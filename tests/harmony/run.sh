@@ -68,11 +68,13 @@ else
     fail=$((fail + 1)); printf 'FAIL verbose prints byte count\n'
 fi
 
-# Codegen is not implemented: build/run/emit-c all stop with ICE-01 (§16.6).
+# Codegen is not implemented: build/run/emit-llvm/emit-c all stop with ICE-01 (§16.6).
 "$HB" build "$TMP/hello.harmony" >/dev/null 2>&1
 check "build exits 1 (no backend)" 1 $?
 "$HB" run "$TMP/hello.harmony" >/dev/null 2>&1
 check "run exits 1 (no backend)" 1 $?
+"$HB" emit-llvm "$TMP/hello.harmony" >/dev/null 2>&1
+check "emit-llvm exits 1 (no backend)" 1 $?
 "$HB" emit-c "$TMP/hello.harmony" >/dev/null 2>&1
 check "emit-c exits 1 (no backend)" 1 $?
 

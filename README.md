@@ -42,7 +42,8 @@ make clean
 harmony-base check main.harmony              # analyses only, no codegen
 harmony-base build main.harmony -o hello     # compile to an executable
 harmony-base run main.harmony                # build and run
-harmony-base emit-c main.harmony             # print the generated C
+harmony-base emit-llvm main.harmony           # print the generated LLVM IR
+harmony-base emit-c main.harmony             # print the generated C (secondary)
 harmony-base explain MOVE-01                 # long-form lesson for a code
 harmony-base audit                           # list every `unchecked` site
 # flags: --format=pretty|line|json  --all  --strict  --deny-unchecked
@@ -52,6 +53,9 @@ harmony-base audit                           # list every `unchecked` site
 Diagnostics tell the story of the value (`docs/harmony.md` §16): a numbered
 timeline, plain English, always a fix, stable `AREA-NN` codes. Exit codes:
 `0` ok, `1` a STOP (or WARN under `--strict`), `2` usage/IO error.
+
+The primary backend is **LLVM IR** (§19.4); the C11 backend (§19.4b) is the
+portable secondary, used as a cross-check.
 
 Milestone: `harmony` is **byte deterministic** — the same input always produces
 identical output bytes.

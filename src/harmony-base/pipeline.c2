@@ -35,13 +35,14 @@ int pipeline_run(struct Options* opts) {
 
     parser_run(&sf, toks, n);
 
-    // Stage 9 of the pipeline (C emission, §19.4) is not implemented yet.
-    // Requesting it is an honest stop with a fix, not a silent exit: the
+    // Emission stages of the pipeline (§19.1 stage 9) are not implemented yet.
+    // Requesting one is an honest stop with a fix, not a silent exit: the
     // driver only advertises what it can run. `build`/`run` imply codegen too.
-    if (opts->cmd == CMD_EMIT_C || opts->cmd == CMD_BUILD || opts->cmd == CMD_RUN) {
+    if (opts->cmd == CMD_EMIT_LLVM || opts->cmd == CMD_EMIT_C
+        || opts->cmd == CMD_BUILD || opts->cmd == CMD_RUN) {
         int idx;
         idx = diag_stop("ICE-01",
-                        "the C backend is not implemented in this build yet",
+                        "the LLVM backend is not implemented in this build yet",
                         "Code emission (pipeline stage 9) lands with milestone M1. `check` runs every analysis that exists today.",
                         &sf, 0, 1);
         if (idx >= 0) {

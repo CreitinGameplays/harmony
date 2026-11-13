@@ -10,12 +10,12 @@ Status legend: `[ ]` not started · `[/]` partial · `[x]` done.
 ## harmony-base — detailed implementation checklist
 
 `src/harmony-base/*.c2` — the first Harmony compiler, written in c2x-seed.
-Target: the v0.3 design in `docs/harmony.md` (goals §2, lexical §4, types §5,
+Target: the v0.3.1 design in `docs/harmony.md` (goals §2, lexical §4, types §5,
 declarations §6, statements §8, ownership §9–13, traps §14, prelude §15,
 diagnostics §16, grammar §18, architecture §19).
 Output extension: `.harmony`. Milestone: byte-deterministic build.
-The backend is **C11** (§19.4); the driver binary is `harmony-base`
-(the spec's `lc`).
+The primary backend is **LLVM IR** (§19.4, per AGENTS.md); the C11 backend is
+secondary (§19.4b). The driver binary is `harmony-base` (the spec's `lc`).
 
 ### M0 — Toolchain, layout, lexer, parser (§19.7)
 
@@ -38,14 +38,19 @@ The backend is **C11** (§19.4); the driver binary is `harmony-base`
   - [ ] `flow.c2` — definite init, moves, liveness, loans, life (§19.1 stage 6).
   - [ ] `drops.c2` — drop elaboration + drop flags (§19.1 stage 7).
   - [ ] `mono.c2` — monomorphization (§19.1 stage 8).
-  - [ ] `emit_c.c2` — C11 emission (§19.1 stage 9, §19.4). **Priority.**
-  - [ ] `rt.c` — the runtime library `rt.h` (§19.4).
+  - [ ] `emit_llvm.c2/` — LLVM IR text emission (§19.1 stage 9, §19.4).
+        **Priority** (AGENTS.md): the primary backend; deterministic, readable
+        symbols, `--emit-llvm`.
+  - [ ] `emit_c.c2/` — C11 emission (§19.4b). Secondary; the portable
+        cross-check backend (`emit-c`), after the language is exercised.
+  - [ ] `rt.c` — the runtime library (both `rt.bc` and `rt.h`, §19.4).
   - [ ] `exhaust.c2` — pattern-matrix exhaustiveness (`CASE-01/02`).
-- [x] Driver subcommands (§19.5): `build`, `run`, `check`, `emit-c`,
-      `explain <CODE>`, `audit`; flags `--format=pretty|line|json`, `--all`,
-      `--strict`, `--deny-unchecked`, `--ascii`, `--no-color`, `-o`, `-v`.
+- [x] Driver subcommands (§19.5): `build`, `run`, `check`, `emit-llvm`,
+      `emit-c`, `explain <CODE>`, `audit`; flags `--format=pretty|line|json`,
+      `--all`, `--strict`, `--deny-unchecked`, `--ascii`, `--no-color`,
+      `-o`, `-v`.
       (`check` runs the real pipeline; codegen commands stop with `ICE-01`
-      until the C backend lands.)
+      until the LLVM backend lands.)
 - [x] Exit codes (§16.6): `0` ok, `1` any STOP (or WARN under `--strict`),
       `2` usage/IO error, `70` the compiled program trapped (§14.3).
 - [x] Deterministic build: no timestamps/PIDs/paths in output; stable symbol
@@ -100,19 +105,21 @@ Twelve c2x-seed defects were found and fixed while bootstrapping (see
       `struct G { struct G arr[2]; }`): by-value self-reference during body
       parsing now reports a plain parse fault instead of recursing forever.
 
-### M1 — Types + first codegen: "C with types and traps" (§19.7)
+### M1 — Types + first codegen: "LLVM with types and traps" (§19.7)
 
 - [ ] Type checker for scalars, functions, structs, enums, `switch`
       (no ownership yet). Codes: `TYPE-01..04`, `MUT-01..03`, `INIT-01`,
       `CASE-01/02` (on enums), `FMT-01`.
-- [ ] C11 emission for the same subset (§19.4 mapping table): checked
-      arithmetic via `__builtin_*_overflow` + `lc_trap`, bounds-checked
-      indexing, `main` entry, `extern fn` prototypes.
-- [ ] Runtime `rt.h`: `lc_alloc`/`lc_free` (trap on OOM), `lc_trap` +
-      trap codes `T-*` (§14.1), buffered output, argv access.
-- [ ] `lc run` spawns the compiled program; trap exit status 70 (§14.3).
-- [ ] Byte-deterministic C output; name mangling `module__Type__method`
-      (§19.4). No hashes.
+- [ ] LLVM IR text emission for the same subset (§19.4 mapping table):
+      checked arithmetic via `llvm.*.with.overflow` + `lc_trap`,
+      bounds-checked indexing before GEP, `main` entry, `extern fn`
+      declarations, `noalias` for `&mut`.
+- [ ] Runtime (`rt.bc` + `rt.h` from one source): `lc_alloc`/`lc_free`
+      (trap on OOM), `lc_trap` + trap codes `T-*` (§14.1), buffered output,
+      argv access, stack-guard handler (`T-STACK`).
+- [ ] `lc run` builds via `llc`/linker and spawns; trap exit status 70 (§14.3).
+- [ ] Byte-deterministic `.ll` output; name mangling `module__Type__method`
+      with readable type-argument suffixes (§19.4). No hashes, no paths.
 
 ### M2 — Ownership: moves + drop elaboration (§9, §19.7)
 
@@ -165,13 +172,15 @@ Twelve c2x-seed defects were found and fixed while bootstrapping (see
 - [ ] `audit` lists every site with file/line/reason (§13.6); `audit --json`
       for CI.
 
-### M7 — Standard library, formatter, fuzzing (§15, §19.7)
+### M7 — Standard library, C backend, formatter, fuzzing (§15, §19.7)
 
 - [ ] Prelude: `print`/`println`/`eprintln` (+ `{}`/`{:?}`/`{:.N}`,
       `FMT-01`), `trap`, `assert`, `exit`, `leak`, `drop`, `swap`, `replace`.
 - [ ] `String`/`.own()`, `Vec`, `Heap`, `Maybe`/`Has`/`Empty`,
       `Outcome`/`Good`/`Bad`, `str` slices + char-boundary traps (§14.1).
 - [ ] Iteration protocol: `fn next(&mut self) -> Maybe<T>` (§6.6, §8.5).
+- [ ] C11 backend (`emit-c`, §19.4b): same mapping-table semantics, run
+      through the host `cc`; cross-check results against the LLVM path.
 - [ ] `lc fmt`: canonical formatter, one style, no options (§19.5) — out of
       scope for harmony-base v0; document divergence.
 - [ ] Test strategy (§19.6): accept suite; reject suite — for **every code**,

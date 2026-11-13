@@ -196,9 +196,10 @@ void diag_plain(char* id, char* msg);
 const int CMD_BUILD = 0;
 const int CMD_RUN = 1;
 const int CMD_CHECK = 2;
-const int CMD_EMIT_C = 3;
-const int CMD_EXPLAIN = 4;
-const int CMD_AUDIT = 5;
+const int CMD_EMIT_LLVM = 3;
+const int CMD_EMIT_C = 4;
+const int CMD_EXPLAIN = 5;
+const int CMD_AUDIT = 6;
 
 // Output format (docs/harmony.md §16.7): --format=pretty|line|json.
 const int FORMAT_PRETTY = 0;

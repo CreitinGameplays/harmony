@@ -21,12 +21,15 @@ vocabulary the lexer and parser must recognize, per the v0.3 spec.
 
 `life` is contextual so `player.life -= 1;` still compiles (§4.2).
 
-**Reserved for the future:** `trait` `async` `await` `macro` `spawn` `send` `try`.
+**Reserved for the future:** `abilities` `async` `await` `macro` `try`.
+Dropped reservations (v0.3.1): `spawn`, `send` (concurrency will use
+ordinary method-style names), and `trait` (the v1 trait-like feature is
+spelled `abilities`, see docs/harmony.md §20.4).
 
 **Recognized foreign words** (not keywords; the compiler knows them and emits
-a `NAME-02` translation hint): `unsafe` `impl` `match` `pub` `use` `loop`
-`goto` `null` `NULL` `nullptr` `malloc` `free` `Box` `Option` `Some` `None`
-`Result` `Ok` `Err` `panic`.
+a `NAME-02` translation hint): `unsafe` `impl` `match` `trait` `pub` `use`
+`loop` `goto` `null` `NULL` `nullptr` `malloc` `free` `Box` `Option` `Some`
+`None` `Result` `Ok` `Err` `panic`.
 
 ## Builtins (docs/harmony.md §15)
 

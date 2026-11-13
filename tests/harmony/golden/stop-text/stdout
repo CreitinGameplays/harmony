@@ -1,5 +1,5 @@
 STOP  ICE-01  main.harmony:1:0
-the C backend is not implemented in this build yet
+the LLVM backend is not implemented in this build yet
 
    Code emission (pipeline stage 9) lands with milestone M1. `check` runs every analysis that exists today.
 

@@ -13,7 +13,7 @@ Check
 - Fix any c2x-seed bug if you find any there (don't suppress).
 - Keep source code files and subdirs well organized.
 - Also fix any other bug before reporting success.
-- *PRIORITIZE writing LLVM backend!!*
+- *PRIORITIZE writing LLVM backend!! C backend comes later*
 - *PREFER things to be auto resizable when possible instead of a fixed value!*
 - Split big source files into smaller, organized files (they can be inside subdirs in the source 
   code for better organization) instead of huge single files (only exception is c2x-seed src).

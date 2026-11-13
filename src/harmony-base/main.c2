@@ -1,10 +1,11 @@
 // harmony-base — driver: argument parsing and pipeline dispatch
 // (docs/harmony.md §19.5).
 //
-//   lc build <file>       compile to an executable
+//   lc build <file>       compile to an executable (LLVM path)
 //   lc run   <file>       build and run
 //   lc check <file>       analyses only, no code generation
-//   lc emit-c <file>      print the generated C
+//   lc emit-llvm <file>   print the generated LLVM IR (primary backend)
+//   lc emit-c <file>      print the generated C (secondary backend)
 //   lc explain <CODE>     long-form lesson for a diagnostic code
 //   lc audit              list every `unchecked` site
 //
@@ -12,7 +13,7 @@
 //          --no-color   --ascii   -o <out>
 
 char* usage_text() {
-    return "usage: harmony-base build <file.harmony> [-o out]\n       harmony-base run   <file.harmony>\n       harmony-base check <file.harmony>\n       harmony-base emit-c <file.harmony>\n       harmony-base explain <CODE>\n       harmony-base audit\n";
+    return "usage: harmony-base build <file.harmony> [-o out]\n       harmony-base run   <file.harmony>\n       harmony-base check <file.harmony>\n       harmony-base emit-llvm <file.harmony>\n       harmony-base emit-c <file.harmony>\n       harmony-base explain <CODE>\n       harmony-base audit\n";
 }
 
 void print_usage(void) {
@@ -59,6 +60,7 @@ int parse_options(int argc, char** argv, struct Options* opts) {
         if (str_eq(a, "build"))   { opts->cmd = CMD_BUILD;   i = i + 1; continue; }
         if (str_eq(a, "run"))     { opts->cmd = CMD_RUN;     i = i + 1; continue; }
         if (str_eq(a, "check"))   { opts->cmd = CMD_CHECK;   i = i + 1; continue; }
+        if (str_eq(a, "emit-llvm")) { opts->cmd = CMD_EMIT_LLVM; i = i + 1; continue; }
         if (str_eq(a, "emit-c"))  { opts->cmd = CMD_EMIT_C;  i = i + 1; continue; }
         if (str_eq(a, "explain")) {
             if (i + 1 < argc) { opts->explain_code = argv[i + 1]; }

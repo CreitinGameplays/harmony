@@ -1,14 +1,18 @@
-# A C-Like, Beginner-Friendly, Memory-Safe Systems Language
-UPDATE LANG NAME: Harmony\
-File Extension: .harmony
+# Harmony — A C-Like, Beginner-Friendly, Memory-Safe Systems Language
 
-### Conceptual Design Document · v0.3
+File extension: `.harmony`
+
+### Conceptual Design Document · v0.3.1
 
 > **Status:** conceptual. Nothing here is implemented, benchmarked, or proven sound.
-> The language is deliberately **unnamed**; this document says "the language" and "the compiler".
-> Pitch line, for whoever needs one: *C with a seatbelt.*
+> The language is **Harmony**; source files end in `.harmony`. This document
+> says "the language" and "the compiler" where a neutral voice reads better.
+> Examples keep the compiler binary name `lc` for brevity — in this
+> codebase the driver is `harmony-base` (the bootstrap compiler, written in
+> c2x-seed).
 >
-> Placeholders used in examples: source files end in `.src`, and the compiler binary is called `lc`.
+> Placeholders used in some older examples: `.src` file suffixes read as
+> `.harmony`.
 
 ---
 
@@ -32,7 +36,7 @@ File Extension: .harmony
 16. [Compiler diagnostics format](#16-compiler-diagnostics-format)
 17. [Example programs](#17-example-programs)
 18. [Formal grammar (EBNF)](#18-formal-grammar-ebnf)
-19. [Compiler architecture and the C backend](#19-compiler-architecture-and-the-c-backend)
+19. [Compiler architecture and the backends](#19-compiler-architecture-and-the-backends)
 20. [Limitations, open questions, roadmap](#20-limitations-open-questions-roadmap)
 21. [Appendix: C to this language cheat sheet](#21-appendix-c-to-this-language-cheat-sheet)
 
@@ -47,6 +51,7 @@ File Extension: .harmony
 | v0.1 | First draft | Ownership core, `life(a)` lifetime syntax, `new`, C-style parens and semicolons. |
 | v0.2 | Rename pass | `impl`→`methods`, `match`→`switch`/`case`, `Option`/`Some`/`None`→`Maybe`/`Has`/`Empty`, `Box`→`Heap`, `for (x in v)`→`for (x : v)`. |
 | v0.3 | Identity pass | New diagnostics format, `String::from`→`.own()`, constructors named `make`, `unchecked("reason")`, `raw` pointers, `extern fn`, `export`/`import`, `cleanup` hook, `eq`/`ord` bounds, `next` iteration protocol, `Outcome`, byte literals, ranges. |
+| v0.3.1 | Decisions + backends | §20.3 open questions resolved (structured reasons, guards, `Shared<T>`, threads incl. detached, `try`, named fields/struct patterns, function pointers, `i32` literals; `unchecked`-as-expression rejected); names kept, trait-like feature renamed **`trait`→`abilities`**, `spawn`/`send` un-reserved; **LLVM is the primary backend**, C11 secondary; the language is named Harmony (`.harmony`). |
 
 ### 1.2 Bug fixed in v0.3
 
@@ -76,6 +81,7 @@ The core ideas (ownership, borrowing, lifetimes, exhaustive sum types) are not n
 | Constructor convention | `Type::new()` | `Type::make()` | `new` is a keyword here. |
 | Destructor | `Drop` trait | `fn cleanup(&mut self)` | A special method name, no traits needed. |
 | Iteration | `Iterator` trait | any type with `fn next(&mut self) -> Maybe<T>` | A structural protocol, no traits needed. |
+| Traits (v1) | `trait` | `abilities` | An ability is what a type *has*; the bound syntax `<T: Drawable>` is already the shape. |
 | Infinite loop | `loop {}` | `while (true) { }` | Already C. |
 | Swap / replace / take | `mem::swap` etc. | `swap`, `replace`, `.take()` | Free functions in the prelude. |
 | Compiler errors | `error[E0382]: ...` + carets | "Life story" timeline (see §16) | Teaches ownership by narrating it. |
@@ -95,14 +101,14 @@ The core ideas (ownership, borrowing, lifetimes, exhaustive sum types) are not n
 3. **C-shaped.** Parenthesized conditions, mandatory braces, semicolons, `switch`, `for (;;)`, designated initializers, explicit `return`. A C programmer can read a page of it on day one.
 4. **Beginner-friendly.** Few concepts, readable keywords, diagnostics that explain in plain English and always propose a fix.
 5. **Predictable.** Defined evaluation order (left to right), no integer promotion surprises, no implicit casts, no undefined behavior outside `unchecked`.
-6. **Compilable to plain C.** The first backend emits C11, so the generated program runs anywhere a C compiler does.
+6. **The primary backend is LLVM**, so safe code compiles to native quality with checked arithmetic and bounds checks inline (`--emit=llvm`, then assemble + link; `--emit=c` emits C11 as a portable secondary backend that runs anywhere a C compiler does).
 
-### 2.2 Non-goals
+### 2.2 Non-goals (v0)
 
-- Maximum expressiveness. There are no traits, closures, macros, or operator overloading in v0.
+- Maximum expressiveness. There are no user-defined abilities (traits), closures, macros, or operator overloading in v0. (`abilities` arrives in v1.)
 - Zero-cost *everything*. Bounds checks and overflow checks exist and are on in all builds.
 - Leak freedom. Memory safety is not leak safety (see §3.4).
-- Concurrency. v0 is single-threaded; threads are a future design that would need `send`-style markers.
+- Concurrency. v0 is single-threaded; v1 adds threads **with detached-thread support** via capability markers that are ordinary names, not reserved keywords (§20.3 item 4, §20.4).
 - Source compatibility with C. It is C-*shaped*, not C-compatible, apart from `extern fn` FFI.
 
 ### 2.3 The feature budget
@@ -194,9 +200,13 @@ Every feature in v0 must kill a named bug class. If it doesn't, it is out.
 
 `life` is **contextual**, so `player.life -= 1;` still compiles. (A game developer's most-typed identifier survives.)
 
-**Reserved for the future:** `trait` `async` `await` `macro` `spawn` `send` `try`.
+**Reserved for the future:** `abilities` `async` `await` `macro` `try`.
+(`trait` is **not** reserved — the v1 trait-like feature is spelled
+`abilities`, see §20.4. `spawn` and `send` are deliberately **not** reserved
+either — v1 concurrency will use ordinary method-style names, not keywords;
+see §20.4.)
 
-**Recognized foreign words** (not keywords, but the compiler knows them and gives a translation hint instead of a bare "unknown name"; see `NAME-02` in §16): `unsafe` `impl` `match` `pub` `use` `loop` `goto` `null` `NULL` `nullptr` `malloc` `free` `Box` `Option` `Some` `None` `Result` `Ok` `Err` `panic`.
+**Recognized foreign words** (not keywords, but the compiler knows them and gives a translation hint instead of a bare "unknown name"; see `NAME-02` in §16): `unsafe` `impl` `match` `trait` `pub` `use` `loop` `goto` `null` `NULL` `nullptr` `malloc` `free` `Box` `Option` `Some` `None` `Result` `Ok` `Err` `panic`.
 
 ### 4.3 Literals
 
@@ -318,7 +328,7 @@ struct View<life a> { text: &life(a) str; }
 ```
 
 - Parameters are **types** (`T`) and **lives** (`life a`). They are implemented by monomorphization (one copy of the code per instantiation), so there is no runtime cost and no runtime type information.
-- **Bounds** are compiler-known markers, not user-definable traits:
+- **Bounds** are compiler-known markers, not user-definable abilities (user-defined `abilities` blocks arrive in v1, §20.4):
 
 | Bound | Meaning | Who satisfies it |
 |---|---|---|
@@ -1115,7 +1125,7 @@ Yes, `new` without `delete` is legal. No, it doesn't leak: the owner's closing b
 
 - `Heap<T>` is **not** `copy`; moving it moves ownership of the allocation (just a pointer copy at runtime).
 - `*h` dereferences. `.` auto-dereferences through `Heap`, `&`, and `&mut`, so there is no `->` anywhere.
-- `Maybe<Heap<T>>` compiles to a single nullable pointer in the C backend, so a linked-list link costs one word.
+- `Maybe<Heap<T>>` compiles to a single nullable pointer in the backends, so a linked-list link costs one word.
 - A failed allocation is `T-OOM`, a trap, never undefined behavior.
 
 ### 12.3 Recursive types need `Heap`
@@ -1350,7 +1360,7 @@ fn parse_u8(text: &str) -> Outcome<u8, ParseError> {
 }
 ```
 
-There is no `?` operator in v0. Errors are handled with `switch`, which keeps control flow visible. (A `try` statement is a v1 candidate; the word is reserved.)
+There is no `?` operator in v0. Errors are handled with `switch`, which keeps control flow visible. (A `try` statement **is decided for v1** — `let x = try parse(s);` returns early on `Bad`; the word is reserved for it, see §20.3 item 5.)
 
 ---
 
@@ -1974,6 +1984,7 @@ When the compiler sees a word from C, C++, Rust, Java, or Go that means somethin
 |---|---|
 | `unsafe { }` | `unchecked("reason") { }` |
 | `impl X { }` | `methods X { }` |
+| `trait Shape { ... }` | `abilities Shape { ... }` (v1 feature; a `NAME-02` hint, not an error) |
 | `match x { A => ... }` | `switch (x) { case A: { ... } }` |
 | `pub fn` | `export fn` |
 | `use foo;` | `import "foo.src";` |
@@ -2441,7 +2452,7 @@ literal       = INT | FLOAT | CHAR | BYTE | STRING | "true" | "false" ;
 
 ---
 
-## 19. Compiler architecture and the C backend
+## 19. Compiler architecture and the backends
 
 ### 19.1 Pipeline
 
@@ -2455,8 +2466,12 @@ literal       = INT | FLOAT | CHAR | BYTE | STRING | "true" | "false" ;
 | 6 | Flow analyses | facts and **events** | Definite init, move analysis, liveness, loan analysis, life inference, exhaustiveness. |
 | 7 | Drop elaboration | CFG IR with drops | Inserts drops and drop flags for maybe-moved values. |
 | 8 | Monomorphization | specialized IR | One instance per generic instantiation. |
-| 9 | C emission | `.c` + `rt.h` | See §19.4. |
-| 10 | Host C compiler | executable | `cc -std=c11 -O2 ...` |
+| 9 | **LLVM emission** (primary) | `.ll` | See §19.4. Deterministic IR text: stable symbol/type names, no hashes or timestamps. |
+| 10 | `llc`/`opt` + system linker | executable | `--emit=llvm` shows the IR; `--emit=c` routes through the secondary C backend instead. |
+
+**The C backend is secondary** (§19.4b): same mapping table semantics, emitted
+as C11 and compiled with the host `cc -std=c11 -O2`. It is the portability and
+cross-check backend — the differential test runs both and diffs behavior.
 
 ### 19.2 Analyses
 
@@ -2476,7 +2491,43 @@ literal       = INT | FLOAT | CHAR | BYTE | STRING | "true" | "false" ;
 
 Every analysis records **events** with provenance as it works: `born(place, span)`, `moved(place, span, into)`, `borrowed(place, kind, span)`, `used(place, span)`, `dropped(place, span)`. A diagnostic is built by selecting the relevant events and ordering them by **time** (§16.2). This is why the timeline format costs almost nothing extra: the information the checker needed to reach its verdict is exactly the story the reader needs. Design the event log in stage 5 (not as an afterthought) and `explain`, JSON output, and editor fixes all fall out for free.
 
-### 19.4 C backend
+### 19.4 LLVM backend (primary)
+
+The primary backend emits **LLVM IR text** (`.ll`), assembled by the system
+toolchain. The runtime is linked in as `rt.bc` (built from the same source that
+generates `rt.h` for the C backend).
+
+| Source construct | Emitted LLVM IR |
+|---|---|
+| `i8`..`i64`, `u8`..`u64`, `isize`, `usize` | `i8`..`i64`, `ptr`-sized ints via the data layout |
+| `bool` | `i1` in registers, `i8` in memory |
+| `char` | `i32` (one Unicode scalar value) |
+| `&T`, `&mut T` | `T*`, `noalias` + (for `&mut`) `nocapture` where the signature proves it; never null by construction |
+| `&[T]`, `&str` | `{ T*, i64 }` (pointer + length) |
+| `[T; N]` | `[N x T]` (copies by value) |
+| `struct` / `enum` | named `%struct` types; enums are `{ i32 tag, [payload] }` with the payload unioned as a fields-of-max-size struct (no `undefined` type-punning; the tag picks the interpretation) |
+| `Heap<T>` | `T*` from `lc_alloc(sizeof(T))`; freed by drop glue |
+| `Maybe<Heap<T>>`, `Maybe<&T>` | a bare pointer, `null` = `Empty` (niche optimization) |
+| `a[i]` | `call lc_check_index(i, N, loc)` before the GEP; direct GEP in `unchecked` |
+| checked arithmetic | `call {T, i1} @llvm.sadd.with.overflow.*` (etc.) + `lc_trap(T_OVERFLOW, loc)` on the overflow bit |
+| `a / b` | zero and `MIN / -1` checks, then exact division |
+| `a << n` | range check on `n`, then shift |
+| move | `memcpy`-classed register/value handling; the source is dead, no code needed |
+| drop with a drop flag | `br` on the flag; drop glue call in its own block |
+| `trap(...)` | `call lc_trap(...)`, declared `noreturn` |
+| `unchecked` operation | emitted as the plain IR operation; no extra checks |
+| `extern fn` | a plain C-ABI declaration |
+
+**Determinism:** IR bytes are a pure function of the input — stable,
+readable symbol names (`module__Type__method`), types emitted in a fixed
+order, explicit (non-numerical) block labels, no hashes, no timestamps,
+no build paths. The same input compiles to identical `.ll` bytes
+(two runs diff clean).
+
+### 19.4b C backend (secondary, cross-check)
+
+Emits C11 from the same mapping semantics; run through the host
+`cc -std=c11 -O2`. The table is identical to §19.4 read with C types:
 
 | Source construct | Emitted C (11) |
 |---|---|
@@ -2501,20 +2552,21 @@ Every analysis records **events** with provenance as it works: `born(place, span
 
 Defense in depth: compile the output with `-fwrapv -fno-strict-aliasing -fno-delete-null-pointer-checks -fstack-clash-protection`. The generated code is written so that it does **not** depend on these flags for correctness; they only blunt compiler bugs.
 
-**Runtime library (`rt.h`, a few hundred lines):** allocation wrappers that trap on OOM, `lc_trap`, buffered output, argv access, and a guard-page plus alternate-signal-stack handler that turns stack exhaustion into `T-STACK` instead of a crash.
+**Runtime library (`rt.h`, a few hundred lines):** allocation wrappers that trap on OOM, `lc_trap`, buffered output, argv access, and a guard-page plus alternate-signal-stack handler that turns stack exhaustion into `T-STACK` instead of a crash. The same runtime source backs `rt.bc` for the LLVM backend and `rt.h` for the C backend.
 
-**Name mangling:** `module__Type__method`, with monomorphized instances suffixed by a hash of their type arguments.
+**Name mangling:** `module__Type__method`, with monomorphized instances suffixed by a **readable, stable** rendering of their type arguments (e.g. `Stack__push__i32`) — no hashes, so both backends (and two compiler runs) produce identical names.
 
 ### 19.5 CLI
 
 ```
-lc build <file.src>        compile to an executable
-lc run   <file.src>        build and run
-lc check <file.src>        analyses only, no code generation (fast, editor-friendly)
-lc emit-c <file.src>       print the generated C
-lc explain <CODE>          long-form lesson for a diagnostic
-lc audit [paths]           list every `unchecked` site
-lc fmt   <file.src>        canonical formatter (one style, no options)
+lc build   <file.harmony>   compile to an executable (LLVM path)
+lc run     <file.harmony>   build and run
+lc check   <file.harmony>   analyses only, no code generation (fast, editor-friendly)
+lc emit-llvm <file.harmony> print the generated LLVM IR
+lc emit-c  <file.harmony>   print the generated C (secondary backend)
+lc explain <CODE>           long-form lesson for a diagnostic
+lc audit   [paths]          list every `unchecked` site
+lc fmt     <file.harmony>   canonical formatter (one style, no options)
 
 flags:  --format=pretty|line|json   --all   --strict   --deny-unchecked
         --no-color   --ascii   -o <out>
@@ -2533,13 +2585,13 @@ flags:  --format=pretty|line|json   --all   --strict   --deny-unchecked
 | M | Deliverable |
 |---|---|
 | M0 | Lexer, parser, AST pretty-printer, round-trip tests. |
-| M1 | Type checker and C emission for scalars, functions, structs, enums, `switch`: "C with types and traps". |
+| M1 | Type checker and **LLVM IR emission** for scalars, functions, structs, enums, `switch`: "C with types and traps", with the runtime (`rt.bc`) linked in. (`emit-llvm` is the M1 deliverable; the C backend follows once the language is exercised.) |
 | M2 | Ownership: moves, drop elaboration, `Heap`, `String`, `Vec`, `cleanup`. |
 | M3 | Borrow checker: shared and exclusive loans, liveness-based. |
 | M4 | `life` parameters, elision, structs with references. |
 | M5 | Diagnostics renderer (event log, timeline format), `explain`, migration hints, JSON output. |
 | M6 | `unchecked`, `raw`, `extern fn`, `lc audit`. |
-| M7 | Standard library polish, formatter, fuzzing harness, the beginner's book. |
+| M7 | Standard library polish, **C backend as the cross-check backend** (`emit-c` + differential tests), formatter, fuzzing harness, the beginner's book. |
 
 ---
 
@@ -2554,33 +2606,42 @@ flags:  --format=pretty|line|json   --all   --strict   --deny-unchecked
 | No shared ownership (`Rc`-like) | Restructure ownership, or clone. |
 | No interior mutability | Pass `&mut` explicitly. |
 | No mutable globals | Pass state as parameters. |
-| No closures or function values | Write a named `fn`; pass a state struct. |
-| No traits, so no user-defined generic algorithms over behavior (e.g., a generic `sort` with a custom comparison) | Built-in `eq`/`ord` cover common cases. |
+| No closures or function values | Write a named `fn`; pass a state struct. (Function pointers arrive in v1, §20.3 item 7.) |
+| No user-defined abilities (traits), so no user-defined generic algorithms over behavior (e.g., a generic `sort` with a custom comparison) | Built-in `eq`/`ord` cover common cases. (`abilities` arrives in v1, §20.4.) |
 | No outlives bounds on `life` | Restructure; some advanced signatures are rejected. |
-| No partial moves | `replace`, `clone`, or consuming methods. |
-| No threads | Single-threaded by design in v0. |
+| No partial moves | `replace`, `clone`, or consuming methods. (Struct patterns soften this in v1, §20.3 item 6.) |
+| No threads | Single-threaded by design in v0. (v1 adds threads with detached-thread support, §20.3 item 4.) |
 | No `?`-style propagation | Explicit `switch` on `Outcome`. |
 | Long list drops recurse | Hand-written iterative `cleanup` (`DROP-02` warns). |
 
 ### 20.2 Deliberately left out of v0
 
-Traits, closures, macros, operator overloading, partial moves, `?`/`try`, ternary, threads, shared ownership, interior mutability, mutable globals, unions, `goto`, exceptions, null, implicit conversions, inheritance, and a preprocessor.
+User-defined abilities (`abilities`, v1; `trait` elsewhere), closures, macros, operator overloading, partial moves, `?`/`try`, ternary, threads, shared ownership, interior mutability, mutable globals, unions, `goto`, exceptions, null, implicit conversions, inheritance, and a preprocessor.
 
-### 20.3 Open questions
+### 20.3 Decisions on the open questions (resolved for v1)
 
-1. **Should reason strings be partly structured?** e.g. `unchecked(index_checked, "i < len on line 5")`, with a small vocabulary of tags, so `lc audit` could group sites by kind of promise.
-2. **`switch` guards.** `case Has(x) if (x > 3):` would be convenient; it complicates exhaustiveness reporting.
-3. **Shared ownership.** If added in v1, should it be `Shared<T>` (non-atomic, single-threaded) with `weak` handles, deliberately boring and visibly costly?
-4. **Concurrency.** Threads would need `send`/`share`-style markers (the reserved words `spawn` and `send` are held for this). A design decision: structured scopes only, no detached threads?
-5. **`try` statement.** `let x = try parse(s);` returning early on `Bad` would remove the most common boilerplate without hiding control flow.
-6. **Named fields in enum payloads**, and **struct patterns** in `switch` (which would also soften "no partial moves").
-7. **Function pointers** (`fn(i32) -> i32`) are safe and cheap; they only wait on a decision about whether they are "enough" without closures.
-8. **Integer type for unsuffixed literals**: `i32` (C-like, predictable) vs. inferring `usize` more aggressively when used as an index.
-9. **Should `unchecked` blocks be allowed as expressions** (to avoid the declare-then-assign pattern), at the cost of the "no trailing-expression magic" rule?
+These were open in the v0.3 draft; they are now decided, to be implemented in v1 (v0 scope is unchanged):
 
-### 20.4 Naming still open
+1. **Structured reason strings: yes.** `unchecked` reasons may carry a tag from a small vocabulary plus free text, e.g. `unchecked(index_checked, "i < len on line 5")`, so `lc audit` can group sites by kind of promise. The plain-string form stays valid.
+2. **`switch` guards: yes.** `case Has(x) if (x > 3):` is accepted; a guarded case still counts for exhaustiveness only when its pattern alone is irrefutable for that variant, and guards never suppress the `default`-required rule on open domains.
+3. **Shared ownership: yes.** v1 adds `Shared<T>` — non-atomic, single-threaded, with `weak` handles — deliberately boring and visibly costly.
+4. **Concurrency: yes, including detached threads.** Threads come with share-style capability markers (ordinary words, not reserved keywords) and **support detached threads** (a thread not tied to a structured scope), not just structured scopes.
+5. **`try` statement: yes.** `let x = try parse(s);` returns early on `Bad`, removing the most common boilerplate without hiding control flow.
+6. **Named fields in enum payloads and struct patterns in `switch`: yes.** Both are accepted; struct patterns also soften the "no partial moves" limitation.
+7. **Function pointers: yes.** `fn(i32) -> i32` is safe and cheap and comes in v1; it is "enough" without closures.
+8. **Unsuffixed integer literals: `i32`.** C-like and predictable; aggressive `usize` inference for indices is not done.
+9. **`unchecked` blocks as expressions: no.** Blocks stay statements; the declare-then-assign pattern keeps the "no trailing-expression magic" rule intact.
 
-`fn`, `Vec`, `String`, `copy`, `Heap`, `make`, and `own` are the remaining places where a second rename pass could further distance the surface from its influences. The language itself is unnamed.
+### 20.4 Naming
+
+**Decided: the names stay.** `fn`, `Vec`, `String`, `copy`, `Heap`, `make`, and `own` are kept — the v0.3 rename pass settled the vocabulary, and a second rename would only churn the surface without improving reading. The language name is **Harmony** (file extension `.harmony`).
+
+**The trait-like feature is spelled `abilities`**, and `trait` is **not** a keyword:
+
+- The concept matches how the language already speaks: the v0 bounds (`copy`, `eq`, `ord`) are *abilities a type has*, so a user-defined one is declared in an `abilities` block — `abilities Shape { ... }` — parallel to `methods Type { ... }`, and consumed as the same bound syntax (`<T: Drawable + ord>`).
+- `trait` (like `impl`, `match`, `Box`) becomes a **recognized foreign word**: writing it earns a `NAME-02` translation hint (`trait Shape { ... }` → `abilities Shape { ... }`), never a bare "unknown name".
+
+Three keyword reservations are **dropped**: `spawn`, `send`, and (per the rename above) `trait`. Concurrency in v1 will use ordinary names (e.g. `thread.spawn(...)`-style methods or contextual words), not reserved keywords. The reserved-for-the-future list in §4.2 is therefore `abilities` `async` `await` `macro` `try`.
 
 ---
 
@@ -2618,4 +2679,4 @@ Traits, closures, macros, operator overloading, partial moves, `?`/`try`, ternar
 
 ---
 
-*End of document. Conceptual design v0.3. Nothing here has been built yet; that is both the risk and the fun.*
+*End of document. Conceptual design v0.3.1 (decisions resolved for v1). Nothing here is fully built yet; that is both the risk and the fun.*

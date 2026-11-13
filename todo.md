@@ -23,8 +23,8 @@ Output extension: `.harmony`. Milestone: byte-deterministic build.
   - [x] `source.c2` — source manager: file load, line index, byte offset→line/col.
   - [x] `diag.c2` — report builder + text renderer (P0 subset).
   - [x] `util.c2` — arena allocator, string helpers, out/err helpers.
+  - [x] `ast.c2` — AST node definitions + arena-backed resizable child lists.
   - [/] `lexer.c2` — token model + P0 EOF-only stub.
-  - [ ] `ast.c2` — AST node definitions + arena allocator.
   - [/] `parser.c2` — recursive-descent parser (P0 stub).
   - [ ] `resolve.c2` — names/IDs → HIR.
   - [ ] `types.c2` — type checker + copy rules.
@@ -47,7 +47,7 @@ Output extension: `.harmony`. Milestone: byte-deterministic build.
 
 ### P0.5 — c2x-seed fixes required to build harmony-base
 
-Five c2x-seed defects were found and fixed while bootstrapping (see
+Eight c2x-seed defects were found and fixed while bootstrapping (see
 `docs/c2x-seed.md` "Recent Bug Fixes"):
 
 - [x] Postfix index expressions used `parse_unary`; now `parse_expression`.
@@ -56,6 +56,12 @@ Five c2x-seed defects were found and fixed while bootstrapping (see
 - [x] Nested struct member chains (`b.a.x`, `c.b.a.x`, `o[i].inner.a`) were
       miscompiled; added a recursive `gen_addr` lvalue-address helper.
 - [x] Global struct arrays of array-bearing structs emitted a doubled `g_` prefix.
+- [x] Type-flag collision: `struct N**` encoded the same as a struct array
+      (`ARRAY_TYPE_FLAG` now sits above all pointer encodings).
+- [x] Pointer-to-struct members/indices at depth ≥ 2 lost field metadata and
+      mis-scaled indices (`pp[i]->field`, `l->items[i]->kind`).
+- [x] Forward struct references (`struct A { struct B* b; }` with `B` later)
+      failed to parse; placeholder + back-patch support added.
 
 ### P1 — Diagnostics + source spans
 

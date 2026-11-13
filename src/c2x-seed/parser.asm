@@ -103,12 +103,25 @@ global parser_state
 ; allocates the array on the stack at runtime (base+count frame slot).
 %define VLA_FLAG        1
 
-; Pointer type encoding: PTR_TYPE_FLAG + base_token_type
-; e.g. int* = 10050, char* = 10051
+; Pointer type encoding: PTR_TYPE_FLAG + base_token_type, plus one more
+; PTR_TYPE_FLAG per extra pointer level (e.g. int* = 10050, int** = 20050).
 %define PTR_TYPE_FLAG   10000
-; Array field encoding: ARRAY_TYPE_FLAG + base_element_type
-; e.g. char[10] = 20051, int[5] = 20050
-%define ARRAY_TYPE_FLAG  20000
+; Array field encoding: ARRAY_TYPE_FLAG + element_type (element_type may itself
+; be a pointer encoding, e.g. struct Field*[N] = ARRAY_TYPE_FLAG + 10057).
+;
+; IMPORTANT: pointer depth is additive, so a depth-`d` pointer is
+; `base + d*PTR_TYPE_FLAG`. ARRAY_TYPE_FLAG must therefore sit ABOVE every
+; pointer encoding we can produce, so that `type >= ARRAY_TYPE_FLAG` only ever
+; matches an array. The old value 20000 collided with depth-2 pointers
+; (struct N** = 57 + 2*10000 = 20057 = 20000 + 57), which made a double
+; pointer look like a struct array and crashed `struct_total_size`.
+; 1<<28 leaves room for ~26000 pointer levels before a collision, and stays
+; inside the signed 32-bit immediate range that `cmp reg, imm32` requires.
+%define ARRAY_TYPE_FLAG  268435456
+; Const struct field flag: a distinct high bit OR'd into the field-descriptor
+; type. Kept above every pointer encoding and distinct from ARRAY_TYPE_FLAG so
+; `test`/`or`/`sub` are unambiguous at any pointer depth.
+%define FIELD_CONST_FLAG 536870912
 ; Const struct field flag: OR'd into the field type in the field descriptor
 ; so codegen can reject assignments to const fields.
 ; Value chosen to avoid overlapping with PTR_TYPE_FLAG (10000) or
@@ -222,6 +235,23 @@ section .bss
     ; self-referential struct definitions like `struct Node { struct Node* next; }`.
     global struct_pre_reg_index
     struct_pre_reg_index resq 1
+
+    ; Forward-reference back-patch table. A pointer field may reference a named
+    ; struct that is defined later (`struct A { struct B* p; }` before B). We
+    ; create a placeholder registry entry for B and record the address of the
+    ; field descriptor's sub_array_ptr slot (offset 24) here; when B is finally
+    ; defined we copy its field array pointer into every recorded slot.
+    FWD_REF_MAX equ 128
+    global fwd_ref_count
+    fwd_ref_count resq 1
+    fwd_ref_slot  resb FWD_REF_MAX * 8      ; named-struct registry index
+    fwd_ref_desc  resb FWD_REF_MAX * 8      ; address of field_descriptor.sub_array_ptr
+
+    ; Pending forward-reference state for the field currently being parsed.
+    ; parser_fwd_index >= 0 means the field references a not-yet-defined struct;
+    ; when its descriptor is stored we record the slot for back-patching.
+    global parser_fwd_index
+    parser_fwd_index resq 1
 
     ; Current function return type (set during parse_function for void-check)
     global current_func_return_type
@@ -2585,13 +2615,73 @@ register_named_struct:
     mov [named_struct_sizes + rbx], rsi
     mov [named_struct_fields + rbx], rdx
     inc qword [named_struct_count]
+    ; Return the registry index in rax (callers that pre-register placeholders
+    ; need it to update the entry / patch forward references later).
+    mov rax, rbx
+    shr rax, 3
+    jmp .ret
 
 .done:
+    mov rax, -1
+.ret:
     pop rcx
     pop rbx
     pop rdx
     pop rsi
     pop rdi
+    ret
+
+; ================================================================
+; find_named_struct_index(rdi = name_ptr) -> rax = index, or -1 if not found.
+; Like find_named_struct but returns the registry slot so callers can update
+; a forward-declared placeholder in place.
+; ================================================================
+    global find_named_struct_index
+find_named_struct_index:
+    push rbx
+    push r8
+    push r9
+    push r10
+    mov r8, [named_struct_count]
+    test r8, r8
+    jz .fnsi_not_found
+    mov rsi, rdi
+    call strlen
+    mov r9, rax
+    mov r10, rdi
+    xor rbx, rbx
+.fnsi_loop:
+    cmp rbx, r8
+    jge .fnsi_not_found
+    imul rax, rbx, 8
+    mov rdi, [named_struct_names + rax]
+    mov rsi, rdi
+    push rcx
+    call strlen
+    pop rcx
+    cmp rax, r9
+    jne .fnsi_next
+    mov rsi, r10
+    mov rdx, r9
+    call mem_eq
+    test rax, rax
+    jz .fnsi_found
+.fnsi_next:
+    inc rbx
+    jmp .fnsi_loop
+.fnsi_found:
+    mov rax, rbx
+    pop r10
+    pop r9
+    pop r8
+    pop rbx
+    ret
+.fnsi_not_found:
+    mov rax, -1
+    pop r10
+    pop r9
+    pop r8
+    pop rbx
     ret
 
 ; ================================================================
@@ -2663,6 +2753,60 @@ find_named_struct:
     pop r9
     pop r8
     pop rbx
+    ret
+
+; ================================================================
+; fwd_ref_record(rdi = registry index, rsi = &field_descriptor.sub_array_ptr)
+; Remember that the field descriptor at rsi should receive the field array
+; pointer of the struct registered at index rdi once that struct is defined.
+; ================================================================
+fwd_ref_record:
+    push rax
+    push rbx
+    mov rax, [fwd_ref_count]
+    cmp rax, FWD_REF_MAX
+    jae .fr_done
+    mov rbx, rax
+    shl rbx, 3
+    mov [fwd_ref_slot + rbx], rdi
+    mov [fwd_ref_desc + rbx], rsi
+    inc qword [fwd_ref_count]
+.fr_done:
+    pop rbx
+    pop rax
+    ret
+
+; ================================================================
+; fwd_ref_patch(rdi = registry index, rsi = field_array_ptr)
+; When a struct with the given registry index is defined, copy its field array
+; pointer into every field descriptor that forward-referenced it.
+; ================================================================
+fwd_ref_patch:
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    xor rcx, rcx                  ; rcx = scan index
+.frp_loop:
+    cmp rcx, [fwd_ref_count]
+    jge .frp_done
+    mov rbx, rcx
+    shl rbx, 3
+    mov rax, [fwd_ref_slot + rbx]
+    cmp rax, rdi
+    jne .frp_next
+    mov rdx, [fwd_ref_desc + rbx]
+    mov [rdx], rsi                ; descriptor.sub_array_ptr = field_array_ptr
+.frp_next:
+    inc rcx
+    jmp .frp_loop
+.frp_done:
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
     ret
 
 ; ================================================================
@@ -3048,15 +3192,31 @@ parse_struct_def:
     ; Pre-register named struct with size=0 so self-references in the body
     ; (e.g., `struct Node { struct Node* next; }`) can find the type.
     ; Store the index in a global so we don't need extra stack slots.
+    ; If a forward-reference placeholder already exists for this tag (created
+    ; when an earlier struct referenced it through a pointer), reuse that slot
+    ; instead of creating a duplicate — the field descriptors to back-patch are
+    ; keyed on that slot index.
     mov qword [struct_pre_reg_index], -1   ; default: not pre-registered
     mov rax, [rsp + 8]               ; rax = tag name (saved above saved regs)
     test rax, rax
     jz .field_loop
     mov rdi, rax                     ; rdi = tag name
+    push r15                         ; save field array ptr
+    call find_named_struct_index
+    pop r15
+    cmp rax, 0
+    jge .pre_reg_existing
+    mov rdi, [rsp + 8]               ; rdi = tag name
     xor rsi, rsi                     ; rsi = size = 0 (placeholder)
     mov rdx, r15                     ; rdx = field array ptr
     call register_named_struct
+.pre_reg_existing:
     mov [struct_pre_reg_index], rax  ; save index for later size update
+    ; Point the entry at this body's field array now, so self-references inside
+    ; the body (which look the struct up mid-parse) can resolve fields.
+    mov rbx, rax
+    shl rbx, 3
+    mov [named_struct_fields + rbx], r15
 
 .field_loop:
     mov rax, [parser_state.current_token]
@@ -3215,18 +3375,45 @@ parse_struct_def:
     push r13                         ; save outer offset (r13)
     push r15                         ; save outer field array (r15)
     push r8                          ; save r8 (caller-saved, but be safe)
+    ; Save the tag name so we can re-look-up / register a placeholder if the
+    ; struct is not defined yet (forward reference through a pointer).
+    push rdi                         ; save tag name
     call find_named_struct
     ; rax = total_size, rcx = field_array_ptr
     mov r9, rax                      ; r9 = total_size (field size)
     mov r8, rcx                      ; r8 = sub_array_ptr
+    pop rdi                          ; rdi = tag name
+    ; Remember whether this was found, for the forward-reference branch.
+    mov qword [parser_fwd_index], -1
+    test r8, r8
+    jnz .fs_named_found
+    ; Not defined yet. Only pointer fields can forward-reference a struct
+    ; (their size is always 8). Peek the next tokens for at least one '*'
+    ; before the field name; if present, register a placeholder struct and
+    ; schedule a back-patch of this field's field-array pointer.
+    mov rax, [parser_state.current_token]
+    cmp rax, TOK_STAR
+    jne .fs_named_ref_bad            ; non-pointer field to unknown struct → error
+    push rdi
+    xor rsi, rsi                     ; placeholder size = 0 (unknown yet)
+    xor rdx, rdx                     ; placeholder field array = 0
+    call register_named_struct
+    mov [parser_fwd_index], rax      ; index of the placeholder for back-patch
+    pop rdi
+    xor r8, r8                       ; no field array yet
+    xor r9, r9                       ; size 0
+    jmp .fs_named_found
+.fs_named_ref_bad:
+    pop rcx                          ; discard saved r8
+    pop r15
+    pop r13
+    pop r12
+    jmp .field_bad
+.fs_named_found:
     pop rcx                          ; discard saved r8
     pop r15                          ; restore outer field array
     pop r13                          ; restore outer offset
     pop r12                          ; restore outer field count
-    ; Check field_array_ptr (rcx) instead of size (rax) — a pre-registered
-    ; struct (size=0) still has a valid field array pointer.
-    test r8, r8
-    jz .field_bad                    ; not found
     mov rcx, r9                      ; rcx = field size
     mov r14, TOK_KW_STRUCT           ; field type
 
@@ -3333,6 +3520,18 @@ parse_struct_def:
     je .ns_no_const_flag
     or qword [rdi + 16], FIELD_CONST_FLAG
 .ns_no_const_flag:
+    ; If this field forward-references a not-yet-defined struct, record the
+    ; address of its sub_array_ptr slot so we can patch it when that struct is
+    ; defined (fwd_ref_patch at definition time). rdi = field descriptor.
+    cmp qword [parser_fwd_index], 0
+    jl .ns_no_fwd
+    push rdi
+    lea rsi, [rdi + 24]              ; &field_descriptor.sub_array_ptr
+    mov rdi, [parser_fwd_index]      ; registry index of the placeholder
+    call fwd_ref_record
+    pop rdi
+    mov qword [parser_fwd_index], -1
+.ns_no_fwd:
     inc r12
     add r13, rcx                     ; total_size += field size
     jmp .field_loop
@@ -3583,19 +3782,45 @@ parse_struct_def:
     ; struct_pre_reg_index = -1 means not pre-registered.
     mov rax, [struct_pre_reg_index]
     cmp rax, 0
-    jl .do_register                     ; not pre-registered → register now
+    jge .update_entry                    ; pre-registered → update in place
 
-    ; Pre-registered: update the size at the saved index
-    imul rbx, rax, 8
-    mov [named_struct_sizes + rbx], r13
-    jmp .after_tag
-
-.do_register:
-    ; Register the named struct type (fallback for non-pre-registered case)
+    ; Not pre-registered. A forward-reference placeholder may already exist for
+    ; this tag (created when a pointer field referenced it before definition).
+    ; If so, reuse that slot; otherwise register a new entry.
+    push r15                             ; save field array ptr
     mov rdi, r14                         ; rdi = tag name
-    mov rsi, r13                         ; rsi = total size
-    mov rdx, r15                         ; rdx = field array ptr
+    call find_named_struct_index
+    pop r15
+    cmp rax, 0
+    jge .have_index
+
+    ; Register new entry, returning its index in rax.
+    mov rdi, r14                         ; tag name
+    mov rsi, r13                         ; total size
+    mov rdx, r15                         ; field array ptr
     call register_named_struct
+    cmp rax, 0
+    jl .after_tag                        ; registry full → nothing to patch
+    jmp .patch_index
+
+.update_entry:
+    ; Update the pre-registered entry's size and field array pointer.
+    mov rbx, rax
+    shl rbx, 3
+    mov [named_struct_sizes + rbx], r13
+    mov [named_struct_fields + rbx], r15
+.have_index:
+    ; rax = index of the (placeholder) entry; fill in real size + fields.
+    mov rbx, rax
+    shl rbx, 3
+    mov [named_struct_sizes + rbx], r13
+    mov [named_struct_fields + rbx], r15
+.patch_index:
+    ; rax = registry index. Patch every forward-referencing field descriptor
+    ; to point at this struct's real field array.
+    mov rdi, rax
+    mov rsi, r15
+    call fwd_ref_patch
 
 .after_tag:
     ; If this was `const struct Name { ... }`, mark every field const so

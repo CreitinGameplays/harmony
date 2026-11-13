@@ -188,3 +188,48 @@ int lexer_run(struct SourceFile* sf, struct Token** out_tokens);
 // Parser (P3). Stub for now.
 // ---------------------------------------------------------------------------
 int parser_run(struct SourceFile* sf, struct Token* tokens, int ntokens);
+
+// ---------------------------------------------------------------------------
+// AST (P3, docs/harmony.md Appendix A). Nodes are arena-allocated and carry a
+// byte span so reports can point at exact source. Lists grow by doubling.
+//
+// c2x-seed has no unions and no const array dimensions, so the node is flat:
+// kind + span + a few payloads + up to three direct children + two lists.
+struct AstList {
+    int len;
+    int cap;
+    struct AstNode** items;
+};
+
+struct AstNode {
+    int   kind;
+    int   file;      // source file index
+    int   start;     // byte offset
+    int   end;       // byte offset (exclusive)
+    int   ival;      // integer payload (literal value, flags, repeat count)
+    char* sval;      // string payload (name, operator, spelling); may be 0
+    struct AstNode* a;   // first child (meaning depends on kind)
+    struct AstNode* b;   // second child
+    struct AstNode* c;   // third child
+    struct AstList* kids;   // primary child list
+    struct AstList* kids2;  // secondary child list
+    int   ty;        // resolved type id (filled by the checker; 0 = unset)
+};
+
+// Byte sizes as fixed literals (c2x-seed needs literal array dimensions and
+// uses an 8-byte field ABI, so every field is one qword).
+const int AST_NODE_SIZE = 104;   // 13 fields * 8
+const int AST_LIST_SIZE = 24;    // len, cap, items
+const int AST_NODE_PTR_SIZE = 8;
+
+struct AstNode* ast_node_new(int kind);
+void ast_span(struct AstNode* n, int file, int start, int end);
+struct AstList* ast_list_new(void);
+void ast_list_push(struct AstList* l, struct AstNode* n);
+int ast_list_len(struct AstList* l);
+struct AstNode* ast_list_get(struct AstList* l, int i);
+struct AstList* ast_list_concat(struct AstList* a, struct AstList* b);
+char* ast_kind_name(int kind);
+int ast_is_item(int kind);
+int ast_is_stmt(int kind);
+int ast_is_type(int kind);

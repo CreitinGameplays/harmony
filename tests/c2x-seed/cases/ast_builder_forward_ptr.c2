@@ -1,0 +1,44 @@
+// Regression: an AST-like builder where a list struct holds `struct Node**`
+// and the node struct is defined *after* the list (a common shape for
+// mutually recursive data). Exercises forward references, struct-double-pointer
+// field indexing, and member access through indexed pointer elements.
+// EXPECT: 42
+struct AstList { int len; int cap; struct AstNode** items; };
+struct AstNode { int kind; };
+
+char g_mem[65536];
+int g_off;
+char* aalloc(int n) { char* p; p = &g_mem[g_off]; g_off = g_off + n; return p; }
+
+struct AstNode* node_new(int k) {
+    struct AstNode* n;
+    n = (struct AstNode*)aalloc(16);
+    n->kind = k;
+    return n;
+}
+
+struct AstList* list_new(void) {
+    struct AstList* l;
+    l = (struct AstList*)aalloc(24);
+    l->len = 0;
+    l->cap = 8;
+    l->items = (struct AstNode**)aalloc(64);
+    return l;
+}
+
+void list_push(struct AstList* l, struct AstNode* n) {
+    l->items[l->len] = n;
+    l->len = l->len + 1;
+}
+
+int main(void) {
+    struct AstList* l;
+    int i;
+    l = list_new();
+    i = 0;
+    while (i < 5) { list_push(l, node_new(i)); i = i + 1; }
+    if (l->len != 5) { return 1; }
+    if (l->items[0]->kind != 0) { return 2; }
+    if (l->items[4]->kind != 4) { return 3; }
+    return 42;
+}

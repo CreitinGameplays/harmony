@@ -100,12 +100,17 @@ global codegen_init, codegen_generate, codegen_cleanup, symbol_tables_init
 %define TOK_INCR        80
 %define TOK_DECR        81
 
-; Pointer type encoding: PTR_TYPE_FLAG + base_token_type
+; Pointer type encoding: PTR_TYPE_FLAG + base_token_type, plus one more
+; PTR_TYPE_FLAG per extra pointer level (e.g. int* = 10050, int** = 20050).
+; Must stay identical to the defines in parser.asm.
 %define PTR_TYPE_FLAG   10000
-; Array field encoding: ARRAY_TYPE_FLAG + base_element_type
-%define ARRAY_TYPE_FLAG  20000
-; Const struct field flag: OR'd into the field type in the field descriptor
-%define FIELD_CONST_FLAG 65536
+; Array field encoding: ARRAY_TYPE_FLAG + element_type.
+; Must sit above every reachable pointer encoding so `type >= ARRAY_TYPE_FLAG`
+; only matches arrays. The old value (20000) collided with depth-2 pointers
+; like `struct N**` = 20057, which crashed `struct_total_size`. See parser.asm.
+%define ARRAY_TYPE_FLAG  268435456
+; Const struct field flag: a distinct high bit OR'd into the field type.
+%define FIELD_CONST_FLAG 536870912
 
 ; ------------------------------------------------------------
 ; AST node struct (5 qwords = 40 bytes)
@@ -1609,12 +1614,20 @@ collect_symbols:
     ; rcx = type (already set)
     ; Check if struct pointer: set extra = field_array_ptr from data4
     xor r8, r8                      ; default extra = 0
+    ; A pointer to a struct at any depth (struct T*, struct T**, ...) carries
+    ; the pointee's field array in data4. Use the depth-agnostic helper so
+    ; `struct T** p; p[i]->field` can resolve fields. rdi holds name_ptr for
+    ; add_symbol, so save it across the helper call.
     cmp rcx, PTR_TYPE_FLAG
-    jb .not_struct_ptr               ; below flag → not a pointer
-    mov rax, rcx
-    sub rax, PTR_TYPE_FLAG
-    cmp rax, TOK_KW_STRUCT
-    jne .not_struct_ptr
+    jb .not_struct_ptr               ; below the pointer band → not a pointer
+    push rdi
+    push rcx
+    mov rdi, rcx
+    call type_base_is_struct
+    pop rcx
+    pop rdi                          ; restore name_ptr
+    test rax, rax
+    jz .not_struct_ptr
     ; Struct pointer — get field_array_ptr from data4
     mov rax, [rbx + ast_node_t.data4]
     test rax, rax
@@ -5804,16 +5817,19 @@ gen_assign:
     mov rsi, asm_pop_rbx
     call emit_string
     ; rbx = base, rax = index
-    ; Strip pointer flag (if present) to get element type
+    ; Strip one pointer level (if present) to get the element type. For a
+    ; pointer-to-pointer base (`struct T** p; p[i]`), r14 becomes the inner
+    ; pointer type (e.g. struct T*), which is still an 8-byte element.
     cmp r14, PTR_TYPE_FLAG
     jb .ai_gen_not_ptr
     sub r14, PTR_TYPE_FLAG
 .ai_gen_not_ptr:
-    ; Scale index by element size
+    ; Scale index by element size. char = 1, struct-by-value is handled by the
+    ; struct path, everything else (int, pointer elements) is 8 bytes.
     cmp r14, TOK_KW_CHAR
     je .ai_gen_no_scale
-    cmp r14, TOK_KW_INT
-    jne .ai_gen_no_scale
+    cmp r14, TOK_KW_STRUCT
+    je .ai_gen_no_scale
     mov rsi, asm_shl_rax_3
     call emit_string
 .ai_gen_no_scale:
@@ -7763,7 +7779,13 @@ gen_expr:
     cmp r14, TOK_KW_CHAR
     je .index_gen_noscale
     cmp r14, TOK_KW_INT
-    jne .index_gen_check_struct
+    je .index_gen_scale8
+    ; Pointer element (struct T*, int*, ...) or struct: pointers and most
+    ; scalar element types are 8 bytes.
+    cmp r14, TOK_KW_STRUCT
+    je .index_gen_check_struct
+    jmp .index_gen_scale8
+.index_gen_scale8:
     mov rsi, asm_shl_rax_3
     call emit_string                    ; rax = index * 8
     jmp .index_gen_noscale
@@ -8161,6 +8183,21 @@ gen_expr:
     call emit_string
 .index_loaded:
     mov [gen_expr_type], r14              ; element type
+    ; If the element is a pointer to a struct (struct T*, struct T**, ...),
+    ; remember the pointee's field array (the symbol's `extra`, held in rbx on
+    ; every path through .index_common) so `p->field` and `p[i]->field` can
+    ; resolve fields. rax holds the loaded value, so save it around the call.
+    push rax
+    push rbx
+    mov rdi, r14
+    call type_base_is_struct
+    mov r8, rax
+    pop rbx
+    pop rax
+    test r8, r8
+    jz .index_loaded_done
+    mov [gen_expr_struct_fields], rbx
+.index_loaded_done:
     jmp .done
 
 .call_expr:
@@ -8787,14 +8824,14 @@ gen_expr:
     mov rsi, asm_mov_rax_from_rax
     call emit_string
     mov [gen_expr_type], r14
-    ; struct T* field: preserve pointee field_array_ptr for later indexing
-    ; (e.g. def.fields[i] where fields is struct Field*).
-    mov rax, r14
-    cmp rax, PTR_TYPE_FLAG
-    jb .member_global_loaded
-    sub rax, PTR_TYPE_FLAG
-    cmp rax, TOK_KW_STRUCT
-    jne .member_global_loaded
+    ; struct T*..** field: preserve pointee field_array_ptr for later indexing
+    ; (e.g. def.fields[i] where fields is struct Field*). Works at any depth.
+    push r9
+    mov rdi, r14
+    call type_base_is_struct
+    pop r9
+    test rax, rax
+    jz .member_global_loaded
     mov [gen_expr_struct_fields], r9
 .member_global_loaded:
     jmp .done
@@ -8887,13 +8924,13 @@ gen_expr:
     mov rsi, asm_mov_rax_from_rax
     call emit_string
     mov [gen_expr_type], r13
-    ; struct T* field: preserve pointee field_array_ptr for later indexing
-    mov rax, r13
-    cmp rax, PTR_TYPE_FLAG
-    jb .mc_loaded
-    sub rax, PTR_TYPE_FLAG
-    cmp rax, TOK_KW_STRUCT
-    jne .mc_loaded
+    ; struct T*..** field: preserve pointee field_array_ptr for later indexing.
+    push r9
+    mov rdi, r13
+    call type_base_is_struct
+    pop r9
+    test rax, rax
+    jz .mc_loaded
     mov [gen_expr_struct_fields], r9
 .mc_loaded:
     jmp .done
@@ -8981,13 +9018,13 @@ gen_expr:
     mov rsi, asm_mov_rax_from_rax
     call emit_string
     mov [gen_expr_type], r14
-    ; struct T* field: preserve pointee field_array_ptr for later indexing
-    mov rax, r14
-    cmp rax, PTR_TYPE_FLAG
-    jb .member_local_loaded
-    sub rax, PTR_TYPE_FLAG
-    cmp rax, TOK_KW_STRUCT
-    jne .member_local_loaded
+    ; struct T*..** field: preserve pointee field_array_ptr for later indexing.
+    push r9
+    mov rdi, r14
+    call type_base_is_struct
+    pop r9
+    test rax, rax
+    jz .member_local_loaded
     mov [gen_expr_struct_fields], r9
 .member_local_loaded:
     jmp .done
@@ -9136,13 +9173,13 @@ gen_expr:
 
 .member_expr_loaded:
     mov [gen_expr_type], r14
-    ; struct T* field: preserve pointee field_array_ptr for later indexing
-    mov rax, r14
-    cmp rax, PTR_TYPE_FLAG
-    jb .member_expr_loaded_done
-    sub rax, PTR_TYPE_FLAG
-    cmp rax, TOK_KW_STRUCT
-    jne .member_expr_loaded_done
+    ; struct T*..** field: preserve pointee field_array_ptr for later indexing.
+    push r9
+    mov rdi, r14
+    call type_base_is_struct
+    pop r9
+    test rax, rax
+    jz .member_expr_loaded_done
     mov [gen_expr_struct_fields], r9
 .member_expr_loaded_done:
     jmp .done
@@ -9178,6 +9215,32 @@ gen_expr:
 
 .done:
     EPILOGUE r15, r14, r13, r12, rbx
+
+; ================================================================
+; type_base_is_struct(rdi = type) -> rax = 1 if the type is a pointer whose
+; ultimate pointee is TOK_KW_STRUCT, else 0. Handles any pointer depth, since
+; pointer depth is encoded additively (`base + depth*PTR_TYPE_FLAG`).
+; Preserves rdi (uses rax as scratch); clobbers rax only.
+; ================================================================
+type_base_is_struct:
+    mov rax, rdi
+    cmp rax, PTR_TYPE_FLAG
+    jb .tbs_no                        ; below the pointer band → not a pointer
+    cmp rax, ARRAY_TYPE_FLAG
+    jae .tbs_no                       ; array encoding, not a plain pointer
+.tbs_loop:
+    cmp rax, PTR_TYPE_FLAG
+    jb .tbs_check
+    sub rax, PTR_TYPE_FLAG
+    jmp .tbs_loop
+.tbs_check:
+    cmp rax, TOK_KW_STRUCT
+    jne .tbs_no
+    mov rax, 1
+    ret
+.tbs_no:
+    xor rax, rax
+    ret
 
 ; ================================================================
 ; find_field(rdi=field_array_ptr, rsi=field_name_ptr)
@@ -9516,9 +9579,20 @@ gen_addr:
     jmp .ga_member_emit
 .ga_member_type_ready:
     mov [gen_expr_type], r14
-    ; For plain struct fields, remember the sub field array so chained access works.
+    ; Struct or pointer-to-struct fields: remember the sub field array so
+    ; chained member/index access can resolve the pointee at any depth.
     cmp r14, TOK_KW_STRUCT
-    jne .ga_member_not_struct
+    je .ga_member_set_fields
+    push rax
+    push r15
+    mov rdi, r14
+    call type_base_is_struct
+    pop r15
+    mov r8, rax
+    pop rax
+    test r8, r8
+    jz .ga_member_not_struct
+.ga_member_set_fields:
     mov [gen_expr_struct_fields], r15
 .ga_member_not_struct:
 .ga_member_emit:
@@ -9573,7 +9647,17 @@ gen_addr:
 .ga_member_arrow_type_ready:
     mov [gen_expr_type], r14
     cmp r14, TOK_KW_STRUCT
-    jne .ga_member_arrow_not_struct
+    je .ga_member_arrow_set_fields
+    push rax
+    push r15
+    mov rdi, r14
+    call type_base_is_struct
+    pop r15
+    mov r8, rax
+    pop rax
+    test r8, r8
+    jz .ga_member_arrow_not_struct
+.ga_member_arrow_set_fields:
     mov [gen_expr_struct_fields], r15
 .ga_member_arrow_not_struct:
 .ga_member_arrow_emit:

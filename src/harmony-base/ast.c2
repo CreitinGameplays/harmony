@@ -1,0 +1,231 @@
+// harmony-base — AST node model and arena-backed containers.
+//
+// Every node carries a byte span (`file`, `start`, `end`) so reports can point
+// at exact source locations. Lists grow by doubling (never a fixed cap), per
+// the project rule to prefer auto-resizable structures.
+//
+// Node shape is intentionally flat (no unions, which c2x-seed lacks): a node
+// stores its kind, span, a few scalar/string payloads, up to three direct
+// child nodes, and two resizable child lists. Fields not meaningful for a
+// given kind stay zero.
+
+// ---------------------------------------------------------------------------
+// Node kinds. Grouped by category with gaps so new kinds slot in without
+// renumbering existing ones (the numeric values are not a public API).
+// ---------------------------------------------------------------------------
+// Program / items
+const int AST_PROGRAM   = 1;
+const int AST_FN        = 10;
+const int AST_EXTERN_FN = 11;
+const int AST_STRUCT    = 12;
+const int AST_ENUM      = 13;
+const int AST_METHODS   = 14;
+const int AST_CONST     = 15;
+const int AST_FIELD     = 16;
+const int AST_VARIANT   = 17;
+const int AST_PARAM     = 18;
+
+// Types
+const int AST_TYPE_NAME  = 20;  // sval = name, list = generic args
+const int AST_TYPE_REF   = 21;  // a = target, ival bit 0 = mut, sval = life
+const int AST_TYPE_ARRAY = 22;  // a = element, ival = length
+const int AST_TYPE_SLICE = 23;  // a = element
+const int AST_TYPE_UNIT  = 24;  // ()
+
+// Statements
+const int AST_BLOCK     = 30;  // list = statements
+const int AST_LET       = 31;  // sval = name, a = type (may be 0), b = init
+const int AST_ASSIGN    = 32;  // a = place, sval = op, b = value
+const int AST_EXPR_STMT = 33;  // a = expr
+const int AST_IF        = 34;  // a = cond, b = then block, c = else (may be 0)
+const int AST_WHILE     = 35;  // a = cond, b = body
+const int AST_FOR       = 36;  // a = init, b = cond, c = step, list = body
+const int AST_SWITCH    = 37;  // a = subject, list = arms
+const int AST_ARM       = 38;  // a = pattern (0 = default), b = block
+const int AST_RETURN    = 39;  // a = expr (may be 0)
+const int AST_BREAK     = 40;
+const int AST_CONTINUE  = 41;
+const int AST_UNCHECKED = 42;  // sval = reason (may be 0), a = block
+
+// Expressions
+const int AST_INT_LIT   = 50;  // ival = value
+const int AST_FLOAT_LIT = 51;  // sval = spelling
+const int AST_STRING_LIT= 52;  // sval = value, ival = length
+const int AST_CHAR_LIT  = 53;  // ival = scalar value
+const int AST_BOOL_LIT  = 54;  // ival = 0/1
+const int AST_UNIT_LIT  = 55;  // ()
+const int AST_PATH      = 56;  // sval = name, a = base (0), list = segments
+const int AST_BINARY    = 57;  // sval = op, a = left, b = right
+const int AST_UNARY     = 58;  // sval = op, a = operand
+const int AST_FIELD_ACC = 59;  // a = base, sval = field
+const int AST_INDEX     = 60;  // a = base, b = index
+const int AST_CALL      = 61;  // a = callee, list = args, list2 = method
+const int AST_AS        = 62;  // a = expr, b = type
+const int AST_STRUCT_INIT = 63;// sval = name, list = field inits
+const int AST_FIELD_INIT  = 64;// sval = name, a = value
+const int AST_ARRAY_LIT   = 65;// list = elements, ival = repeat count (-1 = none)
+const int AST_BORROW      = 66;// a = operand, ival bit 0 = mut
+const int AST_DEREF       = 67;// a = operand
+const int AST_NEW         = 68;// a = operand
+
+// Patterns
+const int AST_PAT_WILD   = 80;
+const int AST_PAT_LIT    = 81;  // a = literal
+const int AST_PAT_BIND   = 82;  // sval = name
+const int AST_PAT_VARIANT= 83;  // sval = variant, list = sub-patterns
+
+// ---------------------------------------------------------------------------
+// Nodes
+// ---------------------------------------------------------------------------
+
+struct AstNode* ast_node_new(int kind) {
+    struct AstNode* n;
+    n = arena_alloc(AST_NODE_SIZE);
+    n->kind = kind;
+    n->file = 0;
+    n->start = 0;
+    n->end = 0;
+    n->ival = 0;
+    n->sval = 0;
+    n->a = 0;
+    n->b = 0;
+    n->c = 0;
+    n->kids = 0;
+    n->kids2 = 0;
+    n->ty = 0;
+    return n;
+}
+
+// Sets the byte span on a node.
+void ast_span(struct AstNode* n, int file, int start, int end) {
+    n->file = file;
+    n->start = start;
+    n->end = end;
+}
+
+// ---------------------------------------------------------------------------
+// Resizable child lists. Start small; double on overflow.
+// ---------------------------------------------------------------------------
+
+struct AstList* ast_list_new(void) {
+    struct AstList* l;
+    l = arena_alloc(AST_LIST_SIZE);
+    l->len = 0;
+    l->cap = 8;
+    l->items = arena_alloc(8 * AST_NODE_PTR_SIZE);
+    return l;
+}
+
+void ast_list_push(struct AstList* l, struct AstNode* n) {
+    if (l->len >= l->cap) {
+        int ncap;
+        struct AstNode** ni;
+        int i;
+        ncap = l->cap * 2;
+        ni = arena_alloc(ncap * AST_NODE_PTR_SIZE);
+        i = 0;
+        while (i < l->len) { ni[i] = l->items[i]; i = i + 1; }
+        l->items = ni;
+        l->cap = ncap;
+    }
+    l->items[l->len] = n;
+    l->len = l->len + 1;
+}
+
+int ast_list_len(struct AstList* l) {
+    if (l == 0) { return 0; }
+    return l->len;
+}
+
+struct AstNode* ast_list_get(struct AstList* l, int i) {
+    return l->items[i];
+}
+
+struct AstList* ast_list_concat(struct AstList* a, struct AstList* b) {
+    int i;
+    if (a == 0) { return b; }
+    i = 0;
+    while (i < ast_list_len(b)) {
+        ast_list_push(a, ast_list_get(b, i));
+        i = i + 1;
+    }
+    return a;
+}
+
+// ---------------------------------------------------------------------------
+// Small helpers used by the parser and diagnostics.
+// ---------------------------------------------------------------------------
+
+// Returns a stable, lowercase name for a node kind (used by AST dumps/tests).
+char* ast_kind_name(int kind) {
+    if (kind == AST_PROGRAM)   { return "program"; }
+    if (kind == AST_FN)        { return "fn"; }
+    if (kind == AST_EXTERN_FN) { return "extern-fn"; }
+    if (kind == AST_STRUCT)    { return "struct"; }
+    if (kind == AST_ENUM)      { return "enum"; }
+    if (kind == AST_METHODS)   { return "methods"; }
+    if (kind == AST_CONST)     { return "const"; }
+    if (kind == AST_FIELD)     { return "field"; }
+    if (kind == AST_VARIANT)   { return "variant"; }
+    if (kind == AST_PARAM)     { return "param"; }
+    if (kind == AST_TYPE_NAME) { return "type-name"; }
+    if (kind == AST_TYPE_REF)  { return "type-ref"; }
+    if (kind == AST_TYPE_ARRAY){ return "type-array"; }
+    if (kind == AST_TYPE_SLICE){ return "type-slice"; }
+    if (kind == AST_TYPE_UNIT) { return "type-unit"; }
+    if (kind == AST_BLOCK)     { return "block"; }
+    if (kind == AST_LET)       { return "let"; }
+    if (kind == AST_ASSIGN)    { return "assign"; }
+    if (kind == AST_EXPR_STMT) { return "expr-stmt"; }
+    if (kind == AST_IF)        { return "if"; }
+    if (kind == AST_WHILE)     { return "while"; }
+    if (kind == AST_FOR)       { return "for"; }
+    if (kind == AST_SWITCH)    { return "switch"; }
+    if (kind == AST_ARM)       { return "arm"; }
+    if (kind == AST_RETURN)    { return "return"; }
+    if (kind == AST_BREAK)     { return "break"; }
+    if (kind == AST_CONTINUE)  { return "continue"; }
+    if (kind == AST_UNCHECKED) { return "unchecked"; }
+    if (kind == AST_INT_LIT)   { return "int"; }
+    if (kind == AST_FLOAT_LIT) { return "float"; }
+    if (kind == AST_STRING_LIT){ return "string"; }
+    if (kind == AST_CHAR_LIT)  { return "char"; }
+    if (kind == AST_BOOL_LIT)  { return "bool"; }
+    if (kind == AST_UNIT_LIT)  { return "unit"; }
+    if (kind == AST_PATH)      { return "path"; }
+    if (kind == AST_BINARY)    { return "binary"; }
+    if (kind == AST_UNARY)     { return "unary"; }
+    if (kind == AST_FIELD_ACC) { return "field"; }
+    if (kind == AST_INDEX)     { return "index"; }
+    if (kind == AST_CALL)      { return "call"; }
+    if (kind == AST_AS)        { return "as"; }
+    if (kind == AST_STRUCT_INIT){ return "struct-init"; }
+    if (kind == AST_FIELD_INIT) { return "field-init"; }
+    if (kind == AST_ARRAY_LIT) { return "array-lit"; }
+    if (kind == AST_BORROW)    { return "borrow"; }
+    if (kind == AST_DEREF)     { return "deref"; }
+    if (kind == AST_NEW)       { return "new"; }
+    if (kind == AST_PAT_WILD)  { return "_"; }
+    if (kind == AST_PAT_LIT)   { return "pat-lit"; }
+    if (kind == AST_PAT_BIND)  { return "pat-bind"; }
+    if (kind == AST_PAT_VARIANT){ return "pat-variant"; }
+    return "?";
+}
+
+int ast_is_item(int kind) {
+    if (kind == AST_FN || kind == AST_EXTERN_FN || kind == AST_STRUCT) { return 1; }
+    if (kind == AST_ENUM || kind == AST_METHODS || kind == AST_CONST) { return 1; }
+    return 0;
+}
+
+int ast_is_stmt(int kind) {
+    if (kind == AST_LET || kind == AST_ASSIGN || kind == AST_EXPR_STMT) { return 1; }
+    if (kind == AST_IF || kind == AST_WHILE || kind == AST_FOR) { return 1; }
+    if (kind == AST_SWITCH || kind == AST_RETURN || kind == AST_BREAK) { return 1; }
+    if (kind == AST_CONTINUE || kind == AST_UNCHECKED || kind == AST_BLOCK) { return 1; }
+    return 0;
+}
+
+int ast_is_type(int kind) {
+    return kind >= AST_TYPE_NAME && kind <= AST_TYPE_UNIT;
+}

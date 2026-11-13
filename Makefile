@@ -7,6 +7,7 @@ HB_OUT    := build/harmony-base
 HB_SRC    := \
 	src/harmony-base/common.c2 \
 	src/harmony-base/util.c2 \
+	src/harmony-base/ast.c2 \
 	src/harmony-base/source.c2 \
 	src/harmony-base/diag.c2 \
 	src/harmony-base/lexer.c2 \

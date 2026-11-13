@@ -25,3 +25,5 @@ Check
 - All risks are accepted.
 - Always add helpful comments in the code.
 - Always use `-s` arg when using `git commit`
+- If a bug happens on c2x-seed during harmony implementation, pause it and only focus on fixing c2x-seed.
+  When fixed just report final completion.

@@ -1006,6 +1006,20 @@ main:
 | **`break`/`continue`** | `break;` exits the innermost loop, `continue;` jumps to the next iteration. Works in both `while` and `for` loops. Nested loops supported via global loop-label save/restore. |
 | **Multi-file compilation** | Multiple `.c2` files accepted on command line. Parser accumulates functions and globals across files using persistent registries. |
 | **Dynamic statement arrays** | `parse_block` allocates a growing pointer array for block statements: starts at capacity 32, doubles on overflow, copies old entries. No hard limit on statements per block. |
+| **Nested member chains** | Chained access through struct-typed fields works for any depth (`b.a.x`, `c.b.a.x`) and for index-rooted chains (`o[i].inner.a`). Struct-typed field reads yield the field *address* (struct value semantics), and the address-of/index paths recurse through a shared `gen_addr` helper. |
+
+## Recent Bug Fixes (harmony-base bring-up)
+
+These c2x-seed defects were found and fixed while bootstrapping `harmony-base`.
+Each has a regression case under `tests/c2x-seed/cases/` (run `make test-seed`).
+
+| Bug | Symptom | Fix |
+|---|---|---|
+| **Binary-expression index on a struct-field pointer** | `s.p[i + 2]` failed to parse (`Expected ']'`), while `s.p[i]` and `arr[i + 2]` worked. | The two postfix-index parser paths used `parse_unary` for the index expression, which cannot parse binary operators. Changed both to `parse_expression`. |
+| **Local struct arrays** | `struct Point pts[3];` segfaulted the compiler — even the documented example. | `collect_symbols` registered `extra = element count` for struct arrays, but the index handler needs `extra = field_array_ptr`, so it dereferenced a small integer. Struct-array registration now stores the field-array pointer in `extra`, and `.index_scale_struct` uses `rbx` (the field array on every path) instead of `r13`. |
+| **Address of a struct-array field through a pointer** | `&r->spans[0]` segfaulted the compiler. | `gen_expr`'s `.addr_index` path assumed the operand was `ident[index]`, misread the `AST_MEMBER` base, and dereferenced garbage. It now detects a non-ident base and evaluates it via `gen_addr`. |
+| **Nested struct member reads/writes** | `b.a.x` read the wrong slot, deeper chains (`c.b.a.x`) returned garbage, and index-rooted chains (`o[i].inner.a`) crashed. | Struct-typed member reads now keep the field address instead of loading a scalar; chained member access is routed through a new recursive `gen_addr` helper that computes the address of any lvalue (`IDENT`, `MEMBER`, `INDEX`, `*ptr`). Both read and assign paths use it. |
+| **Global struct arrays of array-bearing structs** | Emitted `g_g_name` (doubled prefix) and failed assembly. | The general index-address path now runs the name through `strip_g_prefix`, matching the other emit paths. |
 
 ## External Declarations
 

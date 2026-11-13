@@ -15,15 +15,17 @@ Output extension: `.harmony`. Milestone: byte-deterministic build.
 
 ### P0 — Toolchain, layout, skeleton, tests
 
-- [ ] `Makefile` rules: `harmony-base` (build compiler), `test-harmony-base`,
-      `test-harmony-base-fuzz`, `clean`; wire `build.sh` (c2x-seed) as a prereq.
-- [ ] `src/harmony-base/` file layout (each file < ~1500 lines; split aggressively):
-  - [ ] `main.c2` — driver: arg parsing, pipeline wiring, exit codes.
-  - [ ] `source.c2` — source manager: file load, line index, byte offset→line/col.
-  - [ ] `diag.c2` — report builder + text renderer.
-  - [ ] `lexer.c2` — tokens.
+- [x] `Makefile` rules: `harmony-base` (build compiler), `test`, `test-seed`,
+      `test-fuzz`, `clean`; `build.sh` (c2x-seed) is a prereq of the compiler.
+- [/] `src/harmony-base/` file layout (each file < ~1500 lines; split aggressively):
+  - [x] `common.c2` — shared declarations (types + cross-module prototypes).
+  - [x] `main.c2` — driver: arg parsing, pipeline wiring, exit codes.
+  - [x] `source.c2` — source manager: file load, line index, byte offset→line/col.
+  - [x] `diag.c2` — report builder + text renderer (P0 subset).
+  - [x] `util.c2` — arena allocator, string helpers, out/err helpers.
+  - [/] `lexer.c2` — token model + P0 EOF-only stub.
   - [ ] `ast.c2` — AST node definitions + arena allocator.
-  - [ ] `parser.c2` — recursive-descent parser.
+  - [/] `parser.c2` — recursive-descent parser (P0 stub).
   - [ ] `resolve.c2` — names/IDs → HIR.
   - [ ] `types.c2` — type checker + copy rules.
   - [ ] `hir.c2`, `mir.c2` — IR types and builders.
@@ -34,12 +36,26 @@ Output extension: `.harmony`. Milestone: byte-deterministic build.
   - [ ] `lower_llvm.c2` — LLVM IR backend (**priority**).
   - [ ] `lower_c.c2` — C11 backend (secondary).
   - [ ] `runtime.ll` / `runtime.c` — the ~400-line runtime.
-- [ ] Driver subcommands: `build`, `check`, `run`, `--emit=c|ir|asm`,
+- [/] Driver subcommands: `build`, `check`, `run`, `--emit=c|ir|asm`,
       `--explain`, `--report=json|seams`, `--strict`, `--forbid=`, `--max-faults=`.
-- [ ] Exit codes: `0` ok, `1` compile fault, `70` `compiler.internal`, `101` runtime abort.
+      (`build`/`check`/`run` + flags parse; backends still return `70`.)
+- [x] Exit codes: `0` ok, `1` compile fault, `2` usage, `70` `compiler.internal`, `101` runtime abort.
 - [ ] Deterministic build: no timestamps/paths/random in output; stable symbol names.
 - [ ] Test harness: golden fixtures under `tests/harmony/`; diff stdout + exit code.
-- [ ] `tests/harmony/run.sh` runner; register in Makefile.
+- [x] `tests/harmony/run.sh` + `tests/harmony/fuzz.sh`; registered in Makefile.
+- [x] `tests/c2x-seed/run.sh` — c2x-seed regression corpus (`make test-seed`).
+
+### P0.5 — c2x-seed fixes required to build harmony-base
+
+Five c2x-seed defects were found and fixed while bootstrapping (see
+`docs/c2x-seed.md` "Recent Bug Fixes"):
+
+- [x] Postfix index expressions used `parse_unary`; now `parse_expression`.
+- [x] Local struct arrays registered element count instead of the field array.
+- [x] `&r->spans[i]` (address-of struct-array field via pointer) crashed.
+- [x] Nested struct member chains (`b.a.x`, `c.b.a.x`, `o[i].inner.a`) were
+      miscompiled; added a recursive `gen_addr` lvalue-address helper.
+- [x] Global struct arrays of array-bearing structs emitted a doubled `g_` prefix.
 
 ### P1 — Diagnostics + source spans
 

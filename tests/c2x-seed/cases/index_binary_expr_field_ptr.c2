@@ -1,0 +1,17 @@
+// Regression: indexing a struct-field pointer with a binary-expression index.
+// Before the fix, s.p[i + 2] failed to parse (the index used parse_unary), so
+// only a bare variable index worked.
+// EXPECT: 42
+struct Buf { int* p; int n; };
+
+int backing[16];
+
+int main(void) {
+    struct Buf b;
+    int i;
+    b.p = backing;
+    b.n = 16;
+    i = 3;
+    b.p[i + 2] = 42;
+    return backing[5];
+}

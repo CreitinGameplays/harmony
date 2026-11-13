@@ -14,9 +14,14 @@ Check
 - Keep source code files and subdirs well organized.
 - Also fix any other bug before reporting success.
 - *PRIORITIZE writing LLVM backend!!*
+- *PREFER things to be auto resizable when possible instead of a fixed value!*
 - Split big source files into smaller, organized files instead of huge single files (only exception is c2x-seed src).
 - Always add new or update todo.md and docs/* if some info got stale, this includes updating harmony language reference/keywords.
 - Use makefile to build harmony lang. build.sh builds the c2x-seed, which is written in assembly.
 - Always make or update tests for any new implementation/feature,
   as well as fuzzing/aggressive tests, and add them to makefile rules.
 - Use your edit tool to edit source files *instead of shell scripts (including python)*.
+- Use installed GDB to debug issues if found.
+- All risks are accepted.
+- Always add helpful comments in the code.
+- Always use `-s` arg when using `git commit`

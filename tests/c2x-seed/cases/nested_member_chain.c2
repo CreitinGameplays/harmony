@@ -1,0 +1,14 @@
+// Regression: nested struct member chains. Before the fix, struct-typed
+// fields were loaded as scalar values instead of yielding their address, so
+// b.a.x read the wrong slot (and deeper chains crashed).
+// EXPECT: 123
+struct A { int x; int w; };
+struct B { struct A a; int y; };
+
+int main(void) {
+    struct B b;
+    b.a.x = 1;
+    b.a.w = 2;
+    b.y = 3;
+    return b.a.x * 100 + b.a.w * 10 + b.y;
+}

@@ -1,0 +1,8 @@
+// harmony-base — parser (P3).
+//
+// P0 does no parsing yet; the module exists so the pipeline is wired and the
+// build layout is fixed. `tokens` is the token array from the lexer.
+
+int parser_run(struct SourceFile* sf, struct Token* tokens, int ntokens) {
+    return 0;
+}

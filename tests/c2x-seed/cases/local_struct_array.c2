@@ -1,0 +1,15 @@
+// Regression: local struct arrays. Before the fix, registering a local
+// struct array stored the element count where the index handler expected the
+// struct field-array pointer, so the compiler segfaulted while compiling even
+// the documented example.
+// EXPECT: 62
+struct Point { int x; int y; };
+
+int main(void) {
+    struct Point pts[3];
+    pts[0].x = 10;
+    pts[0].y = 11;
+    pts[2].x = 20;
+    pts[2].y = 21;
+    return pts[0].x + pts[0].y + pts[2].x + pts[2].y;
+}

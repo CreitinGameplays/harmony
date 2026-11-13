@@ -1,0 +1,21 @@
+// Regression: global struct arrays whose element type has array fields.
+// Exercises the "g_" prefix stripping path in the general index address
+// computation (it used to emit g_g_name and fail assembly).
+// EXPECT: 42
+struct P { int x; int y; };
+struct Report { char* id; int sev; struct P spans[4]; };
+struct Report g_reports[2];
+
+int main(void) {
+    g_reports[0].sev = 9;
+    g_reports[0].spans[1].x = 100;
+    g_reports[1].spans[3].y = 200;
+
+    if (g_reports[0].sev != 9) {
+        return 1;
+    }
+    if (g_reports[0].spans[1].x + g_reports[1].spans[3].y != 300) {
+        return 2;
+    }
+    return 42;
+}

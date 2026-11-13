@@ -1,0 +1,190 @@
+// harmony-base — shared declarations (header module).
+//
+// c2x-seed resolves names from earlier files only, and requires a declaration
+// before use inside a file. So every shared type and cross-module function is
+// declared here, and this file must be listed first on the compiler command
+// line. Implementation lives in the later modules.
+
+// ---------------------------------------------------------------------------
+// Linux syscall wrappers. The c2x-seed runtime always emits these five as
+// global functions (docs/c2x-seed.md "Syscall wrappers").
+// ---------------------------------------------------------------------------
+extern int syscall_read(int fd, char* buf, int count);
+extern int syscall_write(int fd, char* buf, int count);
+extern int syscall_open(char* path, int flags, int mode);
+extern int syscall_close(int fd);
+extern int syscall_exit(int code);
+
+const int FD_STDOUT = 1;
+const int FD_STDERR = 2;
+const int O_RDONLY = 0;
+const int O_WRONLY = 1;
+const int O_CREAT = 64;
+const int O_TRUNC = 512;
+
+// ---------------------------------------------------------------------------
+// Exit codes (docs/harmony.md §25.1). `EXIT_USAGE` is a driver-level error and
+// is not part of the language's report taxonomy.
+// ---------------------------------------------------------------------------
+const int EXIT_OK = 0;
+const int EXIT_FAULT = 1;
+const int EXIT_USAGE = 2;
+const int EXIT_INTERNAL = 70;
+const int EXIT_RUNTIME = 101;
+
+// Severity words (docs/harmony.md §23.2).
+const int SEV_FAULT = 0;
+const int SEV_WARN = 1;
+const int SEV_RUNTIME = 2;
+
+// ---------------------------------------------------------------------------
+// Arena allocator: one big static block, bump-allocated, 8-byte aligned.
+// Everything the compiler builds (tokens, AST, strings) lives here.
+// The size below must stay a literal: c2x-seed cannot use a const as an
+// array dimension.
+// ---------------------------------------------------------------------------
+char* arena_alloc(int n);
+char* arena_alloc_str(char* s);
+void arena_reset(void);
+int arena_used(void);
+
+// ---------------------------------------------------------------------------
+// String helpers.
+// ---------------------------------------------------------------------------
+int str_len(char* s);
+int str_eq(char* a, char* b);
+int str_has_prefix(char* s, char* prefix);
+char* str_copy(char* s);
+char* str_concat(char* a, char* b);
+
+// ---------------------------------------------------------------------------
+// Raw output (reports -> stdout, driver errors -> stderr).
+// ---------------------------------------------------------------------------
+void out_str(char* s);
+void out_int(int n);
+void out_nl(void);
+void err_str(char* s);
+void err_int(int n);
+void err_nl(void);
+
+// ---------------------------------------------------------------------------
+// Source manager: a loaded file plus a line index for offset -> line/col.
+// ---------------------------------------------------------------------------
+struct SourceFile {
+    char* path;         // file path as given
+    char* data;         // file bytes (arena), NUL-terminated for convenience
+    int   len;          // number of bytes
+    int*  line_starts;  // byte offset of each line start (arena)
+    int   line_count;   // number of lines
+};
+
+// Loads a file into the arena. Returns 0 on success, or a negative errno.
+int source_load(char* path, struct SourceFile* out);
+
+// 1-based line / 0-based column for a byte offset.
+void source_line_col(struct SourceFile* sf, int off, int* line, int* col);
+
+// Returns a pointer to the start of the given 1-based line. The returned
+// string is NUL-terminated at the newline (the byte is temporarily masked).
+char* source_line(struct SourceFile* sf, int line);
+
+// ---------------------------------------------------------------------------
+// Diagnostics (docs/harmony.md §23).
+//
+// P0 ships the data model plus a readable multi-line emitter. The full box
+// renderer, report catalogue, JSON twin, and fix-its arrive in P1/P14.
+// ---------------------------------------------------------------------------
+const int ROLE_PRIMARY = 0;
+const int ROLE_ORIGIN = 1;
+const int ROLE_USE = 2;
+const int ROLE_NOTE = 3;
+
+struct Span {
+    int file;       // source file index
+    int start;      // byte offset
+    int end;        // byte offset (exclusive)
+    int role;       // ROLE_*
+};
+
+struct Report {
+    char* id;       // "area.slug", e.g. "syntax.missing-semicolon"
+    int   sev;      // SEV_*
+    char* summary;  // one-line description
+    int   nspans;
+    struct Span spans[8];
+    char* rule;     // the plain-language rule
+    char* got;      // what was found (may be 0)
+    char* want;     // what was needed (may be 0)
+    char* note;     // extra context (may be 0)
+    char* fix;      // a concrete edit (may be 0)
+};
+
+// Builds a report and emits it once (text mode). Returns the report index.
+int diag_fault(char* id, char* summary, struct SourceFile* sf, int off,
+               char* rule, char* got, char* fix);
+int diag_warn(char* id, char* summary, struct SourceFile* sf, int off,
+              char* rule, char* got, char* fix);
+
+// A flat message used for driver/usage errors and I/O failures.
+void diag_plain(char* id, char* msg);
+
+// Registers a source file so spans can resolve file/line/col.
+void diag_register_file(struct SourceFile* sf);
+
+int diag_fault_count(void);
+int diag_warn_count(void);
+void diag_reset(void);
+
+// ---------------------------------------------------------------------------
+// Pipeline (docs/harmony.md §25.1).
+// ---------------------------------------------------------------------------
+const int CMD_BUILD = 0;
+const int CMD_CHECK = 1;
+const int CMD_RUN = 2;
+
+// Driver options gathered from the command line.
+struct Options {
+    int   cmd;
+    char* input;        // input .harmony path
+    char* output;       // -o target (0 = default)
+    int   emit_c;       // --emit=c
+    int   emit_ir;      // --emit=ir
+    int   emit_asm;     // --emit=asm
+    int   strict;       // --strict
+    int   report_json;  // --report=json
+    int   report_seams; // --report=seams
+    int   verbose;      // -v
+};
+
+// Runs the pipeline for one input file. Returns an exit code.
+int pipeline_run(struct Options* opts);
+
+// ---------------------------------------------------------------------------
+// Lexer (P2). Declared here so the driver and later stages can call it while
+// the body is still a stub.
+// ---------------------------------------------------------------------------
+const int TOK_EOF = 0;
+const int TOK_IDENT = 1;
+const int TOK_NUMBER = 2;
+
+// Byte size of one `struct Token` in c2x-seed's ABI (every field is a qword).
+const int TOKEN_SIZE = 56;
+
+struct Token {
+    int   kind;
+    char* text;     // arena-owned spelling
+    int   len;
+    int   start;    // byte offset
+    int   end;      // byte offset (exclusive)
+    int   line;     // 1-based
+    int   col;      // 0-based
+};
+
+// Tokenizes the whole file into an arena array. Returns the token count, or a
+// negative value on a lex fault (already reported).
+int lexer_run(struct SourceFile* sf, struct Token** out_tokens);
+
+// ---------------------------------------------------------------------------
+// Parser (P3). Stub for now.
+// ---------------------------------------------------------------------------
+int parser_run(struct SourceFile* sf, struct Token* tokens, int ntokens);

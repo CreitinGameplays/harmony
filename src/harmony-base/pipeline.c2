@@ -1,0 +1,47 @@
+// harmony-base — pipeline (docs/harmony.md §25.1).
+//
+// P0 wires: load source -> lex -> parse -> report. Codegen and the checker
+// passes are stubbed and added in later phases.
+
+int pipeline_run(struct Options* opts) {
+    struct SourceFile sf;
+    struct Token* toks;
+    int n;
+    int rc;
+
+    arena_reset();
+    diag_reset();
+
+    rc = source_load(opts->input, &sf);
+    if (rc != 0) {
+        diag_plain("source.not-found", opts->input);
+        return EXIT_USAGE;
+    }
+    diag_register_file(&sf);
+
+    if (opts->verbose) {
+        err_str("harmony-base: read ");
+        err_int(sf.len);
+        err_str(" bytes from ");
+        err_str(sf.path);
+        err_nl();
+    }
+
+    n = lexer_run(&sf, &toks);
+    if (n < 0) {
+        return EXIT_FAULT;
+    }
+
+    parser_run(&sf, toks, n);
+
+    // Later phases (type check, dataflow, borrow, drops, codegen) plug in here.
+    if (opts->emit_c || opts->emit_ir || opts->emit_asm) {
+        diag_plain("compiler.internal", "codegen backends are not implemented yet");
+        return EXIT_INTERNAL;
+    }
+
+    if (diag_fault_count() > 0) {
+        return EXIT_FAULT;
+    }
+    return EXIT_OK;
+}

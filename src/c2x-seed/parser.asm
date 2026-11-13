@@ -5090,9 +5090,9 @@ parse_unary:
     jne .member_postfix_return
     ; Handle postfix [expr] after member access
     pop rcx                           ; rcx = base (AST_MEMBER)
-    push rcx                          ; save base (parse_unary clobbers rcx)
+    push rcx                          ; save base (parse_expression clobbers rcx)
     call advance                      ; consume '['
-    call parse_unary                  ; rax = index expr (simple, no binary ops)
+    call parse_expression             ; rax = index expr (full expression)
     push rax                          ; save index
     mov rdi, TOK_RBRACKET
     mov rsi, msg_expect_rbracket
@@ -5203,9 +5203,9 @@ parse_unary:
 .postfix_index:
     ; base[index] → AST_INDEX(base, index)
     pop rcx                           ; rcx = base expression
-    push rcx                          ; save base (parse_unary clobbers rcx)
+    push rcx                          ; save base (parse_expression clobbers rcx)
     call advance                      ; consume '['
-    call parse_unary                  ; rax = index expr (simple, no binary ops)
+    call parse_expression             ; rax = index expr (full expression)
     push rax                          ; save index expr
     mov rdi, TOK_RBRACKET
     mov rsi, msg_expect_rbracket

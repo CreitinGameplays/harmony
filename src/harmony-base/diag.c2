@@ -1,0 +1,162 @@
+// harmony-base — diagnostics.
+//
+// P0: a readable multi-line emitter. The full box renderer (§23.3), JSON twin
+// (§23.10), and fix-it application (§23.11) arrive in P1/P14.
+
+struct Report g_reports[128];
+int g_nreports;
+int g_nfaults;
+int g_nwarns;
+
+// Source files, registered by index so spans can resolve file/line/col.
+struct SourceFile* g_files[64];
+int g_nfiles;
+
+void diag_register_file(struct SourceFile* sf) {
+    if (g_nfiles < 64) {
+        g_files[g_nfiles] = sf;
+        g_nfiles = g_nfiles + 1;
+    }
+}
+
+int diag_fault_count(void) { return g_nfaults; }
+int diag_warn_count(void)  { return g_nwarns; }
+
+void diag_reset(void) {
+    g_nreports = 0;
+    g_nfaults = 0;
+    g_nwarns = 0;
+    g_nfiles = 0;
+}
+
+int sev_word(int sev) {
+    if (sev == SEV_FAULT) { return 0; }
+    if (sev == SEV_WARN) { return 1; }
+    return 2;
+}
+
+// Emits one report to stderr in the §23.3 shape, minus the fancy box.
+void diag_emit(struct Report* r) {
+    struct Span* s;
+    struct SourceFile* sf;
+    int line;
+    int col;
+    int i;
+
+    // `source_line_col` writes through these out-params; c2x-seed's flow
+    // analysis does not see that, so initialize them.
+    line = 0;
+    col = 0;
+    s = 0;
+    sf = 0;
+    i = 0;
+
+    // Header: "<severity> · <id>"
+    if (r->sev == SEV_FAULT) { err_str("fault · "); }
+    else if (r->sev == SEV_WARN) { err_str("warn · "); }
+    else { err_str("runtime fault · "); }
+    err_str(r->id);
+    if (r->nspans > 0) {
+        s = &r->spans[0];
+        if (s->file >= 0 && s->file < g_nfiles) {
+            sf = g_files[s->file];
+            source_line_col(sf, s->start, &line, &col);
+            err_str("  ");
+            err_str(sf->path);
+            err_str(":");
+            err_int(line);
+            err_str(":");
+            err_int(col);
+        }
+    }
+    err_nl();
+
+    if (r->summary != 0 && r->summary[0] != 0) {
+        err_str("  "); err_str(r->summary); err_nl();
+    }
+
+    // Source lines with markers: at most 6 lines (§23.4).
+    i = 0;
+    while (i < r->nspans && i < 6) {
+        s = &r->spans[i];
+        if (s->file >= 0 && s->file < g_nfiles) {
+            sf = g_files[s->file];
+            source_line_col(sf, s->start, &line, &col);
+            err_str("  ");
+            err_int(line);
+            err_str(" | ");
+            err_str(source_line(sf, line));
+            err_nl();
+        }
+        i = i + 1;
+    }
+
+    if (r->rule != 0 && r->rule[0] != 0) { err_str("  rule  "); err_str(r->rule); err_nl(); }
+    if (r->got != 0 && r->got[0] != 0)   { err_str("  got   "); err_str(r->got);  err_nl(); }
+    if (r->want != 0 && r->want[0] != 0) { err_str("  want  "); err_str(r->want); err_nl(); }
+    if (r->note != 0 && r->note[0] != 0) { err_str("  note  "); err_str(r->note); err_nl(); }
+    if (r->fix != 0 && r->fix[0] != 0)   { err_str("  fix   "); err_str(r->fix);  err_nl(); }
+    err_str("  see   `--explain ");
+    err_str(r->id);
+    err_str("`");
+    err_nl();
+}
+
+int diag_add(char* id, int sev, char* summary, struct SourceFile* sf, int off,
+             char* rule, char* got, char* fix) {
+    struct Report* r;
+    struct Span* s;
+    int idx;
+
+    s = 0;
+    if (g_nreports >= 128) {
+        // Keep counting, but stop storing.
+        if (sev == SEV_FAULT) { g_nfaults = g_nfaults + 1; }
+        else { g_nwarns = g_nwarns + 1; }
+        return -1;
+    }
+    idx = g_nreports;
+    g_nreports = g_nreports + 1;
+    if (sev == SEV_FAULT) { g_nfaults = g_nfaults + 1; }
+    else { g_nwarns = g_nwarns + 1; }
+
+    r = &g_reports[idx];
+    r->id = id;
+    r->sev = sev;
+    r->summary = summary;
+    r->nspans = 0;
+    r->rule = rule;
+    r->got = got;
+    r->want = 0;
+    r->note = 0;
+    r->fix = fix;
+
+    if (sf != 0) {
+        s = &r->spans[0];
+        s->file = 0;
+        s->start = off;
+        s->end = off + 1;
+        s->role = ROLE_PRIMARY;
+        r->nspans = 1;
+    }
+    diag_emit(r);
+    return idx;
+}
+
+int diag_fault(char* id, char* summary, struct SourceFile* sf, int off,
+               char* rule, char* got, char* fix) {
+    return diag_add(id, SEV_FAULT, summary, sf, off, rule, got, fix);
+}
+
+int diag_warn(char* id, char* summary, struct SourceFile* sf, int off,
+              char* rule, char* got, char* fix) {
+    return diag_add(id, SEV_WARN, summary, sf, off, rule, got, fix);
+}
+
+void diag_plain(char* id, char* msg) {
+    err_str("harmony-base: ");
+    err_str(id);
+    err_str(": ");
+    err_str(msg);
+    err_nl();
+}

@@ -1,0 +1,20 @@
+// harmony-base — lexer.
+//
+// P2 will implement the full token set (docs/harmony.md §7). P0 ships the
+// module boundary and a minimal driver: it scans ASCII whitespace and emits a
+// single EOF token, enough to prove the pipeline end to end.
+
+int lexer_run(struct SourceFile* sf, struct Token** out_tokens) {
+    struct Token* toks;
+    // Reserve room for a couple of EOF-ish sentinels so later stages can peek.
+    toks = arena_alloc(4 * TOKEN_SIZE);
+    toks[0].kind = TOK_EOF;
+    toks[0].text = "";
+    toks[0].len = 0;
+    toks[0].start = 0;
+    toks[0].end = 0;
+    toks[0].line = 1;
+    toks[0].col = 0;
+    *out_tokens = toks;
+    return 1;
+}

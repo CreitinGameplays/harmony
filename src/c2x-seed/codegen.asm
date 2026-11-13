@@ -176,9 +176,9 @@ section .data
     asm_label_struct_ret_slot db "struct_ret_slot", 0
     asm_label_current_ret_ptr db "current_ret_ptr", 0
     asm_epilogue        db "    mov rsp, rbp", 10, "    pop rbp", 10, "    ret", 10, 0
-    asm_start_entry     db "global _start", 10, "_start:", 10, "    pop rax", 10, "    mov [g_argc], rax", 10, "    mov [g_argv], rsp", 10, "    mov rdi, rax", 10, "    mov rsi, rsp", 10, "    push rax", 10, "    call main", 10, "    mov rdi, rax", 10, "    mov rax, 60", 10, "    syscall", 10, 0
-    asm_start_result    db "global _start", 10, "_start:", 10, "    pop rax", 10, "    mov [g_argc], rax", 10, "    mov [g_argv], rsp", 10, "    mov rdi, rax", 10, "    mov rsi, rsp", 10, "    push rax", 10, "    call main", 10, "    mov r15, rax", 10, "    sub rsp, 32", 10, "    mov rbx, 10", 10, "    lea rsi, [rsp+8]", 10, "    mov r8, rsi", 10, "    mov rax, r15", 10, ".div_loop:", 10, "    xor rdx, rdx", 10, "    div rbx", 10, "    add dl, '0'", 10, "    dec rsi", 10, "    mov [rsi], dl", 10, "    test rax, rax", 10, "    jnz .div_loop", 10, "    mov rdx, r8", 10, "    sub rdx, rsi", 10, "    mov rdi, 1", 10, "    mov rax, 1", 10, "    syscall", 10, "    add rsp, 32", 10, "    mov rdi, r15", 10, "    mov rax, 60", 10, "    syscall", 10, 0
-    asm_argv_save       db "    pop rax", 10, "    mov [g_argc], rax", 10, "    mov [g_argv], rsp", 10, "    mov rdi, rax", 10, "    mov rsi, rsp", 10, "    push rax", 10, 0
+    asm_start_entry     db "global _start", 10, "_start:", 10, "    pop rax", 10, "    mov [rel g_argc], rax", 10, "    mov [rel g_argv], rsp", 10, "    mov rdi, rax", 10, "    mov rsi, rsp", 10, "    push rax", 10, "    call main", 10, "    mov rdi, rax", 10, "    mov rax, 60", 10, "    syscall", 10, 0
+    asm_start_result    db "global _start", 10, "_start:", 10, "    pop rax", 10, "    mov [rel g_argc], rax", 10, "    mov [rel g_argv], rsp", 10, "    mov rdi, rax", 10, "    mov rsi, rsp", 10, "    push rax", 10, "    call main", 10, "    mov r15, rax", 10, "    sub rsp, 32", 10, "    mov rbx, 10", 10, "    lea rsi, [rsp+8]", 10, "    mov r8, rsi", 10, "    mov rax, r15", 10, ".div_loop:", 10, "    xor rdx, rdx", 10, "    div rbx", 10, "    add dl, '0'", 10, "    dec rsi", 10, "    mov [rsi], dl", 10, "    test rax, rax", 10, "    jnz .div_loop", 10, "    mov rdx, r8", 10, "    sub rdx, rsi", 10, "    mov rdi, 1", 10, "    mov rax, 1", 10, "    syscall", 10, "    add rsp, 32", 10, "    mov rdi, r15", 10, "    mov rax, 60", 10, "    syscall", 10, 0
+    asm_argv_save       db "    pop rax", 10, "    mov [rel g_argc], rax", 10, "    mov [rel g_argv], rsp", 10, "    mov rdi, rax", 10, "    mov rsi, rsp", 10, "    push rax", 10, 0
     asm_argc_name       db "argc", 0
     asm_argv_name       db "argv", 0
 
@@ -433,10 +433,10 @@ section .data
     asm_resq            db "    resq ", 0
     asm_resb            db "    resb ", 0
     asm_label_g_prefix  db "g_", 0
-    asm_mov_rax_g       db "    mov rax, [g_", 0
-    asm_movsx_rax_byte_g db "    movsx rax, byte [g_", 0
-    asm_lea_rax_g       db "    lea rax, [g_", 0
-    asm_store_g_prefix  db "    mov [g_", 0
+    asm_mov_rax_g       db "    mov rax, [rel g_", 0
+    asm_movsx_rax_byte_g db "    movsx rax, byte [rel g_", 0
+    asm_lea_rax_g       db "    lea rax, [rel g_", 0
+    asm_store_g_prefix  db "    mov [rel g_", 0
     asm_store_g_rax_sfx db "], rax", 10, 0
     asm_store_g_al_sfx  db "], al", 10, 0
     asm_extern          db "extern g_", 0
@@ -512,6 +512,7 @@ section .data
     asm_add_rdi_imm     db "    add rdi, ", 0
     asm_mov_rdi_rax     db "    mov [rdi], rax", 10, 0
     asm_mov_rdi_al      db "    mov [rdi], al", 10, 0
+    asm_mov_rdi_rbx     db "    mov rdi, rbx", 10, 0
 
     ; String literal patterns
     asm_section_rodata  db "section .rodata", 10, 0
@@ -1680,6 +1681,10 @@ collect_symbols:
     mov rax, [rbx + ast_node_t.data1]  ; struct total_size
     imul rax, r8                       ; total = struct_size * count
     mov rcx, TOK_KW_STRUCT
+    ; Register the field-array pointer as extra (NOT the element count), so the
+    ; index handler can compute the struct stride. Bounds checks are skipped for
+    ; struct elements, so the count is not needed here.
+    mov r8, [rbx + ast_node_t.data4]   ; field_array_ptr
     jmp .array_do_size
 
 .array_ptr_type:
@@ -6109,9 +6114,13 @@ gen_assign:
     mov rdi, [r15 + ast_node_t.data1]
     mov rax, [rdi]
     cmp rax, AST_MEMBER
-    je .am_chained
+    je .am_via_gen_addr
+    cmp rax, AST_INDEX
+    je .am_via_gen_addr
+    cmp rax, AST_UNARY_OP
+    je .am_via_gen_addr
     cmp rax, 60                         ; below 60 = AST type = expression base
-    jb .assign_member_expr_base
+    jb .am_via_gen_addr
 
     ; Flat member access: data1 = struct name_ptr (string)
     push rdi
@@ -6153,171 +6162,6 @@ gen_assign:
     mov r14, rcx                         ; r14 = field_array_ptr
     pop rdi                              ; discard
     jmp .am_find_field
-
-.am_chained:
-    ; data1 is AST_MEMBER node (chained: s.inner.a)
-    ; Follow the same pattern as .member_chained to compute the address,
-    ; then evaluate RHS and store.
-
-    ; --- Resolve inner member (s.inner) ---
-    ; r15 = outer AST_MEMBER, data1 = inner AST_MEMBER
-    mov rdi, [r15 + ast_node_t.data1]    ; inner AST_MEMBER
-    mov r8, [rdi + ast_node_t.data1]     ; r8 = struct name_ptr (string)
-    mov r9, [rdi + ast_node_t.data2]     ; r9 = inner field name
-
-    ; Look up struct
-    mov rdi, r8
-    push r9
-    push r8
-    call find_symbol
-    mov r13, rax                         ; r13 = negative offset or 0
-    mov r14, rcx                         ; r14 = field_array_ptr
-    pop r8
-    pop r9
-    test r13, r13
-    jnz .amc_local
-
-    ; Try global
-    mov rdi, r8
-    call find_global_symbol
-    mov r13, rax                         ; r13 = name_ptr
-    mov r14, rcx                         ; r14 = field_array_ptr
-    test r13, r13
-    jz .am_done
-    test r14, r14
-    jz .am_done
-
-    ; Global: find inner field
-    mov rdi, r14
-    mov rsi, r9
-    call find_field
-    test rbx, rbx
-    jz .am_done
-    ; rax = inner_field_offset, rbx = type, rcx = sub_array_ptr
-    mov r14, rcx                         ; r14 = sub_array_ptr
-
-    ; Emit: lea rax, [g_name + inner_offset]
-    push r14
-    push rax
-    mov rsi, r13
-    call strip_g_prefix
-    mov r13, rsi
-    mov rsi, asm_lea_rax_g
-    call emit_string
-    mov rsi, r13
-    call emit_string
-    pop rdi                              ; rdi = inner_offset
-    test rdi, rdi
-    jz .amc_gbl_no_plus
-    mov dil, '+'
-    call out_write_char
-    call emit_int
-.amc_gbl_no_plus:
-    mov rsi, asm_close_bracket
-    call emit_string
-    pop r14                              ; r14 = sub_array_ptr
-    jmp .amc_store
-
-.amc_local:
-    test r14, r14
-    jz .am_done
-    mov rdi, r14
-    mov rsi, r9
-    call find_field
-    test rbx, rbx
-    jz .am_done
-    ; rax = inner_field_offset, rbx = type, rcx = sub_array_ptr
-    mov r14, rcx                         ; r14 = sub_array_ptr
-    test r14, r14
-    jz .am_done
-
-    ; Emit: lea rax, [rbp - |struct_offset| + inner_field_offset]
-    push r14
-    push rax                             ; save inner_offset
-    mov rdi, r13
-    neg rdi                              ; rdi = positive struct offset
-    pop rax                              ; rax = inner_offset
-    sub rdi, rax                         ; rdi = struct_off - inner_off
-    push rdi
-    mov rsi, asm_lea_rax_rbp
-    call emit_string
-    pop rdi
-    call emit_int
-    mov rsi, asm_close_bracket
-    call emit_string
-    pop r14                              ; r14 = sub_array_ptr
-
-.amc_store:
-    ; rax = address of inner struct field
-    ; r14 = inner sub_array_ptr
-
-    ; Emit: push rax — save address at runtime
-    mov rsi, asm_push_rax
-    call emit_string
-
-    ; Find outer field offset in inner's sub_array
-    mov rdi, r14
-    mov rsi, [r15 + ast_node_t.data2]    ; outer field name
-    call find_field
-    ; rax = outer_field_offset, rbx = field_type
-    test rbx, rbx
-    jz .amc_fail_pop
-    ; Check if the field was declared const
-    cmp qword [find_field_is_const], 0
-    je .amc_field_ok
-    mov rdi, [r15 + ast_node_t.data2]    ; field name for error msg
-    call report_const_error
-    ; Drop the saved field address push, then exit gen_assign cleanly
-    mov rsi, asm_pop_rbx
-    call emit_string
-    jmp .done
-.amc_field_ok:
-    mov r14, rbx                         ; r14 = field_type (const flag already stripped)
-    mov rbx, rax                         ; rbx = field_offset
-
-    ; Evaluate RHS
-    push rbx                             ; save field offset (compiler stack)
-    push r14                             ; save field type (compiler stack)
-    mov rdi, r12                         ; AST_ASSIGN node
-    mov rdi, [rdi + ast_node_t.data2]    ; RHS expression
-    call gen_expr                        ; rax = value
-    pop r14                              ; r14 = field type
-    pop rbx                              ; rbx = field offset
-
-    ; Emit: pop rdi — restore address at runtime
-    mov rsi, asm_pop_rdi
-    call emit_string
-
-    ; Add field offset at runtime
-    test rbx, rbx
-    jz .amc_do_store
-    push rdi
-    push rbx
-    mov rsi, asm_add_rdi_imm
-    call emit_string
-    mov rdi, rbx
-    call emit_int
-    mov rsi, asm_newline
-    call emit_string
-    pop rbx
-    pop rdi
-    jmp .amc_do_store
-
-.amc_do_store:
-    ; rdi = target address, rax = value
-    cmp r14, TOK_KW_CHAR
-    je .amc_store_char
-    mov rsi, asm_mov_rdi_rax
-    call emit_string
-    jmp .am_done
-.amc_store_char:
-    mov rsi, asm_mov_rdi_al
-    call emit_string
-    jmp .am_done
-
-.amc_fail_pop:
-    pop rax                              ; discard saved address
-    jmp .am_done
 
 .am_not_found_global:
     pop rdi                              ; discard name_ptr
@@ -6452,115 +6296,70 @@ gen_assign:
     jmp .am_done
 
 ; ------------------------------------------------------------
-; Expression-based member assignment: (*ptr).field = val
+; Chained / expression-based member assignment via gen_addr.
+; Handles s.inner.a = v, o[i].field = v, (*p).field = v, etc.
 ; ------------------------------------------------------------
-.assign_member_expr_base:
-    ; rdi = data1 (expression node), r15 = AST_MEMBER node
-    push rdi
-    mov rax, [rdi + ast_node_t.type]
-    cmp rax, AST_UNARY_OP
-    jne .ame_eval
-    mov rax, [rdi + ast_node_t.data1]    ; operator
-    cmp rax, TOK_STAR
-    jne .ame_eval
-
-    ; (*ptr).field = val — evaluate ptr to get struct address
-    mov rdi, [rdi + ast_node_t.data2]    ; deref operand
-
-    ; Warning check: *ident where ident may be uninitialized
+.am_via_gen_addr:
+    ; r15 = outer AST_MEMBER node; compute address of the whole lvalue.
     push r12
-    push r15
-    mov rax, [rdi + ast_node_t.type]
-    cmp rax, AST_IDENT
-    jne .ame_skip_warn
-    mov r8, [rdi + ast_node_t.line]
-    mov r9, [rdi + ast_node_t.column]
-    push rdi
-    mov rdi, [rdi + ast_node_t.data1]   ; name_ptr
-    call check_symbol_initialized
-    test rax, rax
-    jnz .ame_warn_done
-    push rax
-    mov rdi, WARN_UNINIT_PTR
-    mov rsi, r8
-    mov rdx, r9
-    mov rcx, msg_warn_uninit_ptr
-    call warn_at
-    pop rax
-.ame_warn_done:
-    pop rdi
-.ame_skip_warn:
-    pop r15
+    mov rdi, r15
+    call gen_addr
     pop r12
-
-    call gen_expr                        ; rax = pointer value
-    jmp .ame_have_addr
-
-.ame_eval:
-    pop rdi
-    push rdi
-    call gen_expr
-
-.ame_have_addr:
-    pop rbx                              ; rbx = data1 (discard)
-    ; rax = struct address (from gen_expr of ptr, at RUNTIME in program)
-
-    ; Get field_array_ptr from gen_expr_struct_fields
-    mov rdi, [gen_expr_struct_fields]
-    test rdi, rdi
+    test rax, rax
     jz .am_done
+    ; rax = target address (runtime); gen_expr_type = field type
+    mov r14, [gen_expr_type]
 
-    ; Find field offset
-    push rax                             ; save current rax onto compiler stack
-    mov rsi, [r15 + ast_node_t.data2]    ; field name ptr
-    call find_field
-    ; rax = field_offset, rbx = field_type
-    test rbx, rbx
-    jz .ame_pop_done
-    ; Check if the field was declared const
-    cmp qword [find_field_is_const], 0
-    je .ame_field_ok
-    mov rdi, [r15 + ast_node_t.data2]    ; field name for error msg
-    call report_const_error
-    jmp .ame_pop_done
-.ame_field_ok:
-    mov r14, rbx                         ; r14 = field_type (const flag already stripped)
-    mov r15, rax                         ; r15 = field_offset (save before pop)
-    pop rax                              ; rax = saved struct address (restore)
-    ; Emit: add rax, <field_offset> for every field, including offset 0.
-    push r15
-    mov rsi, asm_add_rax_imm
-    call emit_string
-    pop rdi
-    call emit_int
-    mov rsi, asm_newline
-    call emit_string
-    ; Now rax = struct_address + field_offset (at RUNTIME)
-    ; Push target address
+    ; Push target address (runtime)
     mov rsi, asm_push_rax
     call emit_string
 
     ; Evaluate RHS
-    mov rdi, [r12 + ast_node_t.data2]    ; RHS expression
+    push r14
+    mov rdi, [r12 + ast_node_t.data2]
     call gen_expr                        ; rax = value
+    pop r14
+
+    ; Struct-typed assignment: byte copy instead of scalar store.
+    cmp r14, TOK_KW_STRUCT
+    je .am_gen_struct_store
 
     ; Pop target address into rbx
     mov rsi, asm_pop_rbx
     call emit_string
-
-    ; Store
     cmp r14, TOK_KW_CHAR
-    je .ame_store_char
+    je .am_gen_store_char
     mov rsi, asm_mov_rbx_rax
     call emit_string
     jmp .am_done
-.ame_store_char:
+.am_gen_store_char:
     mov rsi, asm_mov_rbx_al
     call emit_string
     jmp .am_done
 
-.ame_pop_done:
-    pop rax                              ; discard struct address
+.am_gen_struct_store:
+    ; rax = source struct address, target address on the stack.
+    mov rsi, asm_pop_rbx
+    call emit_string                     ; rbx = dest
+    mov rsi, asm_mov_rsi_rax
+    call emit_string                     ; rsi = src
+    mov rsi, asm_mov_rdi_rbx
+    call emit_string                     ; rdi = dest
+    mov rdi, [gen_expr_struct_fields]
+    test rdi, rdi
+    jz .am_gen_struct_done
+    call struct_total_size               ; rax = size
+    mov rdi, rax
+    test rdi, rdi
+    jz .am_gen_struct_done
+    mov rsi, asm_mov_rdx_imm
+    call emit_string
+    call emit_int
+    mov rsi, asm_newline
+    call emit_string
+    mov rsi, asm_call_struct_copy
+    call emit_string
+.am_gen_struct_done:
     jmp .am_done
 
 .am_done:
@@ -7645,9 +7444,12 @@ gen_expr:
 
 .addr_index:
     ; &arr[i] — compute address of arr[i]
-    ; operand is AST_INDEX{ data1=AST_IDENT, data2=index_expr }
+    ; operand is AST_INDEX{ data1=base_expr, data2=index_expr }
     mov r15, rdi                        ; r15 = AST_INDEX node
-    mov rdi, [rdi + ast_node_t.data1]   ; AST_IDENT node
+    mov rdi, [rdi + ast_node_t.data1]   ; base expression node
+    mov rax, [rdi + ast_node_t.type]
+    cmp rax, AST_IDENT
+    jne .addr_index_general             ; member/other base — general eval
     mov r13, rdi                        ; r13 = AST_IDENT node
     mov rdi, [rdi + ast_node_t.data1]   ; name_ptr
     push rdi
@@ -7736,6 +7538,20 @@ gen_expr:
     pop rdi
     ; Strip PTR_TYPE_FLAG to get base type for scaling
     sub r13, PTR_TYPE_FLAG
+
+.addr_index_general:
+    ; Base is a member access or other expression (e.g., &r->spans[0]).
+    ; Evaluate the base to obtain the array address and element type.
+    push r15                             ; save AST_INDEX node
+    mov rdi, [r15 + ast_node_t.data1]    ; base expression
+    call gen_expr                        ; rax = base address
+    mov r13, [gen_expr_type]
+    cmp r13, PTR_TYPE_FLAG
+    jb .addr_index_gen_noptr
+    sub r13, PTR_TYPE_FLAG
+.addr_index_gen_noptr:
+    pop r15                              ; restore AST_INDEX node
+    jmp .addr_index_compute
 
 .addr_index_compute:
     ; rax = base address (compile-time value, also emitted as runtime)
@@ -8285,11 +8101,11 @@ gen_expr:
     call emit_string
     jmp .index_add_base
 .index_scale_struct:
-    ; Struct array: extra r13 = field_array_ptr
+    ; Struct array: extra = field_array_ptr (held in rbx on every path).
     ; Save field_array_ptr for member access
-    mov [gen_expr_struct_fields], r13
+    mov [gen_expr_struct_fields], rbx
     ; Compute struct_size from field array
-    mov rdi, r13
+    mov rdi, rbx
     test rdi, rdi
     jz .index_add_base
     ; struct_total_size clobbers rdi, r8, r9, rcx, rax
@@ -8963,6 +8779,9 @@ gen_expr:
     pop rax                              ; restore address — not an array field
 
     ; Load value from address (type-aware load)
+    ; A struct field yields its address (struct value semantics).
+    cmp r14, TOK_KW_STRUCT
+    je .member_global_struct
     cmp r14, TOK_KW_CHAR
     je .member_global_load_char
     mov rsi, asm_mov_rax_from_rax
@@ -8978,6 +8797,11 @@ gen_expr:
     jne .member_global_loaded
     mov [gen_expr_struct_fields], r9
 .member_global_loaded:
+    jmp .done
+.member_global_struct:
+    ; Keep the address; remember the sub field array for chained access.
+    mov [gen_expr_type], r14
+    mov [gen_expr_struct_fields], r9
     jmp .done
 .member_global_load_char:
     mov rsi, asm_movsx_byte_rax
@@ -9011,115 +8835,41 @@ gen_expr:
     jmp .done
 
 .member_chained:
-    ; data1 is an AST_MEMBER node (e.g. s.inner from s.inner.a)
-    ; First: resolve the inner member to find its address, sub_field_array, and field_type
-    ; Inner AST_MEMBER has data1=struct_name, data2=inner_field_name
-    mov r15, [r12 + ast_node_t.data1]      ; r15 = inner AST_MEMBER node
-    mov r8, [r15 + ast_node_t.data1]       ; r8 = struct name_ptr (string)
-    mov r9, [r15 + ast_node_t.data2]       ; r9 = inner field name
+    ; base (data1) is an expression: AST_MEMBER (nested struct) or AST_INDEX
+    ; (o[i].field) or similar. Compute the base's address with gen_addr, then
+    ; apply the current field.
+    mov rdi, [r12 + ast_node_t.data1]
+    push r12
+    call gen_addr
+    pop r12
+    test rax, rax
+    jz .mem_bad
+    ; rax = base address (runtime); gen_expr_struct_fields = base field array
+    mov rdi, [gen_expr_struct_fields]
+    test rdi, rdi
+    jz .mem_bad
+    push rax                            ; save base address
+    mov rsi, [r12 + ast_node_t.data2]   ; field name
+    call find_field
+    test rbx, rbx
+    jz .mc_pop_fail
+    ; rax = field_offset, rbx = field type, rcx = sub_array_ptr
+    mov r13, rbx                        ; r13 = field type
+    mov r9, rcx                         ; r9 = element count / sub_array_ptr
+    mov r15, rax                        ; r15 = field offset
+    pop rax                             ; restore base address
 
-    ; Look up the struct variable
-    mov rdi, r8
+    ; Emit: add rax, current_field_offset (always, including offset 0)
+    push r13
     push r9
-    push r8
-    call find_symbol
-    mov r13, rax                           ; r13 = struct negative offset (local) or 0
-    mov r14, rcx                           ; r14 = field_array_ptr
-    pop r8
-    pop r9
-    test r13, r13
-    jnz .mc_local
-
-    ; Try global
-    mov rdi, r8
-    call find_global_symbol
-    mov r13, rax                           ; r13 = name_ptr (for emit)
-    mov r14, rcx                           ; r14 = field_array_ptr
-    test r13, r13
-    jz .mem_bad
-    test r14, r14
-    jz .mem_bad
-
-    ; --- Global struct, chained ---
-    ; Find inner field descriptor
-    mov rdi, r14
-    mov rsi, r9
-    call find_field
-    test rbx, rbx
-    jz .mem_bad
-    ; rax = inner_field_offset, rbx = type, rcx = sub_array_ptr
-    mov r15, rax                           ; r15 = inner field offset
-    mov r14, rcx                           ; r14 = inner sub_array_ptr
-
-    ; Emit: lea rax, [g_name + inner_field_offset]
-    mov rsi, r13
-    call strip_g_prefix
-    mov r13, rsi
-    mov rsi, asm_lea_rax_g
-    call emit_string
-    mov rsi, r13
-    call emit_string
-    mov dil, '+'
-    call out_write_char
-    mov rdi, r15
-    call emit_int
-    mov rsi, asm_close_bracket
-    call emit_string
-    jmp .mc_find_outer
-
-.mc_local:
-    ; --- Local struct, chained ---
-    test r14, r14
-    jz .mem_bad
-    ; Find inner field descriptor
-    mov rdi, r14
-    mov rsi, r9
-    call find_field
-    test rbx, rbx
-    jz .mem_bad
-    ; rax = inner_field_offset, rbx = type, rcx = sub_array_ptr
-    mov r15, rax                           ; r15 = inner field offset
-    mov r14, rcx                           ; r14 = inner sub_array_ptr
-
-    ; Emit: lea rax, [rbp - |struct_offset| + inner_field_offset]
-    mov rdi, r13
-    neg rdi                                ; rdi = positive struct offset
-    sub rdi, r15                           ; rdi = struct_offset - inner_field_offset
-    push rdi
-    mov rsi, asm_lea_rax_rbp
-    call emit_string
-    pop rdi
-    push rdi
-    call emit_int
-    mov rsi, asm_close_bracket
-    call emit_string
-    pop rdi
-    ; rax now holds address of inner struct field
-
-.mc_find_outer:
-    ; Find the current field in inner's sub_field_array
-    test r14, r14
-    jz .mem_bad
-    mov rdi, r14
-    mov rsi, [r12 + ast_node_t.data2]       ; current field name (e.g. "a")
-    call find_field
-    test rbx, rbx
-    jz .mem_bad
-    ; rax = current_field_offset, rbx = type, rcx = sub_array_ptr
-    mov r15, rax                            ; r15 = current field offset
-    mov r13, rbx                            ; r13 = current field type (save for .mc_load)
-    mov r9, rcx                             ; r9 = element count / sub_array_ptr
-
-    ; Emit: add rax, current_field_offset for every field, including offset 0.
-    ; NOTE: emit_string clobbers dil (low byte of rdi), so set rdi AFTER the call
-    push rdi
     mov rsi, asm_add_rax_imm
     call emit_string
     mov rdi, r15
     call emit_int
     mov rsi, asm_newline
     call emit_string
-    pop rdi
+    pop r9
+    pop r13
 
     ; Check if array field — return address instead of loading value
     push rax                             ; save computed address
@@ -9127,6 +8877,10 @@ gen_expr:
     cmp rax, ARRAY_TYPE_FLAG
     jae .mc_load_array                    ; anything >= ARRAY_TYPE_FLAG is an array field
     pop rax                              ; restore address — not an array field
+
+    ; Struct field: keep the address (struct value semantics)
+    cmp r13, TOK_KW_STRUCT
+    je .mc_keep_addr
 
     cmp r13, TOK_KW_CHAR
     je .mc_load_char
@@ -9143,6 +8897,13 @@ gen_expr:
     mov [gen_expr_struct_fields], r9
 .mc_loaded:
     jmp .done
+.mc_keep_addr:
+    mov [gen_expr_type], r13
+    mov [gen_expr_struct_fields], r9
+    jmp .done
+.mc_pop_fail:
+    pop rax
+    jmp .mem_bad
 .mc_load_char:
     mov rsi, asm_movsx_byte_rax
     call emit_string
@@ -9212,6 +8973,9 @@ gen_expr:
     pop rax                              ; restore address — not an array field
 
     ; Load value from address (type-aware load)
+    ; A struct field yields its address (struct value semantics).
+    cmp r14, TOK_KW_STRUCT
+    je .member_local_struct
     cmp r14, TOK_KW_CHAR
     je .member_local_load_char
     mov rsi, asm_mov_rax_from_rax
@@ -9226,6 +8990,11 @@ gen_expr:
     jne .member_local_loaded
     mov [gen_expr_struct_fields], r9
 .member_local_loaded:
+    jmp .done
+.member_local_struct:
+    ; Keep the address; remember the sub field array for chained access.
+    mov [gen_expr_type], r14
+    mov [gen_expr_struct_fields], r9
     jmp .done
 .member_local_load_char:
     mov rsi, asm_movsx_byte_rax
@@ -9284,22 +9053,29 @@ gen_expr:
     jmp .member_expr_have_addr
 
 .member_expr_eval:
-    ; General expression base — evaluate to get struct address
+    ; General expression base — try to compute an address directly.
     pop rdi
     push rdi
-    call gen_expr                         ; rax = expression result
-    ; For most expressions, result is a value (not address).
-    ; The expression should ideally compute the struct address.
-    ; For member access, we need the struct ADDRESS.
-    ; In practice this handles cases like a pure identifier
-    ; (which returns a value, not address, so this won't work for member access
-    ;  unless the struct value was stored as the address itself).
-    ; This path is included for completeness; the deref special case above
-    ; is the primary use case.
+    call gen_addr
+    test rax, rax
+    jz .member_expr_value
+    mov rax, [gen_expr_struct_fields]
+    test rax, rax
+    jz .member_expr_value
+    ; rax = base address; gen_expr_struct_fields holds the base field array.
+    pop rdi                              ; discard data1 (matches .member_expr_have_addr)
+    jmp .member_expr_have_addr2
+
+.member_expr_value:
+    ; Fall back to evaluating the expression as-is.
+    pop rdi
+    push rdi
+    call gen_expr                         ; rax = value
 
 .member_expr_have_addr:
     pop rbx                              ; rbx = data1 (discard)
     ; rax = struct address/pointer (at RUNTIME)
+.member_expr_have_addr2:
 
     ; Get field_array_ptr from gen_expr_struct_fields
     mov rdi, [gen_expr_struct_fields]
@@ -9338,6 +9114,9 @@ gen_expr:
     pop rax                              ; restore address — not an array field
 
     ; Load from computed address
+    ; A struct field yields its address (struct value semantics).
+    cmp r14, TOK_KW_STRUCT
+    je .member_expr_keep_addr
     cmp r14, TOK_KW_CHAR
     je .member_expr_load_char
 
@@ -9345,6 +9124,11 @@ gen_expr:
     mov rsi, asm_mov_rax_from_rax
     call emit_string
     jmp .member_expr_loaded
+
+.member_expr_keep_addr:
+    mov [gen_expr_type], r14
+    mov [gen_expr_struct_fields], r9
+    jmp .done
 
 .member_expr_load_char:
     mov rsi, asm_movsx_byte_rax
@@ -9492,6 +9276,541 @@ find_field:
 ; codegen_cleanup()
 ; ================================================================
 codegen_cleanup:
+    ret
+
+; ================================================================
+; gen_addr(rdi = AST node) -> rax = 1 on success, 0 on failure
+; Emits code that computes the ADDRESS of the given lvalue expression.
+;
+; Supported forms:
+;   IDENT           x            → address of variable x
+;   INDEX           base[expr]   → address of element
+;   MEMBER          base.field   → address of field (recursive)
+; Sets:
+;   gen_expr_type         = type of the element addressed (may include
+;                           PTR_TYPE_FLAG; struct fields keep TOK_KW_STRUCT)
+;   gen_expr_struct_fields = field_array_ptr when the result is a struct or a
+;                           struct-array element (so chained access can resolve)
+; Clobbers: caller-saved registers (caller must save what it needs).
+; ================================================================
+gen_addr:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    mov r12, rdi
+    mov rax, [r12 + ast_node_t.type]
+
+    cmp rax, AST_IDENT
+    je .ga_ident
+    cmp rax, AST_INDEX
+    je .ga_index
+    cmp rax, AST_MEMBER
+    je .ga_member
+    ; Unsupported form
+    xor rax, rax
+    jmp .ga_ret
+
+; ----------------------------------------------------------------
+.ga_ident:
+    mov rdi, [r12 + ast_node_t.data1]   ; name_ptr
+    push rdi
+    call find_symbol
+    ; rax = negative offset, rbx = type, rcx = extra
+    test rax, rax
+    jnz .ga_ident_local
+    ; Global
+    pop rdi
+    push rdi
+    call find_global_symbol
+    ; rax = name_ptr, rbx = type, rcx = extra
+    test rax, rax
+    jz .ga_fail
+    pop rdi                             ; rdi = name_ptr
+    mov [gen_expr_type], rbx
+    mov [gen_expr_struct_fields], rcx
+    ; Global arrays with ARRAY_TYPE_FLAG: element type = type - ARRAY_TYPE_FLAG
+    mov rax, rbx
+    cmp rax, ARRAY_TYPE_FLAG
+    jb .ga_ident_global_not_arr
+    sub rax, ARRAY_TYPE_FLAG
+    mov [gen_expr_type], rax
+.ga_ident_global_not_arr:
+    ; Struct arrays use type == TOK_KW_STRUCT with extra = field_array_ptr.
+    mov r9, rdi                         ; r9 = name_ptr
+    mov rsi, r9
+    call strip_g_prefix
+    mov r9, rsi                         ; r9 = stripped name
+    ; Emit: lea rax, [rel g_name]  — but if it's a pointer variable, load it.
+    mov rax, rbx
+    cmp rax, PTR_TYPE_FLAG
+    jae .ga_ident_global_ptr
+    mov rsi, asm_lea_rax_g
+    call emit_string
+    mov rsi, r9
+    call emit_string
+    mov rsi, asm_close_bracket
+    call emit_string
+    mov rax, 1
+    jmp .ga_ret
+.ga_ident_global_ptr:
+    ; Pointer variable: the variable's value IS the address.
+    mov rsi, asm_mov_rax_g
+    call emit_string
+    mov rsi, r9
+    call emit_string
+    mov rsi, asm_close_bracket
+    call emit_string
+    mov rax, 1
+    jmp .ga_ret
+
+.ga_ident_local:
+    ; rax = negative offset, rbx = type, rcx = extra
+    mov r13, rax                        ; r13 = offset
+    mov [gen_expr_type], rbx
+    mov [gen_expr_struct_fields], rcx
+    pop rdi                             ; discard name_ptr
+    mov rax, rbx
+    cmp rax, PTR_TYPE_FLAG
+    jae .ga_ident_local_ptr
+    ; Array or scalar: lea rax, [rbp-offset]
+    mov rdi, r13
+    neg rdi
+    push rdi
+    mov rsi, asm_lea_rax_rbp
+    call emit_string
+    pop rdi
+    push rdi
+    call emit_int
+    mov rsi, asm_close_bracket
+    call emit_string
+    pop rdi
+    mov rax, 1
+    jmp .ga_ret
+.ga_ident_local_ptr:
+    ; Pointer variable: mov rax, [rbp-offset]
+    mov rdi, r13
+    neg rdi
+    push rdi
+    mov rsi, asm_load_qword_rbp
+    call emit_string
+    pop rdi
+    push rdi
+    call emit_int
+    mov rsi, asm_close_bracket
+    call emit_string
+    pop rdi
+    mov rax, 1
+    jmp .ga_ret
+
+; ----------------------------------------------------------------
+.ga_member:
+    ; base.field — base = data1, field = data2.
+    ; data1 is either a struct name string (flat: s.field) or an AST node
+    ; (expression base: s.inner.field, o[i].field, (*p).field).
+    mov rdi, [r12 + ast_node_t.data1]
+    mov rax, [rdi]                      ; peek first qword
+    cmp rax, 60                         ; below 60 = AST node type
+    jb .ga_member_expr_base
+
+    ; --- Flat member: data1 is the struct variable name string ---
+    push rdi
+    call find_symbol
+    test rax, rax
+    jnz .ga_member_flat_local
+    pop rdi
+    push rdi
+    call find_global_symbol
+    test rax, rax
+    jz .ga_fail
+    ; Global struct: rax = name_ptr, rcx = field_array_ptr
+    pop rdi                             ; rdi = name_ptr
+    mov r15, rcx                        ; r15 = base field array
+    mov r14, rdi                        ; r14 = name ptr
+    push r14
+    mov rsi, asm_lea_rax_g
+    call emit_string
+    pop rsi
+    call emit_string
+    mov rsi, asm_close_bracket
+    call emit_string
+    jmp .ga_member_flat_have_base
+.ga_member_flat_local:
+    mov r13, rax                        ; r13 = negative offset
+    mov r15, rcx                        ; r15 = base field array
+    pop rdi                             ; discard name ptr
+    mov rdi, r13
+    neg rdi
+    push rdi
+    mov rsi, asm_lea_rax_rbp
+    call emit_string
+    pop rdi
+    push rdi
+    call emit_int
+    mov rsi, asm_close_bracket
+    call emit_string
+    pop rdi
+.ga_member_flat_have_base:
+    ; r15 = base field array; rax = base struct address (runtime)
+    mov rdi, r15
+    test rdi, rdi
+    jz .ga_fail
+    push rax
+    mov rsi, [r12 + ast_node_t.data2]   ; field name
+    call find_field
+    test rbx, rbx
+    jz .ga_member_pop_fail
+    mov r13, rax                        ; field offset
+    mov r14, rbx                        ; field type
+    mov r15, rcx                        ; sub_array_ptr
+    pop rax
+    jmp .ga_member_apply
+
+.ga_member_expr_base:
+    mov rax, [rdi + ast_node_t.type]
+    cmp rax, AST_UNARY_OP
+    je .ga_member_arrow
+    ; Compute address of the base lvalue recursively.
+    call gen_addr
+    test rax, rax
+    jz .ga_fail
+    mov rdi, [gen_expr_struct_fields]
+    test rdi, rdi
+    jz .ga_fail
+    push rax                            ; save base address
+    mov rsi, [r12 + ast_node_t.data2]   ; field name
+    call find_field
+    test rbx, rbx
+    jz .ga_member_pop_fail
+    mov r13, rax                        ; r13 = field offset
+    mov r14, rbx                        ; r14 = field type
+    mov r15, rcx                        ; r15 = sub_array_ptr
+    pop rax                             ; restore base address
+    jmp .ga_member_apply
+
+.ga_member_apply:
+    ; rax = base address, r13 = field offset, r14 = field type, r15 = sub ptr
+    ; Struct-array field: type = ARRAY_TYPE_FLAG + TOK_KW_STRUCT; r15 = info ptr
+    mov r8, r14
+    sub r8, ARRAY_TYPE_FLAG
+    cmp r8, TOK_KW_STRUCT
+    je .ga_member_struct_array
+    ; Ordinary field (scalar / pointer / struct): element type = strip ARRAY flag
+    mov rbx, r14
+    cmp rbx, ARRAY_TYPE_FLAG
+    jb .ga_member_type_ready
+    sub r14, ARRAY_TYPE_FLAG
+    ; Non-struct array field: r15 = element count → set array count metadata
+    mov [gen_expr_array_count], r15
+    jmp .ga_member_type_ready
+.ga_member_struct_array:
+    sub r14, ARRAY_TYPE_FLAG
+    ; r15 = info ptr ([count, field_array_ptr])
+    mov r8, [r15]
+    mov [gen_expr_array_count], r8
+    mov r8, [r15 + 8]
+    mov [gen_expr_struct_fields], r8
+    ; The element field array is already stored; don't overwrite it below.
+    mov [gen_expr_type], r14
+    jmp .ga_member_emit
+.ga_member_type_ready:
+    mov [gen_expr_type], r14
+    ; For plain struct fields, remember the sub field array so chained access works.
+    cmp r14, TOK_KW_STRUCT
+    jne .ga_member_not_struct
+    mov [gen_expr_struct_fields], r15
+.ga_member_not_struct:
+.ga_member_emit:
+    ; Emit: add rax, field_offset
+    push r13
+    mov rsi, asm_add_rax_imm
+    call emit_string
+    pop rdi
+    call emit_int
+    mov rsi, asm_newline
+    call emit_string
+    mov rax, 1
+    jmp .ga_ret
+.ga_member_pop_fail:
+    pop rax
+    jmp .ga_fail
+
+.ga_member_arrow:
+    ; base = *ptr — evaluate ptr to get struct address, then add field offset
+    mov rdi, [rdi + ast_node_t.data2]   ; deref operand (the pointer expr)
+    call gen_expr                       ; rax = pointer value (= struct address)
+    mov rdi, [gen_expr_struct_fields]
+    test rdi, rdi
+    jz .ga_fail
+    push rax
+    mov rsi, [r12 + ast_node_t.data2]   ; field name
+    call find_field
+    test rbx, rbx
+    jz .ga_member_pop_fail
+    mov r13, rax
+    mov r14, rbx
+    mov r15, rcx
+    pop rax
+    mov r8, r14
+    sub r8, ARRAY_TYPE_FLAG
+    cmp r8, TOK_KW_STRUCT
+    je .ga_member_arrow_struct_array
+    mov rax, r14
+    cmp rax, ARRAY_TYPE_FLAG
+    jb .ga_member_arrow_type_ready
+    sub r14, ARRAY_TYPE_FLAG
+    mov [gen_expr_array_count], r15
+    jmp .ga_member_arrow_type_ready
+.ga_member_arrow_struct_array:
+    sub r14, ARRAY_TYPE_FLAG
+    mov r8, [r15]
+    mov [gen_expr_array_count], r8
+    mov r8, [r15 + 8]
+    mov [gen_expr_struct_fields], r8
+    mov [gen_expr_type], r14
+    jmp .ga_member_arrow_emit
+.ga_member_arrow_type_ready:
+    mov [gen_expr_type], r14
+    cmp r14, TOK_KW_STRUCT
+    jne .ga_member_arrow_not_struct
+    mov [gen_expr_struct_fields], r15
+.ga_member_arrow_not_struct:
+.ga_member_arrow_emit:
+    push r13
+    mov rsi, asm_add_rax_imm
+    call emit_string
+    pop rdi
+    call emit_int
+    mov rsi, asm_newline
+    call emit_string
+    mov rax, 1
+    jmp .ga_ret
+
+; ----------------------------------------------------------------
+.ga_index:
+    ; base[expr] — data1 = base, data2 = index
+    mov rdi, [r12 + ast_node_t.data1]
+    mov rax, [rdi + ast_node_t.type]
+    cmp rax, AST_IDENT
+    je .ga_index_ident
+    cmp rax, AST_MEMBER
+    je .ga_index_member
+    cmp rax, AST_INDEX
+    je .ga_index_member               ; nested indexing — treat like general
+    jmp .ga_fail
+
+.ga_index_ident:
+    ; Fast path for simple array variables.
+    mov rdi, [rdi + ast_node_t.data1]   ; name_ptr
+    push rdi
+    call find_symbol
+    test rax, rax
+    jnz .ga_index_local
+    pop rdi
+    push rdi
+    call find_global_symbol
+    test rax, rax
+    jz .ga_fail
+    pop rdi
+    mov r13, rbx                        ; element type
+    mov r14, rcx                        ; extra
+    ; Global array base
+    mov rax, r13
+    cmp rax, PTR_TYPE_FLAG
+    jae .ga_index_global_ptr
+    ; Struct array (TOK_KW_STRUCT) or scalar array
+    mov rax, r13
+    cmp rax, ARRAY_TYPE_FLAG
+    jb .ga_index_global_not_flag
+    sub rax, ARRAY_TYPE_FLAG
+.ga_index_global_not_flag:
+    mov r15, rax                        ; element type
+    ; Set element metadata: struct arrays carry the field array in extra.
+    cmp r15, TOK_KW_STRUCT
+    jne .ga_index_global_scalar
+    mov [gen_expr_struct_fields], r14
+    jmp .ga_index_global_emit
+.ga_index_global_scalar:
+    mov [gen_expr_array_count], r14
+.ga_index_global_emit:
+    ; Strip any leading "g_" so we don't emit "g_g_name".
+    mov rsi, rdi
+    call strip_g_prefix
+    mov r9, rsi
+    ; Emit: lea rax, [rel g_name]   (emit_string clobbers rdi, so use r9)
+    mov rsi, asm_lea_rax_g
+    call emit_string
+    mov rsi, r9
+    call emit_string
+    mov rsi, asm_close_bracket
+    call emit_string
+    jmp .ga_index_finish
+.ga_index_global_ptr:
+    ; Pointer variable used as array base
+    mov r15, r13
+    sub r15, PTR_TYPE_FLAG
+    push rdi
+    mov rsi, asm_mov_rax_g
+    call emit_string
+    pop rsi
+    call emit_string
+    mov rsi, asm_close_bracket
+    call emit_string
+    jmp .ga_index_finish
+
+.ga_index_local:
+    mov r13, rax                        ; offset
+    mov r14, rcx                        ; extra
+    pop rdi
+    test r13, r13
+    jz .ga_fail
+    mov rax, r13
+    ; For struct arrays, type is TOK_KW_STRUCT, extra = field_array_ptr
+    ; For scalar arrays, type = TOK_KW_INT/CHAR, extra = count
+    ; For pointer variables used as base, type has PTR_TYPE_FLAG.
+    mov r15, rbx
+    mov rax, rbx
+    cmp rax, ARRAY_TYPE_FLAG
+    jae .ga_index_local_strip_flag
+    cmp rax, PTR_TYPE_FLAG
+    jb .ga_index_local_arr
+    ; pointer variable: load value
+    mov r15, rbx
+    sub r15, PTR_TYPE_FLAG
+    mov rdi, r13
+    neg rdi
+    push rdi
+    mov rsi, asm_load_qword_rbp
+    call emit_string
+    pop rdi
+    push rdi
+    call emit_int
+    mov rsi, asm_close_bracket
+    call emit_string
+    pop rdi
+    jmp .ga_index_finish
+.ga_index_local_strip_flag:
+    mov rax, rbx
+    sub rax, ARRAY_TYPE_FLAG
+    cmp rax, PTR_TYPE_FLAG
+    jb .ga_index_local_flag_arr
+    mov r15, rax
+    sub r15, PTR_TYPE_FLAG
+    mov rdi, r13
+    neg rdi
+    push rdi
+    mov rsi, asm_load_qword_rbp
+    call emit_string
+    pop rdi
+    push rdi
+    call emit_int
+    mov rsi, asm_close_bracket
+    call emit_string
+    pop rdi
+    jmp .ga_index_finish
+.ga_index_local_flag_arr:
+    mov r15, rax                        ; element type
+.ga_index_local_arr:
+    ; Set element metadata.
+    cmp r15, TOK_KW_STRUCT
+    jne .ga_index_local_scalar
+    mov [gen_expr_struct_fields], r14
+    jmp .ga_index_local_emit
+.ga_index_local_scalar:
+    mov [gen_expr_array_count], r14
+.ga_index_local_emit:
+    mov rdi, r13
+    neg rdi
+    push rdi
+    mov rsi, asm_lea_rax_rbp
+    call emit_string
+    pop rdi
+    push rdi
+    call emit_int
+    mov rsi, asm_close_bracket
+    call emit_string
+    pop rdi
+    jmp .ga_index_finish
+
+.ga_index_member:
+    ; General base: compute address of the base lvalue.
+    mov rdi, [r12 + ast_node_t.data1]
+    call gen_addr
+    test rax, rax
+    jz .ga_fail
+    ; gen_expr_type holds the base element type (or pointer type)
+    mov r15, [gen_expr_type]
+    mov r14, [gen_expr_struct_fields]
+    mov rax, r15
+    cmp rax, PTR_TYPE_FLAG
+    jb .ga_index_member_structchk
+    sub r15, PTR_TYPE_FLAG
+.ga_index_member_structchk:
+    ; Keep struct metadata already set by gen_addr.
+.ga_index_finish:
+    ; rax = base address (compile-time hint), r15 = element type.
+    ; Emit a runtime push of the base address.
+    mov rsi, asm_push_rax
+    call emit_string
+    ; Save metadata around index eval (index expr may clobber the globals)
+    mov rax, [gen_expr_struct_fields]
+    push rax
+    mov rax, [gen_expr_array_count]
+    push rax
+    push r15
+    mov rdi, [r12 + ast_node_t.data2]   ; index expr
+    call gen_expr
+    pop r15
+    pop rax
+    mov [gen_expr_array_count], rax
+    pop rax
+    mov [gen_expr_struct_fields], rax
+    ; rax = index; runtime base is on the stack
+    mov rsi, asm_pop_rbx
+    call emit_string                    ; pop rbx → rbx = base
+    ; rbx = base, rax = index
+    cmp r15, TOK_KW_CHAR
+    je .ga_index_noscale
+    cmp r15, TOK_KW_INT
+    jne .ga_index_struct_chk
+    mov rsi, asm_shl_rax_3
+    call emit_string
+    jmp .ga_index_noscale
+.ga_index_struct_chk:
+    cmp r15, TOK_KW_STRUCT
+    jne .ga_index_noscale
+    mov rdi, [gen_expr_struct_fields]
+    test rdi, rdi
+    jz .ga_index_noscale
+    push rdi
+    call struct_total_size
+    mov rdi, rax
+    pop r8
+    test rdi, rdi
+    jz .ga_index_noscale
+    push rdi
+    mov rsi, asm_imul_rax_imm
+    call emit_string
+    pop rdi
+    call emit_int
+    mov rsi, asm_newline
+    call emit_string
+.ga_index_noscale:
+    mov rsi, asm_add_rax_rbx
+    call emit_string
+    mov [gen_expr_type], r15
+    mov rax, 1
+    jmp .ga_ret
+
+.ga_fail:
+    xor rax, rax
+.ga_ret:
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
     ret
 
 ; ================================================================

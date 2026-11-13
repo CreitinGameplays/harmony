@@ -1,0 +1,22 @@
+// Regression: three-level nested member chains and struct field copies.
+// EXPECT: 42
+struct A { int x; int w; };
+struct B { struct A a; int y; };
+struct C { struct B b; int z; };
+
+int main(void) {
+    struct C c;
+    struct A t;
+    c.b.a.x = 1;
+    c.b.a.w = 2;
+    c.b.y = 3;
+    c.z = 4;
+    if (c.b.a.x * 1000 + c.b.a.w * 100 + c.b.y * 10 + c.z != 1234) {
+        return 1;
+    }
+    t = c.b.a;
+    if (t.x != 1 || t.w != 2) {
+        return 2;
+    }
+    return 42;
+}

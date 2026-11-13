@@ -52,7 +52,7 @@ Output extension: `.harmony`. Milestone: byte-deterministic build.
 
 ### P0.5 — c2x-seed fixes required to build harmony-base
 
-Nine c2x-seed defects were found and fixed while bootstrapping (see
+Ten c2x-seed defects were found and fixed while bootstrapping (see
 `docs/c2x-seed.md` "Recent Bug Fixes"):
 
 - [x] Postfix index expressions used `parse_unary`; now `parse_expression`.
@@ -70,6 +70,10 @@ Nine c2x-seed defects were found and fixed while bootstrapping (see
 - [x] Non-deterministic binaries: the PID-unique temp `.asm` path leaked into
       the output's `FILE` symbol; nasm now reads the temp file via
       `/dev/stdin` (added `sys_dup2`).
+- [x] Compiler crash on an undeclared indexed/address-of name
+      (`x[i]`, `&x[i]`, `&x`, `x[i] = v`): the index/address-of fast paths
+      leaked a pushed pointer on the not-found branch, growing the codegen
+      stack until it read off the end.
 
 ### P1 — Diagnostics + source spans
 

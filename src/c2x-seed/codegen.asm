@@ -5691,7 +5691,7 @@ gen_assign:
     call find_global_symbol
     ; rax = name_ptr (nonzero), rbx = type, rcx = extra
     test rax, rax
-    jz .done
+    jz .ai_no_base
     ; Global array
     pop rdi                              ; rdi = name_ptr
     mov r13, rdi                         ; save name_ptr in callee-saved reg
@@ -6379,6 +6379,15 @@ gen_assign:
     jmp .am_done
 
 .am_done:
+    jmp .done                            ; keep the _no_base handler off the fall-through path
+
+.ai_no_base:
+    ; Base name of `x[i] = ...` is neither local nor global (undeclared
+    ; identifier). Discard the name_ptr pushed before find_global_symbol so
+    ; the stack stays balanced; emit nothing (the write is dropped). The
+    ; resolver reports the missing name; codegen must not crash on it.
+    pop rdi
+    jmp .done
 
 .done:
     EPILOGUE r15, r14, r13, r12, rbx
@@ -7480,7 +7489,7 @@ gen_expr:
     call find_global_symbol
     ; rax = name_ptr, rbx = element type, rcx = extra
     test rax, rax
-    jz .done
+    jz .addr_index_no_base
     pop rdi                             ; rdi = name_ptr (discard)
     mov r14, rax                        ; r14 = name_ptr for emit
     mov r13, rbx                        ; r13 = element type
@@ -7644,7 +7653,7 @@ gen_expr:
     call find_global_symbol
     ; rax = name_ptr, rbx = type
     test rax, rax
-    jz .done
+    jz .addr_no_base
     ; rbx = type, set gen_expr_type to pointer-to-type
     mov [gen_expr_type], rbx
     add qword [gen_expr_type], PTR_TYPE_FLAG
@@ -7703,7 +7712,7 @@ gen_expr:
     call find_global_symbol
     ; rax = name_ptr (nonzero), rbx = type, rcx = extra
     test rax, rax
-    jz .done
+    jz .index_no_base
     ; Global array
     pop rdi                              ; rdi = name_ptr
     mov r15, rdi                         ; r15 = name_ptr (for emit)
@@ -9211,6 +9220,29 @@ gen_expr:
 
 .member_expr_pop_done:
     pop rax                              ; discard struct address
+    jmp .done
+
+.index_no_base:
+    ; Base name of `x[i]` is neither a local nor a global (e.g. an
+    ; undeclared identifier). The name_ptr pushed before find_global_symbol
+    ; must be discarded or the stack grows on every such node and later
+    ; codegen walks off the end. Emit nothing and yield 0, matching .ident's
+    ; not-found path (the missing name is the resolver's problem, not
+    ; codegen's; the compiler must not crash on it).
+    pop rdi
+    xor rax, rax
+    jmp .done
+
+.addr_index_no_base:
+    ; Same imbalance as .index_no_base, on the &x[i] path.
+    pop rdi
+    xor rax, rax
+    jmp .done
+
+.addr_no_base:
+    ; Same imbalance on the &x path for an undeclared name.
+    pop rdi
+    xor rax, rax
     jmp .done
 
 .done:

@@ -1,5 +1,5 @@
 # A Conceptual GC-Free, Memory-Safe, C-Shaped Language
-UPDATE LANG NAME: Harmony
+UPDATE LANG NAME: Harmony\
 File Extension: .harmony
 
 > **Status:** concept notes, version 0.3. This document describes a language that does not exist yet.

@@ -15,6 +15,7 @@ extern msg_syntax, msg_expect_semi, msg_expect_rparen, msg_expect_rbrace, msg_vo
 extern msg_expect_type, msg_expect_ident, msg_expect_lbrace, msg_expect_rbracket
 extern msg_unexpected, msg_expected_primary, msg_expect_lparen
 extern msg_expect_dot, msg_expect_eq
+extern msg_infinite_struct
 extern mem_eq
 extern mem_copy
 extern source_path
@@ -3431,6 +3432,22 @@ parse_struct_def:
     call advance                 ; consume '*'
     jmp .fs_named_ptr_loop
 .fs_named_no_ptr:
+    ; By-value field of a struct that is still being defined (its registry
+    ; entry is the pre-registration with size 0 — e.g. `struct G { struct G s; }`
+    ; or `struct G { struct G arr[2]; }`). The type has infinite size; C says
+    ; "array type has incomplete element type", we say it in plain words.
+    ; Pointer fields were rewired to size 8 above, so only by-value fields
+    ; reach this test with size 0. Without the check, struct_total_size
+    ; recurses into the struct's own (incomplete) field array forever.
+    ; The saved registers were already restored at .fs_named_found, so this
+    ; path must not pop anything.
+    test rcx, rcx
+    jnz .fs_size_ok
+    mov rsi, msg_infinite_struct
+    call error
+    call advance
+    jmp .field_loop
+.fs_size_ok:
 
     ; Trailing const after struct type/pointers: `struct Name const field;`
     mov rax, [parser_state.current_token]

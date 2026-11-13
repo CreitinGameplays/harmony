@@ -28,6 +28,10 @@ ERR_EXPECTED_RBRACKET equ 107
 ERR_UNEXPECTED     equ 108
 ERR_EXPECTED_PRIMARY equ 109
 ERR_EXPECTED_LPAREN equ 110
+ERR_ASSIGN_CONST    equ 111
+
+; Semantic errors (150-199)
+ERR_INFINITE_STRUCT equ 150
 
 ; Compiler errors (200-299)
 ERR_ASM_FAIL       equ 201
@@ -71,6 +75,7 @@ msg_undeclared_func db "function not declared before use", 0
 msg_expect_dot      db "Expected '.'", 0
 msg_expect_eq       db "Expected '='", 0
 msg_assign_const    db "Cannot assign to const variable", 0
+msg_infinite_struct db "struct cannot contain itself by value (use a pointer field)", 0
 
 ; Compiler messages
 msg_asm_fail        db "Error: assembly failed", 10, 0
@@ -103,6 +108,8 @@ err_table:
     dq ERR_UNEXPECTED,     msg_unexpected
     dq ERR_EXPECTED_PRIMARY, msg_expected_primary
     dq ERR_EXPECTED_LPAREN, msg_expect_lparen
+    dq ERR_ASSIGN_CONST,   msg_assign_const
+    dq ERR_INFINITE_STRUCT, msg_infinite_struct
     dq ERR_ASM_FAIL,       msg_asm_fail
     dq ERR_LD_FAIL,        msg_ld_fail
     dq ERR_BUILD_FAIL,     msg_build_fail
@@ -201,6 +208,7 @@ error_at_code:
     global msg_expect_dot
     global msg_expect_eq
     global msg_assign_const
+    global msg_infinite_struct
     global msg_asm_fail
     global msg_ld_fail
     global msg_build_fail

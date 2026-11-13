@@ -1,0 +1,33 @@
+// Regression: a struct containing itself by value (`struct G { struct G s; }`)
+// or as an inline array (`struct G { struct G arr[2]; }`) has infinite size.
+// struct_total_size now follows struct fields recursively, so these used to
+// recurse into the struct's own (still incomplete) field array forever and
+// segfault the compiler. C rejects them too ("array type has incomplete
+// element type"); we report a plain-words error instead of crashing.
+// The legal form — a pointer field — must keep compiling.
+// COMPILE-ONLY: the fault case is in the comment; the compiler error itself is
+// checked by the crash-free sweep (fuzz) and by hand below.
+// EXPECT: 42
+struct Node { int value; struct Node* next; };   // pointer self-reference: legal
+
+struct Wrap { int n; struct Node node; };        // by-value *other* struct: legal
+
+int main(void) {
+    struct Node a;
+    struct Node b;
+    struct Wrap w;
+    a.value = 1;
+    a.next = &b;
+    b.value = 2;
+    b.next = 0;
+    w.n = 3;
+    w.node.value = 4;
+    if (a.next->value != 2) { return 1; }
+    if (w.node.value != 4) { return 2; }
+    return 42;
+}
+
+// Fault variants (each must produce "struct cannot contain itself by value"
+// and exit 1 — verified in tests/c2x-seed/run.sh via the seed's error path):
+//   struct Bad1 { int n; struct Bad1 s; };
+//   struct Bad2 { int n; struct Bad2 arr[2]; };

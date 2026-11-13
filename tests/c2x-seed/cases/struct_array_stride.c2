@@ -1,0 +1,47 @@
+// Regression: a struct whose last field is an array or a by-value struct was
+// sized as if that field were a single qword, so `struct_total_size` returned
+// a too-small value. A global (or local) array of such structs was then
+// indexed with too small a stride, and reads/writes silently hit the wrong
+// element. Examples that used to be mis-sized:
+//   struct B { int n; int arr[3]; };          // 16 bytes spoken, 32 real
+//   struct B { int n; struct S s; };          // 16 vs 24
+//   struct B { int n; struct S arr[3]; };     // 16 vs 56
+// Array fields now contribute count * element_size, by-value struct fields
+// contribute the element struct's recursively computed size, and the
+// FIELD_CONST_FLAG bit no longer confuses classification.
+// EXPECT: 42
+struct Point { int x; int y; };
+struct Row { int id; int cells[4]; };
+struct Grid { int id; struct Row rows[2]; };
+struct Mixed { int id; struct Point at; };
+
+struct Row g_rows[3];
+struct Grid g_grids[2];
+struct Mixed g_mixed[3];
+
+int main(void) {
+    // struct Row = 8 (id) + 4*8 (cells) = 40; stride must be 40, not 16.
+    g_rows[2].id = 7;
+    g_rows[2].cells[3] = 30;
+    if (g_rows[0].id != 0) { return 1; }
+    if (g_rows[1].cells[0] != 0) { return 2; }
+    if (g_rows[2].id != 7) { return 3; }
+    if (g_rows[2].cells[3] != 30) { return 4; }
+
+    // struct Grid = 8 + 2 * 40 (Row) = 88; nested struct array.
+    g_grids[1].id = 9;
+    g_grids[1].rows[1].cells[2] = 55;
+    if (g_grids[0].id != 0) { return 5; }
+    if (g_grids[1].id != 9) { return 6; }
+    if (g_grids[1].rows[1].cells[2] != 55) { return 7; }
+
+    // struct Mixed = 8 + 16 (Point) = 24; by-value struct field.
+    g_mixed[2].id = 11;
+    g_mixed[2].at.y = 22;
+    if (g_mixed[0].id != 0) { return 8; }
+    if (g_mixed[1].at.x != 0) { return 9; }
+    if (g_mixed[2].id != 11) { return 10; }
+    if (g_mixed[2].at.y != 22) { return 11; }
+
+    return 42;
+}

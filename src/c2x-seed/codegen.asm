@@ -9931,12 +9931,27 @@ gen_addr:
 
 ; ================================================================
 ; struct_total_size(rdi = field_array_ptr) -> rax = total_size
-; Walks field descriptors and computes total size (last_offset + last_size + tail_pad)
+; Walks the field descriptors and computes total size
+; (last_offset + last_field_size, padded up to 8).
+;
+; Array and by-value struct fields are NOT 8 bytes: for `int n; int arr[3];`
+; the last field contributes 24 bytes, so the struct is 32, not 16 (the old
+; code assumed every non-char field was one qword, so a global array of such
+; structs was indexed with too small a stride and reads/writes hit the wrong
+; element). Scalar/pointer array fields carry the element count in
+; sub_array_ptr; struct-array fields carry a pointer to an info struct
+; [count, element_field_array_ptr]; a by-value struct field carries its field
+; array directly. Struct element sizes are computed recursively.
+;
+; The base offset lives in rcx, which the recursive call preserves; rdi is
+; clobbered by the recursion, so it must not hold the accumulator.
 ; ================================================================
 struct_total_size:
     push rcx
     push r8
     push r9
+    push rbx
+    push r10
     mov r8, [rdi]                ; r8 = field count
     test r8, r8
     jz .sts_zero
@@ -9945,32 +9960,78 @@ struct_total_size:
     mov rax, r8
     shl rax, 5                   ; rax = last_idx * 32
     lea r9, [rdi + 8 + rax]     ; r9 = last field descriptor
-    mov rdi, [r9 + 8]           ; rdi = last field offset
+    mov rcx, [r9 + 8]           ; rcx = last field offset (survives recursion)
     mov rax, [r9 + 16]          ; rax = last field type
-    ; Pointer fields are always 8 bytes
-    cmp rax, PTR_TYPE_FLAG
-    jae .sts_qword
-    ; Array fields: use sub_array_ptr element count * elem size (approx 8)
+    mov rbx, [r9 + 24]          ; rbx = sub_array_ptr (count, info ptr, or fields)
+    ; Strip FIELD_CONST_FLAG: `const int arr[3]` must be classified by its
+    ; element type, not by the const bit.
+    mov r10, FIELD_CONST_FLAG
+    not r10
+    and rax, r10
     cmp rax, ARRAY_TYPE_FLAG
-    jae .sts_qword
+    jae .sts_array
+    cmp rax, PTR_TYPE_FLAG
+    jae .sts_size8
     cmp rax, TOK_KW_CHAR
-    jne .sts_qword
+    je .sts_size1
+    cmp rax, TOK_KW_STRUCT
+    je .sts_struct
+.sts_size8:
+    mov rax, 8
+    jmp .sts_add
+.sts_size1:
     mov rax, 1
     jmp .sts_add
-.sts_qword:
-    mov rax, 8
+.sts_struct:
+    ; By-value struct field: sub_array_ptr is its field array. The field size
+    ; is that struct's total size, computed recursively.
+    mov rdi, rbx
+    test rdi, rdi
+    jz .sts_size8               ; forward-ref placeholder — fall back
+    call struct_total_size
+    jmp .sts_add                ; rax = field size
+.sts_array:
+    ; rax = ARRAY_TYPE_FLAG + element_type, rbx = sub_array_ptr.
+    cmp rbx, 0
+    je .sts_size8               ; no count recorded — fall back
+    mov r10, rax
+    sub r10, ARRAY_TYPE_FLAG    ; r10 = element type
+    cmp r10, TOK_KW_STRUCT
+    je .sts_array_struct
+    cmp r10, TOK_KW_CHAR
+    je .sts_array_char
+    mov r10, 8                  ; int/pointer elements are 8 bytes
+    jmp .sts_array_mul
+.sts_array_char:
+    mov r10, 1
+.sts_array_mul:
+    imul r10, rbx               ; r10 = element_size * count
+    mov rax, r10
+    jmp .sts_add
+.sts_array_struct:
+    ; rbx = pointer to [count, element_field_array_ptr].
+    mov rdi, [rbx + 8]
+    test rdi, rdi
+    jz .sts_size8               ; forward-ref placeholder — fall back
+    push rbx
+    call struct_total_size      ; rax = element struct size
+    pop rbx
+    imul rax, [rbx]             ; rax = element_size * count
+    jmp .sts_add
 .sts_add:
-    add rdi, rax                 ; rdi = last_offset + last_size
-    ; Tail pad to 8 bytes (conservative default)
-    mov rax, rdi
+    add rax, rcx                ; rax = last_offset + last_field_size
     add rax, 7
-    and rax, -8
+    and rax, -8                 ; tail pad to 8 bytes
+    pop r10
+    pop rbx
     pop r9
     pop r8
     pop rcx
     ret
 .sts_zero:
     xor rax, rax
+    pop r10
+    pop rbx
     pop r9
     pop r8
     pop rcx

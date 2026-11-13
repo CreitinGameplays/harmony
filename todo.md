@@ -52,7 +52,7 @@ Output extension: `.harmony`. Milestone: byte-deterministic build.
 
 ### P0.5 — c2x-seed fixes required to build harmony-base
 
-Ten c2x-seed defects were found and fixed while bootstrapping (see
+Twelve c2x-seed defects were found and fixed while bootstrapping (see
 `docs/c2x-seed.md` "Recent Bug Fixes"):
 
 - [x] Postfix index expressions used `parse_unary`; now `parse_expression`.
@@ -74,6 +74,12 @@ Ten c2x-seed defects were found and fixed while bootstrapping (see
       (`x[i]`, `&x[i]`, `&x`, `x[i] = v`): the index/address-of fast paths
       leaked a pushed pointer on the not-found branch, growing the codegen
       stack until it read off the end.
+- [x] Struct array stride too small: `struct_total_size` sized array and
+      by-value struct fields as one qword, so `struct B { int n; int arr[3]; }`
+      came out 16 bytes instead of 32 and array indexing hit the wrong element.
+- [x] Compiler crash on infinite-size structs (`struct G { struct G s; }`,
+      `struct G { struct G arr[2]; }`): by-value self-reference during body
+      parsing now reports a plain parse fault instead of recursing forever.
 
 ### P1 — Diagnostics + source spans
 

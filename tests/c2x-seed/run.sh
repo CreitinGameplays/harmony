@@ -67,5 +67,35 @@ for src in "$CASES"/*.c2; do
     run_case "$src"
 done
 
+# Negative cases: each `faults/NAME.c2` must FAIL to compile with the expected
+# error text (a `// WANT: <substring>` line). Guards error paths that used to
+# crash the compiler.
+run_fault_case() {
+    local src="$1"
+    local name
+    name="$(basename "$src" .c2)"
+    local want
+    want="$(sed -n 's|^// WANT: *||p' "$src" | head -1)"
+
+    if "$SEED" -r -o "$TMP/fault_$name" "$src" >"$TMP/flog" 2>&1; then
+        fail=$((fail + 1))
+        printf 'FAIL %s (compiled, expected a fault)\n' "$name"
+        return
+    fi
+    if grep -q "$want" "$TMP/flog"; then
+        pass=$((pass + 1))
+        printf 'ok   %s (rejected)\n' "$name"
+    else
+        fail=$((fail + 1))
+        printf 'FAIL %s (wrong error, wanted "%s")\n' "$name" "$want"
+        sed 's/^/     /' "$TMP/flog" | grep -v 'unknown warning' | head -3
+    fi
+}
+
+shopt -s nullglob
+for src in "$CASES"/faults/*.c2; do
+    run_fault_case "$src"
+done
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

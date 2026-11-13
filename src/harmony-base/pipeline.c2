@@ -1,7 +1,7 @@
 // harmony-base — pipeline (docs/harmony.md §25.1).
 //
-// P0 wires: load source -> lex -> parse -> report. Codegen and the checker
-// passes are stubbed and added in later phases.
+// P0 wires: load source -> lex -> parse -> flush reports. Codegen and the
+// checker passes are stubbed and added in later phases.
 
 int pipeline_run(struct Options* opts) {
     struct SourceFile sf;
@@ -34,9 +34,39 @@ int pipeline_run(struct Options* opts) {
 
     parser_run(&sf, toks, n);
 
+    // Safety profiles (§22.8): --forbid refuses to build when the audited
+    // surface is non-empty. No language surface exists yet, so this only
+    // guards the flag plumbing until the parser reports seams (P14).
+    if (opts->forbid != 0) {
+        if (!str_eq(opts->forbid, "unchecked") && !str_eq(opts->forbid, "keep")) {
+            diag_plain("usage.unknown-forbid-target", opts->forbid);
+            return EXIT_USAGE;
+        }
+    }
+
+    if (opts->report_seams) {
+        seams_print();
+        if (diag_fault_count() == 0) { return EXIT_OK; }
+    }
+
     // Later phases (type check, dataflow, borrow, drops, codegen) plug in here.
+    // Until a backend exists, asking for one is reported through the normal
+    // report model (so text and JSON views stay exercised) but keeps the
+    // dedicated internal exit code (§25.1).
     if (opts->emit_c || opts->emit_ir || opts->emit_asm) {
-        diag_plain("compiler.internal", "codegen backends are not implemented yet");
+        diag_fault("compiler.internal",
+                   "the requested code-generation backend is not implemented yet",
+                   &sf, 0,
+                   "every stage the driver advertises must be able to run",
+                   "no backend for --emit=c|ir|asm", 0);
+    }
+
+    // Flush every stored report: ordered by primary span, capped by
+    // --max-faults, either as text on stdout or as the JSON twin. A clean
+    // build prints nothing at all (§23.9).
+    diag_flush(opts->report_json, opts->max_faults, opts->allow);
+
+    if (opts->emit_c || opts->emit_ir || opts->emit_asm) {
         return EXIT_INTERNAL;
     }
 

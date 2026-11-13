@@ -15,7 +15,8 @@ Check
 - Also fix any other bug before reporting success.
 - *PRIORITIZE writing LLVM backend!!*
 - *PREFER things to be auto resizable when possible instead of a fixed value!*
-- Split big source files into smaller, organized files instead of huge single files (only exception is c2x-seed src).
+- Split big source files into smaller, organized files (they can be inside subdirs in the source 
+  code for better organization) instead of huge single files (only exception is c2x-seed src).
 - Always add new or update todo.md and docs/* if some info got stale, this includes updating harmony language reference/keywords.
 - Use makefile to build harmony lang. build.sh builds the c2x-seed, which is written in assembly.
 - Always make or update tests for any new implementation/feature,

@@ -83,7 +83,7 @@ extern error_count
 extern argc, argv, envp
 extern warn_init, warn_disable_all, print_warning_summary
 extern sys_open, sys_read, sys_close
-extern sys_fork, sys_execve, sys_wait4, sys_unlink, sys_exit, sys_getpid
+extern sys_fork, sys_execve, sys_wait4, sys_unlink, sys_exit, sys_getpid, sys_dup2
 extern STDOUT
 extern STDERR
 
@@ -525,6 +525,13 @@ assemble_and_link:
     push r15
 
     ; --- NASM: assemble .asm -> .o ---
+    ; The assembly is fed to nasm on stdin (input argument "/dev/stdin"),
+    ; NOT through its PID-unique temp path. nasm records the *input path* in
+    ; the object's FILE symbol, and `ld` copies that into the final
+    ; executable's .strtab; a temp path containing the PID would make the
+    ; output binary differ on every build. "/dev/stdin" is stable, so the
+    ; build is reproducible (docs/harmony.md §25.6). The temp .asm is still
+    ; written to disk so --keep-asm can show it after a failure.
     mov rsi, msg_assemble
     call verbose_print
 
@@ -540,15 +547,28 @@ assemble_and_link:
     mov [r15 + 24], rax     ; argv[3] = "-o"
     lea rax, [tmp_obj_path]
     mov [r15 + 32], rax     ; argv[4] = tmp .o file
-    lea rax, [tmp_asm_path]
-    mov [r15 + 40], rax     ; argv[5] = tmp .asm file
+    mov rax, str_dev_stdin
+    mov [r15 + 40], rax     ; argv[5] = "/dev/stdin" (stable FILE symbol)
     mov qword [r15 + 48], 0 ; argv[6] = NULL
+
+    ; Open the temp .asm read-only; its fd is dup2'd onto the child's stdin.
+    lea rdi, [tmp_asm_path]
+    xor rsi, rsi            ; O_RDONLY
+    xor rdx, rdx
+    call sys_open
+    test rax, rax
+    js .asm_fail            ; unreadable temp .asm -> assembler cannot run
+    mov [nasm_asm_fd], rax
 
     mov rdi, str_nasm_path
     lea rsi, [nasm_argv]
     mov rdx, [envp]
+    mov rcx, [nasm_asm_fd]  ; rcx = fd to dup onto the child's stdin
     call run_and_wait
-    test rax, rax
+    mov rbx, rax            ; save status; always close our stdin copy
+    mov rdi, [nasm_asm_fd]
+    call sys_close
+    test rbx, rbx
     jnz .asm_fail
 
     ; --- LD: link .o -> final binary ---
@@ -570,6 +590,7 @@ assemble_and_link:
     mov rdi, str_ld_path
     lea rsi, [ld_argv]
     mov rdx, [envp]
+    mov rcx, -1             ; no stdin redirection for ld
     call run_and_wait
     test rax, rax
     jnz .ld_fail
@@ -635,15 +656,21 @@ assemble_and_link:
     ret
 
 ; ------------------------------------------------------------
-; run_and_wait(rdi = path, rsi = argv, rdx = envp) -> int
+; run_and_wait(rdi = path, rsi = argv, rdx = envp, rcx = stdin_fd)
 ; Fork, execve, wait for child. Returns 0 on success, 1 on failure.
+; When rcx >= 0 the child's stdin (fd 0) is dup2'd from that fd before
+; execve, so a tool like nasm can read its input from stdin. Pass -1 to leave
+; the child's stdin untouched. rcx is clobbered by the syscall wrapper, so it
+; is preserved in a callee-saved register across the fork.
 ; ------------------------------------------------------------
 run_and_wait:
     push rbx
     push r12
     push r13
+    push r14
     mov r12, rdi            ; path
     mov r13, rsi            ; argv
+    mov r14, rcx            ; stdin fd (-1 = inherit)
 
     call sys_fork
     test rax, rax
@@ -663,6 +690,7 @@ run_and_wait:
     test rax, rax
     jnz .child_fail
 
+    pop r14
     pop r13
     pop r12
     pop rbx
@@ -670,6 +698,13 @@ run_and_wait:
     ret
 
 .child:
+    ; Redirect stdin if a source fd was provided.
+    cmp r14, 0
+    jl .child_exec
+    mov rdi, r14            ; oldfd
+    xor rsi, rsi            ; newfd = 0 (stdin)
+    call sys_dup2
+.child_exec:
     mov rdi, r12            ; path
     mov rsi, r13            ; argv
     mov rdx, [envp]
@@ -680,6 +715,7 @@ run_and_wait:
 
 .fork_fail:
     mov rax, 1
+    pop r14
     pop r13
     pop r12
     pop rbx
@@ -687,6 +723,7 @@ run_and_wait:
 
 .child_fail:
     mov rax, 1
+    pop r14
     pop r13
     pop r12
     pop rbx
@@ -1057,6 +1094,7 @@ str_nasm_path     db "/usr/bin/nasm", 0
 str_ld_path       db "/usr/bin/ld", 0
 str_f             db "-f", 0
 str_elf64         db "elf64", 0
+str_dev_stdin     db "/dev/stdin", 0     ; stable nasm input name (see assemble_and_link)
 msg_assemble      db "Assembling...", 10, 0
 msg_linking       db "Linking...", 10, 0
 msg_build_ok      db "Build complete: ", 0
@@ -1075,6 +1113,7 @@ section .bss
     source_count    resq 1          ; number of source files
     assemble_flag   resq 1          ; 1 = produce binary (default), 0 = assembly only (-S)
     tmp_asm_fd      resq 1
+    nasm_asm_fd     resq 1          ; read-only fd of the temp .asm, dup2'd to nasm's stdin
     tmp_path_pid    resq 1
     tmp_asm_path    resb 64
     tmp_obj_path    resb 64

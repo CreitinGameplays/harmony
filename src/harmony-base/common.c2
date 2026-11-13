@@ -116,17 +116,10 @@ struct Report {
     char* got;      // what was found (may be 0)
     char* want;     // what was needed (may be 0)
     char* note;     // extra context (may be 0)
+    char* why;      // why the rule exists (may be 0)
+    char* from;     // where a value/type originated (may be 0)
     char* fix;      // a concrete edit (may be 0)
 };
-
-// Builds a report and emits it once (text mode). Returns the report index.
-int diag_fault(char* id, char* summary, struct SourceFile* sf, int off,
-               char* rule, char* got, char* fix);
-int diag_warn(char* id, char* summary, struct SourceFile* sf, int off,
-              char* rule, char* got, char* fix);
-
-// A flat message used for driver/usage errors and I/O failures.
-void diag_plain(char* id, char* msg);
 
 // Registers a source file so spans can resolve file/line/col.
 void diag_register_file(struct SourceFile* sf);
@@ -134,6 +127,28 @@ void diag_register_file(struct SourceFile* sf);
 int diag_fault_count(void);
 int diag_warn_count(void);
 void diag_reset(void);
+
+// Adds a report (stored, not printed). Returns the report index, or -1 when
+// the report table is full. Use diag_report(idx) to fill in `want`, `why`,
+// `from`, `note`, and secondary spans afterwards.
+int diag_add(char* id, int sev, char* summary, struct SourceFile* sf, int off,
+             char* rule, char* got, char* fix);
+int diag_fault(char* id, char* summary, struct SourceFile* sf, int off,
+               char* rule, char* got, char* fix);
+int diag_warn(char* id, char* summary, struct SourceFile* sf, int off,
+              char* rule, char* got, char* fix);
+struct Report* diag_report(int idx);
+
+// Prints all stored reports, in §23.4 order (primary span ascending), capped
+// by `max_faults` (0 = see all, §23.9). `allow_list` is a comma-separated
+// --allow list; it only silences warnings. `json` selects the §23.10 twin.
+void diag_flush(int json, int max_faults, char* allow_list);
+
+// True when `id` appears in a comma-separated allow list.
+int diag_allowed(char* id, char* allow_list);
+
+// A flat message used for driver/usage errors and I/O failures.
+void diag_plain(char* id, char* msg);
 
 // ---------------------------------------------------------------------------
 // Pipeline (docs/harmony.md §25.1).
@@ -153,8 +168,22 @@ struct Options {
     int   strict;       // --strict
     int   report_json;  // --report=json
     int   report_seams; // --report=seams
+    int   explain;      // --explain <id>: print the long-form page, exit 0
+    char* explain_id;   // the <id> passed to --explain
+    int   max_faults;   // --max-faults=N (0 = see all; default 50)
+    char* allow;        // --allow=<id,id,...>
+    char* forbid;       // --forbid=<name> (unchecked|keep)
     int   verbose;      // -v
 };
+
+// Prints the long-form help page for a report ID (§23.12). Returns 0 when the
+// ID exists, -1 otherwise (the caller reports the unknown ID).
+int explain_lookup(char* id);
+
+// Prints the seam listing (§22.8): every `unchecked` block / fn and every
+// `keep` call with file, line, and reason. P0 has no language surface yet, so
+// the listing is empty; the scanner plugs in during P14.
+void seams_print(void);
 
 // Runs the pipeline for one input file. Returns an exit code.
 int pipeline_run(struct Options* opts);

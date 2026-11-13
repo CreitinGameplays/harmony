@@ -74,5 +74,49 @@ check "unknown flag exits 2" 2 $?
 "$HB" check "$TMP/hello.harmony" "$TMP/hello.harmony" >/dev/null 2>&1
 check "two inputs exits 2" 2 $?
 
+# --explain <known id> prints a page and exits 0.
+"$HB" --explain compiler.internal >/dev/null 2>&1
+check "--explain known id exits 0" 0 $?
+
+# --explain <unknown id> is a usage error.
+"$HB" --explain no.such-id >/dev/null 2>&1
+check "--explain unknown id exits 2" 2 $?
+
+# --explain with no id is a usage error.
+"$HB" --explain >/dev/null 2>&1
+check "--explain missing id exits 2" 2 $?
+
+# --report=seams on a clean file lists no seams and exits 0.
+"$HB" --report=seams check "$TMP/hello.harmony" >/dev/null 2>&1
+check "--report=seams clean exits 0" 0 $?
+
+# --forbid accepts the two known targets.
+"$HB" --forbid=unchecked check "$TMP/hello.harmony" >/dev/null 2>&1
+check "--forbid=unchecked exits 0" 0 $?
+"$HB" --forbid=keep check "$TMP/hello.harmony" >/dev/null 2>&1
+check "--forbid=keep exits 0" 0 $?
+
+# --forbid with an unknown target is a usage error.
+"$HB" --forbid=bogus check "$TMP/hello.harmony" >/dev/null 2>&1
+check "--forbid=bogus exits 2" 2 $?
+
+# --max-faults accepts 0 (see all) and an explicit cap without failing.
+"$HB" --max-faults=0 check "$TMP/hello.harmony" >/dev/null 2>&1
+check "--max-faults=0 exits 0" 0 $?
+"$HB" --max-faults=5 check "$TMP/hello.harmony" >/dev/null 2>&1
+check "--max-faults=5 exits 0" 0 $?
+
+# --allow list parses and does not disturb a clean build.
+"$HB" --allow=seam.no-reason,unchecked.raw-escapes check "$TMP/hello.harmony" >/dev/null 2>&1
+check "--allow list exits 0" 0 $?
+
+# A clean build with --report=json prints nothing at all (§23.9).
+json_out="$("$HB" --report=json check "$TMP/hello.harmony" 2>/dev/null)"
+if [ -z "$json_out" ]; then
+    pass=$((pass + 1)); printf 'ok   clean json build prints nothing\n'
+else
+    fail=$((fail + 1)); printf 'FAIL clean json build prints nothing\n'
+fi
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

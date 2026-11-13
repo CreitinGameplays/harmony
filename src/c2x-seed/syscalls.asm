@@ -5,13 +5,13 @@
 ; Exported Functions
 ; ------------------------------------------------------------
 global sys_exit, sys_read, sys_write, sys_open, sys_close, sys_brk, sys_mmap
-global sys_fork, sys_execve, sys_wait4, sys_unlink, sys_getpid
+global sys_fork, sys_execve, sys_wait4, sys_unlink, sys_getpid, sys_dup2
 
 ; ------------------------------------------------------------
 ; Exported Constants
 ; ------------------------------------------------------------
 global SYS_READ, SYS_WRITE, SYS_OPEN, SYS_CLOSE, SYS_EXIT, SYS_BRK, SYS_MMAP, SYS_MUNMAP
-global SYS_FORK, SYS_EXECVE, SYS_WAIT4, SYS_UNLINK, SYS_GETPID
+global SYS_FORK, SYS_EXECVE, SYS_WAIT4, SYS_UNLINK, SYS_GETPID, SYS_DUP2
 global STDIN, STDOUT, STDERR
 global O_RDONLY, O_WRONLY, O_RDWR, O_CREAT, O_TRUNC, O_APPEND
 global EXIT_SUCCESS, EXIT_FAILURE
@@ -32,6 +32,7 @@ SYS_EXECVE  equ 59
 SYS_WAIT4   equ 61
 SYS_UNLINK  equ 87
 SYS_GETPID  equ 39
+SYS_DUP2    equ 33
 
 ; ------------------------------------------------------------
 ; File Descriptors
@@ -197,6 +198,14 @@ sys_fork:
 ; Output: rax = current process id
 sys_getpid:
     mov rax, SYS_GETPID
+    syscall
+    ret
+
+; sys_dup2(int oldfd, int newfd) -> int
+; Input: rdi = oldfd, rsi = newfd
+; Output: rax = newfd on success, negative error
+sys_dup2:
+    mov rax, SYS_DUP2
     syscall
     ret
 

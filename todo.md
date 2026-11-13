@@ -37,17 +37,22 @@ Output extension: `.harmony`. Milestone: byte-deterministic build.
   - [ ] `lower_c.c2` — C11 backend (secondary).
   - [ ] `runtime.ll` / `runtime.c` — the ~400-line runtime.
 - [/] Driver subcommands: `build`, `check`, `run`, `--emit=c|ir|asm`,
-      `--explain`, `--report=json|seams`, `--strict`, `--forbid=`, `--max-faults=`.
-      (`build`/`check`/`run` + flags parse; backends still return `70`.)
+      `--explain`, `--report=json|seams`, `--strict`, `--forbid=`, `--allow=`,
+      `--max-faults=`. (`build`/`check`/`run` + all flags parse; backends still
+      return `70`, and `--explain` serves the driver/`compiler.internal` pages.)
 - [x] Exit codes: `0` ok, `1` compile fault, `2` usage, `70` `compiler.internal`, `101` runtime abort.
-- [ ] Deterministic build: no timestamps/paths/random in output; stable symbol names.
-- [ ] Test harness: golden fixtures under `tests/harmony/`; diff stdout + exit code.
+- [x] Deterministic build: no timestamps/PIDs/paths in output; stable symbol
+      names. Fixed the c2x-seed PID-in-`FILE`-symbol bug (see
+      `docs/c2x-seed.md`); guarded by `tests/harmony/determinism.sh`.
+- [x] Test harness: golden fixtures under `tests/harmony/golden/`; diff stdout +
+      exit code byte for byte via `tests/harmony/golden.sh`.
 - [x] `tests/harmony/run.sh` + `tests/harmony/fuzz.sh`; registered in Makefile.
-- [x] `tests/c2x-seed/run.sh` — c2x-seed regression corpus (`make test-seed`).
+- [x] `tests/c2x-seed/run.sh` + `tests/c2x-seed/determinism.sh` — c2x-seed
+      regression corpus (`make test-seed`).
 
 ### P0.5 — c2x-seed fixes required to build harmony-base
 
-Eight c2x-seed defects were found and fixed while bootstrapping (see
+Nine c2x-seed defects were found and fixed while bootstrapping (see
 `docs/c2x-seed.md` "Recent Bug Fixes"):
 
 - [x] Postfix index expressions used `parse_unary`; now `parse_expression`.
@@ -62,22 +67,30 @@ Eight c2x-seed defects were found and fixed while bootstrapping (see
       mis-scaled indices (`pp[i]->field`, `l->items[i]->kind`).
 - [x] Forward struct references (`struct A { struct B* b; }` with `B` later)
       failed to parse; placeholder + back-patch support added.
+- [x] Non-deterministic binaries: the PID-unique temp `.asm` path leaked into
+      the output's `FILE` symbol; nasm now reads the temp file via
+      `/dev/stdin` (added `sys_dup2`).
 
 ### P1 — Diagnostics + source spans
 
-- [ ] Span type `{file, start, end}`; primary + secondary spans.
-- [ ] Report model: `id`, `severity`, `summary`, `spans[]`, `rule`, `got`, `want`,
-      `note`, `why`, `from`, `fixes[]`, `explain`.
-- [ ] Text renderer (§23.3): corner `╭─`/`├`/`╰`, gutter, `◀────` markers, ≤6 lines.
-- [ ] Label set (closed): `rule got want note why from fix see`; 5-char column align.
-- [ ] Report ordering by primary span ascending; `--max-faults` cap + trailing summary.
-- [ ] Severity words: `fault` (exit 1), `warn` (continue), `runtime fault` (abort 101).
-- [ ] Stable `area.slug` IDs (no E-codes); every report has a rule line + ≥1 span
-      (asserted by tests).
-- [ ] `--explain <id>` long-form; `--allow=<id>` / `--forbid=<id>`.
-- [ ] JSON twin `--report=json` (one object per line, stable keys §23.10).
+- [x] Span type `{file, start, end, role}`; primary + secondary span slots.
+- [/] Report model: `id`, `severity`, `summary`, `spans[]`, `rule`, `got`,
+      `want`, `note`, `why`, `from`, `fix`, `explain`. Single `fix`/`note`
+      today; `fixes[]`/`notes[]` lists and fix-it application land in P14.
+- [/] Text renderer (§23.3): `<severity> · <id>  path:line:col` header, source
+      lines (≤6, §23.4), labelled lines, `see` footer. The box corners
+      (`╭─`/`├`/`╰`), gutter, and `◀────` markers are still to come.
+- [x] Label set (closed): `rule got want note why from fix see`; 5-char column.
+- [x] Report ordering by primary span ascending; `--max-faults` cap (default 50,
+      0 = see all) + trailing `… N more faults` summary.
+- [x] Severity words: `fault` (exit 1), `warn` (continue), `runtime fault` (abort 101).
+- [/] Stable `area.slug` IDs (no E-codes); reports always carry a rule line +
+      ≥1 span when one exists. The full `<area>.<slug>` catalogue grows per phase.
+- [x] `--explain <id>` long-form (driver/`compiler.internal` pages so far);
+      `--allow=<id,id>` (warnings only) and `--forbid=unchecked|keep`.
+- [x] JSON twin `--report=json` (one object per line, stable keys §23.10).
 - [ ] Fix-its: `applicability=machine|manual`, `--fix` applies machine edits only.
-- [ ] `compiler.internal` shape: snippet + "this is a bug" footer.
+- [x] `compiler.internal` shape: snippet + "this is a bug" explain page.
 
 ### P2 — Lexer (§7)
 

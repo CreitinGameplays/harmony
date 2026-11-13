@@ -10,6 +10,7 @@ HB_SRC    := \
 	src/harmony-base/ast.c2 \
 	src/harmony-base/source.c2 \
 	src/harmony-base/diag.c2 \
+	src/harmony-base/reports.c2 \
 	src/harmony-base/lexer.c2 \
 	src/harmony-base/parser.c2 \
 	src/harmony-base/pipeline.c2 \
@@ -31,10 +32,13 @@ harmony-base: $(SEED) $(HB_SRC)
 # Full test target: c2x-seed regression corpus + harmony-base driver tests.
 test: test-seed harmony-base
 	bash tests/harmony/run.sh
+	bash tests/harmony/golden.sh
+	bash tests/harmony/determinism.sh
 
 # c2x-seed regression corpus (guards the compiler bugs fixed during bring-up).
 test-seed: seed
 	bash tests/c2x-seed/run.sh
+	bash tests/c2x-seed/determinism.sh
 
 test-fuzz: harmony-base
 	bash tests/harmony/fuzz.sh

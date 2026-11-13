@@ -1,0 +1,1 @@
+--report=json build --emit=c main.harmony

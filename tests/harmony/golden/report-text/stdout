@@ -1,0 +1,6 @@
+fault · compiler.internal  main.harmony:1:0
+  the requested code-generation backend is not implemented yet
+  1 | fn main() {
+  rule  every stage the driver advertises must be able to run
+  got   no backend for --emit=c|ir|asm
+  see   `--explain compiler.internal`

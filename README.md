@@ -27,8 +27,8 @@ working compiler for it.
 ```bash
 bash build.sh      # build c2x-seed (stage 0) -> build/c2x-seed
 make               # build the harmony-base compiler -> build/harmony-base
-make test          # c2x-seed regression corpus + harmony-base driver tests
-make test-seed     # c2x-seed regression corpus only
+make test          # seed corpus + driver + golden fixtures + determinism
+make test-seed     # c2x-seed regression corpus + determinism only
 make test-fuzz     # aggressive/fuzz tests for the harmony-base driver
 make clean
 ```

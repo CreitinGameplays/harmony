@@ -1,8 +1,7 @@
 // harmony-base — driver: argument parsing and pipeline dispatch.
 //
-// The full driver (§25.4) grows here: `build`, `check`, `run`, `--emit=`,
-// `--explain`, `--report=`, `--strict`, `--forbid=`, `--max-faults=`.
-// P0 covers the core: `check` / `build` / `run` and a few inspection flags.
+// The full driver (§25.4): `build`, `check`, `run`, `--emit=`, `--explain`,
+// `--report=json|seams`, `--strict`, `--forbid=`, `--allow=`, `--max-faults=`.
 
 char* usage_text() {
     return "usage: harmony-base check <file.harmony>\n       harmony-base build <file.harmony> [-o output]\n       harmony-base run <file.harmony>\n";
@@ -12,9 +11,41 @@ void print_usage(void) {
     err_str(usage_text());
 }
 
+// Parses an `=`-attached value after `flag` (e.g. `--max-faults=10`).
+// Returns the numeric value, or `fallback` when the flag is malformed.
+int flag_int_value(char* a, char* flag, int fallback) {
+    int n;
+    int i;
+    int base;
+    if (!str_has_prefix(a, flag)) { return fallback; }
+    base = str_len(flag);
+    if (a[base] != 61) { return fallback; }   // 61 = '='
+    n = 0;
+    i = base + 1;
+    if (a[i] == 0) { return fallback; }
+    while (a[i] != 0) {
+        if (a[i] < 48 || a[i] > 57) { return fallback; }
+        n = n * 10 + (a[i] - 48);
+        i = i + 1;
+    }
+    return n;
+}
+
+// Returns a pointer to the value of an `=`-attached flag, or 0 when `a` is not
+// that flag or the value is empty. `flag` includes the trailing `=`, e.g.
+// flag_str_value("--forbid=unchecked", "--forbid=") -> "unchecked".
+char* flag_str_value(char* a, char* flag) {
+    int base;
+    if (!str_has_prefix(a, flag)) { return 0; }
+    base = str_len(flag);
+    if (a[base] == 0) { return 0; }           // "--flag=" with nothing after
+    return &a[base];
+}
+
 int parse_options(int argc, char** argv, struct Options* opts) {
     int i;
     char* a;
+    char* v;
 
     opts->cmd = CMD_BUILD;
     opts->input = 0;
@@ -25,6 +56,11 @@ int parse_options(int argc, char** argv, struct Options* opts) {
     opts->strict = 0;
     opts->report_json = 0;
     opts->report_seams = 0;
+    opts->explain = 0;
+    opts->explain_id = 0;
+    opts->max_faults = 50;          // §23.9 default; 0 = see all
+    opts->allow = 0;
+    opts->forbid = 0;
     opts->verbose = 0;
 
     if (argc < 2) {
@@ -52,6 +88,25 @@ int parse_options(int argc, char** argv, struct Options* opts) {
         if (str_eq(a, "--strict")) { opts->strict = 1; i = i + 1; continue; }
         if (str_eq(a, "--report=json")) { opts->report_json = 1; i = i + 1; continue; }
         if (str_eq(a, "--report=seams")) { opts->report_seams = 1; i = i + 1; continue; }
+        if (str_eq(a, "--explain")) {
+            // Long-form help takes a value: `--explain move.after-handoff`.
+            if (i + 1 >= argc) { return 0; }
+            opts->explain = 1;
+            opts->explain_id = argv[i + 1];
+            i = i + 2;
+            continue;
+        }
+        v = flag_str_value(a, "--forbid=");
+        if (v != 0) { opts->forbid = v; i = i + 1; continue; }
+        v = flag_str_value(a, "--allow=");
+        if (v != 0) { opts->allow = v; i = i + 1; continue; }
+        if (str_has_prefix(a, "--max-faults=")) {
+            // Malformed values keep the default instead of failing the build:
+            // a typo in the cap must not mask real faults with a quieter one.
+            opts->max_faults = flag_int_value(a, "--max-faults=", opts->max_faults);
+            i = i + 1;
+            continue;
+        }
         if (str_has_prefix(a, "-")) {
             diag_plain("usage.unknown-flag", a);
             return -1;
@@ -73,6 +128,12 @@ int main(int argc, char** argv) {
 
     ok = parse_options(argc, argv, &opts);
     if (ok == 0) {
+        // `--explain <id>` needs no input file and never prints usage noise.
+        if (opts.explain && opts.explain_id != 0) {
+            if (explain_lookup(opts.explain_id) == 0) { return EXIT_OK; }
+            diag_plain("usage.unknown-report-id", opts.explain_id);
+            return EXIT_USAGE;
+        }
         print_usage();
         return EXIT_USAGE;
     }

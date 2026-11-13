@@ -1,0 +1,48 @@
+# harmony-base — implementation roadmap
+
+Legend: [ ] - Not implemented; [/] - Partially implemented; [x] - Fully implemented.
+
+`harmony-base` is the first, incomplete implementation of the Harmony language
+(extension `.harmony`), written **in c2x-seed** (`.c2`). It is not the full
+language: it is the smallest compiler that can lex, parse, check, and emit
+working code for the v0 core feature set. The full rewrite (`src/harmony`, self
+hosted) comes after. Milestone: `harmony` output is **byte deterministic**.
+
+Priority note (from AGENTS.md): **write the LLVM backend first.** The C11
+backend is a debugging aid, not the goal.
+
+Phase ordering (do not skip backwards dependencies):
+
+| Phase | Theme | Depends on |
+|---|---|---|
+| P0 | Toolchain + skeleton + test harness | c2x-seed built |
+| P1 | Diagnostics + source manager | P0 |
+| P2 | Lexer | P1 |
+| P3 | AST + Parser | P2 |
+| P4 | Name resolution | P3 |
+| P5 | Type checker + copy rules | P4 |
+| P6 | HIR → MIR lowering | P5 |
+| P7 | Exhaustiveness | P5 |
+| P8 | Dataflow: init + moves | P6 |
+| P9 | Borrow checker + `life` | P8 |
+| P10 | Drop insertion | P9 |
+| P11 | LLVM backend (priority) | P10 |
+| P12 | Runtime library | P11 |
+| P13 | C11 backend (secondary) | P10 |
+| P14 | Reporting polish (JSON, explain, fix-its) | P2 onward |
+| P15 | Fuzzing + determinism hardening | P11 |
+
+Detailed per-subsystem checklist lives in `todo.md` under
+"harmony-base — detailed implementation checklist".
+
+## Seed capabilities to rely on (c2x-seed)
+
+- 64-bit `int`, 8-bit `char`, pointers, `char*` strings, fixed/2D/VLA arrays.
+- Named structs, struct pointers, struct arrays, struct params, struct returns
+  (hidden-pointer ABI; no nested/recursive struct-returning calls).
+- Globals, `extern`, forward decls, `const`, compound assign, `++/--`, `for`,
+  `break`/`continue`, `switch`-less dispatch (use `if`/`else` chains).
+- `asm()` for the raw syscall seam.
+- **Missing** (work around): no function pointers, no `enum`, no `typedef`, no
+  floats, no `unsigned`, no `switch`. Use struct-tagged values + `if`/`else`
+  dispatch, and `char*` for all dynamic buffers.

@@ -1,39 +1,27 @@
-// harmony-base — driver: argument parsing and pipeline dispatch.
+// harmony-base — driver: argument parsing and pipeline dispatch
+// (docs/harmony.md §19.5).
 //
-// The full driver (§25.4): `build`, `check`, `run`, `--emit=`, `--explain`,
-// `--report=json|seams`, `--strict`, `--forbid=`, `--allow=`, `--max-faults=`.
+//   lc build <file>       compile to an executable
+//   lc run   <file>       build and run
+//   lc check <file>       analyses only, no code generation
+//   lc emit-c <file>      print the generated C
+//   lc explain <CODE>     long-form lesson for a diagnostic code
+//   lc audit              list every `unchecked` site
+//
+//   flags: --format=pretty|line|json   --all   --strict   --deny-unchecked
+//          --no-color   --ascii   -o <out>
 
 char* usage_text() {
-    return "usage: harmony-base check <file.harmony>\n       harmony-base build <file.harmony> [-o output]\n       harmony-base run <file.harmony>\n";
+    return "usage: harmony-base build <file.harmony> [-o out]\n       harmony-base run   <file.harmony>\n       harmony-base check <file.harmony>\n       harmony-base emit-c <file.harmony>\n       harmony-base explain <CODE>\n       harmony-base audit\n";
 }
 
 void print_usage(void) {
     err_str(usage_text());
 }
 
-// Parses an `=`-attached value after `flag` (e.g. `--max-faults=10`).
-// Returns the numeric value, or `fallback` when the flag is malformed.
-int flag_int_value(char* a, char* flag, int fallback) {
-    int n;
-    int i;
-    int base;
-    if (!str_has_prefix(a, flag)) { return fallback; }
-    base = str_len(flag);
-    if (a[base] != 61) { return fallback; }   // 61 = '='
-    n = 0;
-    i = base + 1;
-    if (a[i] == 0) { return fallback; }
-    while (a[i] != 0) {
-        if (a[i] < 48 || a[i] > 57) { return fallback; }
-        n = n * 10 + (a[i] - 48);
-        i = i + 1;
-    }
-    return n;
-}
-
-// Returns a pointer to the value of an `=`-attached flag, or 0 when `a` is not
-// that flag or the value is empty. `flag` includes the trailing `=`, e.g.
-// flag_str_value("--forbid=unchecked", "--forbid=") -> "unchecked".
+// Returns the `=`-attached value of `--flag=` (e.g. "json" from
+// "--format=json"), or 0 when `a` is not that flag. `flag` must include the
+// trailing `=`.
 char* flag_str_value(char* a, char* flag) {
     int base;
     if (!str_has_prefix(a, flag)) { return 0; }
@@ -50,17 +38,13 @@ int parse_options(int argc, char** argv, struct Options* opts) {
     opts->cmd = CMD_BUILD;
     opts->input = 0;
     opts->output = 0;
-    opts->emit_c = 0;
-    opts->emit_ir = 0;
-    opts->emit_asm = 0;
+    opts->format = FORMAT_PRETTY;
+    opts->all = 0;
     opts->strict = 0;
-    opts->report_json = 0;
-    opts->report_seams = 0;
-    opts->explain = 0;
-    opts->explain_id = 0;
-    opts->max_faults = 50;          // §23.9 default; 0 = see all
-    opts->allow = 0;
-    opts->forbid = 0;
+    opts->deny_unchecked = 0;
+    opts->explain_code = 0;
+    opts->ascii = 0;
+    opts->no_color = 0;
     opts->verbose = 0;
 
     if (argc < 2) {
@@ -72,9 +56,17 @@ int parse_options(int argc, char** argv, struct Options* opts) {
     // Flags may appear before or after the subcommand (e.g. `-v check file`).
     while (i < argc) {
         a = argv[i];
-        if (str_eq(a, "check")) { opts->cmd = CMD_CHECK; i = i + 1; continue; }
-        if (str_eq(a, "build")) { opts->cmd = CMD_BUILD; i = i + 1; continue; }
-        if (str_eq(a, "run")) { opts->cmd = CMD_RUN; i = i + 1; continue; }
+        if (str_eq(a, "build"))   { opts->cmd = CMD_BUILD;   i = i + 1; continue; }
+        if (str_eq(a, "run"))     { opts->cmd = CMD_RUN;     i = i + 1; continue; }
+        if (str_eq(a, "check"))   { opts->cmd = CMD_CHECK;   i = i + 1; continue; }
+        if (str_eq(a, "emit-c"))  { opts->cmd = CMD_EMIT_C;  i = i + 1; continue; }
+        if (str_eq(a, "explain")) {
+            if (i + 1 < argc) { opts->explain_code = argv[i + 1]; }
+            opts->cmd = CMD_EXPLAIN;
+            i = i + 2;
+            continue;
+        }
+        if (str_eq(a, "audit"))  { opts->cmd = CMD_AUDIT;  i = i + 1; continue; }
         if (str_eq(a, "-h") || str_eq(a, "--help")) { return 0; }
         if (str_eq(a, "-v") || str_eq(a, "--verbose")) {
             opts->verbose = 1; i = i + 1; continue;
@@ -82,28 +74,20 @@ int parse_options(int argc, char** argv, struct Options* opts) {
         if (str_eq(a, "-o") && i + 1 < argc) {
             opts->output = argv[i + 1]; i = i + 2; continue;
         }
-        if (str_eq(a, "--emit=c")) { opts->emit_c = 1; i = i + 1; continue; }
-        if (str_eq(a, "--emit=ir")) { opts->emit_ir = 1; i = i + 1; continue; }
-        if (str_eq(a, "--emit=asm")) { opts->emit_asm = 1; i = i + 1; continue; }
-        if (str_eq(a, "--strict")) { opts->strict = 1; i = i + 1; continue; }
-        if (str_eq(a, "--report=json")) { opts->report_json = 1; i = i + 1; continue; }
-        if (str_eq(a, "--report=seams")) { opts->report_seams = 1; i = i + 1; continue; }
-        if (str_eq(a, "--explain")) {
-            // Long-form help takes a value: `--explain move.after-handoff`.
-            if (i + 1 >= argc) { return 0; }
-            opts->explain = 1;
-            opts->explain_id = argv[i + 1];
-            i = i + 2;
-            continue;
-        }
-        v = flag_str_value(a, "--forbid=");
-        if (v != 0) { opts->forbid = v; i = i + 1; continue; }
-        v = flag_str_value(a, "--allow=");
-        if (v != 0) { opts->allow = v; i = i + 1; continue; }
-        if (str_has_prefix(a, "--max-faults=")) {
-            // Malformed values keep the default instead of failing the build:
-            // a typo in the cap must not mask real faults with a quieter one.
-            opts->max_faults = flag_int_value(a, "--max-faults=", opts->max_faults);
+        if (str_eq(a, "--all"))            { opts->all = 1;            i = i + 1; continue; }
+        if (str_eq(a, "--strict"))         { opts->strict = 1;         i = i + 1; continue; }
+        if (str_eq(a, "--deny-unchecked")) { opts->deny_unchecked = 1; i = i + 1; continue; }
+        if (str_eq(a, "--ascii"))          { opts->ascii = 1;          i = i + 1; continue; }
+        if (str_eq(a, "--no-color"))       { opts->no_color = 1;       i = i + 1; continue; }
+        v = flag_str_value(a, "--format=");
+        if (v != 0) {
+            if (str_eq(v, "pretty")) { opts->format = FORMAT_PRETTY; }
+            else if (str_eq(v, "line")) { opts->format = FORMAT_LINE; }
+            else if (str_eq(v, "json")) { opts->format = FORMAT_JSON; }
+            else {
+                diag_plain("usage.bad-format", v);
+                return -1;
+            }
             i = i + 1;
             continue;
         }
@@ -111,12 +95,23 @@ int parse_options(int argc, char** argv, struct Options* opts) {
             diag_plain("usage.unknown-flag", a);
             return -1;
         }
+        // `explain`'s CODE argument may come after the subcommand.
+        if (opts->cmd == CMD_EXPLAIN && opts->explain_code == 0) {
+            opts->explain_code = a; i = i + 1; continue;
+        }
         if (opts->input == 0) {
             opts->input = a; i = i + 1; continue;
         }
         diag_plain("usage.too-many-inputs", a);
         return -1;
     }
+
+    // Subcommands that need no input file.
+    if (opts->cmd == CMD_EXPLAIN) {
+        if (opts->explain_code == 0) { return 0; }
+        return 1;
+    }
+    if (opts->cmd == CMD_AUDIT) { return 1; }
 
     if (opts->input == 0) { return 0; }
     return 1;
@@ -128,18 +123,23 @@ int main(int argc, char** argv) {
 
     ok = parse_options(argc, argv, &opts);
     if (ok == 0) {
-        // `--explain <id>` needs no input file and never prints usage noise.
-        if (opts.explain && opts.explain_id != 0) {
-            if (explain_lookup(opts.explain_id) == 0) { return EXIT_OK; }
-            diag_plain("usage.unknown-report-id", opts.explain_id);
-            return EXIT_USAGE;
-        }
         print_usage();
         return EXIT_USAGE;
     }
     if (ok < 0) {
         print_usage();
         return EXIT_USAGE;
+    }
+
+    // `explain <CODE>` and `audit` need no source and no pipeline.
+    if (opts.cmd == CMD_EXPLAIN) {
+        if (explain_lookup(opts.explain_code) == 0) { return EXIT_OK; }
+        diag_plain("usage.unknown-code", opts.explain_code);
+        return EXIT_USAGE;
+    }
+    if (opts.cmd == CMD_AUDIT) {
+        audit_print();
+        return EXIT_OK;
     }
 
     return pipeline_run(&opts);

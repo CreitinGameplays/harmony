@@ -1,0 +1,12 @@
+ICE-01 - the compiler broke its own rules
+
+WHAT   The compiler hit a condition it promises is unreachable:
+       a stage failed before its output could be produced.
+WHY    The compiler's job is a verdict for every input; bail-outs
+       mean a bug in the compiler, not in your program.
+BAD    any input that ends in a compiler crash
+GOOD   the same input getting a diagnostic, or compiling
+NOTE   Please report it: the source that triggered it is the
+       most useful thing you can attach.
+SEE    docs/harmony.md - 16.10 Code catalogue
+

@@ -1,8 +1,10 @@
-// harmony-base — lexer.
+// harmony-base — lexer (docs/harmony.md §4, §19.1 stage 1).
 //
-// P2 will implement the full token set (docs/harmony.md §7). P0 ships the
-// module boundary and a minimal driver: it scans ASCII whitespace and emits a
-// single EOF token, enough to prove the pipeline end to end.
+// M0 ships the module boundary and a minimal driver: it scans ASCII whitespace
+// and emits a single EOF token, enough to prove the pipeline end to end. The
+// full v0.3 token set — identifiers, keywords + contextual `life`, integer /
+// float / bool / char / byte literals (incl. `_` separators and `\u{...}`),
+// nested block comments, operators — lands with the lexer milestone.
 
 int lexer_run(struct SourceFile* sf, struct Token** out_tokens) {
     struct Token* toks;

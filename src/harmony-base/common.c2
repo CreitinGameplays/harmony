@@ -23,19 +23,19 @@ const int O_CREAT = 64;
 const int O_TRUNC = 512;
 
 // ---------------------------------------------------------------------------
-// Exit codes (docs/harmony.md §25.1). `EXIT_USAGE` is a driver-level error and
-// is not part of the language's report taxonomy.
+// Exit codes (docs/harmony.md §16.6). The compiler itself uses 0/1/2; 70 is
+// the *compiled program's* trap status, kept here so the runtime (§14.3) can
+// share the constant.
 // ---------------------------------------------------------------------------
-const int EXIT_OK = 0;
-const int EXIT_FAULT = 1;
-const int EXIT_USAGE = 2;
-const int EXIT_INTERNAL = 70;
-const int EXIT_RUNTIME = 101;
+const int EXIT_OK = 0;      // build succeeded (warnings allowed unless --strict)
+const int EXIT_STOP = 1;    // at least one STOP (or a WARN under --strict)
+const int EXIT_USAGE = 2;   // usage or I/O error (bad flag, missing file)
+const int EXIT_TRAP = 70;   // the compiled program trapped (§14.3)
 
-// Severity words (docs/harmony.md §23.2).
-const int SEV_FAULT = 0;
-const int SEV_WARN = 1;
-const int SEV_RUNTIME = 2;
+// Diagnostic severities (docs/harmony.md §16.4).
+const int SEV_STOP = 0;     // a rule was broken; stops the build
+const int SEV_WARN = 1;     // legal but suspicious; stops only under --strict
+const int SEV_HINT = 2;     // a suggestion or a translation; never stops
 
 // ---------------------------------------------------------------------------
 // Arena allocator: one big static block, bump-allocated, 8-byte aligned.
@@ -89,108 +89,152 @@ void source_line_col(struct SourceFile* sf, int off, int* line, int* col);
 char* source_line(struct SourceFile* sf, int line);
 
 // ---------------------------------------------------------------------------
-// Diagnostics (docs/harmony.md §23).
+// Diagnostics (docs/harmony.md §16).
 //
-// P0 ships the data model plus a readable multi-line emitter. The full box
-// renderer, report catalogue, JSON twin, and fix-its arrive in P1/P14.
+// The diagnostic tells the story of the value, not just the location of the
+// symptom: a report carries a numbered timeline of source steps (born →
+// moved → used…), each labelled, with the triggering step marked. One root
+// cause, one report (§16.1). Renderers:
+//   * "pretty" (§16.2 anatomy) — the default human format;
+//   * "line"   (§16.7)          — one grep-friendly line per diagnostic;
+//   * "json"   (§16.7)          — one JSON object per diagnostic.
+// By default at most 5 stops are printed, then "…and N more stops (use --all)";
+// warnings are capped at 10 (§16.9). Diagnostics are sorted by primary
+// location; a warnings-only run prints them after a blank line.
 // ---------------------------------------------------------------------------
-const int ROLE_PRIMARY = 0;
-const int ROLE_ORIGIN = 1;
-const int ROLE_USE = 2;
-const int ROLE_NOTE = 3;
 
-struct Span {
-    int file;       // source file index
-    int start;      // byte offset
-    int end;        // byte offset (exclusive)
-    int role;       // ROLE_*
+// Story step roles (docs/harmony.md §16.7 `story[].role`).
+const int ROLE_BORN = 0;
+const int ROLE_MOVED = 1;
+const int ROLE_BORROWED = 2;
+const int ROLE_USED = 3;
+const int ROLE_MUTATED = 4;
+const int ROLE_DROPPED = 5;
+const int ROLE_DECLARED = 6;
+const int ROLE_DEFINED = 7;
+
+// One timeline step: a source location plus a plain-English label. Exactly
+// one step of a report has `trigger` set; it is the one the diagnostic points
+// at (marked `◂ here` in the rendered layout, single-site steps use `▸`).
+struct Step {
+    int   role;       // ROLE_*
+    int   file;       // source file index
+    int   start;      // byte offset
+    int   end;        // byte offset (exclusive)
+    char* label;      // plain-English narration (may be 0)
+    int   trigger;    // 1 = this step triggers the diagnostic
 };
 
-struct Report {
-    char* id;       // "area.slug", e.g. "syntax.missing-semicolon"
-    int   sev;      // SEV_*
-    char* summary;  // one-line description
-    int   nspans;
-    struct Span spans[8];
-    char* rule;     // the plain-language rule
-    char* got;      // what was found (may be 0)
-    char* want;     // what was needed (may be 0)
-    char* note;     // extra context (may be 0)
-    char* why;      // why the rule exists (may be 0)
-    char* from;     // where a value/type originated (may be 0)
-    char* fix;      // a concrete edit (may be 0)
+// One `try:`/`or:` fix (§16.2): a short label plus compilable code.
+struct Fix {
+    char* label;      // "lend it", "give a copy", ...
+    char* text;       // compilable replacement (may be 0)
 };
 
-// Registers a source file so spans can resolve file/line/col.
+struct Diagnostic {
+    char* code;       // stable "AREA-NN" id, e.g. "MOVE-01" (§16.10)
+    int   sev;        // SEV_*
+    char* title;      // one short line, lowercase
+    char* summary;    // one or two plain-English sentences (may be 0)
+    int   pfile;      // primary location: source file index
+    int   pstart;     // primary location: byte offset
+    int   pend;       // primary location: byte offset (exclusive)
+    int   nstory;
+    struct Step story[5];    // the timeline, in time order (§16.2)
+    int   nfixes;
+    struct Fix fixes[3];     // `try:` first, then `or:` alternatives
+};
+
+// Byte sizes as fixed literals (c2x-seed needs literal array dimensions and
+// uses an 8-byte field ABI, so every field is one qword).
+const int STEP_SIZE = 48;      // 6 fields * 8
+const int FIX_SIZE = 16;       // 2 fields * 8
+const int DIAG_SIZE = 176;     // 22 fields * 8 (incl. arrays)
+const int MAX_STORY = 5;       // §16.2: the story is 1 to 5 steps
+const int MAX_FIXES = 3;       // §16.2: 1 to 3 fixes
+
+// Registers a source file so steps can resolve file/line/col.
 void diag_register_file(struct SourceFile* sf);
 
-int diag_fault_count(void);
+int diag_stop_count(void);
 int diag_warn_count(void);
+int diag_hint_count(void);
 void diag_reset(void);
 
-// Adds a report (stored, not printed). Returns the report index, or -1 when
-// the report table is full. Use diag_report(idx) to fill in `want`, `why`,
-// `from`, `note`, and secondary spans afterwards.
-int diag_add(char* id, int sev, char* summary, struct SourceFile* sf, int off,
-             char* rule, char* got, char* fix);
-int diag_fault(char* id, char* summary, struct SourceFile* sf, int off,
-               char* rule, char* got, char* fix);
-int diag_warn(char* id, char* summary, struct SourceFile* sf, int off,
-              char* rule, char* got, char* fix);
-struct Report* diag_report(int idx);
+// Builds a diagnostic (stored, not printed) with no story and no fixes.
+// Returns the diagnostic index, or -1 when the table is full. Fill in the
+// story and fixes through diag_get(idx) afterwards.
+int diag_add(char* code, int sev, char* title, char* summary,
+             struct SourceFile* sf, int off, int end);
+int diag_stop(char* code, char* title, char* summary,
+              struct SourceFile* sf, int off, int end);
+int diag_warn(char* code, char* title, char* summary,
+              struct SourceFile* sf, int off, int end);
+int diag_hint(char* code, char* title, char* summary,
+              struct SourceFile* sf, int off, int end);
+struct Diagnostic* diag_get(int idx);
 
-// Prints all stored reports, in §23.4 order (primary span ascending), capped
-// by `max_faults` (0 = see all, §23.9). `allow_list` is a comma-separated
-// --allow list; it only silences warnings. `json` selects the §23.10 twin.
-void diag_flush(int json, int max_faults, char* allow_list);
+// Appends one story step. Returns 0, or -1 when the story is full.
+int diag_step(struct Diagnostic* d, int role, int file, int start, int end,
+              char* label, int trigger);
 
-// True when `id` appears in a comma-separated allow list.
-int diag_allowed(char* id, char* allow_list);
+// Appends one fix (`try:` when it is the first, otherwise `or:`).
+// Returns 0, or -1 when the fix list is full.
+int diag_fix(struct Diagnostic* d, char* label, char* text);
+
+// Prints all stored diagnostics, sorted by primary location, capped per
+// §16.9 (5 stops / 10 warns unless `all`). `format` is 0=pretty, 1=line,
+// 2=json.
+void diag_flush(int format, int all);
 
 // A flat message used for driver/usage errors and I/O failures.
 void diag_plain(char* id, char* msg);
 
 // ---------------------------------------------------------------------------
-// Pipeline (docs/harmony.md §25.1).
+// Pipeline (docs/harmony.md §19.1, §19.5).
 // ---------------------------------------------------------------------------
 const int CMD_BUILD = 0;
-const int CMD_CHECK = 1;
-const int CMD_RUN = 2;
+const int CMD_RUN = 1;
+const int CMD_CHECK = 2;
+const int CMD_EMIT_C = 3;
+const int CMD_EXPLAIN = 4;
+const int CMD_AUDIT = 5;
+
+// Output format (docs/harmony.md §16.7): --format=pretty|line|json.
+const int FORMAT_PRETTY = 0;
+const int FORMAT_LINE = 1;
+const int FORMAT_JSON = 2;
 
 // Driver options gathered from the command line.
 struct Options {
     int   cmd;
     char* input;        // input .harmony path
     char* output;       // -o target (0 = default)
-    int   emit_c;       // --emit=c
-    int   emit_ir;      // --emit=ir
-    int   emit_asm;     // --emit=asm
-    int   strict;       // --strict
-    int   report_json;  // --report=json
-    int   report_seams; // --report=seams
-    int   explain;      // --explain <id>: print the long-form page, exit 0
-    char* explain_id;   // the <id> passed to --explain
-    int   max_faults;   // --max-faults=N (0 = see all; default 50)
-    char* allow;        // --allow=<id,id,...>
-    char* forbid;       // --forbid=<name> (unchecked|keep)
+    int   format;       // FORMAT_* (diagnostics renderer)
+    int   all;          // --all: lift the 5-stop / 10-warn caps (§16.9)
+    int   strict;       // --strict: a WARN also stops the build (§16.4)
+    int   deny_unchecked;// --deny-unchecked: any unchecked is UNCK-05 (§13.4)
+    char* explain_code; // `lc explain <CODE>`: the requested code
+    int   ascii;        // --ascii: (1)/(2)/> <-- here glyph fallbacks (§16.3)
+    int   no_color;     // --no-color / NO_COLOR (§16.3)
     int   verbose;      // -v
 };
 
-// Prints the long-form help page for a report ID (§23.12). Returns 0 when the
-// ID exists, -1 otherwise (the caller reports the unknown ID).
-int explain_lookup(char* id);
+// Prints the long-form lesson for a diagnostic code (§16.8). Returns 0 when
+// the code exists, -1 otherwise (the caller reports the unknown code).
+int explain_lookup(char* code);
 
-// Prints the seam listing (§22.8): every `unchecked` block / fn and every
-// `keep` call with file, line, and reason. P0 has no language surface yet, so
-// the listing is empty; the scanner plugs in during P14.
-void seams_print(void);
+// Prints the unchecked audit listing (§13.6): every `unchecked` block and
+// `unchecked fn`, with file, line, and reason. No language surface yet, so
+// the listing is empty; the scanner plugs in during M6.
+void audit_print(void);
 
-// Runs the pipeline for one input file. Returns an exit code.
+// Runs the pipeline for one input file. Returns an exit code (§16.6).
 int pipeline_run(struct Options* opts);
 
 // ---------------------------------------------------------------------------
-// Lexer (P2). Declared here so the driver and later stages can call it while
-// the body is still a stub.
+// Lexer (M0, docs/harmony.md §4, §19.1 stage 1). Declared here so the driver
+// and later stages can call it while the body is still a stub.
 // ---------------------------------------------------------------------------
 const int TOK_EOF = 0;
 const int TOK_IDENT = 1;
@@ -210,17 +254,17 @@ struct Token {
 };
 
 // Tokenizes the whole file into an arena array. Returns the token count, or a
-// negative value on a lex fault (already reported).
+// negative value on a lex stop (already reported).
 int lexer_run(struct SourceFile* sf, struct Token** out_tokens);
 
 // ---------------------------------------------------------------------------
-// Parser (P3). Stub for now.
+// Parser (M0, docs/harmony.md §18 grammar, §19.1 stage 2). Stub for now.
 // ---------------------------------------------------------------------------
 int parser_run(struct SourceFile* sf, struct Token* tokens, int ntokens);
 
 // ---------------------------------------------------------------------------
-// AST (P3, docs/harmony.md Appendix A). Nodes are arena-allocated and carry a
-// byte span so reports can point at exact source. Lists grow by doubling.
+// AST (M0, docs/harmony.md §18). Nodes are arena-allocated and carry a
+// byte span so diagnostics can point at exact source. Lists grow by doubling.
 //
 // c2x-seed has no unions and no const array dimensions, so the node is flat:
 // kind + span + a few payloads + up to three direct children + two lists.

@@ -1,7 +1,9 @@
-// harmony-base — parser (P3).
+// harmony-base — parser (docs/harmony.md §18 grammar, §19.1 stage 2).
 //
-// P0 does no parsing yet; the module exists so the pipeline is wired and the
-// build layout is fixed. `tokens` is the token array from the lexer.
+// M0 does no parsing yet; the module exists so the pipeline is wired and the
+// build layout is fixed. `tokens` is the token array from the lexer. The
+// recursive-descent parser (one extra lookahead, recovery at `;` and `}`)
+// lands with the parser milestone.
 
 int parser_run(struct SourceFile* sf, struct Token* tokens, int ntokens) {
     return 0;

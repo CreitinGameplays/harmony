@@ -1,27 +1,27 @@
-// harmony-base — diagnostics (docs/harmony.md §23).
+// harmony-base — diagnostics (docs/harmony.md §16).
 //
-// Data model + two renderers. P0/P1 subset:
-//   * reports are *stored* at fault time and printed once, at the end;
-//   * at flush time they are ordered by primary span ascending (§23.4),
-//     capped by --max-faults (default 50, 0 = see all, §23.9), and rendered
-//     either as text on stdout or as the JSON twin (§23.10, one object per
-//     line, stable keys);
-//   * --allow=<id> suppresses matching `warn` reports (faults are never
-//     suppressible);
-//   * driver/usage errors stay on stderr immediately (diag_plain).
-// The box renderer (§23.3), fix-it application (§23.11), and the report
-// catalogue tests arrive with the later phases.
+// One root cause, one report (§16.1). A diagnostic tells the story of the
+// value: a numbered timeline of source steps (born → moved → used), each
+// labelled, with the triggering step marked `◂ here`. Stored at analysis
+// time, printed once at flush:
+//   * sorted by primary location (§16.9);
+//   * capped: 5 stops, then "…and N more stops (use --all)"; 10 warns
+//     (§16.9) — unless `all`;
+//   * rendered as pretty (§16.2), line (§16.7), or json (§16.7).
+// Driver/usage errors stay on stderr immediately (diag_plain), so the
+// machine-readable outputs stay pure.
 
-struct Report g_reports[128];
-int g_nreports;
-int g_nfaults;
+struct Diagnostic g_diags[128];
+int g_ndiags;
+int g_nstops;
 int g_nwarns;
+int g_nhints;
 
-// Source files, registered by index so spans can resolve file/line/col.
+// Source files, registered by index so steps resolve file/line/col.
 struct SourceFile* g_files[64];
 int g_nfiles;
 
-// Emission order (report indices), sorted by primary span at flush time.
+// Emission order (diagnostic indices), sorted by primary location at flush.
 int g_order[128];
 
 void diag_register_file(struct SourceFile* sf) {
@@ -31,57 +31,131 @@ void diag_register_file(struct SourceFile* sf) {
     }
 }
 
-int diag_fault_count(void) { return g_nfaults; }
-int diag_warn_count(void)  { return g_nwarns; }
+int diag_stop_count(void) { return g_nstops; }
+int diag_warn_count(void) { return g_nwarns; }
+int diag_hint_count(void) { return g_nhints; }
 
 void diag_reset(void) {
-    g_nreports = 0;
-    g_nfaults = 0;
+    g_ndiags = 0;
+    g_nstops = 0;
     g_nwarns = 0;
+    g_nhints = 0;
     g_nfiles = 0;
 }
 
-// Read-write access to a stored report so later phases can fill in `want`,
-// `note`, `why`, `from`, and extra spans after the initial add.
-struct Report* diag_report(int idx) {
-    if (idx < 0 || idx >= g_nreports) { return 0; }
-    return &g_reports[idx];
-}
-
 // ---------------------------------------------------------------------------
-// --allow=<id1,id2> matching: comma-separated IDs, exact match only.
+// Construction.
 // ---------------------------------------------------------------------------
 
-int diag_slice_eq(char* s, int a, int b, char* id) {
-    int i;
-    if (b - a != str_len(id)) { return 0; }
-    i = 0;
-    while (a + i < b) {
-        if (s[a + i] != id[i]) { return 0; }
-        i = i + 1;
+int diag_add(char* code, int sev, char* title, char* summary,
+             struct SourceFile* sf, int off, int end) {
+    struct Diagnostic* d;
+    int idx;
+
+    if (g_ndiags >= 128) {
+        // Keep counting, but stop storing.
+        if (sev == SEV_STOP) { g_nstops = g_nstops + 1; }
+        else if (sev == SEV_WARN) { g_nwarns = g_nwarns + 1; }
+        else { g_nhints = g_nhints + 1; }
+        return -1;
     }
-    return 1;
+    idx = g_ndiags;
+    g_ndiags = g_ndiags + 1;
+    if (sev == SEV_STOP) { g_nstops = g_nstops + 1; }
+    else if (sev == SEV_WARN) { g_nwarns = g_nwarns + 1; }
+    else { g_nhints = g_nhints + 1; }
+
+    d = &g_diags[idx];
+    d->code = code;
+    d->sev = sev;
+    d->title = title;
+    d->summary = summary;
+    d->nstory = 0;
+    d->nfixes = 0;
+    if (sf != 0) {
+        d->pfile = 0;
+        d->pstart = off;
+        d->pend = end;
+    } else {
+        d->pfile = -1;
+        d->pstart = 0;
+        d->pend = 0;
+    }
+    return idx;
 }
 
-int diag_allowed(char* id, char* allow_list) {
-    int i;
-    int start;
-    if (allow_list == 0) { return 0; }
-    start = 0;
-    i = 0;
-    while (1) {
-        if (allow_list[i] == 0 || allow_list[i] == 44) {   // 44 = ','
-            if (i > start && diag_slice_eq(allow_list, start, i, id)) { return 1; }
-            if (allow_list[i] == 0) { break; }
-            start = i + 1;
-        }
-        i = i + 1;
-    }
+int diag_stop(char* code, char* title, char* summary,
+              struct SourceFile* sf, int off, int end) {
+    return diag_add(code, SEV_STOP, title, summary, sf, off, end);
+}
+
+int diag_warn(char* code, char* title, char* summary,
+              struct SourceFile* sf, int off, int end) {
+    return diag_add(code, SEV_WARN, title, summary, sf, off, end);
+}
+
+int diag_hint(char* code, char* title, char* summary,
+              struct SourceFile* sf, int off, int end) {
+    return diag_add(code, SEV_HINT, title, summary, sf, off, end);
+}
+
+struct Diagnostic* diag_get(int idx) {
+    if (idx < 0 || idx >= g_ndiags) { return 0; }
+    return &g_diags[idx];
+}
+
+int diag_step(struct Diagnostic* d, int role, int file, int start, int end,
+              char* label, int trigger) {
+    struct Step* s;
+    if (d == 0 || d->nstory >= MAX_STORY) { return -1; }
+    s = &d->story[d->nstory];
+    s->role = role;
+    s->file = file;
+    s->start = start;
+    s->end = end;
+    s->label = label;
+    s->trigger = trigger;
+    d->nstory = d->nstory + 1;
+    return 0;
+}
+
+int diag_fix(struct Diagnostic* d, char* label, char* text) {
+    struct Fix* f;
+    if (d == 0 || d->nfixes >= MAX_FIXES) { return -1; }
+    f = &d->fixes[d->nfixes];
+    f->label = label;
+    f->text = text;
+    d->nfixes = d->nfixes + 1;
     return 0;
 }
 
 // ---------------------------------------------------------------------------
-// JSON twin (§23.10): one object per line, stable keys.
+// Shared helpers.
+// ---------------------------------------------------------------------------
+
+void sev_word(int sev, int lowercase) {
+    if (sev == SEV_STOP) {
+        if (lowercase) { out_str("stop"); } else { out_str("STOP"); }
+    } else if (sev == SEV_WARN) {
+        if (lowercase) { out_str("warn"); } else { out_str("WARN"); }
+    } else {
+        if (lowercase) { out_str("hint"); } else { out_str("HINT"); }
+    }
+}
+
+void role_word(int role) {
+    if (role == ROLE_BORN) { out_str("born"); }
+    else if (role == ROLE_MOVED) { out_str("moved"); }
+    else if (role == ROLE_BORROWED) { out_str("borrowed"); }
+    else if (role == ROLE_USED) { out_str("used"); }
+    else if (role == ROLE_MUTATED) { out_str("mutated"); }
+    else if (role == ROLE_DROPPED) { out_str("dropped"); }
+    else if (role == ROLE_DECLARED) { out_str("declared"); }
+    else { out_str("defined"); }
+}
+
+// ---------------------------------------------------------------------------
+// JSON twin (§16.7): one object per diagnostic, stable keys.
 // ---------------------------------------------------------------------------
 
 void out_json_char(char c) {
@@ -91,9 +165,6 @@ void out_json_char(char c) {
     out_str(b);
 }
 
-// Emits a JSON string literal with escapes for `"`, `\`, and control chars.
-// A missing value (0) renders as an empty string; JSON `null` is emitted
-// explicitly by the callers that need it.
 void out_json_str(char* s) {
     int i;
     char c;
@@ -114,233 +185,270 @@ void out_json_str(char* s) {
     out_str("\"");
 }
 
-void diag_json_role(int role) {
-    if (role == ROLE_PRIMARY) { out_str("\"primary\""); }
-    else if (role == ROLE_ORIGIN) { out_str("\"origin\""); }
-    else if (role == ROLE_USE) { out_str("\"use\""); }
-    else { out_str("\"note\""); }
-}
-
-void diag_emit_json(struct Report* r) {
-    struct Span* s;
+void out_json_loc(int file, int off) {
     struct SourceFile* sf;
-    char* fpath;
     int line;
     int col;
-    int endline;
-    int endcol;
+    line = 0;
+    col = 0;
+    sf = 0;
+    if (file >= 0 && file < g_nfiles) { sf = g_files[file]; }
+    if (sf != 0) { source_line_col(sf, off, &line, &col); }
+    out_str("\"file\": ");
+    if (sf != 0) { out_json_str(sf->path); } else { out_json_str(""); }
+    out_str(", \"line\": ");
+    out_int(line);
+    out_str(", \"col\": ");
+    out_int(col);
+}
+
+void diag_emit_json(struct Diagnostic* d) {
+    struct Step* s;
+    struct Fix* f;
+    int line;
+    int col;
     int i;
 
     s = 0;
-    sf = 0;
+    f = 0;
     line = 0;
     col = 0;
-    endline = 0;
-    endcol = 0;
 
-    out_str("{\"report\": ");
-    out_json_str(r->id);
-    out_str(", \"severity\": ");
-    if (r->sev == SEV_FAULT) { out_str("\"fault\""); }
-    else if (r->sev == SEV_WARN) { out_str("\"warn\""); }
-    else { out_str("\"runtime fault\""); }
+    out_str("{\"severity\": ");
+    if (d->sev == SEV_STOP) { out_str("\"stop\""); }
+    else if (d->sev == SEV_WARN) { out_str("\"warn\""); }
+    else { out_str("\"hint\""); }
+    out_str(", \"code\": ");
+    out_json_str(d->code);
+    out_str(", \"title\": ");
+    out_json_str(d->title);
     out_str(", \"summary\": ");
-    out_json_str(r->summary);
-
-    // Primary location. Editors parse this exact object.
-    out_str(", \"primary\": ");
-    if (r->nspans > 0) {
-        s = &r->spans[0];
-        if (s->file >= 0 && s->file < g_nfiles) { sf = g_files[s->file]; }
-        fpath = "";
-        if (sf != 0) {
-            fpath = sf->path;
-            source_line_col(sf, s->start, &line, &col);
-            source_line_col(sf, s->end, &endline, &endcol);
-        }
-        out_str("{\"file\": ");
-        out_json_str(fpath);
-        out_str(", \"line\": ");
-        out_int(line);
-        out_str(", \"col\": ");
-        out_int(col);
-        out_str(", \"end_line\": ");
-        out_int(endline);
-        out_str(", \"end_col\": ");
-        out_int(endcol);
-        out_str("}");
-    } else {
-        out_str("null");
-    }
-
-    // All spans, primary first.
-    out_str(", \"spans\": [");
+    out_json_str(d->summary);
+    out_str(", \"primary\": {");
+    out_json_loc(d->pfile, d->pstart);
+    out_str("}");
+    out_str(", \"story\": [");
     i = 0;
-    while (i < r->nspans) {
-        s = &r->spans[i];
+    while (i < d->nstory) {
+        s = &d->story[i];
         if (i > 0) { out_str(", "); }
-        fpath = "";
-        if (s->file >= 0 && s->file < g_nfiles) {
-            sf = g_files[s->file];
-            fpath = sf->path;
-            source_line_col(sf, s->start, &line, &col);
-        }
-        out_str("{\"file\": ");
-        out_json_str(fpath);
-        out_str(", \"line\": ");
-        out_int(line);
-        out_str(", \"col\": ");
-        out_int(col);
-        // Marker labels arrive with the box renderer (§23.3).
-        out_str(", \"label\": null, \"role\": ");
-        diag_json_role(s->role);
+        out_str("{\"step\": ");
+        out_int(i + 1);
+        out_str(", \"role\": ");
+        role_word(s->role);
+        out_str(", ");
+        out_json_loc(s->file, s->start);
+        out_str(", \"label\": ");
+        out_json_str(s->label);
+        if (s->trigger) { out_str(", \"trigger\": true"); }
         out_str("}");
         i = i + 1;
     }
     out_str("]");
-
-    out_str(", \"rule\": ");
-    out_json_str(r->rule);
-    out_str(", \"got\": ");
-    out_json_str(r->got);
-    out_str(", \"want\": ");
-    out_json_str(r->want);
-    out_str(", \"note\": ");
-    out_json_str(r->note);
-    out_str(", \"why\": ");
-    out_json_str(r->why);
-    out_str(", \"from\": ");
-    out_json_str(r->from);
-    // Multi-note and multi-fix support arrives with P1; today a report has at
-    // most one of each, surfaced in the stable keys above.
-    out_str(", \"notes\": []");
-    if (r->fix != 0 && r->fix[0] != 0) {
-        out_str(", \"fixes\": [{\"title\": ");
-        out_json_str(r->fix);
-        out_str(", \"applicability\": \"manual\"}]");
-    } else {
-        out_str(", \"fixes\": []");
+    out_str(", \"fixes\": [");
+    i = 0;
+    while (i < d->nfixes) {
+        f = &d->fixes[i];
+        if (i > 0) { out_str(", "); }
+        out_str("{\"label\": ");
+        out_json_str(f->label);
+        out_str(", \"edits\": [ {");
+        out_json_loc(d->pfile, d->pstart);
+        // Editors need the extent; the story/fix engine fills exact spans
+        // once fix-it application lands (§16.7 `len`/`with`).
+        out_str(", \"len\": 0, \"with\": ");
+        out_json_str(f->text);
+        out_str("} ]}");
+        i = i + 1;
     }
-    out_str(", \"explain\": ");
-    out_json_str(r->id);
-    out_str("}");
+    out_str("]");
+    // `code` is a strict AREA-NN ASCII identifier (§16.10), so it needs no
+    // JSON escaping — embed it directly inside the literal.
+    out_str(", \"learn\": \"harmony-base explain ");
+    out_str(d->code);
+    out_str("\"}");
     out_nl();
 }
 
 // ---------------------------------------------------------------------------
-// Text renderer (§23.3 subset: no box yet, same information).
+// Line format (§16.7): one grep-friendly line per diagnostic.
+//   main.harmony:11:10: stop[MOVE-01]: use of moved value `name`
 // ---------------------------------------------------------------------------
 
-void diag_emit_text(struct Report* r) {
-    struct Span* s;
+void diag_emit_line(struct Diagnostic* d) {
+    struct SourceFile* sf;
+    int line;
+    int col;
+    line = 0;
+    col = 0;
+    sf = 0;
+    if (d->pfile >= 0 && d->pfile < g_nfiles) { sf = g_files[d->pfile]; }
+    if (sf != 0) { source_line_col(sf, d->pstart, &line, &col); }
+    if (sf != 0) { out_str(sf->path); } else { out_str("<driver>"); }
+    out_str(":");
+    out_int(line);
+    out_str(":");
+    out_int(col);
+    out_str(": ");
+    sev_word(d->sev, 1);
+    out_str("[");
+    out_str(d->code);
+    out_str("]: ");
+    out_str(d->title);
+    out_nl();
+}
+
+// ---------------------------------------------------------------------------
+// Pretty format (§16.2 anatomy):
+//   STOP  MOVE-01  main.src:11:10
+//   use of moved value `name`
+//
+//      `name` was handed to consume() on line 10, ...
+//
+//      ①   8  let mut name = ...;   born: ...
+//      ...
+//
+//   try:  lend it         consume(&name);
+//   learn: harmony-base explain MOVE-01
+// ---------------------------------------------------------------------------
+
+void diag_emit_pretty(struct Diagnostic* d) {
+    struct Step* s;
+    struct Fix* f;
     struct SourceFile* sf;
     int line;
     int col;
     int i;
 
     s = 0;
+    f = 0;
     sf = 0;
     line = 0;
     col = 0;
-    i = 0;
 
-    // Header: "<severity> · <id>  <path>:<line>:<col>" — the severity is the
-    // first word so `grep '^fault'` works, and the location suffix is
-    // editor-parseable (§23.3 parts 1-2).
-    if (r->sev == SEV_FAULT) { out_str("fault · "); }
-    else if (r->sev == SEV_WARN) { out_str("warn · "); }
-    else { out_str("runtime fault · "); }
-    out_str(r->id);
-    if (r->nspans > 0) {
-        s = &r->spans[0];
-        if (s->file >= 0 && s->file < g_nfiles) {
-            sf = g_files[s->file];
-            source_line_col(sf, s->start, &line, &col);
-            out_str("  ");
-            out_str(sf->path);
-            out_str(":");
-            out_int(line);
-            out_str(":");
-            out_int(col);
-        }
+    // Header (always one line): SEVERITY  CODE  file:line:col
+    sev_word(d->sev, 0);
+    out_str("  ");
+    out_str(d->code);
+    out_str("  ");
+    if (d->pfile >= 0 && d->pfile < g_nfiles) {
+        sf = g_files[d->pfile];
+        source_line_col(sf, d->pstart, &line, &col);
+        out_str(sf->path);
+        out_str(":");
+        out_int(line);
+        out_str(":");
+        out_int(col);
     }
     out_nl();
 
-    if (r->summary != 0 && r->summary[0] != 0) {
-        out_str("  "); out_str(r->summary); out_nl();
+    // Title: one short line, lowercase, no period.
+    out_str(d->title);
+    out_nl();
+    out_nl();
+
+    // Summary: at most two plain-English sentences.
+    if (d->summary != 0 && d->summary[0] != 0) {
+        out_str("   ");
+        out_str(d->summary);
+        out_nl();
+        out_nl();
     }
 
-    // Source lines with markers: at most 6 per report (§23.4).
+    // Story: 1 to 5 steps in time order, source line trimmed, labelled.
+    // Single-site diagnostics show `▸` instead of a number.
     i = 0;
-    while (i < r->nspans && i < 6) {
-        s = &r->spans[i];
+    while (i < d->nstory) {
+        s = &d->story[i];
+        out_str("   ");
+        if (d->nstory == 1) {
+            out_str("\xe2\x96\xb8");        // ▸
+        } else {
+            // ①..⑤ are 3-byte UTF-8 sequences starting at U+2460.
+            out_json_char(0xe2);
+            out_json_char(0x91);
+            out_json_char(0xa0 + i);
+        }
+        out_str("  ");
         if (s->file >= 0 && s->file < g_nfiles) {
             sf = g_files[s->file];
             source_line_col(sf, s->start, &line, &col);
-            out_str("  ");
             out_int(line);
-            out_str(" | ");
+            out_str("  ");
             out_str(source_line(sf, line));
-            out_nl();
         }
+        if (s->label != 0 && s->label[0] != 0) {
+            out_str("   ");
+            out_str(s->label);
+        }
+        if (s->trigger) {
+            out_str("  \xe2\x97\x82 here");  // ◂ here
+        }
+        out_nl();
         i = i + 1;
     }
+    if (d->nstory > 0) { out_nl(); }
 
-    // Labelled lines (§23.5), aligned in the five(+1)-character column.
-    if (r->rule != 0 && r->rule[0] != 0) { out_str("  rule  "); out_str(r->rule); out_nl(); }
-    if (r->got != 0 && r->got[0] != 0)   { out_str("  got   "); out_str(r->got);  out_nl(); }
-    if (r->want != 0 && r->want[0] != 0) { out_str("  want  "); out_str(r->want); out_nl(); }
-    if (r->note != 0 && r->note[0] != 0) { out_str("  note  "); out_str(r->note); out_nl(); }
-    if (r->why != 0 && r->why[0] != 0)   { out_str("  why   "); out_str(r->why);  out_nl(); }
-    if (r->from != 0 && r->from[0] != 0) { out_str("  from  "); out_str(r->from); out_nl(); }
-    if (r->fix != 0 && r->fix[0] != 0)   { out_str("  fix   "); out_str(r->fix);  out_nl(); }
-
-    // Footer: pointer to long-form help (§23.3 part 7).
-    if (r->id != 0 && r->id[0] != 0) {
-        out_str("  see   `--explain ");
-        out_str(r->id);
-        out_str("`");
+    // Fixes: `try:` is the preferred fix; `or:` are alternatives. Code in a
+    // fix is valid code, with names filled in.
+    i = 0;
+    while (i < d->nfixes) {
+        f = &d->fixes[i];
+        out_str("   ");
+        if (i == 0) { out_str("try:  "); } else { out_str("or:   "); }
+        if (f->label != 0 && f->label[0] != 0) {
+            out_str(f->label);
+            if (f->text != 0 && f->text[0] != 0) {
+                out_str("   ");
+            }
+        }
+        if (f->text != 0 && f->text[0] != 0) { out_str(f->text); }
         out_nl();
+        i = i + 1;
     }
+    if (d->nfixes > 0) { out_nl(); }
+
+    // Learn footer (always last).
+    out_str("   learn: harmony-base explain ");
+    out_str(d->code);
+    out_nl();
 }
 
 // ---------------------------------------------------------------------------
-// Flush: sort, cap, render.
+// Flush: sort by primary location, cap per §16.9, render.
 // ---------------------------------------------------------------------------
 
-// Sort key helper: reports with a primary span come first, ordered by span
-// start (then file index); spanless reports sort last.
 int diag_before(int ia, int ib) {
-    struct Report* a;
-    struct Report* b;
-    a = &g_reports[ia];
-    b = &g_reports[ib];
-    if (a->nspans == 0 && b->nspans == 0) { return 0; }
-    if (a->nspans == 0) { return 0; }
-    if (b->nspans == 0) { return 1; }
-    if (a->spans[0].start != b->spans[0].start) {
-        return a->spans[0].start < b->spans[0].start;
-    }
-    return a->spans[0].file < b->spans[0].file;
+    struct Diagnostic* a;
+    struct Diagnostic* b;
+    a = &g_diags[ia];
+    b = &g_diags[ib];
+    if (a->pfile < 0 && b->pfile < 0) { return 0; }
+    if (a->pfile < 0) { return 0; }
+    if (b->pfile < 0) { return 1; }
+    if (a->pstart != b->pstart) { return a->pstart < b->pstart; }
+    return a->pfile < b->pfile;
 }
 
-void diag_flush(int json, int max_faults, char* allow_list) {
-    struct Report* r;
+void diag_flush(int format, int all) {
+    struct Diagnostic* d;
     int i;
     int j;
     int tmp;
-    int limit;
-    int emitted;
-    int hidden;
+    int stops_shown;
+    int stops_hidden;
+    int warns_shown;
+    int warn_pend;
 
-    r = 0;
+    d = 0;
 
-    // Order reports by primary span ascending (§23.4). Insertion sort: the
-    // report count is small, and stable order matters for the golden tests.
+    // Sort by primary location, ascending (§16.9). Insertion sort: the
+    // diagnostic count is small, and a stable order keeps the golden tests
+    // honest.
     i = 0;
-    while (i < g_nreports) { g_order[i] = i; i = i + 1; }
+    while (i < g_ndiags) { g_order[i] = i; i = i + 1; }
     i = 1;
-    while (i < g_nreports) {
+    while (i < g_ndiags) {
         j = i;
         while (j > 0 && diag_before(g_order[j], g_order[j - 1])) {
             tmp = g_order[j - 1];
@@ -351,95 +459,61 @@ void diag_flush(int json, int max_faults, char* allow_list) {
         i = i + 1;
     }
 
-    // --max-faults=N caps rendered output (default 50; 0 = see all, §23.9).
-    limit = max_faults;
-    if (limit <= 0) { limit = g_nreports; }
-    emitted = 0;
-    hidden = 0;
+    stops_shown = 0;
+    stops_hidden = 0;
+    warns_shown = 0;
+    warn_pend = 0;
+
     i = 0;
-    while (i < g_nreports) {
-        r = &g_reports[g_order[i]];
-        // --allow only silences warnings; faults are never suppressible.
-        if (r->sev == SEV_WARN && diag_allowed(r->id, allow_list)) {
-            i = i + 1;
-            continue;
+    while (i < g_ndiags) {
+        d = &g_diags[g_order[i]];
+        if (d->sev == SEV_STOP) {
+            if (stops_shown >= 5 && all == 0) {
+                stops_hidden = stops_hidden + 1;
+                i = i + 1;
+                continue;
+            }
+            if (warn_pend == 0 && warns_shown > 0) {
+                // Warnings print after a blank line, never before a stop.
+                warn_pend = 1;
+            }
+            if (format == FORMAT_JSON) { diag_emit_json(d); }
+            else if (format == FORMAT_LINE) { diag_emit_line(d); }
+            else { diag_emit_pretty(d); }
+            stops_shown = stops_shown + 1;
+        } else if (d->sev == SEV_WARN) {
+            if (warns_shown >= 10 && all == 0) {
+                i = i + 1;
+                continue;
+            }
+            if (stops_shown > 0 && warn_pend == 0) {
+                out_nl();
+                warn_pend = 1;
+            }
+            if (format == FORMAT_JSON) { diag_emit_json(d); }
+            else if (format == FORMAT_LINE) { diag_emit_line(d); }
+            else { diag_emit_pretty(d); }
+            warns_shown = warns_shown + 1;
+        } else {
+            if (format == FORMAT_JSON) { diag_emit_json(d); }
+            else if (format == FORMAT_LINE) { diag_emit_line(d); }
+            else { diag_emit_pretty(d); }
         }
-        if (emitted >= limit) {
-            if (r->sev == SEV_FAULT) { hidden = hidden + 1; }
-            i = i + 1;
-            continue;
-        }
-        if (json) { diag_emit_json(r); } else { diag_emit_text(r); }
-        emitted = emitted + 1;
         i = i + 1;
     }
-    if (hidden > 0 && json == 0) {
-        out_str("… ");
-        out_int(hidden);
-        out_str(" more faults (--max-faults=0 to see all)");
+
+    // §16.9 tail: "…and N more stops (use --all)".
+    if (stops_hidden > 0 && format != FORMAT_JSON) {
+        out_str("…and ");
+        out_int(stops_hidden);
+        out_str(" more stops (use --all)");
         out_nl();
     }
 }
 
-// ---------------------------------------------------------------------------
-// Report construction.
-// ---------------------------------------------------------------------------
-
-int diag_add(char* id, int sev, char* summary, struct SourceFile* sf, int off,
-             char* rule, char* got, char* fix) {
-    struct Report* r;
-    struct Span* s;
-    int idx;
-
-    s = 0;
-    if (g_nreports >= 128) {
-        // Keep counting, but stop storing.
-        if (sev == SEV_FAULT) { g_nfaults = g_nfaults + 1; }
-        else { g_nwarns = g_nwarns + 1; }
-        return -1;
-    }
-    idx = g_nreports;
-    g_nreports = g_nreports + 1;
-    if (sev == SEV_FAULT) { g_nfaults = g_nfaults + 1; }
-    else { g_nwarns = g_nwarns + 1; }
-
-    r = &g_reports[idx];
-    r->id = id;
-    r->sev = sev;
-    r->summary = summary;
-    r->nspans = 0;
-    r->rule = rule;
-    r->got = got;
-    r->want = 0;
-    r->note = 0;
-    r->why = 0;
-    r->from = 0;
-    r->fix = fix;
-
-    if (sf != 0) {
-        s = &r->spans[0];
-        s->file = 0;
-        s->start = off;
-        s->end = off + 1;
-        s->role = ROLE_PRIMARY;
-        r->nspans = 1;
-    }
-    return idx;
-}
-
-int diag_fault(char* id, char* summary, struct SourceFile* sf, int off,
-               char* rule, char* got, char* fix) {
-    return diag_add(id, SEV_FAULT, summary, sf, off, rule, got, fix);
-}
-
-int diag_warn(char* id, char* summary, struct SourceFile* sf, int off,
-              char* rule, char* got, char* fix) {
-    return diag_add(id, SEV_WARN, summary, sf, off, rule, got, fix);
-}
-
 // A flat message used for driver/usage errors and I/O failures. These are not
-// language reports: they go to stderr immediately and never enter the report
-// list, so --report=json output stays pure.
+// language diagnostics: they go to stderr immediately and never enter the
+// diagnostic list, so --format=json output stays pure.
 void diag_plain(char* id, char* msg) {
     err_str("harmony-base: ");
     err_str(id);

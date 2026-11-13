@@ -36,14 +36,22 @@ make clean
 `harmony-base` is bootstrapped with `c2x-seed`; `c2x-seed` is bootstrapped with
 `nasm` + `ld` and needs no libc.
 
-## Usage (planned)
+## Usage (docs/harmony.md §19.5)
 
 ```bash
-harmony-base check main.harmony          # parse + check only
-harmony-base build main.harmony -o hello # compile to a binary
-harmony-base run main.harmony            # compile and run
-harmony-base --explain borrow.conflict   # long-form help for a report
+harmony-base check main.harmony              # analyses only, no codegen
+harmony-base build main.harmony -o hello     # compile to an executable
+harmony-base run main.harmony                # build and run
+harmony-base emit-c main.harmony             # print the generated C
+harmony-base explain MOVE-01                 # long-form lesson for a code
+harmony-base audit                           # list every `unchecked` site
+# flags: --format=pretty|line|json  --all  --strict  --deny-unchecked
+#        --no-color  --ascii  -o <out>
 ```
+
+Diagnostics tell the story of the value (`docs/harmony.md` §16): a numbered
+timeline, plain English, always a fix, stable `AREA-NN` codes. Exit codes:
+`0` ok, `1` a STOP (or WARN under `--strict`), `2` usage/IO error.
 
 Milestone: `harmony` is **byte deterministic** — the same input always produces
 identical output bytes.

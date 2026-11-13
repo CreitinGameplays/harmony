@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
-# harmony-base determinism test (docs/harmony.md §25.6).
+# harmony-base determinism test (docs/harmony.md §19.1: the C backend must be
+# byte-reproducible). Same input -> identical output bytes: no timestamps, no
+# temp paths, no random state, stable symbol names.
 #
-# A compiler build must be reproducible: same input -> identical output bytes,
-# with no timestamps, no temp paths, and stable symbol names. This runs the
-# same invocation twice and diffs every produced artifact byte for byte.
-#
-# P0 has no codegen yet, so the artifacts checked today are report output
-# (text and JSON) and the binary the pipeline produces. As backends land, add
-# `--emit=ir` / `--emit=c` outputs here.
+# M0 has no codegen yet, so the artifacts checked today are diagnostic output
+# (pretty/line/json) and the compiler binary itself. As the C backend lands
+# (M1), add `emit-c` output here.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -55,22 +53,17 @@ else
     printf 'FAIL compiler rebuild (missing artifact)\n'
 fi
 
-# Report output must be identical run to run (text and JSON).
+# Diagnostic output must be identical run to run, in every format (§16.7).
 cat > "$TMP/src.harmony" <<'EOF'
 fn main() {
     let x = 1;
 }
 EOF
 
-for mode in text json; do
-    if [ "$mode" = json ]; then
-        "$HB" --report=json check "$TMP/src.harmony" > "$TMP/$mode.1" 2>/dev/null
-        "$HB" --report=json check "$TMP/src.harmony" > "$TMP/$mode.2" 2>/dev/null
-    else
-        "$HB" check "$TMP/src.harmony" > "$TMP/$mode.1" 2>/dev/null
-        "$HB" check "$TMP/src.harmony" > "$TMP/$mode.2" 2>/dev/null
-    fi
-    compare_bytes "report output ($mode) is identical run to run" "$TMP/$mode.1" "$TMP/$mode.2"
+for mode in pretty line json; do
+    "$HB" --format=$mode build "$TMP/src.harmony" > "$TMP/$mode.1" 2>/dev/null
+    "$HB" --format=$mode build "$TMP/src.harmony" > "$TMP/$mode.2" 2>/dev/null
+    compare_bytes "diagnostic output ($mode) is identical run to run" "$TMP/$mode.1" "$TMP/$mode.2"
 done
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"

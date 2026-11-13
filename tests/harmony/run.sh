@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# harmony-base driver smoke tests (P0).
+# harmony-base driver smoke tests.
 #
-# These exercise the pipeline end to end at the P0 level: argument handling,
-# source loading, the lexer stub, and exit codes. As later phases land, this
-# script grows real language tests.
+# These exercise the pipeline end to end at the M0 level: argument handling,
+# source loading, the lexer stub, the diagnostic renderers, and exit codes
+# (docs/harmony.md §16.6, §19.5). As later milestones land, this script grows
+# real language tests.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -41,15 +42,20 @@ check "no arguments exits 2" 2 $?
 "$HB" --help >/dev/null 2>&1
 check "--help exits 2" 2 $?
 
-# check on a real file -> success.
-"$HB" check "$TMP/hello.harmony" >/dev/null 2>&1
+# check on a real file -> success, and a clean build prints nothing (§16.6).
+out="$("$HB" check "$TMP/hello.harmony" 2>/dev/null)"
 check "check hello exits 0" 0 $?
+if [ -z "$out" ]; then
+    pass=$((pass + 1)); printf 'ok   clean check prints nothing\n'
+else
+    fail=$((fail + 1)); printf 'FAIL clean check prints nothing\n'
+fi
 
 # check on an empty file -> success (lexer stub emits EOF).
 "$HB" check "$TMP/empty.harmony" >/dev/null 2>&1
 check "check empty exits 0" 0 $?
 
-# Missing file -> usage error.
+# Missing file -> usage/I-O error (§16.6).
 "$HB" check "$TMP/does-not-exist.harmony" >/dev/null 2>&1
 check "check missing file exits 2" 2 $?
 
@@ -62,61 +68,83 @@ else
     fail=$((fail + 1)); printf 'FAIL verbose prints byte count\n'
 fi
 
-# Unimplemented backend -> internal error.
-"$HB" build --emit=c "$TMP/hello.harmony" >/dev/null 2>&1
-check "--emit=c exits 70" 70 $?
+# Codegen is not implemented: build/run/emit-c all stop with ICE-01 (§16.6).
+"$HB" build "$TMP/hello.harmony" >/dev/null 2>&1
+check "build exits 1 (no backend)" 1 $?
+"$HB" run "$TMP/hello.harmony" >/dev/null 2>&1
+check "run exits 1 (no backend)" 1 $?
+"$HB" emit-c "$TMP/hello.harmony" >/dev/null 2>&1
+check "emit-c exits 1 (no backend)" 1 $?
+
+# The stop renders in every format and names its code.
+"$HB" build "$TMP/hello.harmony" 2>/dev/null | grep -q "ICE-01"
+if [ $? -eq 0 ]; then
+    pass=$((pass + 1)); printf 'ok   build stop mentions ICE-01\n'
+else
+    fail=$((fail + 1)); printf 'FAIL build stop mentions ICE-01\n'
+fi
+"$HB" --format=line build "$TMP/hello.harmony" 2>/dev/null | grep -q "stop\[ICE-01\]"
+if [ $? -eq 0 ]; then
+    pass=$((pass + 1)); printf 'ok   --format=line renders one line\n'
+else
+    fail=$((fail + 1)); printf 'FAIL --format=line renders one line\n'
+fi
+"$HB" --format=json build "$TMP/hello.harmony" 2>/dev/null | grep -q '"code": "ICE-01"'
+if [ $? -eq 0 ]; then
+    pass=$((pass + 1)); printf 'ok   --format=json renders an object\n'
+else
+    fail=$((fail + 1)); printf 'FAIL --format=json renders an object\n'
+fi
+
+# A clean build with --format=json prints nothing at all.
+json_out="$("$HB" --format=json check "$TMP/hello.harmony" 2>/dev/null)"
+check "clean json check exits 0" 0 $?
+if [ -z "$json_out" ]; then
+    pass=$((pass + 1)); printf 'ok   clean json check prints nothing\n'
+else
+    fail=$((fail + 1)); printf 'FAIL clean json check prints nothing\n'
+fi
 
 # Unknown flag -> usage error.
 "$HB" --nope check "$TMP/hello.harmony" >/dev/null 2>&1
 check "unknown flag exits 2" 2 $?
 
+# Bad --format value -> usage error.
+"$HB" --format=bogus check "$TMP/hello.harmony" >/dev/null 2>&1
+check "bad --format exits 2" 2 $?
+
 # Too many inputs -> usage error.
 "$HB" check "$TMP/hello.harmony" "$TMP/hello.harmony" >/dev/null 2>&1
 check "two inputs exits 2" 2 $?
 
-# --explain <known id> prints a page and exits 0.
-"$HB" --explain compiler.internal >/dev/null 2>&1
-check "--explain known id exits 0" 0 $?
+# explain <known code> prints a lesson and exits 0 (§16.8).
+"$HB" explain ICE-01 >/dev/null 2>&1
+check "explain ICE-01 exits 0" 0 $?
 
-# --explain <unknown id> is a usage error.
-"$HB" --explain no.such-id >/dev/null 2>&1
-check "--explain unknown id exits 2" 2 $?
+# explain <unknown code> is a usage error.
+"$HB" explain MOVE-99 >/dev/null 2>&1
+check "explain unknown code exits 2" 2 $?
 
-# --explain with no id is a usage error.
-"$HB" --explain >/dev/null 2>&1
-check "--explain missing id exits 2" 2 $?
+# explain with no code is a usage error.
+"$HB" explain >/dev/null 2>&1
+check "explain missing code exits 2" 2 $?
 
-# --report=seams on a clean file lists no seams and exits 0.
-"$HB" --report=seams check "$TMP/hello.harmony" >/dev/null 2>&1
-check "--report=seams clean exits 0" 0 $?
-
-# --forbid accepts the two known targets.
-"$HB" --forbid=unchecked check "$TMP/hello.harmony" >/dev/null 2>&1
-check "--forbid=unchecked exits 0" 0 $?
-"$HB" --forbid=keep check "$TMP/hello.harmony" >/dev/null 2>&1
-check "--forbid=keep exits 0" 0 $?
-
-# --forbid with an unknown target is a usage error.
-"$HB" --forbid=bogus check "$TMP/hello.harmony" >/dev/null 2>&1
-check "--forbid=bogus exits 2" 2 $?
-
-# --max-faults accepts 0 (see all) and an explicit cap without failing.
-"$HB" --max-faults=0 check "$TMP/hello.harmony" >/dev/null 2>&1
-check "--max-faults=0 exits 0" 0 $?
-"$HB" --max-faults=5 check "$TMP/hello.harmony" >/dev/null 2>&1
-check "--max-faults=5 exits 0" 0 $?
-
-# --allow list parses and does not disturb a clean build.
-"$HB" --allow=seam.no-reason,unchecked.raw-escapes check "$TMP/hello.harmony" >/dev/null 2>&1
-check "--allow list exits 0" 0 $?
-
-# A clean build with --report=json prints nothing at all (§23.9).
-json_out="$("$HB" --report=json check "$TMP/hello.harmony" 2>/dev/null)"
-if [ -z "$json_out" ]; then
-    pass=$((pass + 1)); printf 'ok   clean json build prints nothing\n'
+# audit lists the (currently empty) unchecked surface (§13.6).
+audit_out="$("$HB" audit 2>/dev/null)"
+check "audit exits 0" 0 $?
+if echo "$audit_out" | grep -q "unchecked audit"; then
+    pass=$((pass + 1)); printf 'ok   audit prints its header\n'
 else
-    fail=$((fail + 1)); printf 'FAIL clean json build prints nothing\n'
+    fail=$((fail + 1)); printf 'FAIL audit prints its header\n'
 fi
+
+# --strict / --all / --deny-unchecked parse and do not disturb a clean check.
+"$HB" --strict check "$TMP/hello.harmony" >/dev/null 2>&1
+check "--strict clean exits 0" 0 $?
+"$HB" --all check "$TMP/hello.harmony" >/dev/null 2>&1
+check "--all clean exits 0" 0 $?
+"$HB" --deny-unchecked check "$TMP/hello.harmony" >/dev/null 2>&1
+check "--deny-unchecked clean exits 0" 0 $?
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

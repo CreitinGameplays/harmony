@@ -1,62 +1,71 @@
-// harmony-base — report catalogue: `--explain` pages and `--report=seams`.
+// harmony-base — diagnostic catalogue: `explain` lessons and the `audit`
+// listing (docs/harmony.md §16.8, §13.6).
 //
-// `--explain <id>` prints the long-form page for a report ID (§23.12). The
-// pages live here, next to the compiler, so the documentation cannot drift
-// from the binary that renders it.
+// `harmony-base explain <CODE>` prints the long-form lesson for a diagnostic
+// code: WHAT/WHY/BAD/GOOD/NOTE/SEE (§16.8). The lessons live next to the
+// compiler so the documentation cannot drift from the binary that renders it.
 //
-// `--report=seams` lists every `unchecked` block/fn and every `keep` call
-// with file, line, and reason (§22.8). P0 has no language surface, so the
-// scanner returns an empty listing; the real one plugs in during P14.
+// `harmony-base audit` lists every `unchecked` block and `unchecked fn` with
+// file, line, and reason (§13.6). No language surface exists yet, so the
+// scanner returns an empty listing; it plugs in during M6.
 
-int explain_known(char* id) {
-    return str_eq(id, "compiler.internal")
-        || str_eq(id, "source.not-found")
-        || str_eq(id, "usage.unknown-flag")
-        || str_eq(id, "usage.unknown-report-id")
-        || str_eq(id, "usage.too-many-inputs");
-}
+const char* EXPLAIN_HEADER =
+"WHAT   A %s\n";
 
-// One long-form page: the rule, an example, common causes, related IDs.
-void explain_page(char* id) {
-    out_str(id);
+// The lesson template: WHAT/WHY/BAD/GOOD/NOTE/SEE (§16.8).
+void explain_page(char* code) {
+    out_str(code);
     out_nl();
     out_nl();
-    if (str_eq(id, "compiler.internal")) {
-        out_str("  This is a bug in the compiler, not in your program.\n\n");
-        out_str("  rule  a crash, a wrong diagnostic, or an internal abort is always\n");
-        out_str("        a compiler fault and should be reported\n");
-        out_str("  fix   please file an issue with the source that triggered it\n");
-        out_nl();
-        out_str("  related: source.not-found\n");
-        return;
-    }
-    // Driver-level IDs share one short page.
-    out_str("  Driver-level condition, not a language report.\n\n");
-    if (str_eq(id, "source.not-found")) {
-        out_str("  rule  the input file could not be read\n");
-        out_str("  fix   check the path and file permissions\n");
-    } else if (str_eq(id, "usage.unknown-flag")) {
-        out_str("  rule  the flag is not recognized by this compiler version\n");
-        out_str("  fix   run with --help to list accepted flags\n");
-    } else if (str_eq(id, "usage.unknown-report-id")) {
-        out_str("  rule  --explain needs a valid report ID (area.slug)\n");
-        out_str("  fix   pick an ID from a rendered report's `see` line\n");
-    } else {
-        out_str("  rule  exactly one input file is accepted\n");
-        out_str("  fix   pass a single .harmony source file\n");
-    }
+    out_str("WHAT   This diagnostic code exists but its long-form lesson has\n");
+    out_str("       not been written for this build yet.\n");
+    out_str("WHY    Stable codes, one lesson each (docs/harmony.md 16.8).\n");
+    out_str("SEE    docs/harmony.md - 16.10 Code catalogue\n");
     out_nl();
 }
 
-int explain_lookup(char* id) {
-    if (!explain_known(id)) { return -1; }
-    explain_page(id);
+// One lesson per code. The driver-level codes get real lessons now; the
+// language codes gain theirs as the analyses land.
+void explain_page_compiler(void) {
+    out_str("ICE-01 - the compiler broke its own rules\n");
+    out_nl();
+    out_str("WHAT   The compiler hit a condition it promises is unreachable:\n");
+    out_str("       a stage failed before its output could be produced.\n");
+    out_str("WHY    The compiler's job is a verdict for every input; bail-outs\n");
+    out_str("       mean a bug in the compiler, not in your program.\n");
+    out_str("BAD    any input that ends in a compiler crash\n");
+    out_str("GOOD   the same input getting a diagnostic, or compiling\n");
+    out_str("NOTE   Please report it: the source that triggered it is the\n");
+    out_str("       most useful thing you can attach.\n");
+    out_str("SEE    docs/harmony.md - 16.10 Code catalogue\n");
+    out_nl();
+}
+
+// Returns 1 when `code` is recognized by this build.
+int explain_known(char* code) {
+    return str_eq(code, "ICE-01")
+        || str_eq(code, "SYN-01")
+        || str_eq(code, "SYN-04")
+        || str_eq(code, "NAME-02")
+        || str_eq(code, "USE-01")
+        || str_eq(code, "CFG-01");
+}
+
+int explain_lookup(char* code) {
+    if (!explain_known(code)) { return -1; }
+    if (str_eq(code, "ICE-01")) {
+        explain_page_compiler();
+        return 0;
+    }
+    // The remaining codes currently share the stub lesson; each gets its
+    // own WHAT/WHY/BAD/GOOD text as the stage that emits it lands.
+    explain_page(code);
     return 0;
 }
 
-void seams_print(void) {
-    // §22.8: every `unchecked` block, every `unchecked fn`, every `keep`.
-    // No language surface exists yet, so the audit listing is empty.
-    out_str("no seams (no unchecked blocks, unchecked fns, or keep calls)");
+void audit_print(void) {
+    // §13.6: every `unchecked` block / `unchecked fn`, with file, line, reason.
+    // No language surface yet; the listing is empty until M6.
+    out_str("unchecked audit - 0 sites - 0 lines total");
     out_nl();
 }

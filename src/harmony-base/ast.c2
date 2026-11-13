@@ -1,7 +1,7 @@
 // harmony-base — AST node model and arena-backed containers.
 //
-// Every node carries a byte span (`file`, `start`, `end`) so reports can point
-// at exact source locations. Lists grow by doubling (never a fixed cap), per
+// Every node carries a byte span (`file`, `start`, `end`) so diagnostics can
+// point at exact source locations. Lists grow by doubling (never a fixed cap), per
 // the project rule to prefer auto-resizable structures.
 //
 // Node shape is intentionally flat (no unions, which c2x-seed lacks): a node

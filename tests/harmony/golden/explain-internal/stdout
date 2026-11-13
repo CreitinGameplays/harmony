@@ -1,9 +1,0 @@
-compiler.internal
-
-  This is a bug in the compiler, not in your program.
-
-  rule  a crash, a wrong diagnostic, or an internal abort is always
-        a compiler fault and should be reported
-  fix   please file an issue with the source that triggered it
-
-  related: source.not-found

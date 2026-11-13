@@ -62,7 +62,10 @@ run_case "double-dash" --
 run_case "unknown-subcommand" frobnicate "$TMP/long.harmony"
 run_case "flag-cluster" -vvvv check "$TMP/long.harmony"
 run_case "missing-o-value" -o
-run_case "emit-asm" build --emit=asm "$TMP/long.harmony"
+run_case "emit-c-json" build --format=json "$TMP/long.harmony"
+run_case "explain-no-code" explain
+run_case "explain-junk" explain "MOVE-@@["
+run_case "audit-junk-args" audit "$TMP/long.harmony"
 
 # Nonexistent and directory inputs.
 run_case "missing-input" check "$TMP/nope.harmony"

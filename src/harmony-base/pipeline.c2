@@ -1,7 +1,7 @@
-// harmony-base — pipeline (docs/harmony.md §25.1).
+// harmony-base — pipeline (docs/harmony.md §19.1).
 //
-// P0 wires: load source -> lex -> parse -> flush reports. Codegen and the
-// checker passes are stubbed and added in later phases.
+// M0 wires: load source -> lex -> parse -> flush diagnostics. Codegen and the
+// checker passes are stubbed and added in later milestones (§19.7).
 
 int pipeline_run(struct Options* opts) {
     struct SourceFile sf;
@@ -29,49 +29,31 @@ int pipeline_run(struct Options* opts) {
 
     n = lexer_run(&sf, &toks);
     if (n < 0) {
-        return EXIT_FAULT;
+        diag_flush(opts->format, opts->all);
+        return EXIT_STOP;
     }
 
     parser_run(&sf, toks, n);
 
-    // Safety profiles (§22.8): --forbid refuses to build when the audited
-    // surface is non-empty. No language surface exists yet, so this only
-    // guards the flag plumbing until the parser reports seams (P14).
-    if (opts->forbid != 0) {
-        if (!str_eq(opts->forbid, "unchecked") && !str_eq(opts->forbid, "keep")) {
-            diag_plain("usage.unknown-forbid-target", opts->forbid);
-            return EXIT_USAGE;
+    // Stage 9 of the pipeline (C emission, §19.4) is not implemented yet.
+    // Requesting it is an honest stop with a fix, not a silent exit: the
+    // driver only advertises what it can run. `build`/`run` imply codegen too.
+    if (opts->cmd == CMD_EMIT_C || opts->cmd == CMD_BUILD || opts->cmd == CMD_RUN) {
+        int idx;
+        idx = diag_stop("ICE-01",
+                        "the C backend is not implemented in this build yet",
+                        "Code emission (pipeline stage 9) lands with milestone M1. `check` runs every analysis that exists today.",
+                        &sf, 0, 1);
+        if (idx >= 0) {
+            diag_fix(diag_get(idx), "run analyses only", "harmony-base check main.harmony");
         }
     }
 
-    if (opts->report_seams) {
-        seams_print();
-        if (diag_fault_count() == 0) { return EXIT_OK; }
-    }
+    // Flush stored diagnostics (only stops/warns render; a clean build
+    // prints nothing at all, §16.6).
+    diag_flush(opts->format, opts->all);
 
-    // Later phases (type check, dataflow, borrow, drops, codegen) plug in here.
-    // Until a backend exists, asking for one is reported through the normal
-    // report model (so text and JSON views stay exercised) but keeps the
-    // dedicated internal exit code (§25.1).
-    if (opts->emit_c || opts->emit_ir || opts->emit_asm) {
-        diag_fault("compiler.internal",
-                   "the requested code-generation backend is not implemented yet",
-                   &sf, 0,
-                   "every stage the driver advertises must be able to run",
-                   "no backend for --emit=c|ir|asm", 0);
-    }
-
-    // Flush every stored report: ordered by primary span, capped by
-    // --max-faults, either as text on stdout or as the JSON twin. A clean
-    // build prints nothing at all (§23.9).
-    diag_flush(opts->report_json, opts->max_faults, opts->allow);
-
-    if (opts->emit_c || opts->emit_ir || opts->emit_asm) {
-        return EXIT_INTERNAL;
-    }
-
-    if (diag_fault_count() > 0) {
-        return EXIT_FAULT;
-    }
+    if (diag_stop_count() > 0) { return EXIT_STOP; }
+    if (opts->strict && diag_warn_count() > 0) { return EXIT_STOP; }
     return EXIT_OK;
 }

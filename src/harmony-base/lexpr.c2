@@ -35,7 +35,15 @@ char* ll_field_addr(struct AstNode* n);
 char* ll_index_addr(struct AstNode* n);
 char* ll_struct_gep(char* base, int struct_ty, int field);
 char* ll_array_gep(char* base, int elem, char* idx);
+char* ll_array_gep_i64(char* base, int elem, char* idx);
 void  ll_bounds_check(char* idx, int n, struct AstNode* at);
+void  ll_bounds_check_n(char* idx, char* len, struct AstNode* at);
+char* ll_index_to_i64(char* idx);
+char* ll_slice_data(char* pair);
+char* ll_slice_len(char* pair);
+char* ll_slice_pair(struct AstNode* n);
+char* ll_len_value(struct AstNode* n);
+void  ll_store_value(char* addr, int ty, char* v);
 char* ll_widen_index(char* idx);
 int   ty_array_len(int id);
 char* ll_int_convert(char* v, int from, int to);
@@ -238,7 +246,7 @@ char* ll_expr_path(struct AstNode* n) {
     if (slot != 0) {
         ty = ll_local_ty(n->sval);
         g_expr_ty = ty;
-        if (ty_kind(ty) == CTY_STRUCT || ty_kind(ty) == CTY_ENUM || ty_is_array(ty)) {
+        if (ll_is_aggregate(ty)) {
             return slot;
         }
         return ll_load(ty, slot);
@@ -636,7 +644,11 @@ char* ll_addr(struct AstNode* n) {
         return ll_expr(n->a);
     }
     if (n->kind == AST_FIELD_ACC) { return ll_field_addr(n); }
-    if (n->kind == AST_INDEX) { return ll_index_addr(n); }
+    if (n->kind == AST_INDEX) {
+        // A range index is a slice value: its address is a fresh pair.
+        if (ty_kind(n->ty) == CTY_SLICE) { return ll_slice_pair(n); }
+        return ll_index_addr(n);
+    }
     return "null";
 }
 
@@ -681,8 +693,24 @@ char* ll_index_addr(struct AstNode* n) {
     int alen;
     char* baseaddr;
     char* idx;
+    char* wide;
 
     bt = n->a->ty;
+    if (ty_kind(bt) == CTY_SLICE) {
+        // Slice indexing: the pair carries a runtime length.
+        char* pair;
+        char* data;
+        char* len;
+        pair = ll_expr(n->a);
+        data = ll_slice_data(pair);
+        len = ll_slice_len(pair);
+        idx = ll_expr(n->b);
+        wide = ll_index_to_i64(idx);
+        ll_bounds_check_n(wide, len, n);
+        elem = ty_elem(bt);
+        if (elem == 0) { elem = TY_I32; }
+        return ll_array_gep_i64(data, elem, wide);
+    }
     if (ty_is_ref(bt) || ty_is_ptr(bt)) {
         baseaddr = ll_expr(n->a);
         bt = ty_elem(bt);
@@ -690,23 +718,22 @@ char* ll_index_addr(struct AstNode* n) {
         baseaddr = ll_addr(n->a);
     }
     idx = ll_expr(n->b);
+    wide = ll_index_to_i64(idx);
 
     if (ty_is_array(bt)) {
         elem = ty_elem(bt);
         alen = ty_array_len(bt);
-        ll_bounds_check(idx, alen, n);
-        return ll_array_gep(baseaddr, elem, idx);
+        ll_bounds_check_n(wide, ll_const_int(alen, TY_ISIZE), n);
+        return ll_array_gep_i64(baseaddr, elem, wide);
     }
     elem = ty_elem(bt);
     if (elem == 0) { elem = TY_I32; }
-    return ll_array_gep(baseaddr, elem, idx);
+    return ll_array_gep_i64(baseaddr, elem, wide);
 }
 
-// `getelementptr T, ptr base, i64 idx` (T is the element type).
-char* ll_array_gep(char* base, int elem, char* idx) {
+// `getelementptr T, ptr base, i64 idx` with an already-i64 index.
+char* ll_array_gep_i64(char* base, int elem, char* idx) {
     char* r;
-    char* wide;
-    wide = ll_widen_index(idx);
     r = ll_new_reg();
     ll_out_str("  ");
     ll_out_str(r);
@@ -715,21 +742,39 @@ char* ll_array_gep(char* base, int elem, char* idx) {
     ll_out_str(", ptr ");
     ll_out_str(base);
     ll_out_str(", i64 ");
-    ll_out_str(wide);
+    ll_out_str(idx);
     ll_out_nl();
     return r;
 }
 
+// `getelementptr T, ptr base, i64 idx` (T is the element type).
+char* ll_array_gep(char* base, int elem, char* idx) {
+    return ll_array_gep_i64(base, elem, ll_index_to_i64(idx));
+}
+
+// Widens an index to the runtime's i64 without assuming its width. The
+// backend tracks the last expression's type in `g_expr_ty`; after conversion
+// the current type becomes isize so a second call is a no-op.
+char* ll_index_to_i64(char* idx) {
+    int t;
+    t = g_expr_ty;
+    if (ty_is_untyped_lit(t)) { t = TY_I32; }
+    if (!ty_is_integer(t)) { return idx; }
+    if (ty_bit_width(t) == 64) { g_expr_ty = TY_ISIZE; return idx; }
+    idx = ll_int_convert(idx, t, TY_ISIZE);
+    g_expr_ty = TY_ISIZE;
+    return idx;
+}
+
 // `call void @lc_check_index(i, n, file, col)` — the runtime traps on OOB.
-// The index is sign-extended to the runtime's i64 (a negative index is a
-// trap, not a wraparound).
-void ll_bounds_check(char* idx, int n, struct AstNode* at) {
-    char* wide;
-    wide = ll_widen_index(idx);
+// A negative index is a trap, not a wraparound. `idx` and `len` are already
+// i64 SSA values (the caller widens once, before any other expression can
+// change `g_expr_ty`).
+void ll_bounds_check_n(char* idx, char* len, struct AstNode* at) {
     ll_out_str("  call void @lc_check_index(i64 ");
-    ll_out_str(wide);
+    ll_out_str(idx);
     ll_out_str(", i64 ");
-    ll_out_int(n);
+    ll_out_str(len);
     ll_out_str(", i64 ");
     ll_out_int(at->file);
     ll_out_str(", i64 ");
@@ -737,17 +782,197 @@ void ll_bounds_check(char* idx, int n, struct AstNode* at) {
     ll_out_str(")\n");
 }
 
-// Widens an index value to i64 for the runtime call.
-char* ll_widen_index(char* idx) {
+void ll_bounds_check(char* idx, int n, struct AstNode* at) {
+    char* wide;
+    wide = ll_index_to_i64(idx);
+    ll_bounds_check_n(wide, ll_const_int(n, TY_ISIZE), at);
+}
+
+// The two halves of a slice pair stored at `pair`.
+char* ll_slice_data(char* pair) {
+    char* gp;
     char* r;
-    if (str_eq(idx, "0")) { return "0"; }
+    gp = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(gp);
+    ll_out_str(" = getelementptr inbounds %slice, ptr ");
+    ll_out_str(pair);
+    ll_out_str(", i32 0, i32 0\n");
     r = ll_new_reg();
     ll_out_str("  ");
     ll_out_str(r);
-    ll_out_str(" = sext i32 ");
-    ll_out_str(idx);
-    ll_out_str(" to i64\n");
+    ll_out_str(" = load ptr, ptr ");
+    ll_out_str(gp);
+    ll_out_nl();
     return r;
+}
+
+char* ll_slice_len(char* pair) {
+    char* gp;
+    char* r;
+    gp = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(gp);
+    ll_out_str(" = getelementptr inbounds %slice, ptr ");
+    ll_out_str(pair);
+    ll_out_str(", i32 0, i32 1\n");
+    r = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(r);
+    ll_out_str(" = load i64, ptr ");
+    ll_out_str(gp);
+    ll_out_nl();
+    return r;
+}
+
+// Builds the slice pair for `base[lo..hi]` / `base[..]` (§5.2). `n` is the
+// range index node. The bounds run through `lc_check_slice`, so a bad range
+// is a T-SLICE trap, never a wild pointer.
+char* ll_slice_pair(struct AstNode* n) {
+    int bt;
+    int elem;
+    char* data;
+    char* len;
+    char* lo;
+    char* hi;
+    char* slot;
+    struct AstNode* r;
+
+    r = n->b;
+    bt = n->a->ty;
+    if (ty_kind(bt) == CTY_SLICE) {
+        char* pair;
+        pair = ll_expr(n->a);
+        elem = ty_elem(bt);
+        data = ll_slice_data(pair);
+        len = ll_slice_len(pair);
+    } else if (ty_is_ref(bt) && ty_is_array(ty_elem(bt))) {
+        int at;
+        at = ty_elem(bt);
+        elem = ty_elem(at);
+        data = ll_expr(n->a);
+        len = ll_const_int(ty_array_len(at), TY_ISIZE);
+    } else {
+        elem = ty_elem(bt);
+        data = ll_addr(n->a);
+        len = ll_const_int(ty_array_len(bt), TY_ISIZE);
+    }
+    if (elem == 0) { elem = TY_I32; }
+
+    // Bounds are evaluated left to right (§7.5); an absent bound defaults to
+    // the start or the end.
+    if (r->a != 0) {
+        lo = ll_expr(r->a);
+        lo = ll_index_to_i64(lo);
+    } else {
+        lo = "0";
+    }
+    if (r->b != 0) {
+        hi = ll_expr(r->b);
+        hi = ll_index_to_i64(hi);
+        if (str_eq(r->sval, "..=")) { hi = ll_bin("add", TY_ISIZE, hi, "1"); }
+    } else {
+        hi = len;
+    }
+
+    ll_out_str("  call void @lc_check_slice(i64 ");
+    ll_out_str(lo);
+    ll_out_str(", i64 ");
+    ll_out_str(hi);
+    ll_out_str(", i64 ");
+    ll_out_str(len);
+    ll_out_str(", i64 ");
+    ll_out_int(n->file);
+    ll_out_str(", i64 ");
+    ll_out_int(n->start);
+    ll_out_str(")\n");
+
+    slot = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(slot);
+    ll_out_str(" = alloca %slice\n");
+    {
+        char* f0;
+        char* newdata;
+        char* f1;
+        char* newlen;
+        newdata = ll_array_gep_i64(data, elem, lo);
+        newlen = ll_bin("sub", TY_ISIZE, hi, lo);
+        f0 = ll_new_reg();
+        ll_out_str("  ");
+        ll_out_str(f0);
+        ll_out_str(" = getelementptr inbounds %slice, ptr ");
+        ll_out_str(slot);
+        ll_out_str(", i32 0, i32 0\n");
+        ll_out_str("  store ptr ");
+        ll_out_str(newdata);
+        ll_out_str(", ptr ");
+        ll_out_str(f0);
+        ll_out_nl();
+        f1 = ll_new_reg();
+        ll_out_str("  ");
+        ll_out_str(f1);
+        ll_out_str(" = getelementptr inbounds %slice, ptr ");
+        ll_out_str(slot);
+        ll_out_str(", i32 0, i32 1\n");
+        ll_out_str("  store i64 ");
+        ll_out_str(newlen);
+        ll_out_str(", ptr ");
+        ll_out_str(f1);
+        ll_out_nl();
+    }
+    g_expr_ty = ll_node_ty(n);
+    return slot;
+}
+
+// `.len()` on an array (a constant) or a slice (its length half).
+char* ll_len_value(struct AstNode* n) {
+    struct AstNode* recv;
+    int rt;
+    int lt;
+    recv = n->a->a;
+    rt = recv->ty;
+    lt = rt;
+    while (ty_is_ref(lt) && ty_kind(lt) != CTY_SLICE) { lt = ty_elem(lt); }
+    if (ty_is_array(lt)) {
+        g_expr_ty = TY_USIZE;
+        return ll_const_int(ty_array_len(lt), TY_USIZE);
+    }
+    // Slice: read the length half of the pair (evaluate the receiver first;
+    // it may itself be a call and update g_expr_ty).
+    {
+        char* pair;
+        pair = ll_expr(recv);
+        g_expr_ty = TY_USIZE;
+        return ll_slice_len(pair);
+    }
+}
+
+// Stores one value into `addr`. Aggregates (structs, enums, arrays, slices)
+// are address-represented, so they are copied; scalars are stored directly.
+void ll_store_value(char* addr, int ty, char* v) {
+    if (ll_is_aggregate(ty)) {
+        ll_out_str("  call void @llvm.memcpy.p0.p0.i64(ptr align 8 ");
+        ll_out_str(addr);
+        ll_out_str(", ptr align 8 ");
+        ll_out_str(v);
+        ll_out_str(", i64 ");
+        ll_out_int(ty_size(ty));
+        ll_out_str(", i1 false)\n");
+        return;
+    }
+    ll_out_str("  store ");
+    ll_out_str(ll_type_name(ty));
+    ll_out_str(" ");
+    ll_out_str(v);
+    ll_out_str(", ptr ");
+    ll_out_str(addr);
+    ll_out_nl();
+}
+
+// Kept for callers that only have an i32 index; same as ll_index_to_i64.
+char* ll_widen_index(char* idx) {
+    return ll_index_to_i64(idx);
 }
 
 int ty_array_len(int id) {
@@ -764,8 +989,7 @@ char* ll_expr_field(struct AstNode* n) {
     addr = ll_addr(n);
     ft = ll_node_ty(n);
     g_expr_ty = ft;
-    if (ft == TY_UNIT || ty_kind(ft) == CTY_STRUCT || ty_kind(ft) == CTY_ENUM
-        || ty_is_array(ft)) {
+    if (ft == TY_UNIT || ll_is_aggregate(ft)) {
         return addr;   // aggregates are addressed, not loaded
     }
     return ll_load(ft, addr);
@@ -777,8 +1001,7 @@ char* ll_expr_index(struct AstNode* n) {
     addr = ll_addr(n);
     et = ll_node_ty(n);
     g_expr_ty = et;
-    if (et == TY_UNIT || ty_kind(et) == CTY_STRUCT || ty_kind(et) == CTY_ENUM
-        || ty_is_array(et)) {
+    if (et == TY_UNIT || ll_is_aggregate(et)) {
         return addr;
     }
     return ll_load(et, addr);
@@ -805,13 +1028,7 @@ char* ll_expr_array_lit(struct AstNode* n) {
             char* addr;
             v = ll_expr(n->kids->items[i]);
             addr = ll_array_gep(slot, et, ll_const_int(i, TY_USIZE));
-            ll_out_str("  store ");
-            ll_out_str(ll_type_name(et));
-            ll_out_str(" ");
-            ll_out_str(v);
-            ll_out_str(", ptr ");
-            ll_out_str(addr);
-            ll_out_nl();
+            ll_store_value(addr, et, v);
             i = i + 1;
         }
     } else if (n->a != 0) {
@@ -825,13 +1042,7 @@ char* ll_expr_array_lit(struct AstNode* n) {
         while (i < count) {
             char* addr;
             addr = ll_array_gep(slot, et, ll_const_int(i, TY_USIZE));
-            ll_out_str("  store ");
-            ll_out_str(ll_type_name(et));
-            ll_out_str(" ");
-            ll_out_str(v);
-            ll_out_str(", ptr ");
-            ll_out_str(addr);
-            ll_out_nl();
+            ll_store_value(addr, et, v);
             i = i + 1;
         }
     }
@@ -864,13 +1075,7 @@ char* ll_expr_struct_init(struct AstNode* n) {
             ft = ty_member_type(ty, ty_find_member(ty, fi->sval));
             v = ll_expr(fi->a);            // evaluate in written order (§7.5)
             addr = ll_struct_gep(slot, ty, ty_find_member(ty, fi->sval));
-            ll_out_str("  store ");
-            ll_out_str(ll_type_name(ft));
-            ll_out_str(" ");
-            ll_out_str(v);
-            ll_out_str(", ptr ");
-            ll_out_str(addr);
-            ll_out_nl();
+            ll_store_value(addr, ft, v);
             i = i + 1;
         }
     }
@@ -882,6 +1087,18 @@ char* ll_expr_struct_init(struct AstNode* n) {
 // References and heap.
 // ---------------------------------------------------------------------------
 char* ll_expr_borrow(struct AstNode* n) {
+    // `&base[lo..hi]` builds a fat pair (§5.2): the borrow of a range is a
+    // slice, not the address of one element.
+    if (n->a != 0 && n->a->kind == AST_INDEX && n->a->b != 0
+        && n->a->b->kind == AST_BINARY
+        && (str_eq(n->a->b->sval, "..") || str_eq(n->a->b->sval, "..="))) {
+        return ll_slice_pair(n->a);
+    }
+    // Borrowing a slice value (`&s`) yields the same pair (already a ref).
+    if (ty_kind(ll_node_ty(n)) == CTY_SLICE) {
+        g_expr_ty = ll_node_ty(n);
+        return ll_expr(n->a);
+    }
     // `&x` / `&mut x` is the address of the place.
     g_expr_ty = ll_node_ty(n);
     return ll_addr(n->a);
@@ -893,8 +1110,7 @@ char* ll_expr_deref(struct AstNode* n) {
     ptr = ll_expr(n->a);
     t = ll_node_ty(n);
     g_expr_ty = t;
-    if (t == TY_UNIT || ty_kind(t) == CTY_STRUCT || ty_kind(t) == CTY_ENUM
-        || ty_is_array(t)) {
+    if (t == TY_UNIT || ll_is_aggregate(t)) {
         return ptr;   // aggregate: the pointer is the address
     }
     return ll_load(t, ptr);
@@ -1039,6 +1255,11 @@ char* ll_method_call(struct AstNode* n, struct AstNode* callee, struct AstList* 
     char* buf;
     char* ret;
     int agg;
+
+    // Builtin `.len()` (checker marks the call node, §15.1).
+    if (n->ival == 1) {
+        return ll_len_value(n);
+    }
 
     rt = callee->a->ty;
     // Evaluate the receiver once; auto-deref through references/boxes to the

@@ -168,7 +168,12 @@ These c2x-seed defects were found and fixed while bootstrapping (see
       associated calls (`Type__method` mangling, `self` shapes), casts
       (`as`, sext/zext/trunc/sitofp/fptosi), `heap(x)` + `lc_alloc`,
       `&T`/`&mut T`, `switch` on scalars (exact, or-patterns, ranges) and
-      enums (tag tests). (codegen.sh, 21 cases.)
+      enums (tag tests). (codegen.sh, 28 cases.)
+- [x] Slices (`&[T]`, §5.2): a slice is a fat `{ ptr, i64 }` pair; `&a[lo..hi]`,
+      `&a[..]`, `&a[..hi]`, `&a[lo..]`, and `&a[lo..=hi]` build one,
+      `lc_check_slice` guards the range (T-SLICE), `s[i]` checks against the
+      runtime length (T-INDEX), `.len()` folds arrays and reads slices,
+      slices re-slice, and pass/return/store in structs by value.
 - [x] `extern fn` FFI: unmangled C symbols, `declare` emission, calls gated
       on `unchecked` (UNCK-01) with the runtime's `lc_syscall3` hook proving
       the ABI; `unchecked` reason checks (UNCK-02) and `--deny-unchecked`
@@ -179,8 +184,9 @@ These c2x-seed defects were found and fixed while bootstrapping (see
 - [x] Untyped literals adapt at every coercion site (§5.9) and the adapted
       type is stamped on the node, so `let x: i64 = 1`, `f(1)` with an i64
       parameter, `return 0` in an i64 function, and `x + 1` lower correctly.
-- [ ] Remaining M1 gaps: generic monomorphization, slices (`&[T]` fat
-      pointers), `FMT-01`, the stack-overflow guard (`T-STACK`).
+- [ ] Remaining M1 gaps: generic monomorphization, `FMT-01`, the
+      stack-overflow guard (`T-STACK`), and `noalias` on `&mut [T]`
+      slices (mutability of the fat pair is not tracked yet).
 
 ### M2 — Ownership: moves + drop elaboration (§9, §19.7)
 

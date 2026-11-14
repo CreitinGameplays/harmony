@@ -139,6 +139,9 @@ ok_case "struct init, field access, borrow/deref"
 write 'fn main() { let a = arr[0]; let b = m[1][2]; let c = f(1, 2,); let d = x.g<h>(3); }\n'
 ok_case "index chains, trailing comma, generic method call"
 
+write 'fn main() { let a = x[1..3]; let b = x[..3]; let c = x[3..]; let d = x[..]; let e = x[1..=3]; }\n'
+ok_case "slice range indexes (open/mixed/inclusive)"
+
 write 'fn main() { let a = [1, 2, 3]; let b = [0; 8]; let c = []; let d = sizeof(i32); }\n'
 ok_case "array literals (list, repeat, empty), sizeof"
 

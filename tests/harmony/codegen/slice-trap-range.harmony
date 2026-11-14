@@ -1,0 +1,8 @@
+// EXPECT-TRAP: T-SLICE
+// A slice range is checked against the source length; `[2..9]` on a
+// five-element array traps (§14.1: bad slice range).
+fn main() -> i32 {
+    let a: [i32; 5] = [1, 2, 3, 4, 5];
+    let s = &a[2..9];
+    return s.len() as i32;
+}

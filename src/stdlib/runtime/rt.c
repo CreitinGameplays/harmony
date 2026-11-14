@@ -11,6 +11,7 @@
 //                     turns its i32 into the process exit code.
 //   lc_trap           print a trap message to stderr and exit 70 (§14.3).
 //   lc_check_index    bounds check for `a[i]` (T-INDEX).
+//   lc_check_slice    bounds check for `&a[lo..hi]` (T-SLICE).
 //   lc_alloc          bump/heap allocation that traps on OOM (T-OOM).
 //
 // Everything is deterministic and allocation-free on the hot path.
@@ -161,6 +162,14 @@ void lc_trap(long code, long line, long col, long detail) {
 void lc_check_index(long i, long n, long line, long col) {
     if (i < 0 || i >= n) {
         lc_trap(T_INDEX, line, col, i);
+    }
+}
+
+// lc_check_slice(lo, hi, len, line, col) — trap unless the half-open range
+// [lo, hi) fits inside [0, len). Guards `&a[1..3]` (§5.2, T-SLICE).
+void lc_check_slice(long lo, long hi, long len, long line, long col) {
+    if (lo < 0 || hi < lo || hi > len) {
+        lc_trap(T_SLICE, line, col, lo);
     }
 }
 

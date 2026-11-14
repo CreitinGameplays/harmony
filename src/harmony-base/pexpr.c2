@@ -489,6 +489,25 @@ struct AstNode* parse_or(void) {
 // range_expr = [ or ] ( .. | ..= ) [ or ]
 struct AstNode* parse_range_expr(void) {
     struct AstNode* l;
+    // Open-start range `..hi` / `..=hi` (e.g. `a[..3]`, `a[..]`): parse_or
+    // would reject a leading `..`, so the node starts here with `a` empty.
+    if (p_at(TOK_RANGE) || p_at(TOK_DOTS_EQ)) {
+        struct AstNode* n;
+        n = ast_node_new(AST_BINARY);
+        if (p_at(TOK_RANGE)) {
+            n->sval = "..";
+        } else {
+            n->sval = "..=";
+        }
+        n->start = p_cur()->start;
+        p_advance();
+        if (!p_at_mult_end()) {
+            n->b = parse_or();
+            if (n->b == 0) { return 0; }
+        }
+        n->end = p_prev()->end;
+        return n;
+    }
     l = parse_or();
     if (l == 0) { return 0; }
     if (p_at(TOK_RANGE) || p_at(TOK_DOTS_EQ)) {

@@ -1,0 +1,40 @@
+// EXPECT: 42
+// Slices (`&[T]`, §5.2) are fat (pointer, length) pairs. Built from an
+// array with `&a[lo..hi]`, `&a[..hi]`, `&a[lo..]`, `&a[..]`, and `..=`.
+// `.len()` works on arrays (constant) and slices (runtime length), slices
+// re-slice, a slice parameter is a pair, and a slice return uses sret.
+fn sum(xs: &[i32]) -> i32 {
+    let mut i: usize = 0;
+    let mut total: i32 = 0;
+    while (i < xs.len()) {
+        total = total + xs[i];
+        i = i + 1;
+    }
+    return total;
+}
+
+fn tail(xs: &[i32]) -> &[i32] {
+    return &xs[1..];
+}
+
+fn main() -> i32 {
+    let a: [i32; 5] = [10, 20, 30, 40, 50];
+    let mut lo: usize = 1;
+    let mut hi: usize = 4;
+    let s = &a[lo..hi];          // 20 + 30 + 40 = 90
+    let inc = &a[1..=3];         // 20 + 30 + 40 = 90
+    let front = &a[..2];         // 10 + 20 = 30
+    let back = &a[3..];          // 40 + 50 = 90
+    let all = &a[..];
+    let sub = &s[1..];           // 30 + 40 = 70
+    if (inc.len() != 3) { return 1; }
+    if (front.len() != 2) { return 2; }
+    if (back.len() != 2) { return 3; }
+    if (all.len() != 5) { return 4; }
+    let t = tail(s);             // 30 + 40 = 70
+    if (t.len() != 2) { return 5; }
+    let total = sum(s) + sum(inc) + sum(front) + sum(back)
+              + sum(all) + sum(sub) + sum(t);
+    // 90+90+30+90+150+70+70 = 590, plus a.len() = 595; 595/10 - 17 = 42.
+    return (total + a.len() as i32) / 10 - 17;
+}

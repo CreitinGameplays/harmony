@@ -326,7 +326,8 @@ int ty_eq(int a, int b) {
     }
     if (g_types[a].kind == CTY_REF || g_types[a].kind == CTY_MUTREF
         || g_types[a].kind == CTY_HEAP || g_types[a].kind == CTY_PTR
-        || g_types[a].kind == CTY_MUTPTR || g_types[a].kind == CTY_STRREF) {
+        || g_types[a].kind == CTY_MUTPTR || g_types[a].kind == CTY_STRREF
+        || g_types[a].kind == CTY_SLICE) {
         return ty_eq(g_types[a].a, g_types[b].a);
     }
     return 0;
@@ -363,8 +364,9 @@ int ty_size(int id) {
     if (k == CTY_REF || k == CTY_MUTREF || k == CTY_PTR || k == CTY_MUTPTR
         || k == CTY_HEAP) {
         g_types[id].size = 8;
-    } else if (k == CTY_STRREF) {
-        g_types[id].size = 16;   // fat pointer { ptr, len }
+    } else if (k == CTY_STRREF || k == CTY_SLICE) {
+        // A slice is a (pointer, length) pair, like &str (§5.2).
+        g_types[id].size = 16;
     } else if (k == CTY_ARRAY) {
         g_types[id].size = ty_size(g_types[id].a) * g_types[id].b;
     } else if (k == CTY_STRUCT) {
@@ -416,7 +418,13 @@ int ty_align(int id) {
     }
     if (id <= 0 || id >= g_ntypes) { return 1; }
     if (g_types[id].align != 0) { return g_types[id].align; }
+    // Pointer-shaped composites are one machine word; a slice/&str pair is
+    // two. The array alignment follows its element.
     if (g_types[id].kind == CTY_ARRAY) { return ty_align(g_types[id].a); }
+    if (ty_is_ref(id) || ty_is_ptr(id) || ty_is_heap(id)
+        || g_types[id].kind == CTY_SLICE) {
+        return 8;
+    }
     // Structs/enum: trigger the size pass, which fills `align`.
     ty_size(id);
     if (g_types[id].align != 0) { return g_types[id].align; }

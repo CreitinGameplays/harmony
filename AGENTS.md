@@ -26,6 +26,7 @@ File Extension: .harmony
 - NEVER workaround a fix on harmony-base source code to hide a genuine bug in c2x-seed.
 - Always run final `make test` before completion, but only if you modify source code.
   Docs-only changes don't need to run `make test`.
+- `harmony-base` is freestanding (no stdlib).
 - Harmony standard lib code for final language should be written in src/stdlib/<subdir>.
 - It's good to also add purposely bad code (simple and complex codes)
   in error-handling directory in `tests` to verify if compiler is handling it well.

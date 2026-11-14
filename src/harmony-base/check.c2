@@ -443,6 +443,18 @@ int ck_is_self_param(struct AstNode* p) {
 // Nominal types dedup by name so `Point` used twice is one id. Generic
 // parameters resolve to their placeholder ids (registered as SK_GEN).
 // ---------------------------------------------------------------------------
+// The one slice-reference type for an element type (§5.2). A slice is
+// represented as the (pointer, length) pair itself, so `&[T]`, `&mut [T]`,
+// and `&a[lo..hi]` all produce this same type id shape. Mutability of a
+// slice is a borrow-check property (M2/M3), not part of the value layout.
+int ck_slice_ty(int elem) {
+    lexbuf_reset();
+    lexbuf_push_str("&[");
+    lexbuf_push_str(ty_display(elem));
+    lexbuf_push_str("]");
+    return ty_new(CTY_SLICE, lexbuf_finish(), elem, 0);
+}
+
 int ck_resolve_type(struct AstNode* t) {
     int k;
     if (t == 0) { return TY_UNIT; }
@@ -462,6 +474,11 @@ int ck_resolve_type(struct AstNode* t) {
     }
     if (k == AST_TYPE_REF) {
         int inner;
+        // `&[T]` is a slice reference: the fat (pointer, length) pair is the
+        // value itself (§5.2), so no extra reference layer is added.
+        if (t->a != 0 && t->a->kind == AST_TYPE_SLICE) {
+            return ck_resolve_type(t->a);
+        }
         inner = ck_resolve_type(t->a);
         if (inner == TY_INVALID) { return TY_INVALID; }
         if (t->ival & 1) {
@@ -502,11 +519,7 @@ int ck_resolve_type(struct AstNode* t) {
         int inner;
         inner = ck_resolve_type(t->a);
         if (inner == TY_INVALID) { return TY_INVALID; }
-        lexbuf_reset();
-        lexbuf_push_str("[");
-        lexbuf_push_str(ty_display(inner));
-        lexbuf_push_str("]");
-        return ty_new(CTY_SLICE, lexbuf_finish(), inner, 0);
+        return ck_slice_ty(inner);
     }
     if (k == AST_TYPE_UNIT) { return TY_UNIT; }
     diag_stop("TYPE-05", "unsupported type",

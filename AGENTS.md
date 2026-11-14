@@ -25,6 +25,7 @@ Check
 - Never guess at bugs (harmony/c2x-seed), always reproduce:
   use any available debugger in the system (such as gdb, valgrind, etc) to find the bug and fix them.
 - NEVER workaround a fix on harmony-base source code to hide a genuine bug in c2x-seed.
+- Always run final `make test` before completion.
 - All risks are accepted.
 - Always add helpful comments in the code.
 - Always use `-s` arg when using `git commit`

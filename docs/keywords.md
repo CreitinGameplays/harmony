@@ -48,6 +48,13 @@ a `NAME-02` translation hint): `unsafe` `impl` `match` `trait` `pub` `use`
 | `sizeof(T)` `heap(x)` `raw(x)` | built-in forms |
 | `Type::make()` | constructor convention (a named `make`, not a keyword) |
 
+**Split rule (docs/harmony.md §19.8):** only the `sizeof`/`heap`/`raw`
+forms, the trap-and-pointer intrinsics, and the syntax glue are compiler
+concerns. `print`/`println`/`format`, the collections, the numeric method
+families, I/O, and the runtime entry/allocator are **library** code. The
+compiler recognizes their hook *names and shapes* (`next`, `cleanup`,
+`clone`, `eq`, `cmp`, `show`), never their implementations.
+
 ## Diagnostic codes (docs/harmony.md §16.10)
 
 The stable code set the checker may emit: `SYN-01..05`, `NAME-01..04`,

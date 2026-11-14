@@ -215,6 +215,12 @@ These c2x-seed defects were found and fixed while bootstrapping (see
 
 ### M7 — Standard library, C backend, formatter, fuzzing (§15, §19.7)
 
+- [ ] Apply the **split rule** (§19.8): keep only soundness/syntax glue in the
+      compiler; move types (`Vec`/`String`/`Heap`/ranges/iterators), free
+      functions, numeric method families, formatting/IO, the runtime entry +
+      allocator + trap formatting, protocol impls (`next`/`cleanup`/`clone`/
+      `eq`/`cmp`/`show`), diagnostic wording, and lints into the library or
+      tooling. The compiler keeps ~a dozen intrinsics plus the analyses.
 - [ ] Prelude: `print`/`println`/`eprintln` (+ `{}`/`{:?}`/`{:.N}`,
       `FMT-01`), `trap`, `assert`, `exit`, `leak`, `drop`, `swap`, `replace`.
 - [ ] `String`/`.own()`, `Vec`, `Heap`, `Maybe`/`Has`/`Empty`,

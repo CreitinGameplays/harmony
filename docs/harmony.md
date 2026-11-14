@@ -2,7 +2,7 @@
 
 File extension: `.harmony`
 
-### Conceptual Design Document · v0.3.2
+### Conceptual Design Document · v0.3.3
 
 > **Status:** conceptual. Nothing here is implemented, benchmarked, or proven sound.
 > The language is **Harmony**; source files end in `.harmony`. This document
@@ -53,6 +53,7 @@ File extension: `.harmony`
 | v0.3 | Identity pass | New diagnostics format, `String::from`→`.own()`, constructors named `make`, `unchecked("reason")`, `raw` pointers, `extern fn`, `export`/`import`, `cleanup` hook, `eq`/`ord` bounds, `next` iteration protocol, `Outcome`, byte literals, ranges. |
 | v0.3.1 | Decisions + backends | §20.3 open questions resolved (structured reasons, guards, `Shared<T>`, threads incl. detached, `try`, named fields/struct patterns, function pointers, `i32` literals; `unchecked`-as-expression rejected); names kept, trait-like feature renamed **`trait`→`abilities`**, `spawn`/`send` un-reserved; **LLVM is the primary backend**, C11 secondary; the language is named Harmony (`.harmony`). |
 | v0.3.2 | Heap form | The heap keyword `new` (a prefix operator: `new 42`) is replaced by the `sizeof`-styled built-in form **`heap(x)`**. It reads like the allocation it is, cannot be mistaken for a constructor, and lets the compiler construct the value **in place** (`heap([0u8; 8_000_000])`). `new` and `delete` join the recognized foreign words. |
+| v0.3.3 | Split rule | §19.8 makes the compiler-vs-library boundary explicit: the compiler keeps only what soundness or syntax requires (analyses, traps, indexing, `heap(x)`, about a dozen intrinsics). Types, collections, formatting, I/O, the runtime's entry/allocator/trap formatting, protocol implementations, diagnostic wording, and lints all move to the library or tooling. |
 
 ### 1.2 Bug fixed in v0.3
 
@@ -130,6 +131,10 @@ Every feature in v0 must kill a named bug class. If it doesn't, it is out.
 | Explicit-only conversions | implicit-promotion and sign bugs |
 | Left-to-right evaluation | unspecified-order bugs |
 | `unchecked("reason")` | *makes the remaining risk searchable* |
+
+The budget also cuts the other way: anything that does **not** kill a bug
+class does not belong in the compiler either. Where the safe subset ends and
+ordinary library code begins is spelled out in the **split rule** (§19.8).
 
 ---
 
@@ -429,7 +434,7 @@ fn greet(name: &str) {            // no `->`: returns nothing
 - Parameter types and return types are always written out.
 - Parameters are passed **by value** (moved or copied). Borrow explicitly with `&` / `&mut`.
 - Every path must end in `return` (or a diverging call) when the function has a return type. The checker understands exhaustive `switch`.
-- No overloading, no default arguments, no variadics. (`print`, `println`, `eprintln`, `format` are compiler-known and format-string-checked.)
+- No overloading, no default arguments, no variadics. (`print`, `println`, `eprintln`, `format` are recognized by the compiler only for their format strings, `FMT-01`; their bodies are library code, see §19.8.2 and §19.8.6.)
 - Recursion is fine; runaway recursion traps (`T-STACK`), it does not corrupt memory.
 - Entry point: `fn main()` or `fn main() -> i32` (the return value is the process exit code).
 
@@ -1355,6 +1360,11 @@ TRAP  T-INDEX  index out of range
 - `cleanup` hooks do **not** run (the OS reclaims memory). Don't put "save the file" logic in a `cleanup` and expect it to survive a trap.
 - Same for `exit(code)`, which stops immediately without running hooks.
 
+The compiler's only job here is to emit a call to the trap hook **with the
+source location** at the point that can trap. The message format, the flush,
+the exit status, and the `on_trap` hook are library/runtime code (§19.8.4),
+so freestanding targets can replace them.
+
 ### 14.4 Errors that are expected: `Maybe` and `Outcome`
 
 Use values, not traps, for things that can reasonably go wrong:
@@ -1393,7 +1403,7 @@ There is no `?` operator in v0. Errors are handled with `switch`, which keeps co
 
 ## 15. Standard library surface
 
-The prelude (always in scope) plus a few importable modules. Signatures use the language's own syntax.
+The prelude (always in scope) plus a few importable modules. Signatures use the language's own syntax. Everything here is **library code**, not compiler magic: the boundary between the two is the split rule in §19.8. Where an item needs a compiler intrinsic (an overflow check, a bounds check, a pointer operation), §19.8 names the one intrinsic it rests on.
 
 ### 15.1 Prelude functions
 
@@ -2518,7 +2528,7 @@ cross-check backend — the differential test runs both and diffs behavior.
 
 ### 19.3 Diagnostics are first-class data
 
-Every analysis records **events** with provenance as it works: `born(place, span)`, `moved(place, span, into)`, `borrowed(place, kind, span)`, `used(place, span)`, `dropped(place, span)`. A diagnostic is built by selecting the relevant events and ordering them by **time** (§16.2). This is why the timeline format costs almost nothing extra: the information the checker needed to reach its verdict is exactly the story the reader needs. Design the event log in stage 5 (not as an afterthought) and `explain`, JSON output, and editor fixes all fall out for free.
+Every analysis records **events** with provenance as it works: `born(place, span)`, `moved(place, span, into)`, `borrowed(place, kind, span)`, `used(place, span)`, `dropped(place, span)`. A diagnostic is built by selecting the relevant events and ordering them by **time** (§16.2). This is why the timeline format costs almost nothing extra: the information the checker needed to reach its verdict is exactly the story the reader needs. Design the event log in stage 5 (not as an afterthought); the JSON output and editor fixes then fall out for free. The human-readable *wording* and the `explain` lessons are data, not compiler code (§19.8.7) — the compiler emits structured events only.
 
 ### 19.4 LLVM backend (primary)
 
@@ -2535,7 +2545,7 @@ generates `rt.h` for the C backend).
 | `&[T]`, `&str` | `{ T*, i64 }` (pointer + length) |
 | `[T; N]` | `[N x T]` (copies by value) |
 | `struct` / `enum` | named `%struct` types; enums are `{ i32 tag, [payload] }` with the payload unioned as a fields-of-max-size struct (no `undefined` type-punning; the tag picks the interpretation) |
-| `Heap<T>` | `T*` from `lc_alloc(sizeof(T))`; freed by drop glue |
+| `Heap<T>` | the library `Heap` struct is `{ ptr }`; `heap(x)` = `T*` from `lc_alloc(sizeof(T))` (constructed in place when `x` is a literal); freed by drop glue |
 | `Maybe<Heap<T>>`, `Maybe<&T>` | a bare pointer, `null` = `Empty` (niche optimization) |
 | `a[i]` | `call lc_check_index(i, N, loc)` before the GEP; direct GEP in `unchecked` |
 | checked arithmetic | `call {T, i1} @llvm.sadd.with.overflow.*` (etc.) + `lc_trap(T_OVERFLOW, loc)` on the overflow bit |
@@ -2567,7 +2577,7 @@ Emits C11 from the same mapping semantics; run through the host
 | `[T; N]` | `struct { T a[N]; }` (so it copies by value) |
 | `struct` | `struct` |
 | `enum` | `struct { uint32_t tag; union { ... } as; }` |
-| `Heap<T>` | `T*` from `lc_alloc(sizeof(T))`; freed by drop glue |
+| `Heap<T>` | the library `Heap` struct is `{ T* }`; `heap(x)` = `T*` from `lc_alloc(sizeof(T))` (constructed in place when `x` is a literal); freed by drop glue |
 | `Maybe<Heap<T>>`, `Maybe<&T>` | a bare pointer, `NULL` = `Empty` (niche optimization) |
 | `a[i]` | `a.a[lc_check_index(i, N, loc)]` |
 | `a + b` (checked ints) | `__builtin_add_overflow` + `lc_trap(T_OVERFLOW, loc)` |
@@ -2581,7 +2591,7 @@ Emits C11 from the same mapping semantics; run through the host
 
 Defense in depth: compile the output with `-fwrapv -fno-strict-aliasing -fno-delete-null-pointer-checks -fstack-clash-protection`. The generated code is written so that it does **not** depend on these flags for correctness; they only blunt compiler bugs.
 
-**Runtime library (`rt.h`, a few hundred lines):** allocation wrappers that trap on OOM, `lc_trap`, buffered output, argv access, and a guard-page plus alternate-signal-stack handler that turns stack exhaustion into `T-STACK` instead of a crash. The same runtime source backs `rt.bc` for the LLVM backend and `rt.h` for the C backend.
+**Runtime library (`rt.h`, a few hundred lines):** allocation wrappers that trap on OOM, `lc_trap`, buffered output, argv access, and a guard-page plus alternate-signal-stack handler that turns stack exhaustion into `T-STACK` instead of a crash. The same runtime source backs `rt.bc` for the LLVM backend and `rt.h` for the C backend. This runtime is **library code, not compiler code**: the compiler emits calls to its hooks, and §19.8.4/§19.8.6 list exactly which pieces live here (allocator, entry, trap formatting, I/O).
 
 **Name mangling:** `module__Type__method`, with monomorphized instances suffixed by a **readable, stable** rendering of their type arguments (e.g. `Stack__push__i32`) — no hashes, so both backends (and two compiler runs) produce identical names.
 
@@ -2621,6 +2631,150 @@ flags:  --format=pretty|line|json   --all   --strict   --deny-unchecked
 | M5 | Diagnostics renderer (event log, timeline format), `explain`, migration hints, JSON output. |
 | M6 | `unchecked`, `raw`, `extern fn`, `lc audit`. |
 | M7 | Standard library polish, **C backend as the cross-check backend** (`emit-c` + differential tests), formatter, fuzzing harness, the beginner's book. |
+
+### 19.8 The split rule: compiler vs. library
+
+**The rule.** A feature stays in the compiler only if a bug in it could let
+*safe* code corrupt memory, or if it needs syntax or analysis nobody else can
+provide. If a buggy version could only produce wrong output, it belongs in the
+library or in tooling. **The compiler is the bouncer, not the whole club.**
+
+This is the concrete reading of the feature budget (§2) and the soundness
+line (§3.4): the compiler's job is to make the safe subset provably safe; the
+convenience, the formatting, the collections, and the diagnostics *wording*
+are ordinary auditable code.
+
+Everything below is currently hardcoded, or described elsewhere in this
+document as "compiler-known". Under the split rule it moves out. The tables
+name, for each item, what the library provides and the tiny intrinsic — if
+any — the compiler must keep.
+
+#### 19.8.1 Types defined in the library
+
+| Item | In the library | The compiler keeps |
+|---|---|---|
+| `Maybe`, `Outcome` | Already ordinary prelude enums | Niche optimization in the C backend |
+| `Vec<T>` | The whole implementation, using `unchecked` (`MiniVec` in §17.8 is the template) | Nothing |
+| `String` | A wrapper over `Vec<u8>` that guarantees valid UTF-8 | Nothing |
+| `Heap<T>` | A struct holding `raw mut T`, with `cleanup`, `into_raw`, `from_raw` | The `heap(x)` intrinsic and the `*h` / auto-deref rule |
+| `Range`, `RangeInclusive` | Structs with a `next` method | `a..b` syntax lowers to constructing them |
+| `Iter`, `IterMut`, `Drain`, `Chars`, `Bytes` | Structs with `next` | The `for` desugaring |
+| `Ordering`, `IoError`, `ParseError` | Plain enums | Nothing |
+
+#### 19.8.2 Free functions
+
+| Item | Implemented as |
+|---|---|
+| `drop`, `leak` | `fn drop<T>(x: T) {}`, and a `leak` that stores the value somewhere the compiler never frees |
+| `swap`, `replace` | Raw read and write inside one tiny `unchecked` block |
+| `assert`, `unreachable`, `exit` | `assert` and `unreachable` call `trap`; `exit` wraps libc's `exit` |
+| `print`, `println`, `eprintln`, `format` | Runtime halves are library code (see §19.8.6) |
+| `sqrt`, `sin`, `pow`, etc. | `extern fn` bindings to libm, with safe wrappers |
+| `min`, `max`, `abs` | Ordinary generic functions |
+
+#### 19.8.3 Methods on built-in types
+
+| Item | Library part | Compiler intrinsics underneath |
+|---|---|---|
+| Integer methods: `try_*`, `wrap_*`, `sat_*`, `pow`, `abs`, `MIN`, `MAX` | All of them | Overflow-detecting add, sub and mul |
+| Conversions: `narrow`, `wrap`, `sat`, `approx` | All of them | Range and representability queries |
+| `char` | Classification, case mapping, `from_code`, Unicode tables | None |
+| `str` | `find`, `contains`, `starts_with`, `chars`, `bytes`, split helpers, the char-boundary trap on slicing | The type `str` itself, because literals need it |
+| Slices and `Vec` | `get`, `last`, `contains`, `get_unchecked` | Slice length and bounds-checked `a[i]` |
+| `raw` pointers | `plus`, `minus`, `read`, `write`, `is_null`, `Raw::null` | Three intrinsics: pointer offset, move-out read, move-in write |
+
+#### 19.8.4 Allocator and runtime
+
+| Item | Move to the library |
+|---|---|
+| `alloc` and `dealloc` | A std module over libc `malloc`/`free`. `heap(x)` calls whatever allocator std exposes, so embedded targets can swap it. |
+| Out-of-memory policy | Library decides (trap by default). |
+| Trap message format, exit status 70, stdout flush | Library. The compiler only emits "call the trap hook with this location." |
+| Stack-overflow guard handler (`T-STACK`) | A std runtime module that installs the handler at startup. |
+| Program entry: argv, calling `main`, turning its return value into an exit code | A std runtime module. |
+| `on_trap` hook for freestanding or embedded builds | Library-level hook, which must return `never`. There is no unwinding. |
+
+#### 19.8.5 Protocol implementations
+
+The compiler knows only the **names and shapes** of the hooks it calls. All
+implementations live in the library:
+
+| Protocol | Compiler's role | Library's role |
+|---|---|---|
+| `next(&mut self) -> Maybe<T>` | Desugars `for` | Every collection iterator |
+| `cleanup(&mut self)` | Inserts the call at scope end | `Vec`, `String`, `Heap`, files |
+| `clone` | Structurally derives it for user types | Hand-written for `String`, `Vec`, `Heap` |
+| `eq`, `cmp` | Structurally derives them for user types | Hand-written for `str`, `String`, `Vec` |
+| `show(&self, out: &mut Formatter)` (new) | Calls it for `{}` | Hand-written for std types |
+
+A `deref` hook and an `index` hook would also fit this pattern. They would
+make `Heap` and `Vec` indexing pure library code, but they let users write
+their own smart pointers, so in v0 they would be **std-only**.
+
+#### 19.8.6 Formatting and I/O
+
+| Item | Move to the library |
+|---|---|
+| Number-to-text (decimal, hex, shortest round-trip floats), padding, precision | Library `fmt` module |
+| `Formatter` and the write loop | Library |
+| stdin, stdout, stderr, `read_line` | Library over libc |
+| Files, paths, environment variables, arguments | Library |
+
+Only format-string **parsing and checking** stays in the compiler, because
+there are no variadics or macros (`FMT-01`). If a later version adds restricted
+compile-time functions, even that moves out.
+
+#### 19.8.7 Tooling and data (not the compiler core)
+
+| Item | Where it goes |
+|---|---|
+| Diagnostic wording, `lc explain` pages | Data files, one per code, not strings baked into the binary |
+| Migration hints (`NAME-02`) | A data pack. Anyone can add "from Go" or "from Python". |
+| Pretty, line and JSON renderers | A separate component consuming structured diagnostics. The compiler emits events only. |
+| Lints: `STYLE-01`, `UNUSED-01/02`, `SHADOW-01`, `DEAD-01`, `MUT-02`, `DROP-02` | Pluggable lint passes. They are policy, not soundness. |
+| `unchecked` reason-length rule and block-size warning | Lints with thresholds in project config |
+| `lc fmt`, `lc audit`, `lc test`, `lc doc` | Separate tools sharing the parser |
+| Import path resolution and package fetching | Build tool |
+
+#### 19.8.8 Not in v0, but library from day one
+
+`HashMap` and `Set`, `Deque`, sorting and searching (`sort<T: ord>`), time,
+random numbers, JSON, threads and channels (later, on top of a capability
+marker — see §20.3 item 4), and Unicode normalization.
+
+#### 19.8.9 What must stay in the compiler
+
+| Item | Reason |
+|---|---|
+| Lexer, parser, grammar | Syntax |
+| Type checker, inference, the `copy`, `eq` and `ord` bound checks | Soundness |
+| Move, init, loan, life and exhaustiveness analyses | Soundness |
+| Drop elaboration and the calls to `cleanup` | Soundness |
+| Overflow, divide-by-zero and shift traps on operators | Operator semantics |
+| Arrays, slices, bounds-checked indexing, fat pointers | Soundness |
+| Lang items: `str` literal type, `Maybe` niche optimization, `Range` sugar, `for` desugaring, deref rule | Syntax glue |
+| `heap(x)` (in-place construction), `sizeof`, layout | Needs backend knowledge |
+| `unchecked` gating (`UNCK-01/04`) | Soundness |
+| Intrinsics: `trap` plus caller location, the overflow ops, the three pointer ops, `reinterpret` | Can't be written in the language |
+| LLVM emission (and, later, C emission) | Backend |
+
+That is about **a dozen intrinsics**, so the compiler core stays small and
+everything above it can be audited as ordinary code.
+
+#### 19.8.10 Caveats
+
+- **Repetition without traits or macros.** The numeric method families repeat
+  across ten integer types. Either generate the std source from a template at
+  build time, or add built-in numeric bounds (`int`, `float`) alongside
+  `copy`, `eq` and `ord`. The document's preference: **add the bounds**.
+- **The std is the trusted surface.** It uses `unchecked` heavily, so
+  `lc audit` (§13.4) should report std and application code **separately**.
+- **Lang items must be versioned.** The compiler refers to std types like
+  `Maybe`, `Range` and `Heap` by well-known names, so the two ship **pinned
+  together**.
+- **Speed depends on inlining.** The intrinsics must compile to one-line LLVM
+  (or C) operations, or the "library" version of everything gets slower than
+  the hardcoded one.
 
 ---
 
@@ -2708,4 +2862,4 @@ Three keyword reservations are **dropped**: `spawn`, `send`, and (per the rename
 
 ---
 
-*End of document. Conceptual design v0.3.2 (decisions resolved for v1). Nothing here is fully built yet; that is both the risk and the fun.*
+*End of document. Conceptual design v0.3.3 (decisions resolved for v1). Nothing here is fully built yet; that is both the risk and the fun.*

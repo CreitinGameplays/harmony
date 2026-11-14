@@ -1,6 +1,6 @@
 name = "Harmony"
 grammar = "harmony"
-path_suffixes = ["harmony"]
+path_suffixes = ["harmony", "hr"]
 
 # Harmony v0.3.3 lexical comment forms.
 line_comments = ["//"]

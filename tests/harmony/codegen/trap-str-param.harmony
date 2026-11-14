@@ -1,0 +1,10 @@
+// EXPECT-TRAP: T-USER
+// A `&str` parameter flows into `trap` (the fat pair, not a thin pointer):
+// regression guard for `&str` parameters being mis-spilled.
+fn fail(msg: &str) -> i32 {
+    trap(msg);
+}
+
+fn main() -> i32 {
+    return fail("a borrowed message");
+}

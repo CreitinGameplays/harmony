@@ -16,6 +16,7 @@
 //   stack guard       a SIGSEGV handler on an alternate stack that turns
 //                     stack exhaustion into a T-STACK trap (§14.2).
 //   lc_put_*          formatting hooks for print/println/eprintln (§15.1).
+//   lc_trap_msg/      prelude traps: trap/assert/unreachable/exit (§15.1).
 //
 // Everything is deterministic and allocation-free on the hot path.
 
@@ -382,6 +383,68 @@ void lc_check_index(long i, long n, long line, long col) {
     if (i < 0 || i >= n) {
         lc_trap(T_INDEX, line, col, i);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Prelude traps (§15.1): trap(msg), assert(cond[, msg]), unreachable(), exit().
+// These are the compiler-recognized builtins the self-hosted rewrite needs to
+// report compiler errors and stop. A user message (when present) replaces the
+// generic trap text; the code and location still print (§14.2).
+// ---------------------------------------------------------------------------
+static void out_user_msg(const char *p, long n) {
+    long i;
+    out_fd = 2;
+    for (i = 0; i < n; i++) { out_char(p[i]); }
+}
+
+// lc_trap_msg(ptr, len, line, col) — T-USER with the user's message.
+void lc_trap_msg(const char *p, long n, long line, long col) {
+    out_flush();
+    out_fd = 2;
+    out_str("TRAP  T-USER  ");
+    out_user_msg(p, n);
+    if (line > 0) {
+        out_str("  at line ");
+        out_int(line);
+        out_str(":");
+        out_int(col);
+    }
+    out_char('\n');
+    out_flush();
+    sys(SYS_exit, 70, 0, 0);
+    for (;;) { }
+}
+
+// lc_assert(cond, ptr, len, line, col) — T-ASSERT when cond is false. A zero
+// length means the one-argument `assert(cond)` form (generic message).
+void lc_assert(long cond, const char *p, long n, long line, long col) {
+    if (cond) { return; }
+    out_flush();
+    out_fd = 2;
+    out_str("TRAP  T-ASSERT  ");
+    if (n > 0) { out_user_msg(p, n); } else { out_str("assertion failed"); }
+    if (line > 0) {
+        out_str("  at line ");
+        out_int(line);
+        out_str(":");
+        out_int(col);
+    }
+    out_char('\n');
+    out_flush();
+    sys(SYS_exit, 70, 0, 0);
+    for (;;) { }
+}
+
+// lc_unreachable(line, col) — T-UNREACHABLE, the `unreachable()` builtin.
+void lc_unreachable(long line, long col) {
+    lc_trap(T_UNREACHABLE, line, col, 0);
+}
+
+// lc_exit(code) — flush and stop with the given status (§14.3). No hooks run.
+void lc_exit(long code) {
+    out_flush();
+    sys(SYS_exit, code & 0xff, 0, 0);
+    for (;;) { }
 }
 
 // lc_check_slice(lo, hi, len, line, col) — trap unless the half-open range

@@ -1,0 +1,6 @@
+// WANT: TYPE-01
+// `assert`'s condition must be `bool` (§15.1).
+fn main() -> i32 {
+    assert(5);
+    return 0;
+}

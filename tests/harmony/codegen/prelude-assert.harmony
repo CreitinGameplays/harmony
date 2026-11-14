@@ -1,0 +1,17 @@
+// EXPECT: 42
+// Prelude builtins (§15.1): `assert` passes silently, `trap`/`unreachable`/
+// `exit` stop control. `assert` may sit inside a value-returning path.
+fn check(n: i32) -> i32 {
+    assert(n > 0, "n must be positive");
+    assert(n < 100);
+    return n * 2;
+}
+
+fn main() -> i32 {
+    assert(true);
+    assert(1 == 1);
+    let mut total: i32 = 0;
+    total = total + check(3);     // 6
+    total = total + check(18);    // 36
+    return total;                 // 42
+}

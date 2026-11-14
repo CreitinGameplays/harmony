@@ -1,0 +1,7 @@
+// EXPECT: 7
+// `exit(code)` stops immediately with the given status (§14.3), without
+// returning through the program.
+fn main() -> i32 {
+    exit(7);
+    return 99;   // dead code after `exit`
+}

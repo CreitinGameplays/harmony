@@ -47,6 +47,14 @@ void  ll_store_value(char* addr, int ty, char* v);
 char* ll_str_literal(char* s, int len);
 char* ll_format_call(struct AstNode* n, struct AstList* args);
 char* ll_emit_call_args(struct AstNode* n, char* symbol, int retty, struct AstList* args);
+char* ll_builtin_trap(struct AstNode* n, struct AstList* args);
+char* ll_builtin_assert(struct AstNode* n, struct AstList* args);
+char* ll_builtin_unreachable(struct AstNode* n, struct AstList* args);
+char* ll_builtin_exit(struct AstNode* n, struct AstList* args);
+char* ll_str_arg(struct AstNode* a);
+void  ll_call_noreturn(char* symbol, char* arglist);
+void  ll_call_void(char* symbol, char* arglist);
+char* ll_i64_const(int v);
 char* ll_widen_index(char* idx);
 int   ty_array_len(int id);
 char* ll_int_convert(char* v, int from, int to);
@@ -1018,6 +1026,110 @@ char* ll_str_literal(char* s, int len) {
     return slot;
 }
 
+// ---------------------------------------------------------------------------
+// Prelude builtins (§15.1): `trap`, `assert`, `unreachable`, `exit`. Each
+// lowers to a runtime hook; the trap-like ones end the basic block.
+// ---------------------------------------------------------------------------
+// Emits `call void @sym(args)` and marks the block terminated.
+void ll_call_noreturn(char* symbol, char* arglist) {
+    ll_out_str("  call void @");
+    ll_out_str(symbol);
+    ll_out_str("(");
+    ll_out_str(arglist);
+    ll_out_str(")\n");
+    ll_out_str("  unreachable\n");
+    ll_set_terminated(1);
+}
+
+// The `(&str)` halves of a `&str` argument as `ptr <data>, i64 <len>`.
+char* ll_str_arg(struct AstNode* a) {
+    char* pair;
+    char* data;
+    char* len;
+    char* b;
+    pair = ll_expr(a);
+    data = ll_slice_data(pair);
+    len = ll_slice_len(pair);
+    b = arena_alloc(96);
+    b[0] = 0;
+    ll_str_append(b, "ptr ");
+    ll_str_append(b, data);
+    ll_str_append(b, ", i64 ");
+    ll_str_append(b, len);
+    return b;
+}
+
+// `trap(msg)` -> lc_trap_msg(ptr, len, line, col).
+char* ll_builtin_trap(struct AstNode* n, struct AstList* args) {
+    char* b;
+    b = arena_alloc(160);
+    b[0] = 0;
+    ll_str_append(b, ll_str_arg(args->items[0]));
+    ll_str_append(b, ", i64 ");
+    ll_str_append(b, ll_i64_const(n->file));
+    ll_str_append(b, ", i64 ");
+    ll_str_append(b, ll_i64_const(n->start));
+    ll_call_noreturn("lc_trap_msg", b);
+    g_expr_ty = TY_NEVER;
+    return "0";
+}
+
+// `assert(cond[, msg])` -> lc_assert(cond, ptr, len, line, col). The message
+// halves are zero when the one-argument form is used.
+char* ll_builtin_assert(struct AstNode* n, struct AstList* args) {
+    char* cond;
+    char* b;
+    cond = ll_expr(args->items[0]);
+    cond = ll_int_convert(cond, TY_BOOL, TY_I64);
+    b = arena_alloc(192);
+    b[0] = 0;
+    ll_str_append(b, "i64 ");
+    ll_str_append(b, cond);
+    ll_str_append(b, ", ");
+    if (args->len == 2) {
+        ll_str_append(b, ll_str_arg(args->items[1]));
+    } else {
+        ll_str_append(b, "ptr null, i64 0");
+    }
+    ll_str_append(b, ", i64 ");
+    ll_str_append(b, ll_i64_const(n->file));
+    ll_str_append(b, ", i64 ");
+    ll_str_append(b, ll_i64_const(n->start));
+    ll_call_void("lc_assert", b);
+    // `assert` may return (the condition held), so the block continues.
+    g_expr_ty = TY_UNIT;
+    return "0";
+}
+
+// `unreachable()` -> lc_unreachable(line, col).
+char* ll_builtin_unreachable(struct AstNode* n, struct AstList* args) {
+    char* b;
+    b = arena_alloc(64);
+    b[0] = 0;
+    ll_str_append(b, "i64 ");
+    ll_str_append(b, ll_i64_const(n->file));
+    ll_str_append(b, ", i64 ");
+    ll_str_append(b, ll_i64_const(n->start));
+    ll_call_noreturn("lc_unreachable", b);
+    g_expr_ty = TY_NEVER;
+    return "0";
+}
+
+// `exit(code)` -> lc_exit(code).
+char* ll_builtin_exit(struct AstNode* n, struct AstList* args) {
+    char* code;
+    char* b;
+    code = ll_expr(args->items[0]);
+    code = ll_int_convert(code, TY_I32, TY_I64);
+    b = arena_alloc(64);
+    b[0] = 0;
+    ll_str_append(b, "i64 ");
+    ll_str_append(b, code);
+    ll_call_noreturn("lc_exit", b);
+    g_expr_ty = TY_NEVER;
+    return "0";
+}
+
 // Kept for callers that only have an i32 index; same as ll_index_to_i64.
 char* ll_widen_index(char* idx) {
     return ll_index_to_i64(idx);
@@ -1456,6 +1568,13 @@ char* ll_expr_call(struct AstNode* n) {
     if (n->ival == 1 || n->ival == 2 || n->ival == 3) {
         return ll_format_call(n, args);
     }
+    // `trap`/`assert`/`unreachable`/`exit` (§15.1): prelude builtins that lower
+    // to runtime hooks. The first three stop control (the checker typed them
+    // `never`/unit); `exit` stops too.
+    if (n->ival == 4) { return ll_builtin_trap(n, args); }
+    if (n->ival == 5) { return ll_builtin_assert(n, args); }
+    if (n->ival == 6) { return ll_builtin_unreachable(n, args); }
+    if (n->ival == 7) { return ll_builtin_exit(n, args); }
 
     // Emit the arguments left to right (§7.5) into a register list.
     // An aggregate argument is passed as a pointer to its value.

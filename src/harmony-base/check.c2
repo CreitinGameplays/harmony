@@ -652,6 +652,84 @@ int ck_resolve_type(struct AstNode* t) {
     return TY_INVALID;
 }
 
+// ---------------------------------------------------------------------------
+// Prelude builtins beyond the print family (§15.1): `trap`, `assert`,
+// `unreachable`, `exit`. Each is recognized by name; the argument shape is
+// checked here and the backend lowers it to a runtime hook.
+// ---------------------------------------------------------------------------
+
+// Count of arguments (0 when there is no list).
+int ck_argc(struct AstList* args) {
+    if (args == 0) { return 0; }
+    return args->len;
+}
+
+// `trap(msg: &str) -> never`.
+int ck_builtin_trap(struct AstNode* n, struct AstList* args) {
+    if (ck_argc(args) != 1) {
+        ck_err_arity(n, "trap", 1, ck_argc(args));
+        return TY_NEVER;
+    }
+    {
+        int at;
+        at = ck_expr(args->items[0]);
+        if (at != TY_INVALID && ty_kind(at) != CTY_STRREF) {
+            ck_err_type_mismatch(args->items[0], TY_INVALID, at, "trap message");
+        }
+    }
+    return TY_NEVER;
+}
+
+// `assert(cond: bool)` / `assert(cond: bool, msg: &str)`.
+int ck_builtin_assert(struct AstNode* n, struct AstList* args) {
+    int na;
+    na = ck_argc(args);
+    if (na < 1 || na > 2) {
+        ck_err_arity(n, "assert", 1, na);
+        return TY_UNIT;
+    }
+    {
+        int at;
+        at = ck_expr(args->items[0]);
+        if (at != TY_INVALID && at != TY_BOOL) {
+            ck_err_type_mismatch(args->items[0], TY_BOOL, at, "assert condition");
+        }
+    }
+    if (na == 2) {
+        int at;
+        at = ck_expr(args->items[1]);
+        if (at != TY_INVALID && ty_kind(at) != CTY_STRREF) {
+            ck_err_type_mismatch(args->items[1], TY_INVALID, at, "assert message");
+        }
+    }
+    return TY_UNIT;
+}
+
+// `unreachable() -> never`.
+int ck_builtin_unreachable(struct AstNode* n, struct AstList* args) {
+    if (ck_argc(args) != 0) {
+        ck_err_arity(n, "unreachable", 0, ck_argc(args));
+    }
+    return TY_NEVER;
+}
+
+// `exit(code: i32) -> never`.
+int ck_builtin_exit(struct AstNode* n, struct AstList* args) {
+    if (ck_argc(args) != 1) {
+        ck_err_arity(n, "exit", 1, ck_argc(args));
+        return TY_NEVER;
+    }
+    {
+        int at;
+        at = ck_expr(args->items[0]);
+        if (!ck_coercible(TY_I32, at)) {
+            ck_err_type_mismatch(args->items[0], TY_I32, at, "exit code");
+        }
+        ck_stamp_lits(args->items[0], TY_I32);
+    }
+    return TY_NEVER;
+}
+
 // Builds "&T"-style display names for reference types.
 char* ck_ref_name(char* pre, int inner) {
     lexbuf_reset();
@@ -1151,10 +1229,17 @@ void ck_check_fn(struct AstNode* fn, int idx) {
 // "all paths return"; the CFG-based analysis arrives with lowering).
 int ck_block_ends_in_return(struct AstNode* blk) {
     struct AstList* stmts;
+    struct AstNode* last;
     if (blk == 0 || blk->kids == 0) { return 0; }
     stmts = blk->kids;
     if (stmts->len == 0) { return 0; }
-    return stmts->items[stmts->len - 1]->kind == AST_RETURN;
+    last = stmts->items[stmts->len - 1];
+    if (last->kind == AST_RETURN) { return 1; }
+    // A final expression statement typed `never` (a `trap`/`exit`/
+    // `unreachable` call, §5.1/§15.1) also ends the function: control never
+    // reaches the end of the body.
+    if (last->ty == TY_NEVER) { return 1; }
+    return 0;
 }
 
 // ---------------------------------------------------------------------------

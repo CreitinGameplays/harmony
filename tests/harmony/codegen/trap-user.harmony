@@ -1,0 +1,6 @@
+// EXPECT-TRAP: T-USER
+// `trap(msg)` stops with T-USER and the user's message (§14.1).
+fn main() -> i32 {
+    trap("reached a forbidden state");
+    return 0;
+}

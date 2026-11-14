@@ -1,0 +1,6 @@
+// EXPECT-TRAP: T-UNREACHABLE
+// `unreachable()` is T-UNREACHABLE (§14.1).
+fn main() -> i32 {
+    unreachable();
+    return 0;
+}

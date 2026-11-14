@@ -1,0 +1,7 @@
+// EXPECT-TRAP: T-ASSERT
+// A failed `assert` traps T-ASSERT with the user's message (§14.1, §15.1).
+fn main() -> i32 {
+    let value: i32 = 3;
+    assert(value > 10, "value must exceed ten");
+    return 0;
+}

@@ -42,6 +42,9 @@ int ck_expr_sizeof(struct AstNode* n);
 // ---------------------------------------------------------------------------
 int ck_coercible(int want, int got) {
     if (ty_eq(want, got)) { return 1; }
+    // `never` (a `trap`/`exit`/`unreachable` expression) coerces to any type
+    // (§5.1): control never reaches the point where the value is used.
+    if (got == TY_NEVER) { return 1; }
     // Widening integer conversions are explicit-only (§5.8): no implicit
     // widening, no implicit sign change. Only the untyped-literal rules above
     // (in ty_eq) adapt.
@@ -497,6 +500,26 @@ int ck_expr_call(struct AstNode* n) {
             n->ival = 3;
             ck_check_format(n, "eprintln", args);
             return TY_UNIT;
+        }
+        // The other prelude builtins the rewrite needs (§15.1): `trap`,
+        // `assert`, `unreachable`, `exit`. Like the print family, these are
+        // recognized by name; their bodies are runtime hooks. `n->ival` marks
+        // which one for the backend (4..7).
+        if (str_eq(callee->sval, "trap")) {
+            n->ival = 4;
+            return ck_builtin_trap(n, args);
+        }
+        if (str_eq(callee->sval, "assert")) {
+            n->ival = 5;
+            return ck_builtin_assert(n, args);
+        }
+        if (str_eq(callee->sval, "unreachable")) {
+            n->ival = 6;
+            return ck_builtin_unreachable(n, args);
+        }
+        if (str_eq(callee->sval, "exit")) {
+            n->ival = 7;
+            return ck_builtin_exit(n, args);
         }
         sym = ck_lookup(callee->sval);
         if (sym < 0 || g_sym_kind[sym] != SK_FN) {

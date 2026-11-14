@@ -1,0 +1,6 @@
+// WANT: TYPE-01
+// `exit` takes an `i32` status; a string is not an exit code (§15.1).
+fn main() -> i32 {
+    exit("nope");
+    return 0;
+}

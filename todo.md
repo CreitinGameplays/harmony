@@ -111,10 +111,14 @@ binary is `harmony-base` (the spec's `lc`).
       its type arguments.
 - [ ] `noalias` on `&mut [T]` slices (the mutability of the fat pair is not
       tracked yet).
-- [ ] Minimal freestanding prelude the rewrite needs to compile `src/core/`:
-      `trap`, `assert`, `unreachable`, `exit`, and a growable `String`/`Vec`
-      over `heap` (the compiler builds IR text). These belong in `src/core/`
-      (freestanding), **not** `src/stdlib/`.
+- [x] Minimal freestanding prelude the rewrite needs to compile `src/core/`:
+      `trap(msg)`, `assert(cond[, msg])`, `unreachable()`, `exit(code)`
+      (§15.1) lower to runtime hooks; the stopping ones are `never`-typed, so
+      a function may end in them (`ck_block_ends_in_return` accepts a `never`
+      tail) and the block ends with `unreachable`. `&str` parameters now spill
+      as the fat pair (was a thin-pointer mis-spill). Remaining for the
+      rewrite: a growable `String`/`Vec` over `heap` (needs an allocator grow
+      hook).
 - [ ] `harmony-base audit` — list every `unchecked` site with reason (§13.6);
       today it returns an empty listing (needs M6 surface).
 - [ ] Continue growing accept/reject suites per feature; add a runtime

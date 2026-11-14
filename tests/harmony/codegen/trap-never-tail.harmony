@@ -1,0 +1,13 @@
+// EXPECT: 42
+// A `trap` in one arm of an `if` gives control flow a `never` tail; the
+// function still type-checks and returns on the other path (§5.1, §15.1).
+fn divide(a: i32, b: i32) -> i32 {
+    if (b == 0) {
+        trap("division by zero");
+    }
+    return a / b;
+}
+
+fn main() -> i32 {
+    return divide(84, 2);   // 42
+}

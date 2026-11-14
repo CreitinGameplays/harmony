@@ -1,0 +1,7 @@
+// WANT: NAME-01
+// An unqualified variant name that no in-scope enum defines is an unknown
+// name, not a silent zero value (§6.5).
+fn main() -> i32 {
+    let x = Nope(1);
+    return 0;
+}

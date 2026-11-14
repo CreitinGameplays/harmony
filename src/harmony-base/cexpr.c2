@@ -54,6 +54,11 @@ int ck_coercible(int want, int got) {
     if (ty_is_thin_ref(want) && ty_is_heap(got)) {
         if (ty_eq(ty_elem(want), ty_elem(got))) { return 1; }
     }
+    // An aggregate place borrows to `&T` at a call site (§10.1): the
+    // argument is address-represented, so the borrow is free and sound.
+    if (ty_is_thin_ref(want) && ck_is_aggregate(got)) {
+        if (ty_eq(ty_elem(want), got)) { return 1; }
+    }
     // Widening integer conversions are explicit-only (§5.8): no implicit
     // widening, no implicit sign change. Only the untyped-literal rules above
     // (in ty_eq) adapt.

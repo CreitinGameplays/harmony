@@ -1,0 +1,46 @@
+// EXPECT: 42
+// The §12.3 singly linked list: `Maybe` (a two-variant enum) holding
+// `Heap<Node>`, with `Node` referencing `Maybe`. This exercises forward
+// references between nominal types (registration is now two-pass), the bare
+// `Empty`/`Has` variant forms, switching through `&Maybe`, and aggregate
+// places borrowing to `&T` at call sites.
+enum Maybe {
+    Has(Heap<Node>),
+    Empty,
+}
+
+struct Node {
+    value: i32;
+    next: Maybe;
+}
+
+fn push(head: Maybe, v: i32) -> Maybe {
+    return Has(heap(Node { .value = v, .next = head }));
+}
+
+fn sum(head: &Maybe) -> i32 {
+    switch (head) {
+        case Has(node): { return node.value + sum(node.next); }
+        case Empty:     { return 0; }
+    }
+    return 0;
+}
+
+fn length(head: &Maybe) -> i32 {
+    switch (head) {
+        case Has(node): { return 1 + length(node.next); }
+        case Empty:     { return 0; }
+    }
+    return 0;
+}
+
+fn main() -> i32 {
+    let mut head: Maybe = Empty;
+    head = push(head, 5);
+    head = push(head, 17);
+    head = push(head, 20);
+    let n = length(&head);
+    let total = sum(&head);
+    if (n != 3) { return 1; }
+    return total;   // 20 + 17 + 5 = 42
+}

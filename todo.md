@@ -89,7 +89,10 @@ binary is `harmony-base` (the spec's `lc`).
     `heap(x)` memcpy's aggregate values into the allocation; switching through
     `&`/`Heap` unwraps to the pointee; `Heap<T>` coerces to `&T` at call
     sites; unqualified variant construction `Has(x)` resolves against
-    in-scope enums (ambiguity rejected).
+    in-scope enums (ambiguity rejected); bare unit variants (`Empty`) build
+    the tagged value; nominal-type registration is two-pass, so §12.3's
+    mutually recursive `Maybe`/`Node` works; aggregate places borrow to `&T`
+    at call sites.
   - **`extern fn` FFI** through `unchecked` (UNCK-01/02/05); `lc_syscall3`
     proves the C ABI without a libc.
   - **`FMT-01`** (§15.1): `print`/`println`/`eprintln` format strings parsed
@@ -103,7 +106,7 @@ binary is `harmony-base` (the spec's `lc`).
   - Quiet toolchain: clang stderr captured to a log; one-line summary + first
     error by default, `-v` replays the whole log.
   - Untyped literals adapt at every coercion site (§5.9), stamped on the node.
-  - Tests: codegen.sh 47, error-handling.sh 23, checker.sh 24, parser.sh 53,
+  - Tests: codegen.sh 48, error-handling.sh 24, checker.sh 24, parser.sh 53,
     lexer.sh 21, golden.sh 9, run.sh 28, fuzz.sh 24, determinism.sh 4.
 
 - [x] **M5 (driver part) — diagnostic model + renderers.**
@@ -128,6 +131,10 @@ binary is `harmony-base` (the spec's `lc`).
       hook).
 - [ ] `harmony-base audit` — list every `unchecked` site with reason (§13.6);
       today it returns an empty listing (needs M6 surface).
+- [ ] In-memory LLVM IR (AGENTS.md): compile the generated IR by feeding it to
+      clang on stdin instead of writing a `.ll` temp file by default. The
+      current driver writes `/tmp/harmony-base.ll` then passes the path; the
+      IR text is already a buffer (`g_out`), so this is a plumb-through.
 - [ ] Continue growing accept/reject suites per feature; add a runtime
       `T-ASSERT` trap test once `assert` exists.
 

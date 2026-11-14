@@ -591,6 +591,7 @@ void ck_stmt(struct AstNode* n);           // check one statement
 void ck_stmt_block(struct AstNode* n);     // check a block (opens a scope)
 int ck_resolve_type(struct AstNode* t);    // type AST node -> type id
 int ck_slice_ty(int elem);                 // slice reference type `&[T]`
+int ck_is_aggregate(int ty);               // struct/enum/array/slice/&str value
 int ceval_const_int(struct AstNode* n);    // const-fold an expression (-1 = no)
 char* ck_ref_name(char* pre, int inner);   // "&T"-style display name
 int ck_lookup(char* name);                 // innermost binding of a name

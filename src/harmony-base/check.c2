@@ -58,6 +58,8 @@ void ck_register_program(struct AstNode* prog);
 void ck_register_item(struct AstNode* n);
 void ck_register_struct(struct AstNode* n);
 void ck_register_enum(struct AstNode* n);
+void ck_fill_struct(struct AstNode* n);
+void ck_fill_enum(struct AstNode* n);
 void ck_register_const(struct AstNode* n);
 void ck_register_fn(struct AstNode* n);
 void ck_register_extern(struct AstNode* n);
@@ -575,6 +577,16 @@ int ck_slice_ty(int elem) {
     return ty_new(CTY_SLICE, lexbuf_finish(), elem, 0);
 }
 
+// True when a type is an aggregate *value* (addressed, not a scalar/pointer):
+// struct, enum, array, slice, or `&str`. Used by call-argument coercion
+// (an aggregate place borrows to `&T`), mirroring the backend's criterion.
+int ck_is_aggregate(int ty) {
+    int k;
+    k = ty_kind(ty);
+    return k == CTY_STRUCT || k == CTY_ENUM || k == CTY_ARRAY
+        || k == CTY_SLICE || k == CTY_STRREF;
+}
+
 int ck_resolve_type(struct AstNode* t) {
     int k;
     if (t == 0) { return TY_UNIT; }
@@ -753,14 +765,43 @@ char* ck_ref_name(char* pre, int inner) {
 // ---------------------------------------------------------------------------
 // Pass 1: register items.
 // ---------------------------------------------------------------------------
+// Two-pass item registration (§12.3 needs forward references):
+//   pass 1 — declare every struct/enum *name* (an empty type id);
+//   pass 2 — resolve their members (any nominal name now resolves);
+//   pass 3 — consts, fns, methods (their signatures see full member lists).
 void ck_register_program(struct AstNode* prog) {
     int i;
     struct AstList* items;
     items = prog->kids;
     if (items == 0) { return; }
+    // Pass 1: the nominal type names.
     i = 0;
     while (i < items->len) {
-        ck_register_item(items->items[i]);
+        struct AstNode* it;
+        it = items->items[i];
+        if (it->kind == AST_STRUCT) { ck_register_struct(it); }
+        if (it->kind == AST_ENUM) { ck_register_enum(it); }
+        i = i + 1;
+    }
+    // Pass 2: their members (fields, variant payloads).
+    i = 0;
+    while (i < items->len) {
+        struct AstNode* it;
+        it = items->items[i];
+        if (it->kind == AST_STRUCT) { ck_fill_struct(it); }
+        if (it->kind == AST_ENUM) { ck_fill_enum(it); }
+        i = i + 1;
+    }
+    // Pass 3: everything else.
+    i = 0;
+    while (i < items->len) {
+        struct AstNode* it;
+        it = items->items[i];
+        if (it->kind == AST_STRUCT || it->kind == AST_ENUM) {
+            i = i + 1;
+            continue;
+        }
+        ck_register_item(it);
         i = i + 1;
     }
 }
@@ -778,12 +819,30 @@ void ck_register_item(struct AstNode* n) {
 // Registers a struct: a CTY_STRUCT type whose members are its fields.
 // Field types are resolved immediately (the struct's own name is already
 // registered, so a field may reference the struct through a pointer).
+// Pass 1: declare every struct/enum *name* with its (empty) type id, so
+// forward references between nominal types resolve (§12.3's `struct Node`
+// containing a `Maybe` declared earlier, or vice versa). Members are filled
+// by pass 2 (ck_register_members).
 void ck_register_struct(struct AstNode* n) {
+    int id;
+    id = ty_new_typed(CTY_STRUCT, n->sval, n);
+    if (ck_declare(n->sval, SK_TYPE, id, n, 0) < 0) { return; }
+}
+
+void ck_register_enum(struct AstNode* n) {
+    int id;
+    id = ty_new_typed(CTY_ENUM, n->sval, n);
+    if (ck_declare(n->sval, SK_TYPE, id, n, 0) < 0) { return; }
+}
+
+// Pass 2: resolve the members of one struct/enum now that every nominal name
+// exists. The type id was recorded on the decl node in pass 1.
+void ck_fill_struct(struct AstNode* n) {
     int id;
     int i;
     struct AstList* fields;
-    id = ty_new_typed(CTY_STRUCT, n->sval, n);
-    if (ck_declare(n->sval, SK_TYPE, id, n, 0) < 0) { return; }
+    id = ck_lookup_type(n->sval);
+    if (id == TY_INVALID) { return; }
     fields = n->kids2;
     if (fields == 0) { return; }
     i = 0;
@@ -799,18 +858,16 @@ void ck_register_struct(struct AstNode* n) {
     }
 }
 
-// Registers an enum: a CTY_ENUM type; each variant's payload becomes an
-// anonymous struct type so layout/codegen treat payloads uniformly.
-//
-// Two phases: build every payload struct first, then append the variant
-// members. `ty_add_member` keeps each type's members contiguous, so mixing
-// payload construction with variant appends would interleave the arrays.
-void ck_register_enum(struct AstNode* n) {
+// Pass 2 for enums: the payload struct of every variant, then the enum's own
+// member list (contiguous). Ordering matters: the payload structs exist
+// before any member lookup, so variant payloads may reference the enum itself
+// (`enum Tree { Branch(Heap<Tree>) }`).
+void ck_fill_enum(struct AstNode* n) {
     int id;
     int i;
     struct AstList* variants;
-    id = ty_new_typed(CTY_ENUM, n->sval, n);
-    if (ck_declare(n->sval, SK_TYPE, id, n, 0) < 0) { return; }
+    id = ck_lookup_type(n->sval);
+    if (id == TY_INVALID) { return; }
     variants = n->kids2;
     if (variants == 0) { return; }
     // Phase A: the payload struct of every variant.

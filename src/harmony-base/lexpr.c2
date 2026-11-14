@@ -269,8 +269,19 @@ char* ll_expr_path(struct AstNode* n) {
         }
         return ll_load(ty, slot);
     }
-    g_expr_ty = ll_node_ty(n);
-    return ll_zero_of(g_expr_ty);
+    // An unqualified *variant* (`Empty`, `Has`) has no local slot: build the
+    // tagged enum value (§6.5). The checker resolved the enum type onto the
+    // node; a unit variant is a zero-payload construction.
+    ty = ll_node_ty(n);
+    if (ty_kind(ty) == CTY_ENUM) {
+        int vi;
+        vi = ty_find_member(ty, n->sval);
+        if (vi >= 0) {
+            return ll_enum_construct(n, ty, vi, 0);
+        }
+    }
+    g_expr_ty = ty;
+    return ll_zero_of(ty);
 }
 
 // A bare enum variant value (`Enum::Variant`, or the prelude's bare `Empty`):

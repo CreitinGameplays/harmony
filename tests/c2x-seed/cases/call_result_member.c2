@@ -1,0 +1,26 @@
+// Member access on a function-call result: f()->kind must load the field.
+// Regression for the c2x-seed bug where `.member_expr_base` saw a call base,
+// gave up resolving the field (gen_expr_struct_fields was stale/0 after
+// gen_call), and silently returned the raw struct address as the value.
+// Two fixes: (1) parser stores the pointee field_array_ptr for
+// `struct T *f()` returns (it used to store 0 "to be safe"); (2) gen_call
+// records the callee's return type + field array after the call so member
+// access on the result resolves.
+// EXPECT: 42
+
+struct T {
+    int kind;
+    int pad;
+};
+
+struct T one;
+
+struct T* fetch(void) {
+    return &one;
+}
+
+int main() {
+    one.kind = 42;
+    if (fetch()->kind == 42) { return 42; }
+    return 0;
+}

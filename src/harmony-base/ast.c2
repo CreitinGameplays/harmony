@@ -15,6 +15,7 @@
 // ---------------------------------------------------------------------------
 // Program / items
 const int AST_PROGRAM   = 1;
+const int AST_IMPORT    = 9;   // sval = module path string
 const int AST_FN        = 10;
 const int AST_EXTERN_FN = 11;
 const int AST_STRUCT    = 12;
@@ -28,9 +29,10 @@ const int AST_PARAM     = 18;
 // Types
 const int AST_TYPE_NAME  = 20;  // sval = name, list = generic args
 const int AST_TYPE_REF   = 21;  // a = target, ival bit 0 = mut, sval = life
-const int AST_TYPE_ARRAY = 22;  // a = element, ival = length
+const int AST_TYPE_ARRAY = 22;  // a = element, b = length expr
 const int AST_TYPE_SLICE = 23;  // a = element
 const int AST_TYPE_UNIT  = 24;  // ()
+const int AST_TYPE_RAW   = 25;  // a = target, ival bit 0 = mut
 
 // Statements
 const int AST_BLOCK     = 30;  // list = statements
@@ -63,16 +65,19 @@ const int AST_CALL      = 61;  // a = callee, list = args, list2 = method
 const int AST_AS        = 62;  // a = expr, b = type
 const int AST_STRUCT_INIT = 63;// sval = name, list = field inits
 const int AST_FIELD_INIT  = 64;// sval = name, a = value
-const int AST_ARRAY_LIT   = 65;// list = elements, ival = repeat count (-1 = none)
+const int AST_ARRAY_LIT   = 65;// list = elements; a = value, b = count for [v; n]
 const int AST_BORROW      = 66;// a = operand, ival bit 0 = mut
 const int AST_DEREF       = 67;// a = operand
 const int AST_NEW         = 68;// a = operand
+const int AST_SIZEOF      = 69;// a = type
+const int AST_RAW_EXPR    = 70;// a = expr (raw(...) cast)
 
 // Patterns
 const int AST_PAT_WILD   = 80;
 const int AST_PAT_LIT    = 81;  // a = literal
 const int AST_PAT_BIND   = 82;  // sval = name
 const int AST_PAT_VARIANT= 83;  // sval = variant, list = sub-patterns
+const int AST_PAT_RANGE  = 84;  // a = lo literal, b = hi literal
 
 // ---------------------------------------------------------------------------
 // Nodes
@@ -159,6 +164,7 @@ struct AstList* ast_list_concat(struct AstList* a, struct AstList* b) {
 // Returns a stable, lowercase name for a node kind (used by AST dumps/tests).
 char* ast_kind_name(int kind) {
     if (kind == AST_PROGRAM)   { return "program"; }
+    if (kind == AST_IMPORT)    { return "import"; }
     if (kind == AST_FN)        { return "fn"; }
     if (kind == AST_EXTERN_FN) { return "extern-fn"; }
     if (kind == AST_STRUCT)    { return "struct"; }
@@ -173,6 +179,7 @@ char* ast_kind_name(int kind) {
     if (kind == AST_TYPE_ARRAY){ return "type-array"; }
     if (kind == AST_TYPE_SLICE){ return "type-slice"; }
     if (kind == AST_TYPE_UNIT) { return "type-unit"; }
+    if (kind == AST_TYPE_RAW) { return "type-raw"; }
     if (kind == AST_BLOCK)     { return "block"; }
     if (kind == AST_LET)       { return "let"; }
     if (kind == AST_ASSIGN)    { return "assign"; }
@@ -205,10 +212,13 @@ char* ast_kind_name(int kind) {
     if (kind == AST_BORROW)    { return "borrow"; }
     if (kind == AST_DEREF)     { return "deref"; }
     if (kind == AST_NEW)       { return "new"; }
+    if (kind == AST_SIZEOF)    { return "sizeof"; }
+    if (kind == AST_RAW_EXPR) { return "raw-expr"; }
     if (kind == AST_PAT_WILD)  { return "_"; }
     if (kind == AST_PAT_LIT)   { return "pat-lit"; }
     if (kind == AST_PAT_BIND)  { return "pat-bind"; }
     if (kind == AST_PAT_VARIANT){ return "pat-variant"; }
+    if (kind == AST_PAT_RANGE) { return "pat-range"; }
     return "?";
 }
 
@@ -227,5 +237,6 @@ int ast_is_stmt(int kind) {
 }
 
 int ast_is_type(int kind) {
-    return kind >= AST_TYPE_NAME && kind <= AST_TYPE_UNIT;
+    if (kind >= AST_TYPE_NAME && kind <= AST_TYPE_UNIT) { return 1; }
+    return kind == AST_TYPE_RAW;
 }

@@ -17,6 +17,7 @@ extern msg_warn_dead_code, msg_warn_implicit_cast
 extern msg_warn_dead_code, msg_warn_implicit_cast
 extern msg_warn_empty_body, msg_warn_constant_cond
 extern msg_assign_const
+extern msg_undeclared
 extern WARN_UNINIT_VAR, WARN_UNINIT_PTR
 extern WARN_MISSING_RETURN, WARN_UNUSED_VAR
 extern WARN_DEAD_CODE, WARN_IMPLICIT_CAST
@@ -2256,6 +2257,51 @@ report_const_error:
 
     ; Print " 'NAME'"
     mov dil, ' '
+    call out_write_char
+    mov dil, 39                      ; single quote
+    call out_write_char
+    mov rsi, r12                     ; name_ptr
+    call out_write_string
+    mov dil, 39                      ; single quote
+    call out_write_char
+    mov dil, 10                      ; newline
+    call out_write_char
+    call out_flush
+
+    ; Restore out_fd
+    pop rdi                          ; rdi = saved out_fd
+    call out_set_fd
+    pop r12
+    pop rbx
+    ret
+
+; ================================================================
+; report_undeclared(name_ptr)
+; Print "error: undeclared identifier 'NAME'\n" to stderr and count the
+; error, so an undeclared identifier used as a value is a hard compile
+; error instead of silent zero-value codegen (the C2X grammar resolves
+; names in one pass, so codegen is the first place the name is known
+; missing). rdi = name_ptr.
+; ================================================================
+report_undeclared:
+    push rbx
+    push r12
+
+    mov r12, rdi                    ; r12 = name_ptr (save across calls)
+
+    inc qword [error_count]
+
+    ; Save current out_fd, flush, switch to stderr
+    mov rbx, [out_fd]
+    push rbx
+    call out_flush
+    mov rdi, STDERR
+    call out_set_fd
+
+    mov rsi, msg_undeclared
+    call out_write_string
+
+    mov dil, 32                      ; space
     call out_write_char
     mov dil, 39                      ; single quote
     call out_write_char
@@ -5353,12 +5399,36 @@ gen_assign:
     push rbx
     mov rax, [gen_expr_type]
     cmp rax, TOK_KW_STRUCT
+    jne .ga_no_struct_copy
+    ; RHS evaluated with struct-value semantics. memcpy is only correct when
+    ; the LHS itself is a struct-typed *variable*: assignment to a pointer
+    ; variable (g_p = g_arr; p = &s;) must store the address as a plain
+    ; qword. Deciding on the RHS alone made `g_p = g_arr` memcpy over the
+    ; pointer variable itself (n bytes starting at &g_p).
+    mov r10, [rsp + 16]                  ; r10 = LHS name_ptr (under rax, rbx)
+    mov rdi, r10
+    call find_symbol                     ; local: rax = offset(neg), rbx = type
+    test rax, rax
+    jnz .ga_lhs_classified
+    mov rdi, r10
+    call find_global_symbol              ; global: rax = name_ptr, rbx = type
+.ga_lhs_classified:
+    test rax, rax
+    jz .ga_lhs_unresolved                ; undeclared LHS: plain path reports
+    cmp rbx, PTR_TYPE_FLAG
+    jae .ga_lhs_is_pointer
+    ; LHS is a struct variable: memcpy path is correct.
     pop rbx
     pop rax
-    jne .not_struct_assign
-    ; Struct RHS: pop name_ptr from stack (pushed before gen_expr)
     pop r10                              ; r10 = LHS name_ptr
     jmp .assign_struct_rhs
+.ga_lhs_is_pointer:
+    ; Re-classify the RHS as a plain address value.
+    mov qword [gen_expr_type], 0
+.ga_lhs_unresolved:
+.ga_no_struct_copy:
+    pop rbx
+    pop rax
 .not_struct_assign:
 
     ; Warning: implicit cast — assigning int literal to char variable
@@ -5882,6 +5952,7 @@ gen_assign:
     mov rsi, asm_mov_rax_g
     call emit_string
     mov rsi, r13
+    call strip_g_prefix                   ; user globals may already spell g_name
     call emit_string
     mov rsi, asm_close_bracket
     call emit_string
@@ -6556,11 +6627,47 @@ gen_call:
     ; After the call, the struct result is in struct_ret_slot (BSS buffer).
     ; Load its address into rax (the gen_expr return value).
     cmp r14, -1
-    jne .asm_done
+    jne .gc_set_ret_type
 
     ; Load struct_ret_slot address into rax
     mov rsi, asm_mov_rax_struct_ret
     call emit_string
+
+.gc_set_ret_type:
+    ; Record the callee's return type so member access on the call result
+    ; (e.g. p_cur()->kind, f().x) can resolve the field array. Without this,
+    ; `gen_expr_struct_fields` held whatever a previous expression left
+    ; there (often 0) and `.member_expr_base` silently returned the raw
+    ; struct address instead of loading the field.
+    push r12
+    mov rdi, r12                         ; callee name
+    call find_func_return                 ; rax = return type, rdx = field_array_ptr
+    pop r12
+    mov [gen_expr_type], rax
+    ; Struct-valued returns: the result is an address (struct value
+    ; semantics); struct-pointer returns keep the pointee field array for
+    ; chained access.
+    cmp rax, TOK_KW_STRUCT
+    jne .gc_ret_type_ptr_check
+    mov [gen_expr_struct_fields], rdx
+    jmp .asm_done
+.gc_ret_type_ptr_check:
+    ; Any pointer-to-struct return (PTR_TYPE_FLAG + TOK_KW_STRUCT + depth)
+    ; also carries the pointee's field array.
+    push rax
+    push rdx
+    mov rdi, rax
+    call type_base_is_struct
+    pop rdx
+    pop rcx                              ; rcx = return type
+    test rax, rax
+    jz .gc_ret_type_plain
+    mov [gen_expr_struct_fields], rdx
+    jmp .asm_done
+.gc_ret_type_plain:
+    ; Non-struct returns have no field array.
+    mov qword [gen_expr_struct_fields], 0
+    jmp .asm_done
 
 .asm_done:
     EPILOGUE r15, r14, r13, r12, rbx
@@ -6926,6 +7033,9 @@ gen_expr:
     test rax, rax
     jnz .found_global
     pop rdi                              ; discard name_ptr
+    ; Undeclared identifier used as a value: a hard compile error, not
+    ; silent zero-value codegen.
+    call report_undeclared
     xor rax, rax
     jmp .done
 
@@ -7517,6 +7627,7 @@ gen_expr:
     mov rsi, asm_mov_rax_g
     call emit_string
     mov rsi, r14
+    call strip_g_prefix                  ; user globals may already spell g_name
     call emit_string
     mov rsi, asm_close_bracket
     call emit_string
@@ -7866,6 +7977,7 @@ gen_expr:
     mov rsi, asm_mov_rax_g
     call emit_string
     mov rsi, r15
+    call strip_g_prefix              ; user globals may already spell g_name
     call emit_string
     mov rsi, asm_close_bracket
     call emit_string
@@ -8497,6 +8609,7 @@ gen_expr:
     mov rsi, asm_mov_rax_g
     call emit_string
     mov rsi, r14
+    call strip_g_prefix                  ; user globals may already spell g_name
     call emit_string
     mov rsi, asm_close_bracket
     call emit_string
@@ -8643,6 +8756,7 @@ gen_expr:
     mov rsi, asm_mov_rax_g
     call emit_string
     mov rsi, r14
+    call strip_g_prefix                  ; user globals may already spell g_name
     call emit_string
     mov rsi, asm_close_bracket
     call emit_string
@@ -9226,10 +9340,10 @@ gen_expr:
     ; Base name of `x[i]` is neither a local nor a global (e.g. an
     ; undeclared identifier). The name_ptr pushed before find_global_symbol
     ; must be discarded or the stack grows on every such node and later
-    ; codegen walks off the end. Emit nothing and yield 0, matching .ident's
-    ; not-found path (the missing name is the resolver's problem, not
-    ; codegen's; the compiler must not crash on it).
+    ; codegen walks off the end. Report the undeclared name (hard error)
+    ; and yield 0, matching .ident's not-found path.
     pop rdi
+    call report_undeclared
     xor rax, rax
     jmp .done
 
@@ -9421,7 +9535,7 @@ gen_addr:
     call find_global_symbol
     ; rax = name_ptr, rbx = type, rcx = extra
     test rax, rax
-    jz .ga_fail
+    jz .ga_ident_undeclared
     pop rdi                             ; rdi = name_ptr
     mov [gen_expr_type], rbx
     mov [gen_expr_struct_fields], rcx
@@ -9454,6 +9568,7 @@ gen_addr:
     mov rsi, asm_mov_rax_g
     call emit_string
     mov rsi, r9
+    call strip_g_prefix                  ; user globals may already spell g_name
     call emit_string
     mov rsi, asm_close_bracket
     call emit_string
@@ -9770,6 +9885,7 @@ gen_addr:
     mov rsi, asm_mov_rax_g
     call emit_string
     pop rsi
+    call strip_g_prefix              ; user globals may already spell g_name
     call emit_string
     mov rsi, asm_close_bracket
     call emit_string
@@ -9928,6 +10044,13 @@ gen_addr:
     pop r12
     pop rbx
     ret
+
+.ga_ident_undeclared:
+    ; `&name` / gen_addr on a name that is neither local nor global:
+    ; report it as a hard compile error (matches .ident's not-found path).
+    pop rdi
+    call report_undeclared
+    jmp .ga_fail
 
 ; ================================================================
 ; struct_total_size(rdi = field_array_ptr) -> rax = total_size

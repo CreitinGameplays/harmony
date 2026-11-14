@@ -45,10 +45,117 @@ void explain_page_compiler(void) {
 int explain_known(char* code) {
     return str_eq(code, "ICE-01")
         || str_eq(code, "SYN-01")
+        || str_eq(code, "SYN-02")
+        || str_eq(code, "SYN-03")
         || str_eq(code, "SYN-04")
+        || str_eq(code, "SYN-05")
+        || str_eq(code, "LEX-01")
         || str_eq(code, "NAME-02")
         || str_eq(code, "USE-01")
         || str_eq(code, "CFG-01");
+}
+
+// SYN-01: conditions need parentheses (§8.1).
+void explain_syn01(void) {
+    out_str("SYN-01 - the condition needs parentheses\n");
+    out_nl();
+    out_str("WHAT   if, while, for, and switch write their condition in\n");
+    out_str("       parentheses, C-style. This keeps `Point { .x = 1 }` and\n");
+    out_str("       other brace forms unambiguous inside a condition.\n");
+    out_str("WHY    Conditions in `if (x > 5) { ... }` read the same as C;\n");
+    out_str("       the grammar never guesses where a condition ends.\n");
+    out_str("BAD    if x > 5 { return; }\n");
+    out_str("GOOD   if (x > 5) { return; }\n");
+    out_str("NOTE   The braces around the body are not optional either\n");
+    out_str("       (SYN-02). Two small rules, no surprises later.\n");
+    out_str("SEE    docs/harmony.md - 8.1, 16.10 Code catalogue\n");
+    out_nl();
+}
+
+// SYN-02: bodies need braces.
+void explain_syn02(void) {
+    out_str("SYN-02 - the body needs braces\n");
+    out_nl();
+    out_str("WHAT   Every if/else/while/for/switch body is a braced block.\n");
+    out_str("       There is no single-statement form.\n");
+    out_str("WHY    The goto-fail bug class (Apple's `goto fail;`) came from a\n");
+    out_str("       brace-less body. Mandatory braces make that mistake\n");
+    out_str("       impossible to write and invisible to diffs.\n");
+    out_str("BAD    if (x) return;\n");
+    out_str("GOOD   if (x) { return; }\n");
+    out_str("NOTE   There is no `loop` keyword; `while (true) { ... }` is the\n");
+    out_str("       infinite loop, with `break` to leave.\n");
+    out_str("SEE    docs/harmony.md - 8.1, 16.10 Code catalogue\n");
+    out_nl();
+}
+
+// SYN-03: assignment as a condition.
+void explain_syn03(void) {
+    out_str("SYN-03 - assignment used as a condition\n");
+    out_nl();
+    out_str("WHAT   `=` assigns; it is a statement form and cannot appear\n");
+    out_str("       inside a condition.\n");
+    out_str("WHY    `if (x = 5)` compiles in C and silently overwrites x.\n");
+    out_str("       Here the grammar cannot express it, so the stop fires at\n");
+    out_str("       the `=` itself.\n");
+    out_str("BAD    if (x = 5) { ... }\n");
+    out_str("GOOD   if (x == 5) { ... }\n");
+    out_str("NOTE   All compound assignments (+=, -=, ...) are statements too.\n");
+    out_str("SEE    docs/harmony.md - 8.1, 16.10 Code catalogue\n");
+    out_nl();
+}
+
+// SYN-04: missing semicolon.
+void explain_syn04(void) {
+    out_str("SYN-04 - missing `;`\n");
+    out_nl();
+    out_str("WHAT   Simple statements (let, assignment, expression, return,\n");
+    out_str("       break, continue) end with `;`. Block statements (if,\n");
+    out_str("       while, for, switch, unchecked, bare `{ }`) do not.\n");
+    out_str("WHY    The rule from C, minus its exceptions: one look at the\n");
+    out_str("       line ending tells you whether the statement continues.\n");
+    out_str("BAD    let n = 5\n");
+    out_str("GOOD   let n = 5;\n");
+    out_str("NOTE   Struct fields also end with `;`; enum variants and struct\n");
+    out_str("       initializer fields are `,`-separated (trailing comma ok).\n");
+    out_str("SEE    docs/harmony.md - 4.4, 16.10 Code catalogue\n");
+    out_nl();
+}
+
+// SYN-05: unexpected token.
+void explain_syn05(void) {
+    out_str("SYN-05 - unexpected token\n");
+    out_nl();
+    out_str("WHAT   This token does not fit the grammar at this position (or\n");
+    out_str("       a delimiter is unbalanced).\n");
+    out_str("WHY    One honest stop at the exact byte beats a cascade; the\n");
+    out_str("       parser recovers at the next `;` or `}` and keeps going, so\n");
+    out_str("       several mistakes are reported per run.\n");
+    out_str("BAD    fn main() { return; )\n");
+    out_str("GOOD   fn main() { return; }\n");
+    out_str("NOTE   Nested generics close the `>>` cleanly: Vec<Vec<i32>>.\n");
+    out_str("       Comparisons do not chain: write `a < b && b < c`.\n");
+    out_str("SEE    docs/harmony.md - 18, 16.10 Code catalogue\n");
+    out_nl();
+}
+
+// LEX-01: malformed literal or unterminated comment.
+void explain_lex01(void) {
+    out_str("LEX-01 - malformed literal or comment\n");
+    out_nl();
+    out_str("WHAT   A literal (number, char, byte, string) or a block comment\n");
+    out_str("       is not written in one of the legal forms.\n");
+    out_str("WHY    The token the rest of the compiler would see does not\n");
+    out_str("       exist, so naming the exact bytes is cheaper than a\n");
+    out_str("       confusing parse error downstream.\n");
+    out_str("BAD    'ab   1_000_   42q   \\q   \"unterminated   /* unclosed\n");
+    out_str("GOOD   'a'   1_000    42u8   \\n   \"closed\"       /* closed */\n");
+    out_str("NOTE   Numbers: `42`, `1_000_000`, `0xFF`, `0o17`, `0b1010`, a\n");
+    out_str("       suffix from the primitive types (42u8). Chars hold one\n");
+    out_str("       Unicode scalar: '\\n', '\\u{1F980}'. b'...' holds one byte.\n");
+    out_str("       Block comments nest.\n");
+    out_str("SEE    docs/harmony.md - 4.3, 16.10 Code catalogue\n");
+    out_nl();
 }
 
 int explain_lookup(char* code) {
@@ -57,6 +164,12 @@ int explain_lookup(char* code) {
         explain_page_compiler();
         return 0;
     }
+    if (str_eq(code, "SYN-01")) { explain_syn01(); return 0; }
+    if (str_eq(code, "SYN-02")) { explain_syn02(); return 0; }
+    if (str_eq(code, "SYN-03")) { explain_syn03(); return 0; }
+    if (str_eq(code, "SYN-04")) { explain_syn04(); return 0; }
+    if (str_eq(code, "SYN-05")) { explain_syn05(); return 0; }
+    if (str_eq(code, "LEX-01")) { explain_lex01(); return 0; }
     // The remaining codes currently share the stub lesson; each gets its
     // own WHAT/WHY/BAD/GOOD text as the stage that emits it lands.
     explain_page(code);

@@ -1,0 +1,19 @@
+// Global struct-pointer indexing: g_p[i].field must emit g_g_-free loads.
+// Regression for the c2x-seed bug where `.ga_index_global_ptr` (and the
+// other global pointer paths) forgot strip_g_prefix on names already
+// spelled g_*, so nasm failed with "symbol g_g_p not defined".
+// EXPECT: 42
+
+struct Point {
+    int x;
+    int y;
+};
+
+struct Point g_arr[2];
+
+int main() {
+    g_arr[1].x = 42;
+    struct Point* g_p;
+    g_p = &g_arr[1];
+    return g_p[0].x;   // index through a global struct pointer
+}

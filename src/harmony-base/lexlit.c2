@@ -1,0 +1,623 @@
+// harmony-base — shared lexer scratch space, char classes, and the literal
+// scanners (docs/harmony.md §4.3).
+//
+// This file sits before lexer.c2 in the build order and owns the pieces both
+// halves need: the identifier/literal scratch buffer, the byte classifiers,
+// and the number/char/string scanners.
+//
+// Numbers: 42, 1_000_000, 0xFF, 0o17, 0b1010 with optional primitive-type
+// suffix (42u8, 7i64, 9usize). Unsuffixed defaults are the checker's business
+// (i32/f64); the lexer records spelling and suffix separately.
+// Floats: 3.14, 1e-3, 2.5f32. A '.' only starts a fraction between digits, so
+// `1..10` lexes as INT RANGE INT (range wins; v0 has no `.5` literals).
+// Chars: 'a', '\n', '\u{1F980}'; bytes: b'a' (one byte, 0..255).
+// Strings: "..." with \n \r \t \\ \" \0 \u{...}; cooked bytes arena-owned.
+//
+// Malformed literals are LEX-01 stops with a `try:` fix. A failed scan
+// returns 0 and the lexer run aborts (no cascading reports).
+
+// Scratch buffer for identifiers and joined names (parser uses it too; never
+// nested — the cursor helpers copy it out before re-entering).
+char g_lexbuf[512];
+int  g_lexbuf_len;
+
+void lexbuf_reset(void) {
+    g_lexbuf_len = 0;
+}
+
+// Scratch buffer for cooked literal bytes (chars, strings): escapes decode
+// into it; litbuf_finish copies it to the arena.
+char g_litbuf[4096];
+int  g_litbuf_len;
+
+void litbuf_reset(void) { g_litbuf_len = 0; }
+
+void litbuf_push(char c) {
+    if (g_litbuf_len < 4095) {
+        g_litbuf[g_litbuf_len] = c;
+        g_litbuf_len = g_litbuf_len + 1;
+    }
+}
+
+// Character classes (bytes read unsigned; >= 128 counts as "identifier-ish"
+// so UTF-8 payload passes through untouched for later stages).
+int is_digit(char c)  { return c >= '0' && c <= '9'; }
+int is_hexdig(char c) {
+    if (is_digit(c)) { return 1; }
+    if (c >= 'a' && c <= 'f') { return 1; }
+    if (c >= 'A' && c <= 'F') { return 1; }
+    return 0;
+}
+int is_ident_start(char c) {
+    if (c == '_') { return 1; }
+    if (c >= 'a' && c <= 'z') { return 1; }
+    if (c >= 'A' && c <= 'Z') { return 1; }
+    if (c < 0) { return 1; }    // UTF-8 lead/continuation byte
+    return 0;
+}
+int is_ident(char c) {
+    return is_ident_start(c) || is_digit(c);
+}
+
+// Appends a NUL-terminated string to the scratch buffer.
+void lexbuf_push_str(char* s) {
+    int i;
+    i = 0;
+    while (s[i] != 0) {
+        lexbuf_push(s[i]);
+        i = i + 1;
+    }
+}
+
+void lexbuf_push(char c) {
+    if (g_lexbuf_len < 510) {
+        g_lexbuf[g_lexbuf_len] = c;
+        g_lexbuf_len = g_lexbuf_len + 1;
+        g_lexbuf[g_lexbuf_len] = 0;   // keep NUL-terminated at the length
+    }
+}
+
+char* lexbuf_finish(void) {
+    // NUL-terminate at the current length (the buffer is reused across
+    // tokens, so stale bytes from a longer previous word must be cut).
+    g_lexbuf[g_lexbuf_len] = 0;
+    return arena_alloc_str(g_lexbuf);
+}
+
+// Copies the buffer into the arena, NUL-terminated at the current length.
+char* litbuf_finish(void) {
+    char* p;
+    int i;
+    p = arena_alloc(g_litbuf_len + 1);
+    i = 0;
+    while (i < g_litbuf_len) { p[i] = g_litbuf[i]; i = i + 1; }
+    p[i] = 0;
+    return p;
+}
+
+// True when byte c is a digit of the radix.
+int digit_in_radix(char c, int radix) {
+    int v;
+    if (c >= '0' && c <= '9') { v = c - '0'; }
+    else if (c >= 'a' && c <= 'f') { v = c - 'a' + 10; }
+    else if (c >= 'A' && c <= 'F') { v = c - 'A' + 10; }
+    else { return 0; }
+    return v >= 0 && v < radix;
+}
+
+// Hex digit value (caller has checked).
+int hexval(char c) {
+    if (c >= '0' && c <= '9') { return c - '0'; }
+    if (c >= 'a' && c <= 'f') { return c - 'a' + 10; }
+    return c - 'A' + 10;
+}
+
+// Reports LEX-01 with a fix; returns 0 so callers can `return lexlit_stop(...)`.
+int lexlit_stop(struct SourceFile* sf, int start, int end,
+                char* title, char* summary, char* fix_label, char* fix_text) {
+    int idx;
+    idx = diag_stop("LEX-01", title, summary, sf, start, end);
+    if (idx >= 0) {
+        diag_fix(diag_get(idx), fix_label, fix_text);
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Numbers.
+// ---------------------------------------------------------------------------
+
+// Known suffix set (§4.3): the primitive types.
+int suffix_is_known(char* s) {
+    if (str_eq(s, "i8"))  { return 1; }
+    if (str_eq(s, "i16")) { return 1; }
+    if (str_eq(s, "i32")) { return 1; }
+    if (str_eq(s, "i64")) { return 1; }
+    if (str_eq(s, "u8"))  { return 1; }
+    if (str_eq(s, "u16")) { return 1; }
+    if (str_eq(s, "u32")) { return 1; }
+    if (str_eq(s, "u64")) { return 1; }
+    if (str_eq(s, "f32")) { return 1; }
+    if (str_eq(s, "f64")) { return 1; }
+    if (str_eq(s, "isize")) { return 1; }
+    if (str_eq(s, "usize")) { return 1; }
+    return 0;
+}
+
+// Duplicates the raw slice [a, b) of the source into the arena, NUL-terminated.
+char* slice_dup(struct SourceFile* sf, int a, int b) {
+    char* p;
+    int i;
+    p = arena_alloc(b - a + 1);
+    i = a;
+    while (i < b) { p[i - a] = sf->data[i]; i = i + 1; }
+    p[b - a] = 0;
+    return p;
+}
+
+// Scans a number starting at `*pos` (a digit). Fills t and advances *pos.
+// Returns 1, or 0 after reporting LEX-01.
+int lex_scan_number(struct SourceFile* sf, int* pos, struct Token* t) {
+    char* d;
+    int n;
+    int start;
+    int p;
+    int radix;
+    int val;
+    int is_float;
+    int suffix_start;
+
+    d = sf->data;
+    n = sf->len;
+    start = *pos;
+    p = start;
+    radix = 10;
+    val = 0;
+    is_float = 0;
+    suffix_start = -1;
+
+    // Radix prefix (0x, 0o, 0b) — consumed only when a digit of that radix
+    // follows, so `0xFF` takes the prefix while a bare `0x` stays integer
+    // `0` + identifier `x` (the parser reports the glued suffix). Plain `0`
+    // stays decimal (no implicit octal).
+    if (d[p] == '0' && p + 1 < n
+        && (d[p + 1] == 'x' || d[p + 1] == 'o' || d[p + 1] == 'b')) {
+        int r;
+        r = 10;
+        if (d[p + 1] == 'x') { r = 16; }
+        else if (d[p + 1] == 'o') { r = 8; }
+        else { r = 2; }
+        if (p + 2 < n && digit_in_radix(d[p + 2], r)) {
+            radix = r;
+            p = p + 2;
+        }
+    }
+
+    // Integer digits with `_` separators (only between digits).
+    while (p < n) {
+        char c;
+        c = d[p];
+        if (digit_in_radix(c, radix)) {
+            val = val * radix + hexval(c);
+            p = p + 1;
+        } else if (c == '_') {
+            // A separator must sit between two digits.
+            if (p + 1 >= n || !digit_in_radix(d[p + 1], radix)) {
+                return lexlit_stop(sf, start, p + 2,
+                                   "misplaced `_` in number",
+                                   "A `_` separator sits between digits, never at either end of the literal.",
+                                   "keep digits around the `_`", "1_000");
+            }
+            p = p + 1;
+        } else {
+            break;
+        }
+    }
+
+    // No digits after the prefix: `0x`, `0b_`, `0o` alone.
+    if (p == start + 2 && radix != 10) {
+        return lexlit_stop(sf, start, p,
+                           "radix prefix needs digits",
+                           "A 0x/0o/0b prefix must be followed by digits in that radix.",
+                           "write the digits", "0xFF");
+    }
+
+    // Fraction: '.' followed by a digit (else `.` begins the range operator
+    // or field access and stays a separate token).
+    if (p < n && d[p] == '.' && p + 1 < n && is_digit(d[p + 1])) {
+        is_float = 1;
+        p = p + 1;
+        while (p < n && (is_digit(d[p]) || d[p] == '_')) {
+            if (d[p] == '_' && (p + 1 >= n || !is_digit(d[p + 1]))) {
+                return lexlit_stop(sf, start, p + 2,
+                                   "misplaced `_` in float",
+                                   "A `_` separator sits between digits.",
+                                   "keep digits around the `_`", "3.14_15");
+            }
+            p = p + 1;
+        }
+    }
+
+    // Exponent: e|E [+|-] digit+. `2e` alone is not an exponent — it lexes as
+    // `2` then `e` (the parser reports the suffix), so only consume on digits.
+    if (!is_float && p < n && (d[p] == 'e' || d[p] == 'E')) {
+        int q;
+        q = p + 1;
+        if (q < n && (d[q] == '+' || d[q] == '-')) { q = q + 1; }
+        if (q < n && is_digit(d[q])) {
+            is_float = 1;
+            p = q;
+            while (p < n && (is_digit(d[p]) || d[p] == '_')) {
+                if (d[p] == '_' && (p + 1 >= n || !is_digit(d[p + 1]))) {
+                    return lexlit_stop(sf, start, p + 2,
+                                       "misplaced `_` in exponent",
+                                       "A `_` separator sits between digits.",
+                                       "keep digits around the `_`", "1e-3");
+                }
+                p = p + 1;
+            }
+        }
+    }
+
+    // Suffix: an identifier run directly after the digits. Known primitive
+    // suffixes only; anything else glued to a number can never be a valid
+    // token, so it is a lex stop (not a parser error).
+    if (p < n && is_ident_start(d[p])) {
+        int send;
+        int slen;
+        send = p;
+        while (p < n && is_ident(d[p])) { p = p + 1; }
+        slen = p - send;
+        if (is_float && slen > 0) {
+            // Float suffixes: f32/f64 only.
+            char* sfx;
+            lexbuf_reset();
+            {
+                int i;
+                i = send;
+                while (i < p) { lexbuf_push(d[i]); i = i + 1; }
+            }
+            sfx = lexbuf_finish();
+            if (!str_eq(sfx, "f32") && !str_eq(sfx, "f64")) {
+                return lexlit_stop(sf, start, p,
+                                   "unknown float suffix",
+                                   "Float suffixes are f32 and f64.",
+                                   "pick one", "2.5f32");
+            }
+            t->sval = sfx;
+            suffix_start = send;
+        } else if (slen > 0) {
+            char* sfx;
+            lexbuf_reset();
+            {
+                int i;
+                i = send;
+                while (i < p) { lexbuf_push(d[i]); i = i + 1; }
+            }
+            sfx = lexbuf_finish();
+            if (!suffix_is_known(sfx)) {
+                return lexlit_stop(sf, start, p,
+                                   "unknown numeric suffix",
+                                   "Numeric suffixes are the primitive types: i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 isize usize.",
+                                   "pick a primitive type", "42u8");
+            }
+            t->sval = sfx;
+            suffix_start = send;
+        }
+    } else {
+        t->sval = 0;
+    }
+
+    t->len = p - start;
+    t->start = start;
+    t->end = p;
+
+    if (is_float) {
+        t->kind = TOK_FLOAT;
+        t->ival = 0;
+        // Spelling without the suffix (the checker re-parses from this).
+        if (suffix_start >= 0) {
+            t->text = slice_dup(sf, start, suffix_start);
+        } else {
+            t->text = slice_dup(sf, start, p);
+        }
+    } else {
+        t->kind = TOK_INT;
+        t->ival = val;
+        t->text = slice_dup(sf, start, p);
+    }
+    *pos = p;
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
+// Shared escape decoder (chars, bytes, strings).
+// ---------------------------------------------------------------------------
+
+// Decodes one escape at `pos` (pointing at the backslash). Appends decoded
+// bytes to litbuf. Returns input bytes consumed (>= 2), or 0 after reporting
+// LEX-01. `byte_ctx`: b'...' literals reject scalar values above 255.
+int lexlit_escape(struct SourceFile* sf, int pos, int byte_ctx) {
+    char* d;
+    int n;
+    char c;
+    d = sf->data;
+    n = sf->len;
+
+    if (pos + 1 >= n) {
+        lexlit_stop(sf, pos, pos + 1,
+                    "dangling backslash",
+                    "A backslash must be followed by an escape character.",
+                    "finish the escape", "\\n");
+        return 0;
+    }
+    c = d[pos + 1];
+
+    if (c == 'n')  { litbuf_push(10); return 2; }
+    if (c == 'r')  { litbuf_push(13); return 2; }
+    if (c == 't')  { litbuf_push(9);  return 2; }
+    if (c == '\\') { litbuf_push(92); return 2; }
+    if (c == '"')  { litbuf_push(34); return 2; }
+    if (c == '\'') { litbuf_push(39); return 2; }
+    if (c == '0')  { litbuf_push(0);  return 2; }
+
+    // \u{...}: Unicode scalar, UTF-8 encoded (byte literals cap at 255).
+    if (c == 'u' && pos + 2 < n && d[pos + 2] == '{') {
+        int p;
+        int val;
+        int ndigits;
+        p = pos + 3;
+        val = 0;
+        ndigits = 0;
+        while (p < n && d[p] != '}') {
+            if (!is_hexdig(d[p])) {
+                lexlit_stop(sf, pos, p + 1,
+                            "malformed \\u{...} escape",
+                            "A \\u{...} escape contains one to six hexadecimal digits followed by `}`.",
+                            "write the digits and close the brace", "\\u{1F980}");
+                return 0;
+            }
+            val = val * 16 + hexval(d[p]);
+            ndigits = ndigits + 1;
+            if (val > 0x10FFFF) {
+                lexlit_stop(sf, pos, p + 1,
+                            "not a Unicode scalar value",
+                            "A \\u{...} escape names one Unicode scalar value: at most 0x10FFFF, and never the surrogate range 0xD800..0xDFFF.",
+                            "use a valid scalar", "\\u{1F980}");
+                return 0;
+            }
+            p = p + 1;
+        }
+        if (p >= n) {
+            lexlit_stop(sf, pos, p,
+                        "unterminated \\u{...} escape",
+                        "A \\u{...} escape must be closed with `}`.",
+                        "close the escape", "\\u{41}");
+            return 0;
+        }
+        if (ndigits == 0) {
+            lexlit_stop(sf, pos, p + 1,
+                        "empty \\u{} escape",
+                        "A \\u{...} escape needs at least one hexadecimal digit.",
+                        "write a scalar value", "\\u{41}");
+            return 0;
+        }
+        if (val >= 0xD800 && val <= 0xDFFF) {
+            lexlit_stop(sf, pos, p + 1,
+                        "not a Unicode scalar value",
+                        "A \\u{...} escape names one Unicode scalar value: at most 0x10FFFF, and never the surrogate range 0xD800..0xDFFF.",
+                        "use a valid scalar", "\\u{1F980}");
+            return 0;
+        }
+        if (byte_ctx && val > 255) {
+            lexlit_stop(sf, pos, p + 1,
+                        "byte literal out of range",
+                        "A b'...' literal holds exactly one byte (0..255).",
+                        "write a byte value", "b'\\u{FF}'");
+            return 0;
+        }
+        // UTF-8 encode.
+        if (val < 0x80) {
+            litbuf_push(val);
+        } else if (val < 0x800) {
+            litbuf_push(0xC0 + (val >> 6));
+            litbuf_push(0x80 + (val & 0x3F));
+        } else if (val < 0x10000) {
+            litbuf_push(0xE0 + (val >> 12));
+            litbuf_push(0x80 + ((val >> 6) & 0x3F));
+            litbuf_push(0x80 + (val & 0x3F));
+        } else {
+            litbuf_push(0xF0 + (val >> 18));
+            litbuf_push(0x80 + ((val >> 12) & 0x3F));
+            litbuf_push(0x80 + ((val >> 6) & 0x3F));
+            litbuf_push(0x80 + (val & 0x3F));
+        }
+        return p + 1 - pos;
+    }
+
+    lexlit_stop(sf, pos, pos + 2,
+                "unknown escape sequence",
+                "The escape set is \\n \\r \\t \\backslash \\\" \\' \\0 \\u{...}.",
+                "use an escape from the set", "\\n");
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Char and byte literals.
+// ---------------------------------------------------------------------------
+
+// Scans 'x' or b'x'. A scalar of >1 UTF-8 byte is allowed for chars (the
+// payload is the Unicode scalar value, stored in t->ival).
+int lex_scan_char(struct SourceFile* sf, int* pos, struct Token* t, int is_byte) {
+    char* d;
+    int n;
+    int start;
+    int p;
+    int scalar;
+
+    d = sf->data;
+    n = sf->len;
+    start = *pos;
+    p = start;
+    if (is_byte) { p = p + 1; }   // skip the b
+    p = p + 1;                    // skip the '
+
+    litbuf_reset();
+
+    // Empty '' is always malformed.
+    if (p < n && d[p] == '\'') {
+        return lexlit_stop(sf, start, p + 1,
+                           "empty character literal",
+                           "A character literal holds exactly one character.",
+                           "write one character", "'a'");
+    }
+    if (p >= n) {
+        return lexlit_stop(sf, start, p,
+                           "unterminated character literal",
+                           "A character literal must be closed with a second '.",
+                           "close the literal", "'a'");
+    }
+
+    if (d[p] == '\\') {
+        int used;
+        used = lexlit_escape(sf, p, is_byte);
+        if (used == 0) { return 0; }
+        p = p + used;
+    } else {
+        // One raw character: ASCII one byte; multi-byte UTF-8 is consumed
+        // fully (one scalar), so `'é'` works.
+        int len8;
+        len8 = utf8_len(d[p]);
+        if (len8 == 0) {
+            return lexlit_stop(sf, p, p + 1,
+                               "invalid UTF-8 in character literal",
+                               "Source is UTF-8; a character literal holds one well-formed character.",
+                               "fix the encoding", "'a'");
+        }
+        {
+            int i;
+            i = 0;
+            while (i < len8) { litbuf_push(d[p + i]); i = i + 1; }
+            p = p + len8;
+        }
+    }
+
+    if (p >= n || d[p] != '\'') {
+        return lexlit_stop(sf, start, p + 1,
+                           "unterminated character literal",
+                           "A character literal holds exactly one character followed by '.",
+                           "close the literal", "'a'");
+    }
+    p = p + 1;
+
+    // Decode the litbuf bytes into a scalar value.
+    scalar = utf8_decode(g_litbuf, g_litbuf_len);
+    if (is_byte) {
+        if (g_litbuf_len != 1) {
+            // Multi-byte escapes were already rejected in lexlit_escape; a
+            // raw multi-byte char is the remaining case.
+            return lexlit_stop(sf, start, p,
+                               "byte literal holds one byte",
+                               "A b'...' literal holds exactly one byte (0..255).",
+                               "write one byte", "b'a'");
+        }
+        t->kind = TOK_BYTE;
+        t->ival = g_litbuf[0] & 0xFF;
+    } else {
+        t->kind = TOK_CHAR;
+        t->ival = scalar;
+    }
+    t->text = slice_dup(sf, start, p);
+    t->sval = 0;
+    t->len = p - start;
+    t->start = start;
+    t->end = p;
+    *pos = p;
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
+// Strings.
+// ---------------------------------------------------------------------------
+
+// Scans "..." with escapes; t->sval = cooked bytes, t->len = cooked length,
+// t->text = raw spelling slice.
+int lex_scan_string(struct SourceFile* sf, int* pos, struct Token* t) {
+    char* d;
+    int n;
+    int start;
+    int p;
+
+    d = sf->data;
+    n = sf->len;
+    start = *pos;
+    p = start + 1;    // skip the "
+
+    litbuf_reset();
+    while (p < n && d[p] != '"') {
+        if (d[p] == '\\') {
+            int used;
+            used = lexlit_escape(sf, p, 0);
+            if (used == 0) { return 0; }
+            p = p + used;
+        } else if (d[p] == 10) {
+            // A raw newline inside a string: report instead of swallowing
+            // the rest of the file.
+            return lexlit_stop(sf, start, p,
+                               "unterminated string literal",
+                               "A string literal must be closed on the same line.",
+                               "close the string", "\"hello\"");
+        } else {
+            litbuf_push(d[p]);
+            p = p + 1;
+        }
+    }
+    if (p >= n) {
+        return lexlit_stop(sf, start, p,
+                           "unterminated string literal",
+                           "A string literal must be closed with a \".",
+                           "close the string", "\"hello\"");
+    }
+    p = p + 1;
+
+    t->kind = TOK_STRING;
+    t->sval = litbuf_finish();
+    t->len = g_litbuf_len;
+    t->text = slice_dup(sf, start, p);
+    t->ival = 0;
+    t->start = start;
+    t->end = p;
+    *pos = p;
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
+// Small UTF-8 helpers (chars only; identifiers pass bytes through).
+// ---------------------------------------------------------------------------
+
+// Length of a UTF-8 sequence from its lead byte; 0 = invalid lead byte.
+int utf8_len(char lead) {
+    // ASCII (also NUL, control).
+    if ((lead & 0x80) == 0) { return 1; }
+    if ((lead & 0xE0) == 0xC0) { return 2; }
+    if ((lead & 0xF0) == 0xE0) { return 3; }
+    if ((lead & 0xF8) == 0xF0) { return 4; }
+    return 0;
+}
+
+// Decodes len bytes at p into a Unicode scalar (no validation beyond the
+// length classes; the lexer only feeds it well-formed slices it measured).
+int utf8_decode(char* p, int len) {
+    if (len == 1) { return p[0] & 0xFF; }
+    if (len == 2) {
+        return ((p[0] & 0x1F) << 6) | (p[1] & 0x3F);
+    }
+    if (len == 3) {
+        return ((p[0] & 0x0F) << 12) | ((p[1] & 0x3F) << 6) | (p[2] & 0x3F);
+    }
+    if (len == 4) {
+        return ((p[0] & 0x07) << 18) | ((p[1] & 0x3F) << 12)
+             | ((p[2] & 0x3F) << 6) | (p[3] & 0x3F);
+    }
+    return 0;
+}

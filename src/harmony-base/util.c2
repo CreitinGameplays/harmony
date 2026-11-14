@@ -21,11 +21,11 @@ char* arena_alloc(int n) {
     g_arena_used = (g_arena_used + 7) & (0 - 8);
     p = &g_arena[g_arena_used];
     g_arena_used = g_arena_used + n;
-    // A hard arena-overflow is a compiler bug, but failing loudly beats
-    // scribbling past the block.
+    // A hard arena-overflow is a compiler bug (ICE-01, §16.6): fail loudly
+    // on stderr with the STOP exit code instead of scribbling past the block.
     if (g_arena_used > 16777216) {
-        err_str("harmony-base: internal: arena exhausted\n");
-        syscall_exit(EXIT_INTERNAL);
+        err_str("harmony-base: internal: arena exhausted (ICE-01)\n");
+        syscall_exit(EXIT_STOP);
     }
     return p;
 }

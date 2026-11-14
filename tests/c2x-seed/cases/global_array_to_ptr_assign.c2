@@ -1,0 +1,24 @@
+// Assigning a global struct array to a global struct pointer: g_p = g_arr
+// must store the address, not memcpy over the pointer variable itself.
+// Regression for the c2x-seed bug where gen_assign chose the struct-copy
+// path from the RHS evaluation type alone (gen_expr_type == TOK_KW_STRUCT
+// for an array-of-structs decaying to its address) and never consulted the
+// LHS type, so `g_p = g_arr` emitted __struct_copy(dest=&g_p, src=&g_arr)
+// — corrupting the pointer variable (and segfaulting when it was still
+// NULL). The fix classifies the LHS first: a pointer-typed LHS stores the
+// address as a plain qword.
+// EXPECT: 42
+
+struct T {
+    int a;
+    int b;
+};
+
+struct T g_arr[2];
+struct T* g_p;
+
+int main() {
+    g_arr[1].a = 42;
+    g_p = g_arr;
+    return g_p[1].a;
+}

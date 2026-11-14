@@ -17,7 +17,7 @@ Output extension: `.harmony`. Milestone: byte-deterministic build.
 The primary backend is **LLVM IR** (§19.4, per AGENTS.md); the C11 backend is
 secondary (§19.4b). The driver binary is `harmony-base` (the spec's `lc`).
 
-### M0 — Toolchain, layout, lexer, parser (§19.7)
+### M0 — Toolchain, layout, lexer, parser (§19.7) — COMPLETE
 
 - [x] `Makefile` rules: `harmony-base` (build compiler), `test`, `test-seed`,
       `test-fuzz`, `clean`; `build.sh` (c2x-seed) is a prereq of the compiler.
@@ -30,8 +30,10 @@ secondary (§19.4b). The driver binary is `harmony-base` (the spec's `lc`).
   - [x] `util.c2` — arena allocator, string helpers, out/err helpers.
   - [x] `ast.c2` — AST node definitions + arena-backed resizable child lists.
   - [x] `reports.c2` — `explain` lessons (§16.8) + `audit` listing (§13.6).
-  - [/] `lexer.c2` — token model + M0 EOF-only stub (full set: §4).
-  - [/] `parser.c2` — recursive-descent parser (M0 stub; grammar: §18).
+  - [x] `lexlit.c2` + `lexer.c2` — full lexer (§4): keywords/contextual
+        `life`, all literal forms, nested comments, LEX-01 stops.
+  - [x] `parser.c2` + `pstmts.c2` + `pexpr.c2` — recursive-descent parser
+        (§18), SYN-01..05 with fixes, recovery, `pastout.c2` pretty-printer.
   - [ ] `resolve.c2` — module loader + name resolution (§19.1 stage 3).
   - [ ] `types.c2` — type checker + `copy`/`eq`/`ord` bounds (§5, §19.1 stage 4).
   - [ ] `lower.c2` — CFG IR: places, moves, borrows, scope ends (§19.1 stage 5).
@@ -61,23 +63,34 @@ secondary (§19.4b). The driver binary is `harmony-base` (the spec's `lc`).
 - [x] `tests/harmony/run.sh` + `tests/harmony/fuzz.sh`; registered in Makefile.
 - [x] `tests/c2x-seed/run.sh` (+`faults/` negative cases) and
       `tests/c2x-seed/determinism.sh` — c2x-seed corpus (`make test-seed`).
-- [ ] Lexer (§4): UTF-8 ingest; nested `/* */` + `//` + `///` comments;
-      identifiers; keywords + contextual `life`; integer/float/bool/char/byte
+- [x] Lexer (§4): UTF-8 ingest; nested `/* */` + `//` + `///` comments;
+      identifiers; keywords + contextual `life` (stays an identifier;
+      `life(...)` recognized in type position); integer/float/bool/char/byte
       literals (incl. `1_000`, `0xFF`, `'a'`, `b'a'`, `\u{...}`);
-      `-`/`;` punctuation rules; position tracking. Missing `;` → `SYN-04`.
-- [ ] Parser (§18): items (`export`/`import`/`fn`/`const`/`struct`/`enum`/
+      `-`/`;` punctuation rules; position tracking. Missing `;` → `SYN-04`;
+      malformed literals → `LEX-01` with a fix. (`lexlit.c2` + `lexer.c2`.)
+- [x] Parser (§18): items (`export`/`import`/`fn`/`const`/`struct`/`enum`/
       `methods`/`extern fn`/`unchecked fn`); statements (`let [mut]`,
       assignment as statement, `if`/`while`/`for` 3 shapes/`switch`/`return`/
       `break`/`continue`/`unchecked("...")` blocks); types (`[T; N]`, `[T]`,
       `&T`, `&mut T`, `&life(a) T`, `raw [mut] T`, generics `<T, life a>`);
       conditions parenthesized (else `SYN-01`); braces mandatory (else `SYN-02`);
-      assignment-in-condition → `SYN-03`; recovery at `;` and `}`.
-- [ ] AST pretty-printer + round-trip tests (§19.7 M0 deliverable).
+      assignment-in-condition → `SYN-03`; recovery at `;` and `}` (plus a
+      no-progress guard so a malformed item cannot loop forever).
+      (`parser.c2` + `pstmts.c2` + `pexpr.c2`.)
+      Notable grammar details handled: `>>`/`>=` split for nested generics
+      (`Vec<Vec<i32>>`), `..=` before `..` in the lexer, `<...>(` lookahead
+      for generic calls, `eq`/`ord` bounds as identifiers (`copy` is the
+      only keyword bound), `self` as a primary expression.
+- [x] AST pretty-printer + round-trip tests (§19.7 M0 deliverable).
+      `pastout.c2` + `--dump-ast` (deterministic output); golden AST shapes
+      in `tests/harmony/parser.sh`; lexer suite `tests/harmony/lexer.sh`
+      (both registered in `make test`).
 
 ### M0.5 — c2x-seed fixes required to build harmony-base
 
-Twelve c2x-seed defects were found and fixed while bootstrapping (see
-`docs/c2x-seed.md` "Recent Bug Fixes"):
+These c2x-seed defects were found and fixed while bootstrapping (see
+`docs/c2x-seed.md` "Recent Bug Fixes" for the full table):
 
 - [x] Postfix index expressions used `parse_unary`; now `parse_expression`.
 - [x] Local struct arrays registered element count instead of the field array.
@@ -104,6 +117,33 @@ Twelve c2x-seed defects were found and fixed while bootstrapping (see
 - [x] Compiler crash on infinite-size structs (`struct G { struct G s; }`,
       `struct G { struct G arr[2]; }`): by-value self-reference during body
       parsing now reports a plain parse fault instead of recursing forever.
+- [x] `g_g_` double prefix on global pointer loads: seven codegen paths
+      (`.ai_global_ptr`, `.addr_global_ptr`, `.index_global_ptr`,
+      `.post_global`, `.postd_global`, `.ga_ident_global_ptr`,
+      `.ga_index_global_ptr`) emitted `mov rax, [rel g_g_name]` for globals
+      already spelled `g_*` (nasm: `symbol g_g_p not defined`); all now call
+      `strip_g_prefix`. Regression: `global_struct_ptr_index.c2`.
+- [x] Member access on a call result (`f()->kind`) returned the raw struct
+      address instead of loading the field: `gen_call` never recorded the
+      callee's return type/field array, so `.member_expr_base` silently
+      no-opped (stale `gen_expr_struct_fields`). Fix: parser stores the
+      pointee field array for `struct T *f()` returns (was 0), and
+      `gen_call` sets `gen_expr_type`/`gen_expr_struct_fields` from the
+      function-return registry after the call. Regression:
+      `call_result_member.c2`.
+- [x] Assigning a struct array to a struct pointer (`g_p = g_arr;`) memcpy'd
+      over the pointer variable itself: `gen_assign` picked the struct-copy
+      path from the RHS evaluation type alone (an array of structs decays to
+      `TOK_KW_STRUCT`) and never checked the LHS type. Fix: classify the LHS
+      first — pointer-typed LHS stores the address as a plain qword.
+      Regression: `global_array_to_ptr_assign.c2`.
+- [x] Undeclared identifiers in expressions compiled to silent garbage (no
+      diagnostic, value reads whatever register held): `.ident`,
+      `.index_no_base`, and `gen_addr` not-found paths yielded 0 silently.
+      Fix: new `report_undeclared` hard compile error (`undeclared
+      identifier 'name'`, exit 1) in all three paths;
+      `undeclared_index_no_crash.c2` moved to `faults/undeclared_index.c2`
+      expecting the error.
 
 ### M1 — Types + first codegen: "LLVM with types and traps" (§19.7)
 

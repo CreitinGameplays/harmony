@@ -11,8 +11,12 @@ HB_SRC    := \
 	src/harmony-base/source.c2 \
 	src/harmony-base/diag.c2 \
 	src/harmony-base/reports.c2 \
+	src/harmony-base/lexlit.c2 \
 	src/harmony-base/lexer.c2 \
 	src/harmony-base/parser.c2 \
+	src/harmony-base/pstmts.c2 \
+	src/harmony-base/pexpr.c2 \
+	src/harmony-base/pastout.c2 \
 	src/harmony-base/pipeline.c2 \
 	src/harmony-base/main.c2
 SEED_SRC  := $(wildcard src/c2x-seed/*.asm)
@@ -32,6 +36,8 @@ harmony-base: $(SEED) $(HB_SRC)
 # Full test target: c2x-seed regression corpus + harmony-base driver tests.
 test: test-seed harmony-base
 	bash tests/harmony/run.sh
+	bash tests/harmony/lexer.sh
+	bash tests/harmony/parser.sh
 	bash tests/harmony/golden.sh
 	bash tests/harmony/determinism.sh
 

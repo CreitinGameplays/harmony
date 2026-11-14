@@ -6,6 +6,7 @@
 int pipeline_run(struct Options* opts) {
     struct SourceFile sf;
     struct Token* toks;
+    struct AstNode* root;
     int n;
     int rc;
 
@@ -33,7 +34,32 @@ int pipeline_run(struct Options* opts) {
         return EXIT_STOP;
     }
 
-    parser_run(&sf, toks, n);
+    if (opts->verbose) {
+        err_str("harmony-base: lexed ");
+        err_int(n);
+        err_str(" tokens");
+        err_nl();
+    }
+
+    root = parser_run(&sf, toks, n);
+    if (root == 0 || parser_stop_count() > 0) {
+        // The parser already reported each syntax stop; flush and stop.
+        diag_flush(opts->format, opts->all);
+        return EXIT_STOP;
+    }
+
+    if (opts->verbose) {
+        err_str("harmony-base: parsed ");
+        err_int(ast_list_len(root->kids));
+        err_str(" items");
+        err_nl();
+    }
+
+    // --dump-ast: print the parse tree to stdout (M0 round-trip tests;
+    // byte-deterministic, a pure function of the tree).
+    if (opts->dump_ast) {
+        ast_print(root);
+    }
 
     // Emission stages of the pipeline (§19.1 stage 9) are not implemented yet.
     // Requesting one is an honest stop with a fix, not a silent exit: the

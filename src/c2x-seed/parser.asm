@@ -3027,9 +3027,11 @@ parse_struct_def:
 .ptr_ret_type_done:
     mov [current_func_return_type], rax
     ; Struct pointer returns use the plain pointer ABI (value in rax, no
-    ; hidden struct-copy slot), so field_array_ptr is irrelevant to the
-    ; codegen.  Store 0 to be safe.
-    mov qword [current_func_return_fields], 0
+    ; hidden struct-copy slot). The pointee's field_array_ptr IS needed,
+    ; though: member access on the call result (p_cur()->kind, f()->x)
+    ; resolves the field through it (codegen .gc_set_ret_type). r15 holds
+    ; the struct's field array here.
+    mov [current_func_return_fields], r15
     ; Hand the function name and pre-consumed flags to parse_function.
     mov [pre_consumed_func_name], rbx
     mov qword [struct_ret_pre_consumed], 1

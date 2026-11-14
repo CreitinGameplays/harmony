@@ -1,22 +1,512 @@
 // harmony-base — lexer (docs/harmony.md §4, §19.1 stage 1).
 //
-// M0 ships the module boundary and a minimal driver: it scans ASCII whitespace
-// and emits a single EOF token, enough to prove the pipeline end to end. The
-// full v0.3 token set — identifiers, keywords + contextual `life`, integer /
-// float / bool / char / byte literals (incl. `_` separators and `\u{...}`),
-// nested block comments, operators — lands with the lexer milestone.
+// Scans UTF-8 source into tokens: identifiers, keywords (incl. contextual
+// `life`, which stays an identifier until the parser asks), all §4.3 literal
+// forms (numbers with `_` separators / radixes / suffixes, chars with
+// `\u{...}`, bytes, strings), nested block comments, and §4.4 punctuation.
+// Position (1-based line, 0-based column) is tracked per token.
+//
+// Errors are diagnostic stops with a `try:` fix (LEX-01 for malformed
+// literals/comments, SYN-05 reserved for the parser); a failed scan returns
+// a negative count and the pipeline flushes.
+//
+// Determinism note: tokens are a pure function of the input bytes.
 
-int lexer_run(struct SourceFile* sf, struct Token** out_tokens) {
-    struct Token* toks;
-    // Reserve room for a couple of EOF-ish sentinels so later stages can peek.
-    toks = arena_alloc(4 * TOKEN_SIZE);
-    toks[0].kind = TOK_EOF;
-    toks[0].text = "";
-    toks[0].len = 0;
-    toks[0].start = 0;
-    toks[0].end = 0;
-    toks[0].line = 1;
-    toks[0].col = 0;
-    *out_tokens = toks;
+// ---------------------------------------------------------------------------
+// Keywords (§4.2) and the reserved/foreign-word handling.
+// (The scratch buffer, char classes, and hex helpers live in lexlit.c2.)
+// ---------------------------------------------------------------------------
+int kw_is_keyword(char* s) {
+    // Declarations
+    if (str_eq(s, "fn")) { return 1; }
+    if (str_eq(s, "let")) { return 1; }
+    if (str_eq(s, "mut")) { return 1; }
+    if (str_eq(s, "const")) { return 1; }
+    if (str_eq(s, "struct")) { return 1; }
+    if (str_eq(s, "enum")) { return 1; }
+    if (str_eq(s, "methods")) { return 1; }
+    if (str_eq(s, "copy")) { return 1; }
+    if (str_eq(s, "export")) { return 1; }
+    if (str_eq(s, "import")) { return 1; }
+    if (str_eq(s, "extern")) { return 1; }
+    // Control flow
+    if (str_eq(s, "if")) { return 1; }
+    if (str_eq(s, "else")) { return 1; }
+    if (str_eq(s, "while")) { return 1; }
+    if (str_eq(s, "for")) { return 1; }
+    if (str_eq(s, "switch")) { return 1; }
+    if (str_eq(s, "case")) { return 1; }
+    if (str_eq(s, "default")) { return 1; }
+    if (str_eq(s, "return")) { return 1; }
+    if (str_eq(s, "break")) { return 1; }
+    if (str_eq(s, "continue")) { return 1; }
+    // Memory and safety
+    if (str_eq(s, "new")) { return 1; }
+    if (str_eq(s, "unchecked")) { return 1; }
+    if (str_eq(s, "raw")) { return 1; }
+    if (str_eq(s, "self")) { return 1; }
+    // Literals and operators
+    if (str_eq(s, "true")) { return 1; }
+    if (str_eq(s, "false")) { return 1; }
+    if (str_eq(s, "as")) { return 1; }
+    if (str_eq(s, "sizeof")) { return 1; }
+    // `life` stays an identifier (contextual, §4.2).
+    return 0;
+}
+
+// True when the spelling is one of the reserved-for-future words (§4.2).
+// Using one where a name is expected earns a STOP, not a hint: reserving is
+// a promise not to silently change meaning later.
+int kw_is_reserved(char* s) {
+    if (str_eq(s, "abilities")) { return 1; }
+    if (str_eq(s, "async")) { return 1; }
+    if (str_eq(s, "await")) { return 1; }
+    if (str_eq(s, "macro")) { return 1; }
+    if (str_eq(s, "try")) { return 1; }
+    return 0;
+}
+
+// Recognized foreign words (§4.2): lexed as plain identifiers; the
+// resolver reports NAME-02 when one is used as a name.
+int kw_is_foreign(char* s) {
+    if (str_eq(s, "unsafe")) { return 1; }
+    if (str_eq(s, "impl")) { return 1; }
+    if (str_eq(s, "match")) {  return 1; }
+    if (str_eq(s, "trait")) { return 1; }
+    if (str_eq(s, "pub")) { return 1; }
+    if (str_eq(s, "use")) { return 1; }
+    if (str_eq(s, "loop")) { return 1; }
+    if (str_eq(s, "goto")) { return 1; }
+    if (str_eq(s, "null")) { return 1; }
+    if (str_eq(s, "NULL")) { return 1; }
+    if (str_eq(s, "nullptr")) { return 1; }
+    if (str_eq(s, "malloc")) { return 1; }
+    if (str_eq(s, "free")) { return 1; }
+    if (str_eq(s, "Box")) { return 1; }
+    if (str_eq(s, "Option")) { return 1; }
+    if (str_eq(s, "Some")) { return 1; }
+    if (str_eq(s, "None")) { return 1; }
+    if (str_eq(s, "Result")) { return 1; }
+    if (str_eq(s, "Ok")) { return 1; }
+    if (str_eq(s, "Err")) { return 1; }
+    if (str_eq(s, "panic")) { return 1; }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Position tracking. `col` counts bytes since the line start (0-based);
+// rendering a caret uses the byte offset anyway, so UTF-8 width is cosmetic.
+// ---------------------------------------------------------------------------
+void lex_pos(struct SourceFile* sf, int off, int* line, int* col) {
+    source_line_col(sf, off, line, col);
+    *col = *col - 1;
+    if (*col < 0) { *col = 0; }
+}
+
+// ---------------------------------------------------------------------------
+// The main scan loop.
+// ---------------------------------------------------------------------------
+
+// Skips whitespace and comments. Returns 1, or 0 after reporting an
+// unterminated block comment at `start`.
+int lex_skip_trivia(struct SourceFile* sf, int* pos) {
+    char* d;
+    int n;
+    d = sf->data;
+    n = sf->len;
+
+    while (*pos < n) {
+        char c;
+        c = d[*pos];
+        // Plain whitespace: space, tab, LF, CR.
+        if (c == ' ' || c == 9 || c == 10 || c == 13) {
+            *pos = *pos + 1;
+            continue;
+        }
+        // Line comment: `//` or doc comment `///`.
+        if (c == '/' && *pos + 1 < n && d[*pos + 1] == '/') {
+            *pos = *pos + 2;
+            while (*pos < n && d[*pos] != 10) { *pos = *pos + 1; }
+            continue;
+        }
+        // Block comment, nesting (§4.1): `/*` ... `*/`, inner `/*` pairs count.
+        if (c == '/' && *pos + 1 < n && d[*pos + 1] == '*') {
+            int start;
+            int depth;
+            start = *pos;
+            depth = 1;
+            *pos = *pos + 2;
+            while (*pos < n && depth > 0) {
+                if (d[*pos] == '/' && *pos + 1 < n && d[*pos + 1] == '*') {
+                    depth = depth + 1;
+                    *pos = *pos + 2;
+                } else if (d[*pos] == '*' && *pos + 1 < n && d[*pos + 1] == '/') {
+                    depth = depth - 1;
+                    *pos = *pos + 2;
+                } else {
+                    *pos = *pos + 1;
+                }
+            }
+            if (depth > 0) {
+                int idx;
+                idx = diag_stop("LEX-01",
+                                "unterminated block comment",
+                                "A `/*` comment must be closed with a matching `*/`. Block comments nest, so every `/*` opened here needs its own `*/`.",
+                                sf, start, start + 2);
+                if (idx >= 0) {
+                    diag_fix(diag_get(idx), "close the comment", "*/");
+                }
+                return 0;
+            }
+            continue;
+        }
+        // Not trivia.
+        break;
+    }
     return 1;
+}
+
+// Scans an identifier or keyword starting at `*pos`; fills `t`.
+void lex_scan_word(struct SourceFile* sf, int* pos, struct Token* t) {
+    char* d;
+    int n;
+    int start;
+    d = sf->data;
+    n = sf->len;
+    start = *pos;
+    lexbuf_reset();
+    while (*pos < n && is_ident(d[*pos])) {
+        lexbuf_push(d[*pos]);
+        *pos = *pos + 1;
+    }
+    t->text = lexbuf_finish();
+    t->len = *pos - start;
+    t->start = start;
+    t->end = *pos;
+    t->ival = 0;
+    t->sval = 0;
+    if (kw_is_keyword(t->text)) {
+        t->kind = TOK_KEYWORD;
+        t->sval = t->text;
+    } else {
+        t->kind = TOK_IDENT;
+    }
+}
+
+// Reports an unexpected character at `pos` (SYN-05-shaped; the lexer never
+// invents operator tokens it cannot place). Returns 0 so callers can chain.
+int lex_bad_char(struct SourceFile* sf, int pos) {
+    int idx;
+    char* what;
+    what = "character";
+    idx = diag_stop("SYN-05",
+                    "unexpected character",
+                    "The lexer found a byte (or a short sequence) that begins no token this language has.",
+                    sf, pos, pos + 1);
+    if (idx >= 0) {
+        diag_fix(diag_get(idx), "remove or quote it", "");
+    }
+    return 0;
+}
+
+// Token kind names for SYN-05 messages and verbose dumps.
+char* tok_kind_name(int kind) {
+    if (kind == TOK_EOF) { return "end of file"; }
+    if (kind == TOK_IDENT) { return "identifier"; }
+    if (kind == TOK_KEYWORD) { return "keyword"; }
+    if (kind == TOK_INT) { return "integer literal"; }
+    if (kind == TOK_FLOAT) { return "float literal"; }
+    if (kind == TOK_STRING) { return "string literal"; }
+    if (kind == TOK_CHAR) { return "char literal"; }
+    if (kind == TOK_BYTE) { return "byte literal"; }
+    if (kind == TOK_LPAREN) { return "'('"; }
+    if (kind == TOK_RPAREN) { return "')'"; }
+    if (kind == TOK_LBRACE) { return "'{'"; }
+    if (kind == TOK_RBRACE) { return "'}'"; }
+    if (kind == TOK_LBRACKET) { return "'['"; }
+    if (kind == TOK_RBRACKET) { return "']'"; }
+    if (kind == TOK_COMMA) { return "','"; }
+    if (kind == TOK_COLON) { return "':'"; }
+    if (kind == TOK_SEMI) { return "';'"; }
+    if (kind == TOK_ARROW) { return "'->'"; }
+    if (kind == TOK_FAT_ARROW) { return "'=>'"; }
+    if (kind == TOK_DOT) { return "'.'"; }
+    if (kind == TOK_DCOLON) { return "'::'"; }
+    if (kind == TOK_RANGE) { return "'..'"; }
+    if (kind == TOK_DOTS_EQ) { return "'..'="; }
+    if (kind == TOK_PLUS) { return "'+'"; }
+    if (kind == TOK_MINUS) { return "'-'"; }
+    if (kind == TOK_STAR) { return "'*'"; }
+    if (kind == TOK_SLASH) { return "'/'"; }
+    if (kind == TOK_PERCENT) { return "'%'"; }
+    if (kind == TOK_AMP) { return "'&'"; }
+    if (kind == TOK_PIPE) { return "'|'"; }
+    if (kind == TOK_CARET) { return "'^'"; }
+    if (kind == TOK_TILDE) { return "'~'"; }
+    if (kind == TOK_NOT) { return "'!'"; }
+    if (kind == TOK_SHL) { return "'<<'"; }
+    if (kind == TOK_SHR) { return "'>>'"; }
+    if (kind == TOK_AND) { return "'&&'"; }
+    if (kind == TOK_OR) { return "'||'"; }
+    if (kind == TOK_EQEQ) { return "'=='"; }
+    if (kind == TOK_NEQ) { return "'!='"; }
+    if (kind == TOK_LE) { return "'<='"; }
+    if (kind == TOK_GE) { return "'>='"; }
+    if (kind == TOK_LT) { return "'<'"; }
+    if (kind == TOK_GT) { return "'>'"; }
+    if (kind == TOK_ASSIGN) { return "'='"; }
+    if (kind == TOK_PLUSEQ) { return "'+='"; }
+    if (kind == TOK_MINUSEQ) { return "'-='"; }
+    if (kind == TOK_STAREQ) { return "'*='"; }
+    if (kind == TOK_SLASHEQ) { return "'/='"; }
+    if (kind == TOK_PERCENTEQ) { return "'%='"; }
+    if (kind == TOK_AMPEQ) { return "'&='"; }
+    if (kind == TOK_PIPEEQ) { return "'|='"; }
+    if (kind == TOK_CARETEQ) { return "'^='"; }
+    if (kind == TOK_SHLEQ) { return "'<<='"; }
+    if (kind == TOK_SHREQ) { return "'>>='"; }
+    return "?";
+}
+
+// True when `t` is the keyword spelled `kw`.
+int tok_is_kw(struct Token* t, char* kw) {
+    if (t->kind != TOK_KEYWORD) { return 0; }
+    return str_eq(t->text, kw);
+}
+
+// Copies one Token by field (c2x-seed has no whole-struct assignment).
+void tok_copy(struct Token* dst, struct Token* src) {
+    dst->kind = src->kind;
+    dst->text = src->text;
+    dst->len = src->len;
+    dst->start = src->start;
+    dst->end = src->end;
+    dst->line = src->line;
+    dst->col = src->col;
+    dst->ival = src->ival;
+    dst->sval = src->sval;
+}
+
+// Two-char operator helper: matches `a` `b` at `pos`, consumes both.
+int lex_two(struct SourceFile* sf, int* pos, char a, char b, int kind, struct Token* t) {
+    if (sf->data[*pos] == a && *pos + 1 < sf->len && sf->data[*pos + 1] == b) {
+        t->kind = kind;
+        t->text = "";
+        t->len = 2;
+        t->start = *pos;
+        t->end = *pos + 2;
+        t->ival = 0;
+        t->sval = 0;
+        *pos = *pos + 2;
+        return 1;
+    }
+    return 0;
+}
+
+// One-char token helper.
+int lex_one(struct SourceFile* sf, int* pos, char a, int kind, struct Token* t) {
+    if (sf->data[*pos] == a) {
+        t->kind = kind;
+        t->text = "";
+        t->len =  1;
+        t->start = *pos;
+        t->end = *pos + 1;
+        t->ival = 0;
+    t->sval = 0;
+        *pos = *pos + 1;
+        return 1;
+    }
+    return 0;
+}
+
+// Main entry: tokenizes the whole file. Returns the token count, or -1 when
+// a lex stop was reported (the caller flushes diagnostics).
+int lexer_run(struct SourceFile* sf, struct Token** out_tokens) {
+    char* d;
+    int n;
+    int pos;
+    struct Token* toks;
+    int cap;
+    int count;
+
+    d = sf->data;
+    n = sf->len;
+    pos = 0;
+    count = 0;
+    cap = 256;
+    toks = arena_alloc(cap * TOKEN_SIZE);
+
+    while (pos < n) {
+        struct Token* t;
+        int line;
+        int col;
+
+        if (!lex_skip_trivia(sf, &pos)) {
+            *out_tokens = toks;
+            return -1;
+        }
+        if (pos >= n) { break; }
+
+        // Grow array (auto-resizable; no fixed caps, per project rule).
+        if (count + 2 >= cap) {
+            struct Token* bigger;
+            int i;
+            int ncap;
+            ncap = cap * 2;
+            bigger = arena_alloc(ncap * TOKEN_SIZE);
+            i = 0;
+            while (i < count) {
+                tok_copy(&bigger[i], &toks[i]);
+                i = i + 1;
+            }
+            toks = bigger;
+            cap = ncap;
+        }
+
+        t = &toks[count];
+        lex_pos(sf, pos, &line, &col);
+        t->line = line;
+        t->col = col;
+        t->ival = 0;
+        t->sval = 0;
+        t->text = "";
+        t->len = 0;
+        t->start = pos;
+        t->end = pos;
+
+        // Literals. A leading digit always begins a number; `.`-leading
+        // floats do not exist in v0 (there is no `.5`).
+        if (is_digit(d[pos])) {
+            if (!lex_scan_number(sf, &pos, t)) { return -1; }
+            count = count + 1;
+            continue;
+        }
+        // ' begins a char literal; b' a byte literal (§4.3: a ' is always a
+        // char literal, never a lifetime).
+        if (d[pos] == '\'') {
+            if (!lex_scan_char(sf, &pos, t, 0)) { return -1; }
+            count = count + 1;
+            continue;
+        }
+        if (d[pos] == 'b' && pos + 1 < n && d[pos + 1] == '\'') {
+            if (!lex_scan_char(sf, &pos, t, 1)) { return -1; }
+            count = count + 1;
+            continue;
+        }
+        if (d[pos] == '"') {
+            if (!lex_scan_string(sf, &pos, t)) { return -1; }
+            count = count + 1;
+            continue;
+        }
+
+        // Identifiers / keywords (includes UTF-8 lead bytes).
+        if (is_ident_start(d[pos])) {
+            lex_scan_word(sf, &pos, t);
+            count = count + 1;
+            continue;
+        }
+
+        // Punctuation and operators (§4.4), longest match first.
+        if (lex_two(sf, &pos, '-', '>', TOK_ARROW, t))     { count = count + 1; continue; }
+        if (lex_two(sf, &pos, ':', ':', TOK_DCOLON, t))    { count = count + 1; continue; }
+        // `..=` (three chars) must be tried before `..` (two chars).
+        if (d[pos] == '.' && pos + 2 < n && d[pos + 1] == '.' && d[pos + 2] == '=') {
+            t->kind = TOK_DOTS_EQ;
+            t->text = "";
+            t->len = 3;
+            t->start = pos;
+            t->end = pos + 3;
+            pos = pos + 3;
+            count = count + 1;
+            continue;
+        }
+        if (lex_two(sf, &pos, '.', '.', TOK_RANGE, t))     { count = count + 1; continue; }
+        if (lex_two(sf, &pos, '<', '<', TOK_SHL, t))       { count = count + 1; continue; }
+        if (lex_two(sf, &pos, '>', '>', TOK_SHR, t))       { count = count + 1; continue; }
+        if (lex_two(sf, &pos, '&', '&', TOK_AND, t))       { count = count + 1; continue; }
+        if (lex_two(sf, &pos, '|', '|', TOK_OR, t))        { count = count + 1; continue; }
+        if (lex_two(sf, &pos, '=', '=', TOK_EQEQ, t))      { count = count + 1; continue; }
+        if (lex_two(sf, &pos, '!', '=', TOK_NEQ, t))       { count = count + 1; continue; }
+        if (lex_two(sf, &pos, '<', '=', TOK_LE, t))        { count = count + 1; continue; }
+        if (lex_two(sf, &pos, '>', '=', TOK_GE, t))        { count = count + 1; continue; }
+        if (lex_two(sf, &pos, '+', '=', TOK_PLUSEQ, t))    { count = count + 1; continue; }
+        if (lex_two(sf, &pos, '-', '=', TOK_MINUSEQ, t))   { count = count + 1; continue; }
+        if (lex_two(sf, &pos, '*', '=', TOK_STAREQ, t))     { count = count + 1; continue; }
+        if (lex_two(sf, &pos, '/', '=', TOK_SLASHEQ, t))    { count = count + 1; continue; }
+        if (lex_two(sf, &pos, '%', '=', TOK_PERCENTEQ, t))  { count = count + 1; continue; }
+        if (lex_two(sf, &pos, '&', '=', TOK_AMPEQ, t))      { count = count + 1; continue; }
+        if (lex_two(sf, &pos, '|', '=', TOK_PIPEEQ, t))     { count = count + 1; continue; }
+        if (lex_two(sf, &pos, '^', '=', TOK_CARETEQ, t))    { count = count + 1; continue; }
+        if (lex_two(sf, &pos, '<', '<', TOK_SHLEQ, t))      { count = count + 1; continue; }
+        if (lex_two(sf, &pos, '>', '>', TOK_SHREQ, t))      { count = count + 1; continue; }
+        if (lex_one(sf, &pos, '(', TOK_LPAREN, t))   { count = count + 1; continue; }
+        if (lex_one(sf, &pos, ')', TOK_RPAREN, t))   { count = count + 1; continue; }
+        if (lex_one(sf, &pos, '{', TOK_LBRACE, t))   { count = count + 1; continue; }
+        if (lex_one(sf, &pos, '}', TOK_RBRACE, t))   { count = count + 1; continue; }
+        if (lex_one(sf, &pos, '[', TOK_LBRACKET, t)) { count = count + 1; continue; }
+        if (lex_one(sf, &pos, ']', TOK_RBRACKET, t)) { count = count + 1; continue; }
+        if (lex_one(sf, &pos, ',', TOK_COMMA, t))    { count = count + 1; continue; }
+        if (lex_one(sf, &pos, ':', TOK_COLON, t))    { count = count + 1; continue; }
+        if (lex_one(sf, &pos, ';', TOK_SEMI, t))     { count = count + 1; continue; }
+        if (lex_one(sf, &pos, '.', TOK_DOT, t))      { count = count + 1; continue; }
+        if (lex_one(sf, &pos, '+', TOK_PLUS, t))     { count = count + 1; continue; }
+        if (lex_one(sf, &pos, '-', TOK_MINUS, t))    { count = count + 1; continue; }
+        if (lex_one(sf, &pos, '*', TOK_STAR, t))     { count = count + 1; continue; }
+        if (lex_one(sf, &pos, '/', TOK_SLASH, t))    { count = count + 1; continue; }
+        if (lex_one(sf, &pos, '%', TOK_PERCENT, t))  { count = count + 1; continue; }
+        if (lex_one(sf, &pos, '&', TOK_AMP, t))      { count = count + 1; continue; }
+        if (lex_one(sf, &pos, '|', TOK_PIPE, t))     { count = count + 1; continue; }
+        if (lex_one(sf, &pos, '^', TOK_CARET, t))    { count = count + 1; continue; }
+        if (lex_one(sf, &pos, '~', TOK_TILDE, t))    { count = count + 1; continue; }
+        if (lex_one(sf, &pos, '!', TOK_NOT, t))      { count = count + 1; continue; }
+        if (lex_one(sf, &pos, '<', TOK_LT, t))       { count = count + 1; continue; }
+        if (lex_one(sf, &pos, '>', TOK_GT, t))       { count = count + 1; continue; }
+        if (lex_one(sf, &pos, '=', TOK_ASSIGN, t))   { count = count + 1; continue; }
+
+        // Nothing matched: unexpected byte.
+        {
+            int bad;
+            bad = lex_bad_char(sf, pos);
+            // Skip it so one bad byte does not produce a cascade.
+            pos = pos + 1;
+            count = count + 1;
+            continue;
+        }
+    }
+
+    // EOF token always present (span of length 0 at end).
+    if (count + 1 >= cap) {
+        struct Token* bigger;
+        int i;
+        int ncap;
+        ncap = cap * 2;
+        bigger = arena_alloc(ncap * TOKEN_SIZE);
+        i = 0;
+        while (i < count) {
+            tok_copy(&bigger[i], &toks[i]);
+            i = i + 1;
+        }
+        toks = bigger;
+        cap = ncap;
+    }
+    {
+        struct Token* t;
+        int line;
+        int col;
+        t = &toks[count];
+        lex_pos(sf, pos, &line, &col);
+        t->kind = TOK_EOF;
+        t->text = "";
+        t->len = 0;
+        t->start = pos;
+        t->end = pos;
+        t->line = line;
+        t->col = col;
+        t->ival =  0;
+        t->sval = 0;
+    }
+    count = count + 1;
+
+    *out_tokens = toks;
+    return count;
 }

@@ -10,7 +10,7 @@
 //   lc audit              list every `unchecked` site
 //
 //   flags: --format=pretty|line|json   --all   --strict   --deny-unchecked
-//          --no-color   --ascii   -o <out>
+//          --dump-ast   --no-color   --ascii   -o <out>
 
 char* usage_text() {
     return "usage: harmony-base build <file.harmony> [-o out]\n       harmony-base run   <file.harmony>\n       harmony-base check <file.harmony>\n       harmony-base emit-llvm <file.harmony>\n       harmony-base emit-c <file.harmony>\n       harmony-base explain <CODE>\n       harmony-base audit\n";
@@ -79,6 +79,7 @@ int parse_options(int argc, char** argv, struct Options* opts) {
         if (str_eq(a, "--all"))            { opts->all = 1;            i = i + 1; continue; }
         if (str_eq(a, "--strict"))         { opts->strict = 1;         i = i + 1; continue; }
         if (str_eq(a, "--deny-unchecked")) { opts->deny_unchecked = 1; i = i + 1; continue; }
+        if (str_eq(a, "--dump-ast")) { opts->dump_ast = 1; i = i + 1; continue; }
         if (str_eq(a, "--ascii"))          { opts->ascii = 1;          i = i + 1; continue; }
         if (str_eq(a, "--no-color"))       { opts->no_color = 1;       i = i + 1; continue; }
         v = flag_str_value(a, "--format=");

@@ -1,0 +1,759 @@
+// harmony-base — statements, blocks, patterns, and the parse entry point
+// (docs/harmony.md §18, §19.1 stage 2).
+//
+// Block statements do not end with `;` (§4.4). `break`/`continue` validity
+// is checked by the flow pass (stage 6), but the parser tracks loop depth
+// for later. Patterns keep grammar-only rules here; binding-mode rules
+// (owned vs reference) are the checker's business.
+//
+// This file owns parser_run() and g_pprogram, closing the item/statement
+// halves defined in parser.c2 / pexpr.c2.
+
+// Top-level item dispatch. `is_export` already consumed.
+struct AstNode* parse_item(int is_export);
+
+// unchecked(...)-head: "unchecked" "(" STRING ")" — reason optional string?
+// Grammar: unck_head = "unchecked" "(" STRING ")" ; reason required (v0.3).
+// Returns the arena reason string, or 0 after a stop.
+char* parse_unck_head(void) {
+    p_advance();      // unchecked (verified by caller)
+    if (!p_expect(TOK_LPAREN, "add `(` after `unchecked`")) { return 0; }
+    if (!p_at(TOK_STRING)) {
+        p_syn("SYN-05",
+              "`unchecked` needs a reason string",
+              "unchecked(\"why this is sound\") { ... } — the promise is written down (13.2).",
+              "write the reason",
+              "unchecked(\"i < len was checked above\")",
+              p_cur());
+        return 0;
+    }
+    {
+        char* reason;
+        reason = p_cur()->sval;
+        p_advance();
+        if (!p_expect(TOK_RPAREN, "add `)` to close the reason")) { return 0; }
+        return reason;
+    }
+}
+
+// let_stmt = "let" [ "mut" ] ( ID | "_" ) [ ":" type ] [ "=" expr ] ";"
+struct AstNode* parse_let_stmt(void) {
+    struct AstNode* n;
+    struct Token* start;
+    start = p_cur();
+    p_advance();      // let
+    n = ast_node_new(AST_LET);
+    n->start = start->start;
+    if (p_at_kw("mut")) {
+        p_advance();
+    n->ival = 1;
+    }
+    if (p_at(TOK_IDENT) && str_eq(p_cur()->text, "_")) {
+        // `_` binding (lexed as IDENT "_"): discard pattern.
+        n->sval = "_";
+        p_advance();
+    } else if (p_at(TOK_IDENT)) {
+        n->sval = p_cur_word();
+        p_advance();
+    } else {
+        p_syn("SYN-05",
+              "`let` needs a name (or `_`)",
+              "`let [mut] name: type = value;`",
+              "name the binding",
+              "let x = 5;",
+              p_cur());
+        return 0;
+    }
+    if (p_eat(TOK_COLON)) {
+        n->a = parse_type();
+        if (n->a == 0) { return 0; }
+    }
+    if (p_eat(TOK_ASSIGN)) {
+        n->b = parse_expr();
+        if (n->b == 0) { return 0; }
+    }
+    if (!p_expect_semi()) { return 0; }
+    p_end_at(n, p_prev());
+    return n;
+}
+
+// True when the cursor is on an assignment operator (§18 assign_op).
+int p_at_assign_op(void) {
+    int k;
+    k = p_cur()->kind;
+    if (k == TOK_ASSIGN) { return 1; }
+    if (k == TOK_PLUSEQ || k == TOK_MINUSEQ || k == TOK_STAREQ) { return 1; }
+    if (k == TOK_SLASHEQ || k == TOK_PERCENTEQ) { return 1; }
+    if (k == TOK_AMPEQ || k == TOK_PIPEEQ || k == TOK_CARETEQ) { return 1; }
+    if (k == TOK_SHLEQ || k == TOK_SHREQ) { return 1; }
+    return 0;
+}
+
+// The operator spelling for AST_ASSIGN.sval / AST_BINARY.sval.
+char* p_cur_op_word(void) {
+    int k;
+    k = p_cur()->kind;
+    if (k == TOK_ASSIGN)   { return "="; }
+    if (k == TOK_PLUSEQ)  { return "+="; }
+    if (k == TOK_MINUSEQ) { return "-="; }
+    if (k == TOK_STAREQ)  { return "*="; }
+    if (k == TOK_SLASHEQ) { return "/="; }
+    if (k == TOK_PERCENTEQ) { return "%="; }
+    if (k == TOK_AMPEQ)   { return "&="; }
+    if (k == TOK_PIPEEQ)  { return "|="; }
+    if (k == TOK_CARETEQ) { return "^="; }
+    if (k == TOK_SHLEQ)   { return "<<="; }
+    if (k == TOK_SHREQ)   { return ">>="; }
+    if (k == TOK_PLUS)    { return "+"; }
+    if (k == TOK_MINUS)   { return "-"; }
+    if (k == TOK_STAR)    { return "*"; }
+    if (k == TOK_SLASH)   { return "/"; }
+    if (k == TOK_PERCENT) { return "%"; }
+    if (k == TOK_AMP)     { return "&"; }
+    if (k == TOK_PIPE)    { return "|"; }
+    if (k == TOK_CARET)   { return "^"; }
+    if (k == TOK_SHL)     { return "<<"; }
+    if (k == TOK_SHR)     { return ">>"; }
+    if (k == TOK_EQEQ)    { return "=="; }
+    if (k == TOK_NEQ)     { return "!="; }
+    if (k == TOK_LE)      { return "<="; }
+    if (k == TOK_GE)      { return ">="; }
+    if (k == TOK_LT)      { return "<"; }
+    if (k == TOK_GT)      { return ">"; }
+    if (k == TOK_AND)     { return "&&"; }
+    if (k == TOK_OR)      { return "||"; }
+    if (k == TOK_RANGE)   { return ".."; }
+    if (k == TOK_DOTS_EQ) { return "..="; }
+    return "?op";
+}
+
+// if_stmt = "if" "(" expr ")" block [ "else" ( if_stmt | block ) ]
+struct AstNode* parse_if_stmt(void) {
+    struct AstNode* n;
+    struct Token* start;
+    start = p_cur();
+    p_advance();      // if
+    n = ast_node_new(AST_IF);
+    n->start = start->start;
+    if (!p_at(TOK_LPAREN)) {
+        p_syn("SYN-01",
+              "the condition needs parentheses",
+              "Conditions are parenthesized, C-style: if (n > 0) { ... } (8.1).",
+              "add the parentheses",
+              "if (n > 0) {",
+              p_cur());
+        return 0;
+    }
+    p_advance();
+    n->a = parse_expr();
+    if (n->a == 0) { return 0; }
+    // SYN-03: assignment used as a condition. The grammar makes `=` a
+    // statement form, so `if (x = 5)` stops at `=`; name it properly.
+    if (p_at_assign_op()) {
+        p_syn("SYN-03",
+              "assignment used as a condition",
+              "An assignment is a statement here, not an expression; conditions compare: if (x == 5) { ... }.",
+              "compare instead",
+              "if (x == 5) {",
+              p_cur());
+        return 0;
+    }
+    if (!p_expect(TOK_RPAREN, "add `)` to close the condition")) { return 0; }
+    if (!p_at(TOK_LBRACE)) {
+        p_syn("SYN-02",
+              "the body needs braces",
+              "Bodies are braced blocks: if (x) { ... } (8.1).",
+              "add the braces",
+              "{ ... }",
+              p_cur());
+        return 0;
+    }
+    n->b = parse_block();
+    if (n->b == 0) { return 0; }
+    if (p_eat_kw("else")) {
+        if (p_at_kw("if")) {
+            n->c = parse_if_stmt();      // else if chain
+            if (n->c == 0) { return 0; }
+        } else {
+            if (!p_at(TOK_LBRACE)) {
+                p_syn("SYN-02",
+                      "the else body needs braces",
+                      "else { ... } — bodies are braced blocks (8.1).",
+                      "add the braces",
+                      "{ ... }",
+                      p_cur());
+                return 0;
+            }
+            n->c = parse_block();
+            if (n->c == 0) { return 0; }
+        }
+    }
+    p_end_at(n, p_prev());
+    return n;
+}
+
+// while_stmt = "while" "(" expr ")" block
+struct AstNode* parse_while_stmt(void) {
+    struct AstNode* n;
+    struct Token* start;
+    start = p_cur();
+    p_advance();      // while
+    n = ast_node_new(AST_WHILE);
+    n->start = start->start;
+    if (!p_at(TOK_LPAREN)) {
+        p_syn("SYN-01",
+              "the condition needs parentheses",
+              "Conditions are parenthesized, C-style: while (n > 0) { ... } (8.4).",
+              "add the parentheses",
+              "while (n > 0) {",
+              p_cur());
+        return 0;
+    }
+    p_advance();
+    n->a = parse_expr();
+    if (n->a == 0) { return 0; }
+    // SYN-03: assignment used as a condition (§16.10).
+    if (p_at_assign_op()) {
+        p_syn("SYN-03",
+              "assignment used as a condition",
+              "An assignment is a statement here, not an expression; conditions compare: while (x == 5) { ... }.",
+              "compare instead",
+              "while (x == 5) {",
+              p_cur());
+        return 0;
+    }
+    if (!p_expect(TOK_RPAREN, "add `)` to close the condition")) { return 0; }
+    if (!p_at(TOK_LBRACE)) {
+        p_syn("SYN-02",
+              "the body needs braces",
+              "Bodies are braced blocks: while (x) { ... }. There is no `loop` keyword.",
+              "add the braces",
+              "{ ... }",
+              p_cur());
+        return 0;
+    }
+    g_ploop_depth = g_ploop_depth + 1;
+    n->b = parse_block();
+    g_ploop_depth = g_ploop_depth - 1;
+    if (n->b == 0) { return 0; }
+    p_end_at(n, p_prev());
+    return n;
+}
+
+// for_stmt = "for" "(" for_head ")" block
+// for_head = let_stmt expr ";" assign_core   (C-style)
+//          | ID ":" expr                    (range / collection / iterator)
+struct AstNode* parse_for_stmt(void) {
+    struct AstNode* n;
+    struct Token* start;
+    start = p_cur();
+    p_advance();      // for
+    n = ast_node_new(AST_FOR);
+    n->start = start->start;
+    if (!p_expect(TOK_LPAREN, "add `(` after `for`")) { return 0; }
+
+    // Shape 1: `let` starts a C-style head.
+    if (p_at_kw("let")) {
+        n->a = parse_let_stmt();      // consumes the `;`
+        if (n->a == 0) { return 0; }
+        if (!p_at(TOK_SEMI)) {
+            n->b = parse_expr();
+            if (n->b == 0) { return 0; }
+        }
+        if (!p_expect(TOK_SEMI, "add the `;` separating condition and step")) {
+            return 0;
+        }
+        if (!p_at(TOK_RPAREN)) {
+            // assign_core: place op expr (no trailing `;` here).
+            struct AstNode* e;
+            e = parse_expr();
+            if (e == 0) { return 0; }
+            if (!p_at_assign_op()) {
+                p_syn("SYN-05",
+                      "the for-step is an assignment",
+                      "for (let i = 0; i < n; i += 1) — the step assigns to a place (8.5).",
+                      "assign to a place",
+                      "i += 1",
+                      p_cur());
+                return 0;
+            }
+            n->c = ast_node_new(AST_ASSIGN);
+            n->c->a = e;
+            n->c->start = e->start;
+            n->c->sval = p_cur_op_word();
+            p_advance();
+            n->c->b = parse_expr();
+            if (n->c->b == 0) { return 0; }
+            n->c->end = p_prev()->end;
+        }
+    } else {
+        // Shape 2/3: `ID : expr` — range, collection, or iterator.
+        if (!p_at(TOK_IDENT)) {
+            p_syn("SYN-05",
+                  "the for-head needs a name or a `let`",
+                  "`for (x : expr)` iterates; `for (let i = 0; ...)` is C-style (8.5).",
+                  "write the head",
+                  "for (i : 0..10) {",
+                  p_cur());
+            return 0;
+        }
+        n->sval = p_cur_word();
+        p_advance();
+        if (!p_expect(TOK_COLON, "add `:` between the binding and the sequence")) {
+            return 0;
+        }
+        n->a = parse_expr();
+        if (n->a == 0) { return 0; }
+    }
+    if (!p_expect(TOK_RPAREN, "add `)` to close the for-head")) { return 0; }
+    if (!p_at(TOK_LBRACE)) {
+        p_syn("SYN-02",
+              "the body needs braces",
+              "for (x : 0..10) { ... } — bodies are braced blocks (8.5).",
+              "add the braces",
+              "{ ... }",
+              p_cur());
+        return 0;
+    }
+    g_ploop_depth = g_ploop_depth + 1;
+    n->b = parse_block();
+    g_ploop_depth = g_ploop_depth - 1;
+    if (n->b == 0) { return 0; }
+    p_end_at(n, p_prev());
+    return n;
+}
+
+// switch_stmt = "switch" "(" expr ")" "{" { case_arm } "}"
+struct AstNode* parse_switch_stmt(void) {
+    struct AstNode* n;
+    struct Token* start;
+    start = p_cur();
+    p_advance();      // switch
+    n = ast_node_new(AST_SWITCH);
+    n->start = start->start;
+    if (!p_at(TOK_LPAREN)) {
+        p_syn("SYN-01",
+              "the subject needs parentheses",
+              "switch (x) { case P: { ... } } (8.6).",
+              "add the parentheses",
+              "switch (x) {",
+              p_cur());
+        return 0;
+    }
+    p_advance();
+    n->a = parse_expr();
+    if (n->a == 0) { return 0; }
+    if (!p_expect(TOK_RPAREN, "add `)` to close the subject")) { return 0; }
+    if (!p_expect(TOK_LBRACE, "add `{` to open the switch body")) { return 0; }
+    n->kids = ast_list_new();
+    while (!p_at(TOK_RBRACE) && !p_at(TOK_EOF)) {
+        struct AstNode* arm;
+        arm = ast_node_new(AST_ARM);
+        arm->a = 0;      // 0 = default arm
+        arm->start = p_cur()->start;
+        if (p_eat_kw("case")) {
+            // pattern { "|" pattern }
+            arm->kids = ast_list_new();
+            while (1) {
+                struct AstNode* pat;
+                pat = parse_pattern();
+                if (pat == 0) { return 0; }
+                ast_list_push(arm->kids, pat);
+                if (p_eat(TOK_PIPE)) { continue; }
+                break;
+            }
+        } else if (!p_eat_kw("default")) {
+            p_syn("SYN-05",
+                  "a switch arm starts with `case` or `default`",
+                  "Each arm is `case pattern: { ... }` or `default: { ... }` (8.6).",
+                  "write the arm",
+                  "case Has(x): { ... }",
+                  p_cur());
+            return 0;
+        }
+        if (!p_expect(TOK_COLON, "add `:` after the pattern")) { return 0; }
+        if (!p_at(TOK_LBRACE)) {
+            p_syn("SYN-02",
+                  "the arm body needs braces",
+                  "Each switch arm is its own braced block: `case P: { ... }` — no fallthrough (8.6).",
+                  "add the braces",
+                  "{ ... }",
+                  p_cur());
+            return 0;
+        }
+        arm->b = parse_block();
+        if (arm->b == 0) { return 0; }
+        ast_list_push(n->kids, arm);
+        if (g_ppanic) {
+            p_panic_off();
+        }
+    }
+    if (!p_expect(TOK_RBRACE, "add `}` to close the switch")) { return 0; }
+    p_end_at(n, p_prev());
+    return n;
+}
+// pattern (§18): "_" | [mut] ID | literal | literal "..=" literal
+//            | path [ "(" pattern { , pattern } ")" ]
+struct AstNode* parse_pattern(void) {
+    struct AstNode* p;
+    struct Token* start;
+    start = p_cur();
+
+    // _
+    if (p_at(TOK_IDENT) && str_eq(p_cur()->text, "_")) {
+        p = ast_node_new(AST_PAT_WILD);
+        p->start = start->start;
+        p_advance();
+        p->end = p_prev()->end;
+        return p;
+    }
+
+    // `mut name` binding
+    if (p_at_kw("mut") && p_peek(1)->kind == TOK_IDENT) {
+        p = ast_node_new(AST_PAT_BIND);
+        p->ival = 1;
+        p_advance();
+        p->sval = p_cur_word();
+        p->start = start->start;
+        p_advance();
+        p->end = p_prev()->end;
+        return p;
+    }
+
+    // literal / range
+    if (p_at(TOK_INT) || p_at(TOK_FLOAT) || p_at(TOK_STRING)
+        || p_at(TOK_CHAR) || p_at(TOK_BYTE) || p_at_kw("true") || p_at_kw("false")) {
+        struct AstNode* lit;
+        lit = parse_literal_node();
+        if (lit == 0) { return 0; }
+        if (p_at(TOK_DOTS_EQ)) {
+            struct AstNode* hi;
+            struct Token* dots;
+            dots = p_cur();
+            p_advance();
+            hi = parse_literal_node();
+            if (hi == 0) { return 0; }
+            p = ast_node_new(AST_PAT_RANGE);
+            p->a = lit;
+            p->b = hi;
+            p->start = start->start;
+            p->end = p_prev()->end;
+            return p;
+        }
+        p = ast_node_new(AST_PAT_LIT);
+        p->a = lit;
+        p->start = start->start;
+        p->end = p_prev()->end;
+        return p;
+    }
+
+    // path / variant with sub-patterns / bare binding
+    if (p_at(TOK_IDENT)) {
+        // Lookahead: `ID (` — variant; `ID::...(` — namespaced variant.
+        char* name;
+        name = parse_path_name();
+        if (name == 0) { return 0; }
+        if (p_at(TOK_LPAREN)) {
+            // Variant with payload patterns.
+            p_advance();
+            p = ast_node_new(AST_PAT_VARIANT);
+            p->sval = name;
+            p->start = start->start;
+            p->kids = ast_list_new();
+            while (1) {
+                struct AstNode* sub;
+                sub = parse_pattern();
+                if (sub == 0) { return 0; }
+                ast_list_push(p->kids, sub);
+                if (p_eat(TOK_COMMA)) { continue; }
+                break;
+            }
+            if (!p_expect(TOK_RPAREN, "add `)` to close the pattern payload")) {
+                return 0;
+            }
+            p->end = p_prev()->end;
+            return p;
+        }
+        // Plain identifier: a binding (or a unit variant, decided later).
+        p = ast_node_new(AST_PAT_BIND);
+        p->sval = name;
+        p->start = start->start;
+        p->end = p_prev()->end;
+        return p;
+    }
+
+    p_syn("SYN-05",
+          "expected a pattern",
+          "Patterns are `_`, [mut] name, literals, `lo..=hi`, or Variant(sub, ...).",
+          "write the pattern",
+          "case Has(x):",
+          p_cur());
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Blocks and statements.
+// ---------------------------------------------------------------------------
+
+// block = "{" { stmt } "}"
+struct AstNode* parse_block(void) {
+    struct AstNode* n;
+    n = ast_node_new(AST_BLOCK);
+    n->start = p_cur()->start;
+    if (!p_expect(TOK_LBRACE, "add `{` to open the block")) { return 0; }
+    n->kids = ast_list_new();
+    while (!p_at(TOK_RBRACE) && !p_at(TOK_EOF)) {
+        struct AstNode* s;
+        int before;
+        before = g_ppos;
+        s = parse_stmt();
+        if (s == 0) {
+            // Recovery: skip to the next `;` (consumed) or to this block's
+            // `}` / EOF, then keep going (several errors per run). If the
+            // cursor did not move, step one token to guarantee progress.
+            p_sync();
+            g_ppanic = 0;
+            if (g_ppos == before) {
+                p_advance();
+            }
+            continue;
+        }
+        ast_list_push(n->kids, s);
+    }
+    if (!p_expect(TOK_RBRACE, "add `}` to close the block")) { return 0; }
+    p_end_at(n, p_prev());
+    return n;
+}
+
+// stmt (§18). Returns 0 after a reported stop (the caller recovers).
+struct AstNode* parse_stmt(void) {
+    struct AstNode* n;
+    struct Token* start;
+
+    start = p_cur();
+
+    // let
+    if (p_at_kw("let")) {
+        return parse_let_stmt();
+    }
+
+    // return [expr] ";" | break ";" | continue ";"
+    if (p_at_kw("return")) {
+        n = ast_node_new(AST_RETURN);
+        n->start = start->start;
+        p_advance();
+        if (!p_at(TOK_SEMI)) {
+            n->a = parse_expr();
+            if (n->a == 0) { return 0; }
+        }
+        if (!p_expect_semi()) { return 0; }
+        p_end_at(n, p_prev());
+        return n;
+    }
+    if (p_at_kw("break")) {
+        n = ast_node_new(AST_BREAK);
+        n->start = start->start;
+        p_advance();
+        if (!p_expect_semi()) { return 0; }
+        p_end_at(n, p_prev());
+        return n;
+    }
+    if (p_at_kw("continue")) {
+        n = ast_node_new(AST_CONTINUE);
+        n->start = start->start;
+        p_advance();
+        if (!p_expect_semi()) { return 0; }
+        p_end_at(n, p_prev());
+        return n;
+    }
+
+    // if / while / for / switch / unchecked / bare block
+    if (p_at_kw("if"))     { return parse_if_stmt(); }
+    if (p_at_kw("while")) { return parse_while_stmt(); }
+    if (p_at_kw("for"))   { return parse_for_stmt(); }
+    if (p_at_kw("switch")){ return parse_switch_stmt(); }
+    if (p_at_kw("unchecked")) {
+        char* reason;
+        reason = parse_unck_head();
+        if (reason == 0) { return 0; }
+        if (!p_at(TOK_LBRACE)) {
+            p_syn("SYN-02",
+                  "the unchecked body needs braces",
+                  "unchecked(\"why\") { ... } — the promise covers one braced block (13.2).",
+                  "add the braces",
+                  "{ ... }",
+                  p_cur());
+            return 0;
+        }
+        n = ast_node_new(AST_UNCHECKED);
+        n->sval = reason;
+        n->start = start->start;
+        n->a = parse_block();
+        if (n->a == 0) { return 0; }
+        p_end_at(n, p_prev());
+        return n;
+    }
+    if (p_at(TOK_LBRACE))  { return parse_block(); }
+
+    // Expression statement or assignment: parse a place/expression, then
+    // decide by what follows (`;` → expr-stmt, assign_op → assignment).
+    {
+        struct AstNode* e;
+        e = parse_expr();
+        if (e == 0) { return 0; }
+        if (p_at_assign_op()) {
+            // Assignment whose lhs was parsed as a full expression: reuse
+            // the node (any expression the grammar allows as a place).
+            struct AstNode* a;
+            a = ast_node_new(AST_ASSIGN);
+            a->a = e;
+            a->start = e->start;
+            a->sval = p_cur_op_word();
+            p_advance();
+            a->b = parse_expr();
+            if (a->b == 0) { return 0; }
+            if (!p_expect_semi()) { return 0; }
+            p_end_at(a, p_prev());
+            return a;
+        }
+        n = ast_node_new(AST_EXPR_STMT);
+        n->a = e;
+        n->start = e->start;
+        if (!p_expect_semi()) { return 0; }
+        p_end_at(n, p_prev());
+        return n;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Items and the parse entry point.
+// ---------------------------------------------------------------------------
+
+// item (§18): [export] fn/const/struct/enum, methods, extern fn, import.
+// `is_export` is 1 when the caller consumed `export`.
+struct AstNode* parse_item(int is_export) {
+    struct Token* start;
+    start = p_cur();
+
+    // import "path";
+    if (p_at_kw("import")) {
+        struct AstNode* n;
+        p_advance();
+        if (!p_at(TOK_STRING)) {
+            p_syn("SYN-05",
+                  "import needs a quoted path",
+                  "import \"geometry.harmony\"; — one file is one module (6.7).",
+                  "quote the path",
+                  "import \"geometry.harmony\";",
+                  p_cur());
+            return 0;
+        }
+        n = ast_node_new(AST_IMPORT);
+        n->sval = p_cur()->sval;
+        p_advance();
+        if (!p_expect_semi()) { return 0; }
+        n->start = start->start;
+        n->end = p_prev()->end;
+        n->ival = is_export;
+        return n;
+    }
+
+    // unchecked fn ... (unchecked function form, 13.2)
+    if (p_at_kw("unchecked") && p_peek(1)->kind == TOK_KEYWORD
+        && tok_is_kw(p_peek(1), "fn")) {
+        struct AstNode* f;
+        f = parse_fn_decl(1, start);
+        if (f == 0) { return 0; }
+        f->ival = 1;
+        if (is_export) { f->ival = 3; }
+        return f;
+    }
+
+    // fn
+    if (p_at_kw("fn")) {
+        struct AstNode* f;
+        f = parse_fn_decl(0, start);
+        if (f == 0) { return 0; }
+        if (is_export) { f->ival = f->ival + 2; }
+        return f;
+    }
+
+    // const
+    if (p_at_kw("const")) {
+        return parse_const_decl(is_export);
+    }
+
+    // [copy] struct / [copy] enum
+    if (p_at_kw("copy")
+        && (tok_is_kw(p_peek(1), "struct") || tok_is_kw(p_peek(1), "enum"))) {
+        int is_copy;
+        p_advance();      // copy
+        is_copy = 1;
+        if (p_at_kw("struct")) { return parse_struct_decl(is_copy); }
+        return parse_enum_decl(is_copy);
+    }
+    if (p_at_kw("struct")) { return parse_struct_decl(0); }
+    if (p_at_kw("enum"))   { return parse_enum_decl(0); }
+
+    // methods
+    if (p_at_kw("methods")) { return parse_methods_block(); }
+
+    // extern fn
+    if (p_at_kw("extern")) { return parse_extern_fn(); }
+
+    p_syn("SYN-05",
+          "expected an item",
+          "Top level holds imports and items: fn, const, struct, enum, methods, extern fn (6, 18).",
+          "write the item",
+          "fn main() {",
+          p_cur());
+    return 0;
+}
+
+// parser_run (§19.1 stage 2): parses the token stream into a program tree.
+struct AstNode* parser_run(struct SourceFile* sf, struct Token* tokens, int ntokens) {
+    struct AstNode* root;
+    struct AstList* items;
+
+    g_ptoks = tokens;
+    g_pntoks = ntokens;
+    g_ppos = 0;
+    g_psf = sf;
+    g_pstops = 0;
+    g_ppanic = 0;
+    g_ploop_depth = 0;
+
+    root = ast_node_new(AST_PROGRAM);
+    root->start = 0;
+    root->end = 0;
+    if (ntokens > 0) {
+        root->end = tokens[ntokens - 1].end;
+    }
+    items = ast_list_new();
+
+    while (!p_at(TOK_EOF)) {
+        struct AstNode* it;
+        int is_export;
+        int before;
+        is_export = 0;
+        if (p_eat_kw("export")) { is_export = 1; }
+        before = g_ppos;
+        it = parse_item(is_export);
+        if (it == 0) {
+            // Recovery at top level: skip to the next `;` (consumed) or to
+            // `}`/EOF. If the cursor did not move at all, advance one token
+            // so a malformed item can never loop forever.
+            p_sync();
+            g_ppanic = 0;
+            if (g_ppos == before) {
+                p_advance();
+            }
+            continue;
+        }
+        ast_list_push(items, it);
+    }
+
+    root->kids = items;
+    g_pprogram = root;
+    return root;
+}

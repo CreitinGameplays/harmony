@@ -215,6 +215,7 @@ struct Options {
     int   all;          // --all: lift the 5-stop / 10-warn caps (§16.9)
     int   strict;       // --strict: a WARN also stops the build (§16.4)
     int   deny_unchecked;// --deny-unchecked: any unchecked is UNCK-05 (§13.4)
+    int   dump_ast;      // --dump-ast: print the parse tree (M0 round-trip)
     char* explain_code; // `lc explain <CODE>`: the requested code
     int   ascii;        // --ascii: (1)/(2)/> <-- here glyph fallbacks (§16.3)
     int   no_color;     // --no-color / NO_COLOR (§16.3)
@@ -234,34 +235,123 @@ void audit_print(void);
 int pipeline_run(struct Options* opts);
 
 // ---------------------------------------------------------------------------
-// Lexer (M0, docs/harmony.md §4, §19.1 stage 1). Declared here so the driver
-// and later stages can call it while the body is still a stub.
+// Lexer (M0, docs/harmony.md §4, §19.1 stage 1).
 // ---------------------------------------------------------------------------
 const int TOK_EOF = 0;
 const int TOK_IDENT = 1;
 const int TOK_NUMBER = 2;
 
-// Byte size of one `struct Token` in c2x-seed's ABI (every field is a qword).
-const int TOKEN_SIZE = 56;
+// Full v0.3 token set (§4). Kinds are grouped with gaps; the numeric values
+// are internal, never rendered.
+const int TOK_KEYWORD = 3;     // sval = the keyword spelling
+const int TOK_INT = 4;         // literal integer; ival = value, sval = suffix
+const int TOK_FLOAT = 5;       // literal float; sval = spelling (suffix last 2)
+const int TOK_STRING = 6;      // literal string; sval = cooked value, len = bytes
+const int TOK_CHAR = 7;        // literal char; ival = Unicode scalar value
+const int TOK_BYTE = 8;        // literal byte b'x'; ival = 0..255
+
+const int TOK_LPAREN = 10;
+const int TOK_RPAREN = 11;
+const int TOK_LBRACE = 12;
+const int TOK_RBRACE = 13;
+const int TOK_LBRACKET = 14;
+const int TOK_RBRACKET = 15;
+const int TOK_COMMA = 16;
+const int TOK_COLON = 17;
+const int TOK_SEMI = 18;
+const int TOK_ARROW = 19;      // ->
+const int TOK_FAT_ARROW = 20;  // => (recognized, reserved for v1 patterns)
+const int TOK_DOT = 21;
+const int TOK_DCOLON = 22;     // ::
+const int TOK_RANGE = 23;      // ..
+const int TOK_DOTS_EQ = 24;     // ..=
+
+const int TOK_PLUS = 30;
+const int TOK_MINUS = 31;
+const int TOK_STAR = 32;
+const int TOK_SLASH = 33;
+const int TOK_PERCENT = 34;
+const int TOK_AMP = 35;
+const int TOK_PIPE = 36;
+const int TOK_CARET = 37;
+const int TOK_TILDE = 38;
+const int TOK_NOT = 39;        // !
+const int TOK_SHL = 40;        // <<
+const int TOK_SHR = 41;        // >>
+const int TOK_AND = 42;        // &&
+const int TOK_OR = 43;         // ||
+const int TOK_EQEQ = 44;       // ==
+const int TOK_NEQ = 45;        // !=
+const int TOK_LE = 46;
+const int TOK_GE = 47;
+const int TOK_LT = 48;
+const int TOK_GT = 49;
+const int TOK_ASSIGN = 50;     // =
+const int TOK_PLUSEQ = 51;
+const int TOK_MINUSEQ = 52;
+const int TOK_STAREQ = 53;
+const int TOK_SLASHEQ = 54;
+const int TOK_PERCENTEQ = 55;
+const int TOK_AMPEQ = 56;
+const int TOK_PIPEEQ = 57;
+const int TOK_CARETEQ = 58;
+const int TOK_SHLEQ = 59;
+const int TOK_SHREQ = 60;
+
+// Byte size of one `struct Token` in c2x-seed's ABI (every field is a qword;
+// 9 fields: kind, text, len, start, end, line, col, ival, sval).
+const int TOKEN_SIZE = 72;
 
 struct Token {
     int   kind;
-    char* text;     // arena-owned spelling
+    char* text;     // arena-owned spelling (ident/keyword spelling)
     int   len;
     int   start;    // byte offset
     int   end;      // byte offset (exclusive)
     int   line;     // 1-based
     int   col;      // 0-based
+    int   ival;     // INT value / CHAR/BYTE scalar (payload, unused for others)
+    char* sval;     // INT suffix / FLOAT spelling / STRING cooked bytes / KEYWORD word
 };
 
 // Tokenizes the whole file into an arena array. Returns the token count, or a
 // negative value on a lex stop (already reported).
 int lexer_run(struct SourceFile* sf, struct Token** out_tokens);
 
+// A stable lowercase name for a token kind (test/verbose dumps, SYN-05 text).
+char* tok_kind_name(int kind);
+
+// True when `t` is the keyword spelled `kw` (TOK_KEYWORD only).
+int tok_is_kw(struct Token* t, char* kw);
+
+// Copies one Token by field (c2x-seed has no whole-struct assignment).
+void tok_copy(struct Token* dst, struct Token* src);
+
 // ---------------------------------------------------------------------------
-// Parser (M0, docs/harmony.md §18 grammar, §19.1 stage 2). Stub for now.
+// Literal scanners (lexer support, §4.3). Each fills `t` (kind, text, span,
+// payloads), advances `*pos` past the literal, and returns 1 on success or
+// 0 after reporting a lex stop. Byte scanning treats source bytes unsigned.
 // ---------------------------------------------------------------------------
-int parser_run(struct SourceFile* sf, struct Token* tokens, int ntokens);
+int lex_scan_number(struct SourceFile* sf, int* pos, struct Token* t);
+int lex_scan_char(struct SourceFile* sf, int* pos, struct Token* t, int is_byte);
+int lex_scan_string(struct SourceFile* sf, int* pos, struct Token* t);
+
+// Shared lexer scratch buffer (identifier/literal assembly; one at a time —
+// the lexer and the parser both build short names through it, never nested).
+void   lexbuf_reset(void);
+void   lexbuf_push(char c);
+void   lexbuf_push_str(char* s);
+char*  lexbuf_finish(void);      // arena copy, NUL-terminated
+
+// Character classes over unsigned bytes (UTF-8 payload passes as ident).
+int is_digit(char c);
+int is_hexdig(char c);
+int is_ident_start(char c);
+int is_ident(char c);
+int hexval(char c);              // hex digit value (caller checked)
+int digit_in_radix(char c, int radix);
+int utf8_len(char lead);         // 1..4, or 0 = invalid lead byte
+int utf8_decode(char* p, int len);
 
 // ---------------------------------------------------------------------------
 // AST (M0, docs/harmony.md §18). Nodes are arena-allocated and carry a
@@ -289,6 +379,88 @@ struct AstNode {
     struct AstList* kids2;  // secondary child list
     int   ty;        // resolved type id (filled by the checker; 0 = unset)
 };
+
+// ---------------------------------------------------------------------------
+// Parser (M0, docs/harmony.md §18 grammar, §19.1 stage 2).
+//
+// Recursive descent, one token of extra lookahead (§18 "Parsing notes").
+// Recovers at `;` and `}` so one malformed construct does not hide the rest.
+// The parser renders SYN-01..05 with a `try:` fix; it does not stop the
+// world, it records the diagnostic and keeps going.
+//
+// Returns the program root node, or 0 after a fatal (uncoverable) stop.
+// Syntax stops are queryable via parser_stop_count().
+// ---------------------------------------------------------------------------
+struct AstNode* parser_run(struct SourceFile* sf, struct Token* tokens, int ntokens);
+int parser_stop_count(void);
+
+// Prints a parse tree as indented S-expressions (round-trip tests, -v dumps).
+void ast_print(struct AstNode* root);
+
+// ---------------------------------------------------------------------------
+// Parser internals shared across parser.c2 / pstmts.c2 / pexpr.c2 (§18).
+// State is module-global (one parse at a time); helpers are declared here so
+// the item/statement and expression halves can call each other.
+// ---------------------------------------------------------------------------
+struct Token* p_cur(void);        // current token (never advances)
+struct Token* p_peek(int n);      // n tokens ahead (clamped to EOF)
+struct Token* p_prev(void);       // last consumed token (EOF-safe)
+void p_advance(void);
+int p_at(int kind);               // cur token is of this kind?
+int p_at_kw(char* kw);            // cur token is this keyword?
+int p_eat(int kind);              // consume if kind matches; 1 = matched
+int p_eat_kw(char* kw);
+int p_expect(int kind, char* what); // consume or report SYN-05; 1 = ok
+int p_expect_kw(char* kw);
+int p_expect_semi(void);          // consume `;` or report SYN-04
+void p_sync(void);                // recovery: skip to just after `;`, or to `}`/EOF
+void p_panic_off(void);           // clear panic mode at a boundary
+
+// Builds a node of `kind` spanning the current token (caller widens the span
+// with p_end_at as more tokens are consumed).
+struct AstNode* p_node(int kind);
+void p_end_at(struct AstNode* n, struct Token* t); // widen span to token end
+char* p_cur_word(void);           // arena copy of cur token spelling
+char* p_prev_word(void);          // arena copy of prev token spelling
+
+// Reports a syntax stop with a `try:` fix (§16.2) and enters panic mode.
+// Returns the diagnostic index or -1.
+int p_syn(char* code, char* title, char* summary,
+          char* fix_label, char* fix_text, struct Token* at);
+
+// The grammar halves.
+struct AstNode* parse_type(void);
+struct AstNode* parse_expr(void);
+struct AstNode* parse_block(void);
+struct AstNode* parse_stmt(void);
+struct AstNode* parse_pattern(void);
+
+// Internal parsing entry points (implemented across parser.c2/pstmts.c2/
+// pexpr.c2; declared here so the halves can call each other).
+char*        parse_path_name(void);          // ID { :: ID } joined ("A::B")
+char*        parse_life_use(void);            // life ( ID ) -> "life(a)"
+struct AstList* parse_generics(void);          // < gparam, ... >
+int          parse_generic_args(struct AstNode* onto);  // < targ, ... >
+int          p_eat_gt_split(void);           // `>` (splits >> and >=)
+struct AstList* parse_params(struct AstNode* onto);     // ( params )
+struct AstNode* parse_fn_decl(int unck, struct Token* start);
+struct AstNode* parse_extern_fn(void);
+struct AstNode* parse_struct_decl(int is_copy);
+struct AstNode* parse_enum_decl(int is_copy);
+struct AstNode* parse_methods_block(void);
+struct AstNode* parse_let_stmt(void);
+struct AstNode* parse_if_stmt(void);
+struct AstNode* parse_while_stmt(void);
+struct AstNode* parse_for_stmt(void);
+struct AstNode* parse_switch_stmt(void);
+struct AstNode* parse_const_decl(int is_export);
+struct AstNode* parse_item(int is_export);
+char*        parse_unck_head(void);           // unchecked ( "reason" )
+struct AstNode* parse_literal_node(void);     // literal token -> node
+int          p_at_assign_op(void);            // = += -= ... on cursor?
+char*        p_cur_op_word(void);             // operator spelling
+void         lexbuf_push_str(char* s);        // scratch-buffer append
+int          p_peek_is_kw(char* kw, int n);
 
 // Byte sizes as fixed literals (c2x-seed needs literal array dimensions and
 // uses an 8-byte field ABI, so every field is one qword).

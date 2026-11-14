@@ -76,6 +76,7 @@ msg_expect_dot      db "Expected '.'", 0
 msg_expect_eq       db "Expected '='", 0
 msg_assign_const    db "Cannot assign to const variable", 0
 msg_infinite_struct db "struct cannot contain itself by value (use a pointer field)", 0
+msg_undeclared      db "undeclared identifier", 0
 
 ; Compiler messages
 msg_asm_fail        db "Error: assembly failed", 10, 0
@@ -208,6 +209,8 @@ error_at_code:
     global msg_expect_dot
     global msg_expect_eq
     global msg_assign_const
+    global msg_infinite_struct
+    global msg_undeclared
     global msg_infinite_struct
     global msg_asm_fail
     global msg_ld_fail

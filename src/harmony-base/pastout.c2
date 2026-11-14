@@ -1,0 +1,62 @@
+// harmony-base — AST pretty-printer (docs/harmony.md §19.7 M0 deliverable).
+//
+// Prints a parse tree one node per line, children indented two spaces per
+// level. Used by round-trip tests and `-v` dumps; the printed form is a pure
+// function of the tree (byte-deterministic, no addresses or spans).
+
+// Indentation: two spaces per level.
+void print_indent(int depth) {
+    int i;
+    i = 0;
+    while (i < depth) {
+        out_str("  ");
+        i = i + 1;
+    }
+}
+
+// Prints one node's tail payloads (sval, then ival when nonzero) after the
+// kind name.
+void print_payload(struct AstNode* n) {
+    if (n->sval != 0) {
+        out_str(" ");
+        out_str(n->sval);
+    }
+    if (n->ival != 0) {
+        out_str(" #");
+        out_int(n->ival);
+    }
+}
+
+// The recursive printer. kids first, then kids2.
+void print_node(struct AstNode* n, int depth) {
+    if (n == 0) { return; }
+    print_indent(depth);
+    out_str(ast_kind_name(n->kind));
+    print_payload(n);
+    out_nl();
+
+    if (n->a != 0) { print_node(n->a, depth + 1); }
+    if (n->b != 0) { print_node(n->b, depth + 1); }
+    if (n->c != 0) { print_node(n->c, depth + 1); }
+    if (n->kids != 0) {
+        int i;
+        i = 0;
+        while (i < ast_list_len(n->kids)) {
+            print_node(ast_list_get(n->kids, i), depth + 1);
+            i = i + 1;
+        }
+    }
+    if (n->kids2 != 0) {
+        int i;
+        i = 0;
+        while (i < ast_list_len(n->kids2)) {
+            print_node(ast_list_get(n->kids2, i), depth + 1);
+            i = i + 1;
+        }
+    }
+}
+
+// Entry: dumps the whole program.
+void ast_print(struct AstNode* root) {
+    print_node(root, 0);
+}

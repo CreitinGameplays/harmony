@@ -202,16 +202,6 @@ struct AstNode* parse_unary(void) {
         n->end = p_prev()->end;
         return n;
     }
-    if (p_at_kw("new")) {
-        struct AstNode* n;
-        p_advance();
-        n = ast_node_new(AST_NEW);
-        n->a = parse_unary();
-        if (n->a == 0) { return 0; }
-        n->start = start->start;
-        n->end = p_prev()->end;
-        return n;
-    }
     return parse_postfix_expr();
 }
 
@@ -593,6 +583,20 @@ struct AstNode* parse_primary(void) {
         n->a = parse_expr();
         if (n->a == 0) { return 0; }
         if (!p_expect(TOK_RPAREN, "add `)` to close `raw(...)`")) { return 0; }
+        n->start = start->start;
+        n->end = p_prev()->end;
+        return n;
+    }
+
+    // heap(expr) — the heap-allocation form (§12.2), styled after sizeof.
+    if (p_at_kw("heap")) {
+        struct AstNode* n;
+        p_advance();
+        if (!p_expect(TOK_LPAREN, "add `(` after `heap`")) { return 0; }
+        n = ast_node_new(AST_HEAP);
+        n->a = parse_expr();
+        if (n->a == 0) { return 0; }
+        if (!p_expect(TOK_RPAREN, "add `)` to close `heap(...)`")) { return 0; }
         n->start = start->start;
         n->end = p_prev()->end;
         return n;

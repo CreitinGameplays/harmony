@@ -40,8 +40,8 @@ int kw_is_keyword(char* s) {
     if (str_eq(s, "return")) { return 1; }
     if (str_eq(s, "break")) { return 1; }
     if (str_eq(s, "continue")) { return 1; }
-    // Memory and safety
-    if (str_eq(s, "new")) { return 1; }
+    // Memory and safety (v0.3.2: `new` is no longer a keyword; the heap
+    // form is the built-in `heap(x)`, listed with the operator forms).
     if (str_eq(s, "unchecked")) { return 1; }
     if (str_eq(s, "raw")) { return 1; }
     if (str_eq(s, "self")) { return 1; }
@@ -50,6 +50,7 @@ int kw_is_keyword(char* s) {
     if (str_eq(s, "false")) { return 1; }
     if (str_eq(s, "as")) { return 1; }
     if (str_eq(s, "sizeof")) { return 1; }
+    if (str_eq(s, "heap")) { return 1; }
     // `life` stays an identifier (contextual, §4.2).
     return 0;
 }
@@ -82,6 +83,8 @@ int kw_is_foreign(char* s) {
     if (str_eq(s, "nullptr")) { return 1; }
     if (str_eq(s, "malloc")) { return 1; }
     if (str_eq(s, "free")) { return 1; }
+    if (str_eq(s, "new")) { return 1; }
+    if (str_eq(s, "delete")) { return 1; }
     if (str_eq(s, "Box")) { return 1; }
     if (str_eq(s, "Option")) { return 1; }
     if (str_eq(s, "Some")) { return 1; }

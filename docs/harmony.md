@@ -2,7 +2,7 @@
 
 File extension: `.harmony`
 
-### Conceptual Design Document · v0.3.1
+### Conceptual Design Document · v0.3.2
 
 > **Status:** conceptual. Nothing here is implemented, benchmarked, or proven sound.
 > The language is **Harmony**; source files end in `.harmony`. This document
@@ -29,7 +29,7 @@ File extension: `.harmony`
 9. [Ownership and moves](#9-ownership-and-moves)
 10. [Borrowing](#10-borrowing)
 11. [Lifetimes: `life`](#11-lifetimes-life)
-12. [The heap, `new`, and `cleanup`](#12-the-heap-new-and-cleanup)
+12. [The heap, `heap(...)`, and `cleanup`](#12-the-heap-heap-and-cleanup)
 13. [`unchecked`: taking the seatbelt off on purpose](#13-unchecked-taking-the-seatbelt-off-on-purpose)
 14. [Runtime traps and error values](#14-runtime-traps-and-error-values)
 15. [Standard library surface](#15-standard-library-surface)
@@ -52,10 +52,11 @@ File extension: `.harmony`
 | v0.2 | Rename pass | `impl`→`methods`, `match`→`switch`/`case`, `Option`/`Some`/`None`→`Maybe`/`Has`/`Empty`, `Box`→`Heap`, `for (x in v)`→`for (x : v)`. |
 | v0.3 | Identity pass | New diagnostics format, `String::from`→`.own()`, constructors named `make`, `unchecked("reason")`, `raw` pointers, `extern fn`, `export`/`import`, `cleanup` hook, `eq`/`ord` bounds, `next` iteration protocol, `Outcome`, byte literals, ranges. |
 | v0.3.1 | Decisions + backends | §20.3 open questions resolved (structured reasons, guards, `Shared<T>`, threads incl. detached, `try`, named fields/struct patterns, function pointers, `i32` literals; `unchecked`-as-expression rejected); names kept, trait-like feature renamed **`trait`→`abilities`**, `spawn`/`send` un-reserved; **LLVM is the primary backend**, C11 secondary; the language is named Harmony (`.harmony`). |
+| v0.3.2 | Heap form | The heap keyword `new` (a prefix operator: `new 42`) is replaced by the `sizeof`-styled built-in form **`heap(x)`**. It reads like the allocation it is, cannot be mistaken for a constructor, and lets the compiler construct the value **in place** (`heap([0u8; 8_000_000])`). `new` and `delete` join the recognized foreign words. |
 
 ### 1.2 Bug fixed in v0.3
 
-v0.2 used `new` as the heap-allocation keyword (`new 42`) **and** as the conventional constructor name (`Counter::new()`). Those cannot both parse. Constructors are now `Type::make()`, and `new` is only ever the heap keyword.
+v0.2 used `new` as the heap-allocation keyword (`new 42`) **and** as the conventional constructor name (`Counter::new()`). Those cannot both parse, so v0.3 made constructors `Type::make()` and kept `new` as the heap keyword. v0.3.2 removes that obligation entirely: the heap form is `heap(x)`, so `new` is no longer a keyword at all (writing it earns a `NAME-02` hint).
 
 ### 1.3 Vocabulary map
 
@@ -78,7 +79,8 @@ The core ideas (ownership, borrowing, lifetimes, exhaustive sum types) are not n
 | Abort | `panic!` | `trap(msg)` | A trap is a controlled stop, not an exception. |
 | Force-unwrap | `.unwrap()` | `.or_trap("msg")` | The name says what happens. |
 | Borrowed→owned | `String::from(s)` / `.to_string()` | `"Ada".own()` | One verb for "make me an owned copy". |
-| Constructor convention | `Type::new()` | `Type::make()` | `new` is a keyword here. |
+| Constructor convention | `Type::new()` | `Type::make()` | A constructor is a named `make`, not a keyword. |
+| Heap allocation | `new x` / `Box::new(x)` | `heap(x)` | A built-in form, C-`sizeof` styled; `new` is a foreign word. |
 | Destructor | `Drop` trait | `fn cleanup(&mut self)` | A special method name, no traits needed. |
 | Iteration | `Iterator` trait | any type with `fn next(&mut self) -> Maybe<T>` | A structural protocol, no traits needed. |
 | Traits (v1) | `trait` | `abilities` | An ability is what a type *has*; the bound syntax `<T: Drawable>` is already the shape. |
@@ -194,8 +196,8 @@ Every feature in v0 must kill a named bug class. If it doesn't, it is out.
 |---|---|
 | Declarations | `fn` `let` `mut` `const` `struct` `enum` `methods` `copy` `export` `import` `extern` |
 | Control flow | `if` `else` `while` `for` `switch` `case` `default` `return` `break` `continue` |
-| Memory and safety | `new` `unchecked` `raw` `self` |
-| Literals and operators | `true` `false` `as` `sizeof` |
+| Memory and safety | `unchecked` `raw` `self` |
+| Literals and operators | `true` `false` `as` `sizeof` `heap` |
 | **Contextual** (keyword only in the positions listed) | `life` — only in generic lists (`<life a>`) and in types (`&life(a) T`, `Words<life(a)>`) |
 
 `life` is **contextual**, so `player.life -= 1;` still compiles. (A game developer's most-typed identifier survives.)
@@ -206,7 +208,7 @@ Every feature in v0 must kill a named bug class. If it doesn't, it is out.
 either — v1 concurrency will use ordinary method-style names, not keywords;
 see §20.4.)
 
-**Recognized foreign words** (not keywords, but the compiler knows them and gives a translation hint instead of a bare "unknown name"; see `NAME-02` in §16): `unsafe` `impl` `match` `trait` `pub` `use` `loop` `goto` `null` `NULL` `nullptr` `malloc` `free` `Box` `Option` `Some` `None` `Result` `Ok` `Err` `panic`.
+**Recognized foreign words** (not keywords, but the compiler knows them and gives a translation hint instead of a bare "unknown name"; see `NAME-02` in §16): `unsafe` `impl` `match` `trait` `pub` `use` `loop` `goto` `null` `NULL` `nullptr` `malloc` `free` `new` `delete` `Box` `Option` `Some` `None` `Result` `Ok` `Err` `panic`.
 
 ### 4.3 Literals
 
@@ -261,7 +263,7 @@ A function with no `->` returns nothing. There are no tuples; return a small `st
 |---|---|---|
 | `String` | a growable UTF-8 buffer on the heap | Created with `"text".own()` or `String::make()`. |
 | `Vec<T>` | a growable buffer of `T` on the heap | `Vec::make()`. |
-| `Heap<T>` | one `T` on the heap | Created with `new expr`. |
+| `Heap<T>` | one `T` on the heap | Created with `heap(expr)`. |
 | `Maybe<T>` | zero or one `T` | Replaces null. |
 | `Outcome<T, E>` | a success `T` or a failure `E` | Replaces error codes and exceptions. |
 
@@ -554,7 +556,7 @@ extern fn getenv(name: raw u8) -> raw u8;
 | Struct init | `Point { .x = 1, .y = 2 }` |
 | Borrow | `&x`, `&mut x` |
 | Deref | `*r`, `*heap_value` |
-| Heap alloc | `new 42`, `new Node { .value = 1, .next = Empty }` |
+| Heap alloc | `heap(42)`, `heap(Node { .value = 1, .next = Empty })` |
 | Cast | `x as i64` (lossless only) |
 | Unary | `-x`, `!flag`, `~bits` |
 | Binary | `a + b`, `a && b`, `a == b`, ... |
@@ -568,7 +570,7 @@ extern fn getenv(name: raw u8) -> raw u8;
 | Level | Operators | Associativity |
 |---|---|---|
 | 1 | `()` call, `[]` index, `.` field/method, `::` path | left |
-| 2 | prefix `-` `!` `~` `*` `&` `&mut` `new` | right |
+| 2 | prefix `-` `!` `~` `*` `&` `&mut` | right |
 | 3 | `as` | left |
 | 4 | `*` `/` `%` | left |
 | 5 | `+` `-` | left |
@@ -1104,7 +1106,7 @@ Even if you annotated it, returning `&s` is `LIFE-01`: `s` dies at the `}`. Fixe
 
 ---
 
-## 12. The heap, `new`, and `cleanup`
+## 12. The heap, `heap(...)`, and `cleanup`
 
 ### 12.1 Where values live
 
@@ -1113,15 +1115,40 @@ Even if you annotated it, returning `&s` is `LIFE-01`: `s` dies at the `}`. Fixe
 | Locals, arrays, structs, enums | inline in the stack frame (or inside their owner) |
 | `String`, `Vec<T>`, `Heap<T>` payloads | on the heap, owned by the handle on the stack |
 
-### 12.2 `new` and `Heap<T>`
+### 12.2 `heap(x)` and `Heap<T>`
 
 ```c
-let mut b: Heap<i32> = new 42;
+let mut b: Heap<i32> = heap(42);
 *b += 1;
 // no free(), no delete, no GC. `b` is freed at the closing brace.
 ```
 
-Yes, `new` without `delete` is legal. No, it doesn't leak: the owner's closing brace is the `delete`. `new expr` evaluates `expr` and moves it to a fresh heap allocation, yielding `Heap<T>`.
+`heap(x)` is a built-in form, styled after `sizeof(T)`: it evaluates `x`,
+moves it to a fresh heap allocation, and yields `Heap<T>`. There is no
+`delete`; the owner's closing brace is the `delete`. Nothing leaks.
+
+```c
+fn push_front(head: Maybe<Heap<Node>>, value: i32) -> Maybe<Heap<Node>> {
+    return Has(heap(Node { .value = value, .next = head }));
+}
+
+enum Tree { Leaf, Branch(Heap<Tree>, i32, Heap<Tree>) }
+
+let t = Tree::Branch(heap(Tree::Leaf), 5, heap(Tree::Leaf));
+```
+
+**In-place construction.** Because `heap(...)` names its argument, the
+compiler is allowed to construct the value directly in the allocation
+instead of building it on the stack and copying it in. This matters for
+large arrays:
+
+```c
+let big = heap([0u8; 8_000_000]);   // constructed in place; no 8 MB stack copy
+```
+
+The observable semantics are identical either way — `heap(x)` always yields
+an owned `Heap<T>` whose pointee is a moved copy of `x`'s value — so the
+optimization is never visible, only faster.
 
 - `Heap<T>` is **not** `copy`; moving it moves ownership of the allocation (just a pointer copy at runtime).
 - `*h` dereferences. `.` auto-dereferences through `Heap`, `&`, and `&mut`, so there is no `->` anywhere.
@@ -1141,7 +1168,7 @@ struct Node {
 
 | You want | Write |
 |---|---|
-| One owned heap value | `new expr` → `Heap<T>` |
+| One owned heap value | `heap(expr)` → `Heap<T>` |
 | A growable list | `Vec<T>` |
 | A growable string | `String` |
 | A fixed-size buffer | `[T; N]` (stack) or `Vec<T>` |
@@ -1992,8 +2019,9 @@ When the compiler sees a word from C, C++, Rust, Java, or Go that means somethin
 | `null`, `NULL`, `nullptr` | `Maybe<T>` with `Empty` |
 | `Option`, `Some(x)`, `None` | `Maybe`, `Has(x)`, `Empty` |
 | `Result`, `Ok(x)`, `Err(e)` | `Outcome`, `Good(x)`, `Bad(e)` |
-| `Box<T>`, `Box::new(x)` | `Heap<T>`, `new x` |
-| `malloc(...)` / `free(p)` | `new x` / nothing: freed at `}` |
+| `Box<T>`, `Box::new(x)` | `Heap<T>`, `heap(x)` |
+| `malloc(...)` / `free(p)` | `heap(x)` / nothing: freed at `}` |
+| `new X`, `delete p` | `heap(x)` / nothing: freed at `}` (a `NAME-02` hint, not an error) |
 | `panic!("msg")`, `abort()` | `trap("msg")` |
 | `.unwrap()` | `.or_trap("msg")` |
 | `String::from("x")`, `.to_string()` | `"x".own()` |
@@ -2102,7 +2130,7 @@ struct Node {
 }
 
 fn push_front(head: Maybe<Heap<Node>>, value: i32) -> Maybe<Heap<Node>> {
-    return Has(new Node { .value = value, .next = head });
+    return Has(heap(Node { .value = value, .next = head }));
 }
 
 fn sum(head: &Maybe<Heap<Node>>) -> i32 {
@@ -2418,7 +2446,7 @@ shift_expr    = add_expr  { ( "<<" | ">>" ) add_expr } ;
 add_expr      = mul_expr  { ( "+" | "-" ) mul_expr } ;
 mul_expr      = cast_expr { ( "*" | "/" | "%" ) cast_expr } ;
 cast_expr     = unary_expr { "as" type } ;
-unary_expr    = ( "-" | "!" | "~" | "*" | "&" [ "mut" ] | "new" ) unary_expr
+unary_expr    = ( "-" | "!" | "~" | "*" | "&" [ "mut" ] ) unary_expr
               | postfix_expr ;
 postfix_expr  = primary { call_args
                         | "[" expr "]"
@@ -2432,6 +2460,7 @@ primary       = literal
               | array_lit
               | struct_init
               | "sizeof" "(" type ")"
+              | "heap" "(" expr ")"
               | "raw" "(" expr ")" ;
 path          = ID { "::" ID } ;
 array_lit     = "[" [ expr { "," expr } [ "," ] ] "]"
@@ -2659,7 +2688,7 @@ Three keyword reservations are **dropped**: `spawn`, `send`, and (per the rename
 | `T *p = &x;` | `let p = &x;` / `&mut x` | Shared or exclusive. |
 | `*p` | `*p` | Deref. |
 | `NULL` | `Maybe<T>` / `Empty` | The compiler forces you to check. |
-| `malloc` + `free` | `new expr` | Freed at the owner's `}`. |
+| `malloc` + `free` | `heap(expr)` | Freed at the owner's `}`. |
 | `realloc`-based growing buffer | `Vec<T>` | Push, pop, indexed. |
 | `char *s` | `&str` / `String` | UTF-8, length-carrying. |
 | `strcpy`, `strcat` | `s.push_str(t)` | Cannot overflow. |
@@ -2679,4 +2708,4 @@ Three keyword reservations are **dropped**: `spawn`, `send`, and (per the rename
 
 ---
 
-*End of document. Conceptual design v0.3.1 (decisions resolved for v1). Nothing here is fully built yet; that is both the risk and the fun.*
+*End of document. Conceptual design v0.3.2 (decisions resolved for v1). Nothing here is fully built yet; that is both the risk and the fun.*

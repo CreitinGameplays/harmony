@@ -10,7 +10,7 @@ Status legend: `[ ]` not started · `[/]` partial · `[x]` done.
 ## harmony-base — detailed implementation checklist
 
 `src/harmony-base/*.c2` — the first Harmony compiler, written in c2x-seed.
-Target: the v0.3.1 design in `docs/harmony.md` (goals §2, lexical §4, types §5,
+Target: the v0.3.2 design in `docs/harmony.md` (goals §2, lexical §4, types §5,
 declarations §6, statements §8, ownership §9–13, traps §14, prelude §15,
 diagnostics §16, grammar §18, architecture §19).
 Output extension: `.harmony`. Milestone: byte-deterministic build.
@@ -65,7 +65,8 @@ secondary (§19.4b). The driver binary is `harmony-base` (the spec's `lc`).
       `tests/c2x-seed/determinism.sh` — c2x-seed corpus (`make test-seed`).
 - [x] Lexer (§4): UTF-8 ingest; nested `/* */` + `//` + `///` comments;
       identifiers; keywords + contextual `life` (stays an identifier;
-      `life(...)` recognized in type position); integer/float/bool/char/byte
+      `life(...)` recognized in type position); `heap(x)` as a built-in
+      form (`new` is no longer a keyword, §12.2 v0.3.2); integer/float/bool/char/byte
       literals (incl. `1_000`, `0xFF`, `'a'`, `b'a'`, `\u{...}`);
       `-`/`;` punctuation rules; position tracking. Missing `;` → `SYN-04`;
       malformed literals → `LEX-01` with a fix. (`lexlit.c2` + `lexer.c2`.)

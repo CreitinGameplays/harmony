@@ -6,8 +6,9 @@ recognizes today vs. what the spec defines.
 
 ## Status
 
-Nothing is lexed yet (M0 starts with the lexer); this table is the target
-vocabulary the lexer and parser must recognize, per the v0.3 spec.
+The lexer (§4) and parser (§18) are implemented (M0): the tables below are
+the vocabulary they recognize. `new` is no longer a keyword (v0.3.2): the
+heap form is the built-in `heap(x)` (docs/harmony.md §12.2).
 
 ## Keywords (docs/harmony.md §4.2)
 
@@ -15,21 +16,24 @@ vocabulary the lexer and parser must recognize, per the v0.3 spec.
 |---|---|
 | Declarations | `fn` `let` `mut` `const` `struct` `enum` `methods` `copy` `export` `import` `extern` |
 | Control flow | `if` `else` `while` `for` `switch` `case` `default` `return` `break` `continue` |
-| Memory and safety | `new` `unchecked` `raw` `self` |
-| Literals and operators | `true` `false` `as` `sizeof` |
+| Memory and safety | `unchecked` `raw` `self` |
+| Literals and operators | `true` `false` `as` `sizeof` `heap` |
 | Contextual | `life` — keyword only in generic lists (`<life a>`) and types (`&life(a) T`, `Words<life(a)>`) |
 
 `life` is contextual so `player.life -= 1;` still compiles (§4.2).
+`heap` is a built-in **form** like `sizeof` (§12.2), not a general keyword:
+`heap(x)` is a primary expression.
 
 **Reserved for the future:** `abilities` `async` `await` `macro` `try`.
 Dropped reservations (v0.3.1): `spawn`, `send` (concurrency will use
 ordinary method-style names), and `trait` (the v1 trait-like feature is
-spelled `abilities`, see docs/harmony.md §20.4).
+spelled `abilities`, see docs/harmony.md §20.4). Dropped keyword (v0.3.2):
+`new` — the heap form is `heap(x)`.
 
 **Recognized foreign words** (not keywords; the compiler knows them and emits
 a `NAME-02` translation hint): `unsafe` `impl` `match` `trait` `pub` `use`
-`loop` `goto` `null` `NULL` `nullptr` `malloc` `free` `Box` `Option` `Some`
-`None` `Result` `Ok` `Err` `panic`.
+`loop` `goto` `null` `NULL` `nullptr` `malloc` `free` `new` `delete` `Box`
+`Option` `Some` `None` `Result` `Ok` `Err` `panic`.
 
 ## Builtins (docs/harmony.md §15)
 
@@ -41,7 +45,8 @@ a `NAME-02` translation hint): `unsafe` `impl` `match` `trait` `pub` `use`
 | `Maybe` `Has` `Empty` `Outcome` `Good` `Bad` | prelude types |
 | `String` `Vec` `Heap` `str` | owning / borrowed types |
 | `.own()` `.or_trap()` `.clone()` `.take()` | methods |
-| `Type::make()` | constructor convention (`new` is a keyword) |
+| `sizeof(T)` `heap(x)` `raw(x)` | built-in forms |
+| `Type::make()` | constructor convention (a named `make`, not a keyword) |
 
 ## Diagnostic codes (docs/harmony.md §16.10)
 

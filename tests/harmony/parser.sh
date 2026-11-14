@@ -140,6 +140,21 @@ ok_case "index chains, trailing comma, generic method call"
 write 'fn main() { let a = [1, 2, 3]; let b = [0; 8]; let c = []; let d = sizeof(i32); }\n'
 ok_case "array literals (list, repeat, empty), sizeof"
 
+write 'fn main() { let mut b: Heap<i32> = heap(42); *b += 1; }\n'
+ok_case "heap(expr) allocation and deref assign"
+
+write 'struct Node { value: i32; next: Maybe<Heap<Node>>; }\nfn push_front(head: Maybe<Heap<Node>>, value: i32) -> Maybe<Heap<Node>> { return Has(heap(Node { .value = value, .next = head })); }\nfn main() { }\n'
+ok_case "heap(...) with a struct literal"
+
+write 'enum Tree { Leaf, Branch(Heap<Tree>, i32, Heap<Tree>) }\nfn main() { let t = Tree::Branch(heap(Tree::Leaf), 5, heap(Tree::Leaf)); }\n'
+ok_case "heap(...) inside an enum payload"
+
+write 'fn main() { let big = heap([0u8; 8_000_000]); }\n'
+ok_case "heap(...) of a large array literal"
+
+write 'fn main() { let x = new 42; }\n'
+reject_case "`new` is no longer a keyword (parses as a name)" "SYN-04"
+
 write 'fn main() { let r = 0..10; let s = 0..=10; }\n'
 ok_case "range expressions"
 

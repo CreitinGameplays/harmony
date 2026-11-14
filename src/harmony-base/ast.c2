@@ -68,7 +68,7 @@ const int AST_FIELD_INIT  = 64;// sval = name, a = value
 const int AST_ARRAY_LIT   = 65;// list = elements; a = value, b = count for [v; n]
 const int AST_BORROW      = 66;// a = operand, ival bit 0 = mut
 const int AST_DEREF       = 67;// a = operand
-const int AST_NEW         = 68;// a = operand
+const int AST_HEAP        = 68;// a = operand (heap(x) construction)
 const int AST_SIZEOF      = 69;// a = type
 const int AST_RAW_EXPR    = 70;// a = expr (raw(...) cast)
 
@@ -211,7 +211,7 @@ char* ast_kind_name(int kind) {
     if (kind == AST_ARRAY_LIT) { return "array-lit"; }
     if (kind == AST_BORROW)    { return "borrow"; }
     if (kind == AST_DEREF)     { return "deref"; }
-    if (kind == AST_NEW)       { return "new"; }
+    if (kind == AST_HEAP)      { return "heap"; }
     if (kind == AST_SIZEOF)    { return "sizeof"; }
     if (kind == AST_RAW_EXPR) { return "raw-expr"; }
     if (kind == AST_PAT_WILD)  { return "_"; }

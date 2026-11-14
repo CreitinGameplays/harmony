@@ -1,0 +1,7 @@
+// WANT: FMT-01
+// `{:x}` is defined for integers only; a string is rejected (§15.1).
+fn main() -> i32 {
+    let s = "oops";
+    println("{:x}", s);
+    return 0;
+}

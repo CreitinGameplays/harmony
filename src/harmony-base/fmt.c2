@@ -1,0 +1,174 @@
+// harmony-base — format strings (docs/harmony.md §15.1, FMT-01).
+//
+// `print`, `println`, `eprintln`, and `format` are recognized by the compiler
+// only for their format strings: there are no variadics or macros, so parsing
+// and *checking* the format stays here (§19.8.6). The formatting itself
+// (number-to-text, padding) is library code, reached through the `lc_*` hooks.
+//
+// Grammar:
+//   fmt      = { text | "{{" | "}}" | field }
+//   field    = "{" [ "?" | [ "0" ] width [ "." precision ] [ "x" ] ] "}"
+//   width    = digit+         (0 = none)
+//   precision= digit+         (0 = none -> keyed off `has_prec`)
+//
+// The scan produces a flat list of pieces in parallel global arrays (c2x-seed
+// has no tuples): literal runs plus one entry per field. Literal text is
+// decoded into `g_fmt_litbuf` (so `{{` becomes a single `{`), and each literal
+// piece names a byte range of it.
+
+// Piece kinds.
+const int FMT_LIT   = 0;   // literal bytes g_fmt_litbuf[start .. start+len)
+const int FMT_DISP  = 1;   // {}   display
+const int FMT_DEBUG = 2;   // {?}  structural debug form
+const int FMT_HEX   = 3;   // {:x} lowercase hex (integers only)
+
+const int FMT_MAX = 128;
+
+int g_fmt_kind[128];
+int g_fmt_start[128];     // literal: offset into g_fmt_litbuf
+int g_fmt_len[128];       // literal: byte length
+int g_fmt_width[128];
+int g_fmt_has_width[128];
+int g_fmt_prec[128];
+int g_fmt_has_prec[128];
+int g_fmt_zero[128];      // "{:0N}" — zero-pad numbers
+int g_fmt_n;              // piece count
+
+char g_fmt_litbuf[4096];
+int  g_fmt_litlen;
+
+int g_fmt_err;            // byte offset of a syntax error, or -1
+
+void fmt_lit_reset(void) { g_fmt_litlen = 0; g_fmt_n = 0; g_fmt_err = -1; }
+
+void fmt_lit_push(char c) {
+    if (g_fmt_litlen < 4095) { g_fmt_litbuf[g_fmt_litlen] = c; g_fmt_litlen = g_fmt_litlen + 1; }
+}
+
+// Appends a literal piece spanning the last `n` bytes pushed to the literal
+// buffer. Returns 1 on success (0 when the piece table is full).
+int fmt_add_lit(int n) {
+    if (n <= 0) { return 1; }
+    if (g_fmt_n >= FMT_MAX) { return 0; }
+    g_fmt_kind[g_fmt_n] = FMT_LIT;
+    g_fmt_start[g_fmt_n] = g_fmt_litlen - n;
+    g_fmt_len[g_fmt_n] = n;
+    g_fmt_width[g_fmt_n] = 0;
+    g_fmt_has_width[g_fmt_n] = 0;
+    g_fmt_prec[g_fmt_n] = 0;
+    g_fmt_has_prec[g_fmt_n] = 0;
+    g_fmt_zero[g_fmt_n] = 0;
+    g_fmt_n = g_fmt_n + 1;
+    return 1;
+}
+
+int fmt_add_field(int kind) {
+    if (g_fmt_n >= FMT_MAX) { return 0; }
+    g_fmt_kind[g_fmt_n] = kind;
+    g_fmt_start[g_fmt_n] = 0;
+    g_fmt_len[g_fmt_n] = 0;
+    g_fmt_width[g_fmt_n] = 0;
+    g_fmt_has_width[g_fmt_n] = 0;
+    g_fmt_prec[g_fmt_n] = 0;
+    g_fmt_has_prec[g_fmt_n] = 0;
+    g_fmt_zero[g_fmt_n] = 0;
+    g_fmt_n = g_fmt_n + 1;
+    return 1;
+}
+
+int fmt_is_digit(char c) { return c >= '0' && c <= '9'; }
+
+// Parses a format string of `len` bytes. Fills the piece arrays (accessible
+// through `g_fmt_n` and the `g_fmt_*` arrays). Returns the field count
+// (placeholders needing an argument), or -1 after setting `g_fmt_err` to the
+// offending byte offset.
+int fmt_parse(char* s, int len) {
+    int i;
+    int lit;
+    int fields;
+    int cur;
+
+    fmt_lit_reset();
+    i = 0;
+    lit = 0;
+    fields = 0;
+
+    while (i < len) {
+        char c;
+        c = s[i];
+        if (c == '{') {
+            if (i + 1 < len && s[i + 1] == '{') {
+                fmt_lit_push('{');
+                lit = lit + 1;
+                i = i + 2;
+                continue;
+            }
+            // Flush the literal run collected so far.
+            if (!fmt_add_lit(lit)) { return -1; }
+            lit = 0;
+            if (!fmt_add_field(FMT_DISP)) { return -1; }
+            cur = g_fmt_n - 1;
+            i = i + 1;
+            // `{?}` is the debug form; anything else is an optional `:`
+            // followed by a width/precision/type spec. Track a leading `0`
+            // flag for zero padding.
+            if (i < len && s[i] == '?') {
+                g_fmt_kind[cur] = FMT_DEBUG;
+                i = i + 1;
+            } else {
+                if (i < len && s[i] == ':') { i = i + 1; }
+                if (i < len && s[i] == '0') {
+                    g_fmt_zero[cur] = 1;
+                    i = i + 1;
+                }
+                if (i < len && fmt_is_digit(s[i])) {
+                    int w;
+                    w = 0;
+                    while (i < len && fmt_is_digit(s[i])) {
+                        w = w * 10 + (s[i] - '0');
+                        i = i + 1;
+                    }
+                    g_fmt_has_width[cur] = 1;
+                    g_fmt_width[cur] = w;
+                }
+                if (i < len && s[i] == '.') {
+                    int p;
+                    i = i + 1;
+                    p = 0;
+                    while (i < len && fmt_is_digit(s[i])) {
+                        p = p * 10 + (s[i] - '0');
+                        i = i + 1;
+                    }
+                    g_fmt_has_prec[cur] = 1;
+                    g_fmt_prec[cur] = p;
+                }
+                if (i < len && s[i] == 'x') {
+                    g_fmt_kind[cur] = FMT_HEX;
+                    i = i + 1;
+                }
+            }
+            if (i >= len || s[i] != '}') {
+                g_fmt_err = i;
+                return -1;
+            }
+            i = i + 1;
+            fields = fields + 1;
+            continue;
+        }
+        if (c == '}') {
+            if (i + 1 < len && s[i + 1] == '}') {
+                fmt_lit_push('}');
+                lit = lit + 1;
+                i = i + 2;
+                continue;
+            }
+            g_fmt_err = i;
+            return -1;
+        }
+        fmt_lit_push(c);
+        lit = lit + 1;
+        i = i + 1;
+    }
+    if (!fmt_add_lit(lit)) { return -1; }
+    return fields;
+}

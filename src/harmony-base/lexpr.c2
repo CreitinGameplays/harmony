@@ -44,6 +44,8 @@ char* ll_slice_len(char* pair);
 char* ll_slice_pair(struct AstNode* n);
 char* ll_len_value(struct AstNode* n);
 void  ll_store_value(char* addr, int ty, char* v);
+char* ll_str_literal(char* s, int len);
+char* ll_format_call(struct AstNode* n, struct AstList* args);
 char* ll_widen_index(char* idx);
 int   ty_array_len(int id);
 char* ll_int_convert(char* v, int from, int to);
@@ -211,6 +213,11 @@ char* ll_expr(struct AstNode* n) {
         g_expr_ty = TY_CHAR;
         ll_int_into(r, n->ival);
         return r;
+    }
+    if (n->kind == AST_STRING_LIT) {
+        // A `&str` literal: register the bytes (deduped) and yield the fat
+        // pair's address — an alloca holding { ptr to the global, length }.
+        return ll_str_literal(n->sval, n->ival);
     }
     if (n->kind == AST_UNIT_LIT) { g_expr_ty = TY_UNIT; return "0"; }
     if (n->kind == AST_PATH) { return ll_expr_path(n); }
@@ -970,9 +977,210 @@ void ll_store_value(char* addr, int ty, char* v) {
     ll_out_nl();
 }
 
+// A `&str` literal (§5.3): register the bytes as a global (deduped) and build
+// the fat pair { ptr, len } in an alloca, returning its address.
+char* ll_str_literal(char* s, int len) {
+    int idx;
+    char* sym;
+    char* slot;
+    char* f0;
+    char* f1;
+    idx = ll_str_intern(s, len);
+    sym = ll_str_symbol(idx);
+    slot = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(slot);
+    ll_out_str(" = alloca %slice\n");
+    f0 = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(f0);
+    ll_out_str(" = getelementptr inbounds %slice, ptr ");
+    ll_out_str(slot);
+    ll_out_str(", i32 0, i32 0\n");
+    ll_out_str("  store ptr ");
+    ll_out_str(sym);
+    ll_out_str(", ptr ");
+    ll_out_str(f0);
+    ll_out_nl();
+    f1 = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(f1);
+    ll_out_str(" = getelementptr inbounds %slice, ptr ");
+    ll_out_str(slot);
+    ll_out_str(", i32 0, i32 1\n");
+    ll_out_str("  store i64 ");
+    ll_out_int(len);
+    ll_out_str(", ptr ");
+    ll_out_str(f1);
+    ll_out_nl();
+    g_expr_ty = ty_new(CTY_STRREF, "&str", TY_U8, 0);
+    return slot;
+}
+
 // Kept for callers that only have an i32 index; same as ll_index_to_i64.
 char* ll_widen_index(char* idx) {
     return ll_index_to_i64(idx);
+}
+
+// ---------------------------------------------------------------------------
+// `print`/`println`/`eprintln` (§15.1). The checker parsed the format (FMT-01)
+// and left the pieces in the `g_fmt_*` arrays; here we lower the call to a
+// run of runtime hooks: pick the fd, write each literal run, and render each
+// placeholder with the width/precision/zero-pad it carries. `n->ival` is 1
+// for `print`, 2 for `println`, 3 for `eprintln`.
+// ---------------------------------------------------------------------------
+void ll_call_void(char* symbol, char* arglist) {
+    ll_out_str("  call void @");
+    ll_out_str(symbol);
+    ll_out_str("(");
+    ll_out_str(arglist);
+    ll_out_str(")\n");
+}
+
+// Width/precision are passed as i64 constants (0 = none).
+char* ll_i64_const(int v) {
+    char* r;
+    r = arena_alloc(24);
+    ll_int_into(r, v);
+    return r;
+}
+
+char* ll_format_call(struct AstNode* n, struct AstList* args) {
+    int argi;      // next runtime argument (1 = first value arg)
+    int k;
+    int println;
+    struct AstNode* fmt;
+
+    println = (n->ival == 2 || n->ival == 3);
+    // Re-parse this call's format string: `g_fmt_*` is shared checker state
+    // that a later call would have overwritten.
+    fmt = args->items[0];
+    fmt_parse(fmt->sval, fmt->ival);
+    // Choose the target fd first: 2 for `eprintln`, 1 otherwise.
+    {
+        char* b;
+        b = arena_alloc(64);
+        b[0] = 0;
+        if (n->ival == 3) { ll_str_append(b, "i64 2"); } else { ll_str_append(b, "i64 1"); }
+        ll_call_void("lc_set_fd", b);
+    }
+
+    argi = 1;   // args->items[0] is the format string
+    k = 0;
+    while (k < g_fmt_n) {
+        if (g_fmt_kind[k] == FMT_LIT) {
+            // Literal run: intern the piece on its own (deduped) and write it
+            // with lc_put_str(ptr, len).
+            int idx;
+            char* sym;
+            char* b;
+            idx = ll_str_intern(g_fmt_litbuf + g_fmt_start[k], g_fmt_len[k]);
+            sym = ll_str_symbol(idx);
+            b = arena_alloc(256);
+            b[0] = 0;
+            ll_str_append(b, "ptr ");
+            ll_str_append(b, sym);
+            ll_str_append(b, ", i64 ");
+            {
+                char* lenb;
+                lenb = arena_alloc(24);
+                ll_int_into(lenb, g_fmt_len[k]);
+                ll_str_append(b, lenb);
+            }
+            ll_call_void("lc_put_str", b);
+        } else {
+            // A placeholder: evaluate its argument, then call the right hook
+            // with (value, width, zero) or (value, width, prec, has_prec).
+            struct AstNode* arg;
+            char* val;
+            int aty;
+            char* b;
+            int has_w;
+            int has_p;
+            int zero;
+            arg = args->items[argi];
+            val = ll_expr(arg);
+            aty = g_expr_ty;
+            has_w = g_fmt_has_width[k];
+            has_p = g_fmt_has_prec[k];
+            zero = g_fmt_zero[k];
+            b = arena_alloc(256);
+            b[0] = 0;
+            // Normalize the value into the hook's parameter type: integers
+            // widen/sign-extend to i64; floats to double; bool to i64; a
+            // char scalar to i64. An untyped literal adopts i64/f64.
+            if (ty_is_untyped_lit(aty)) {
+                if (aty == TY_UINT_LIT) { aty = TY_I32; } else { aty = TY_F64; }
+            }
+            if (ty_is_integer(aty) || ty_is_bool(aty) || ty_is_char(aty)) {
+                if (ty_is_char(aty)) {
+                    // `char` is a scalar; render it as a Unicode character
+                    // (the hook takes the scalar value alone).
+                    ll_str_append(b, "i64 ");
+                    ll_str_append(b, ll_int_convert(val, aty, TY_I64));
+                    ll_call_void("lc_put_char", b);
+                } else {
+                    val = ll_int_convert(val, aty, TY_I64);
+                    ll_str_append(b, "i64 ");
+                    ll_str_append(b, val);
+                    ll_str_append(b, ", i64 ");
+                    if (has_w) { ll_str_append(b, ll_i64_const(g_fmt_width[k])); } else { ll_str_append(b, "0"); }
+                    ll_str_append(b, ", i64 ");
+                    if (zero) { ll_str_append(b, "1"); } else { ll_str_append(b, "0"); }
+                    if (g_fmt_kind[k] == FMT_HEX) {
+                        ll_call_void("lc_put_hex", b);
+                    } else if (ty_is_bool(aty)) {
+                        ll_call_void("lc_put_bool", b);
+                    } else if (ty_is_unsigned(aty)) {
+                        ll_call_void("lc_put_u64", b);
+                    } else {
+                        ll_call_void("lc_put_i64", b);
+                    }
+                }
+            } else if (ty_is_float(aty)) {
+                if (aty != TY_F64) { val = ll_fp_convert(val, aty, TY_F64, 1); }
+                ll_str_append(b, "double ");
+                ll_str_append(b, val);
+                ll_str_append(b, ", i64 ");
+                if (has_w) { ll_str_append(b, ll_i64_const(g_fmt_width[k])); } else { ll_str_append(b, "0"); }
+                ll_str_append(b, ", i64 ");
+                if (has_p) { ll_str_append(b, ll_i64_const(g_fmt_prec[k])); } else { ll_str_append(b, "0"); }
+                ll_str_append(b, ", i64 ");
+                if (has_p) { ll_str_append(b, "1"); } else { ll_str_append(b, "0"); }
+                ll_call_void("lc_put_f64", b);
+            } else {
+                // `&str` / `&[u8]`: the pair's data and length are the two
+                // halves; write them with lc_put_str.
+                char* data;
+                char* len;
+                char* b2;
+                data = ll_slice_data(val);
+                len = ll_slice_len(val);
+                b2 = arena_alloc(128);
+                b2[0] = 0;
+                ll_str_append(b2, "ptr ");
+                ll_str_append(b2, data);
+                ll_str_append(b2, ", i64 ");
+                ll_str_append(b2, len);
+                ll_call_void("lc_put_str", b2);
+            }
+            argi = argi + 1;
+        }
+        k = k + 1;
+    }
+
+    if (println) {
+        char* b;
+        b = arena_alloc(16);
+        b[0] = 0;
+        ll_str_append(b, "i64 10");
+        ll_call_void("lc_put_char", b);
+    }
+    // Always flush at the end of a print: the file's output should appear
+    // even if the program later runs long or traps.
+    ll_call_void("lc_flush", "");
+    g_expr_ty = TY_UNIT;
+    return "0";
 }
 
 int ty_array_len(int id) {
@@ -1160,6 +1368,11 @@ char* ll_expr_call(struct AstNode* n) {
         // Method call `recv.name(args)`: find the method on the receiver's
         // type and pass the receiver as the implicit first argument.
         return ll_method_call(n, callee, args, retty);
+    }
+    // `print`/`println`/`eprintln` (§15.1): the checker marked the builtin in
+    // `n->ival`; lower to the runtime's `lc_*` formatting hooks.
+    if (n->ival == 1 || n->ival == 2 || n->ival == 3) {
+        return ll_format_call(n, args);
     }
 
     // Emit the arguments left to right (§7.5) into a register list.

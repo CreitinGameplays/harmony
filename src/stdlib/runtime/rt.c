@@ -15,6 +15,7 @@
 //   lc_alloc          bump/heap allocation that traps on OOM (T-OOM).
 //   stack guard       a SIGSEGV handler on an alternate stack that turns
 //                     stack exhaustion into a T-STACK trap (§14.2).
+//   lc_put_*          formatting hooks for print/println/eprintln (§15.1).
 //
 // Everything is deterministic and allocation-free on the hot path.
 
@@ -86,14 +87,17 @@ static long sys4(long n, long a, long b, long c, long d) {
 }
 
 // ---------------------------------------------------------------------------
-// Output. Buffered so a sequence of writes costs one syscall.
+// Output. Buffered so a sequence of writes costs one syscall. The target fd
+// is switchable so `println` (stdout, fd 1) and `eprintln` / trap messages
+// (stderr, fd 2) share the same buffer (§15.1).
 // ---------------------------------------------------------------------------
 static char out_buf[4096];
 static usize_t out_len;
+static int out_fd = 2;      // traps and diagnostics default to stderr
 
 static void out_flush(void) {
     if (out_len > 0) {
-        sys(SYS_write, 2, (long) out_buf, (long) out_len);
+        sys(SYS_write, out_fd, (long) out_buf, (long) out_len);
         out_len = 0;
     }
 }
@@ -118,6 +122,181 @@ static void out_uint(unsigned long v) {
 static void out_int(long v) {
     if (v < 0) { out_char('-'); out_uint((unsigned long)(-v)); return; }
     out_uint((unsigned long) v);
+}
+
+// Hexadecimal (lowercase), used by `{:x}`.
+static void out_hex(unsigned long v) {
+    char tmp[16];
+    int n = 0;
+    if (v == 0) { out_char('0'); return; }
+    while (v > 0) {
+        int d = (int)(v & 0xF);
+        tmp[n++] = (char)(d < 10 ? '0' + d : 'a' + (d - 10));
+        v >>= 4;
+    }
+    while (n > 0) { out_char(tmp[--n]); }
+}
+
+// ---------------------------------------------------------------------------
+// Formatting hooks (§15.1, §19.8.6). The compiler lowers `print`/`println`/
+// `eprintln`/`format` to a sequence of these calls; the format-string *parsing*
+// is the compiler's job (FMT-01) because there are no variadics. Width,
+// zero-padding, precision, and the `{?}`/`{:x}` forms are all passed as plain
+// arguments, so the runtime never re-parses the format.
+// ---------------------------------------------------------------------------
+void lc_set_fd(long fd) { out_flush(); out_fd = (int) fd; }
+void lc_flush(void) { out_flush(); }
+
+void lc_put_str(const char *p, long n) {
+    long i;
+    for (i = 0; i < n; i++) { out_char(p[i]); }
+}
+
+// Renders `body` (length `len`) right-aligned to `width`, padding with
+// `padchar` (0 -> space).
+static void out_pad(const char *body, int len, int width, int padchar) {
+    int i;
+    if (padchar == 0) { padchar = ' '; }
+    for (i = len; i < width; i++) { out_char((char) padchar); }
+    for (i = 0; i < len; i++) { out_char(body[i]); }
+}
+
+// Signed 64-bit decimal with optional width and zero padding.
+void lc_put_i64(long v, long width, long zero) {
+    char tmp[24];
+    int n = 0;
+    int neg = 0;
+    unsigned long u;
+    if (v < 0) { neg = 1; u = (unsigned long)(-v); } else { u = (unsigned long) v; }
+    if (u == 0) { tmp[n++] = '0'; }
+    while (u > 0) { tmp[n++] = (char)('0' + (u % 10)); u /= 10; }
+    {
+        char buf[24];
+        int k = 0;
+        if (neg) { buf[k++] = '-'; }
+        while (n > 0) { buf[k++] = tmp[--n]; }
+        // Zero padding goes after the sign.
+        if (zero && (int) width > k) {
+            int pad = (int) width - k;
+            int j;
+            if (neg) { out_char('-'); }
+            for (j = 0; j < pad; j++) { out_char('0'); }
+            for (j = 0; j < k; j++) { if (!(neg && j == 0)) { out_char(buf[j]); } }
+            return;
+        }
+        out_pad(buf, k, (int) width, 0);
+    }
+}
+
+void lc_put_u64(unsigned long v, long width, long zero) {
+    char tmp[24];
+    int n = 0;
+    if (v == 0) { tmp[n++] = '0'; }
+    while (v > 0) { tmp[n++] = (char)('0' + (v % 10)); v /= 10; }
+    {
+        char buf[24];
+        int k = 0;
+        while (n > 0) { buf[k++] = tmp[--n]; }
+        out_pad(buf, k, (int) width, zero ? '0' : 0);
+    }
+}
+
+void lc_put_hex(long v, long width, long zero) {
+    char tmp[20];
+    int n = 0;
+    unsigned long u = (unsigned long) v;
+    if (u == 0) { tmp[n++] = '0'; }
+    while (u > 0) {
+        int d = (int)(u & 0xF);
+        tmp[n++] = (char)(d < 10 ? '0' + d : 'a' + (d - 10));
+        u >>= 4;
+    }
+    {
+        char buf[20];
+        int k = 0;
+        while (n > 0) { buf[k++] = tmp[--n]; }
+        out_pad(buf, k, (int) width, zero ? '0' : 0);
+    }
+}
+
+void lc_put_bool(long v, long width, long zero) {
+    const char *s = v ? "true" : "false";
+    int len = v ? 4 : 5;
+    out_pad(s, len, (int) width, zero ? '0' : 0);
+}
+
+// A Unicode scalar value as UTF-8.
+void lc_put_char(long v) {
+    unsigned long c = (unsigned long) v;
+    if (c < 0x80) {
+        out_char((char) c);
+    } else if (c < 0x800) {
+        out_char((char)(0xC0 | (c >> 6)));
+        out_char((char)(0x80 | (c & 0x3F)));
+    } else if (c < 0x10000) {
+        out_char((char)(0xE0 | (c >> 12)));
+        out_char((char)(0x80 | ((c >> 6) & 0x3F)));
+        out_char((char)(0x80 | (c & 0x3F)));
+    } else {
+        out_char((char)(0xF0 | (c >> 18)));
+        out_char((char)(0x80 | ((c >> 12) & 0x3F)));
+        out_char((char)(0x80 | ((c >> 6) & 0x3F)));
+        out_char((char)(0x80 | (c & 0x3F)));
+    }
+}
+
+// A decimal for f64. With a precision, exactly `prec` fractional digits;
+// otherwise up to six, trailing zeros trimmed. Enough for the M1 surface
+// (the shortest round-trip algorithm is library work per §19.8.6).
+void lc_put_f64(double d, long width, long prec, long has_prec) {
+    char buf[64];
+    int k = 0;
+    long ip;
+    unsigned long frac;
+    int i;
+    int digits;
+    if (d != d) { out_pad("NaN", 3, (int) width, 0); return; }
+    if (d < 0) { buf[k++] = '-'; d = -d; }
+    ip = (long) d;
+    // Integer part, in reverse then flipped.
+    {
+        char tmp[24];
+        int n = 0;
+        unsigned long u = (unsigned long) ip;
+        if (u == 0) { tmp[n++] = '0'; }
+        while (u > 0) { tmp[n++] = (char)('0' + (u % 10)); u /= 10; }
+        while (n > 0) { buf[k++] = tmp[--n]; }
+    }
+    if (has_prec) { digits = (int) prec; } else { digits = 6; }
+    if (digits > 0 && k < 60) {
+        frac = (unsigned long)((d - (double) ip) * 1000000.0 + 0.5);
+        {
+            char tmp[6];
+            int last;
+            for (i = 5; i >= 0; i--) { tmp[i] = (char)('0' + (frac % 10)); frac /= 10; }
+            if (has_prec) {
+                buf[k++] = '.';
+                for (i = 0; i < digits && i < 6; i++) { buf[k++] = tmp[i]; }
+            } else {
+                // Default `{}`: trim trailing zeros; an integral float keeps
+                // one so it still reads as a float ("3.0").
+                last = 5;
+                while (last >= 0 && tmp[last] == '0') { last = last - 1; }
+                buf[k++] = '.';
+                if (last < 0) {
+                    buf[k++] = '0';
+                } else {
+                    for (i = 0; i <= last; i++) { buf[k++] = tmp[i]; }
+                }
+            }
+        }
+    } else if (!has_prec && k < 60) {
+        buf[k++] = '.';
+        buf[k++] = '0';
+    } else if (has_prec && k < 60) {
+        buf[k++] = '.';
+    }
+    out_pad(buf, k, (int) width, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -174,6 +353,9 @@ static const char *trap_msg(long code) {
 
 // lc_trap(code, line, col, detail) — noreturn.
 void lc_trap(long code, long line, long col, long detail) {
+    // A trap always reports on stderr, whatever fd a prior `print` left set.
+    out_flush();
+    out_fd = 2;
     out_str("TRAP  ");
     out_str(trap_name(code));
     out_str("  ");

@@ -552,6 +552,8 @@ int ty_is_char(int id);
 int ty_is_never(int id);
 int ty_is_untyped_lit(int id);   // CTY_UINT_LIT / CTY_FLOAT_LIT
 int ty_is_ref(int id);           // &T / &mut T / &str
+int ty_is_thin_ref(int id);      // &T / &mut T (one machine word)
+int ty_is_fatref(int id);        // &str / &[T] (pointer + length pair)
 int ty_is_heap(int id);          // heap box
 int ty_is_array(int id);
 int ty_is_nominal(int id);       // struct / enum
@@ -593,6 +595,8 @@ int ck_lookup(char* name);                 // innermost binding of a name
 // Resolves a *type* name to its type id (TY_INVALID when unknown).
 int ck_lookup_type(char* name);
 int ck_coercible(int want, int got);       // assignment/arg compatibility
+int ck_check_format(struct AstNode* n, char* fname, struct AstList* args);
+int ck_fmt_displayable(int ty);            // can `{}` render this type?
 void ck_err_type_mismatch(struct AstNode* at, int want, int got, char* what);
 void ck_err_unknown_name(char* name, struct AstNode* at, char* what);
 void ck_err_no_field(struct AstNode* at, int ty, char* field);

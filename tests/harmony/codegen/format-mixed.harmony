@@ -1,0 +1,17 @@
+// EXPECT: 0
+// EXPECT-OUT: answered 42 with true and A
+// EXPECT-OUT: d=ff
+// EXPECT-OUT: f=2.5
+// EXPECT-OUT: mixed [1][2][3][4]
+// Multiple placeholders in one format, mixing integer widths, bool, char,
+// and float, plus width/precision modifiers (§15.1, FMT-01).
+fn main() -> i32 {
+    let a: i32 = 42;
+    let b: u8 = 2;
+    let c: bool = true;
+    let ch: char = 'A';
+    println("answered {} with {} and {}", a, c, ch);
+    println("d={:x}", 255);
+    println("f={}", 2.5);    println("mixed [{}][{}][{}][{}]", 1, 2, 3, 4);
+    return 0;
+}

@@ -1,0 +1,22 @@
+// EXPECT: 0
+// EXPECT-OUT: hello, world
+// EXPECT-OUT: n=42
+// EXPECT-OUT: hex=beef
+// EXPECT-OUT: pi=3.14
+// EXPECT-OUT: pad=[   7]
+// EXPECT-OUT: zero=[0042]
+// EXPECT-OUT: brace { } pair
+// FMT-01 (§15.1): format strings are parsed and checked at compile time; the
+// compiler lowers print/println/eprintln to the runtime's formatting hooks.
+fn main() -> i32 {
+    let name = "world";
+    println("hello, {}", name);
+    let n: i32 = 42;
+    println("n={}", n);
+    println("hex={:x}", 48879);
+    println("pi={:.2}", 3.14159);
+    println("pad=[{:4}]", 7);
+    println("zero=[{:04}]", 42);
+    println("brace {{ }} pair");
+    return 0;
+}

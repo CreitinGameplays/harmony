@@ -189,7 +189,13 @@ These c2x-seed defects were found and fixed while bootstrapping (see
 - [x] Untyped literals adapt at every coercion site (§5.9) and the adapted
       type is stamped on the node, so `let x: i64 = 1`, `f(1)` with an i64
       parameter, `return 0` in an i64 function, and `x + 1` lower correctly.
-- [ ] Remaining M1 gaps: generic monomorphization, `FMT-01`, and `noalias`
+- [x] `FMT-01` (§15.1): `print`/`println`/`eprintln` are recognized only for
+      their format strings, which the compiler parses and checks (placeholder
+      count, displayable types, `{:x}` on integers only, a literal format).
+      The lowering calls the runtime's `lc_*` hooks with the width/precision/
+      zero-pad each placeholder carries (`{}`, `{:5}`, `{:.2}`, `{:05}`,
+      `{{`/`}}`); `&str`/`char`/`bool`/floats display, `{:x}` prints hex.
+- [ ] Remaining M1 gaps: generic monomorphization and `noalias`
       on `&mut [T]` slices (mutability of the fat pair is not tracked yet).
 
 ### M2 — Ownership: moves + drop elaboration (§9, §19.7)

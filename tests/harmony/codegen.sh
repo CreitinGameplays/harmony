@@ -22,10 +22,11 @@ run_case() {
     local src="$1"
     local name
     name="$(basename "$src" .harmony)"
-    local expect trap irwant
+    local expect trap irwant outwant
     expect="$(sed -n 's|^// EXPECT: *\([0-9]*\).*|\1|p' "$src" | head -1)"
     trap="$(sed -n 's|^// EXPECT-TRAP: *\([A-Z0-9-]*\).*|\1|p' "$src" | head -1)"
     irwant="$(sed -n 's|^// IR: *||p' "$src" | head -1)"
+    outwant="$(sed -n 's|^// EXPECT-OUT: *||p' "$src" | head -1)"
 
     "$HB" run "$src" >"$TMP/out" 2>"$TMP/err"
     local rc=$?
@@ -46,6 +47,25 @@ run_case() {
     else
         fail=$((fail + 1)); printf 'FAIL %s (want exit %s, got %s)\n' "$name" "$expect" "$rc"
         sed 's/^/     /' "$TMP/err" | head -3
+    fi
+    # A program may assert its stdout: every `// EXPECT-OUT: <line>` must
+    # match a line in stdout.
+    if [ -n "$outwant" ]; then
+        local oline okall=1
+        while IFS= read -r oline; do
+            [ -z "$oline" ] && continue
+            if ! grep -qF "$oline" "$TMP/out"; then
+                okall=0
+                fail=$((fail + 1)); printf 'FAIL %s (stdout lacks %s)\n' "$name" "$oline"
+                sed 's/^/     /' "$TMP/out" | head -5
+                break
+            fi
+        done <<EOF
+$(sed -n 's|^// EXPECT-OUT: *||p' "$src")
+EOF
+        if [ "$okall" = "1" ]; then
+            pass=$((pass + 1)); printf 'ok   %s (stdout matches)\n' "$name"
+        fi
     fi
     if [ -n "$irwant" ]; then
         "$HB" emit-llvm "$src" >"$TMP/ir" 2>/dev/null

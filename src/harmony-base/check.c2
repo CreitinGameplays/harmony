@@ -413,6 +413,107 @@ void ck_set_deny_unchecked(int on) { g_deny_unchecked = on; }
 int ck_in_unchecked(void) { return g_unchecked_depth > 0; }
 
 // ---------------------------------------------------------------------------
+// Format strings (FMT-01, §15.1). `print`/`println`/`eprintln`/`format` are
+// recognized only for their format strings; the arguments are checked against
+// the placeholders here.
+// ---------------------------------------------------------------------------
+void ck_err_fmt(struct AstNode* at, char* title, char* summary) {
+    lexbuf_reset();
+    lexbuf_push_str(summary);
+    diag_stop("FMT-01", title, lexbuf_finish(),
+              diag_file(at->file), at->start, at->end);
+}
+
+// Is `ty` displayable with `{}`? Scalars, `&str`, `char`, `bool`, and (for
+// `{?}`) anything with a structural form. M1 accepts the scalar surface.
+int ck_fmt_displayable(int ty) {
+    if (ty == TY_UNIT) { return 1; }
+    if (ty_is_untyped_lit(ty)) { return 1; }
+    if (ty_is_integer(ty) || ty_is_float(ty) || ty_is_bool(ty) || ty_is_char(ty)) { return 1; }
+    if (ty_kind(ty) == CTY_STRREF) { return 1; }
+    return 0;
+}
+
+// Checks the format string (argument 0) of a print-family call against the
+// remaining arguments. `fmt` is the literal node; `args` the full argument
+// list. Returns 0 when the call is well-formed.
+int ck_check_format(struct AstNode* n, char* fname, struct AstList* args) {
+    struct AstNode* fmt;
+    int nfields;
+    int i;
+    if (args == 0 || args->len == 0) {
+        ck_err_fmt(n, "format string missing",
+                   "This function needs a format string as its first argument.");
+        return 1;
+    }
+    fmt = args->items[0];
+    if (fmt->kind != AST_STRING_LIT) {
+        ck_err_fmt(fmt, "format string must be a literal",
+                   "The format must be a plain string literal so it can be checked at compile time.");
+        return 1;
+    }
+    nfields = fmt_parse(fmt->sval, fmt->ival);
+    if (nfields < 0) {
+        ck_err_fmt(fmt, "malformed format string",
+                   "A `{` must close with `}`, and a lone `}` must be written `}}`.");
+        return 1;
+    }
+    if (args->len - 1 != nfields) {
+        lexbuf_reset();
+        lexbuf_push_str(fname);
+        lexbuf_push_str(" has ");
+        lexbuf_push_int(nfields);
+        lexbuf_push_str(" placeholder(s) but ");
+        lexbuf_push_int(args->len - 1);
+        lexbuf_push_str(" argument(s)");
+        ck_err_fmt(fmt, "argument count does not match the format", lexbuf_finish());
+        return 1;
+    }
+    // Check each argument's type against its placeholder.
+    i = 0;
+    while (i < nfields) {
+        struct AstNode* arg;
+        int at;
+        int j;
+        j = i;
+        arg = args->items[i + 1];
+        at = ck_expr(arg);
+        // An untyped literal adopts a concrete type here: integers -> i32,
+        // floats -> f64 (the same defaults as `let x = 1`).
+        if (at == TY_UINT_LIT) { ck_stamp_lits(arg, TY_I32); at = TY_I32; }
+        else if (at == TY_FLOAT_LIT) { ck_stamp_lits(arg, TY_F64); at = TY_F64; }
+        // Find the i-th field piece (skip literal pieces).
+        {
+            int k;
+            int seen;
+            int kind;
+            k = 0;
+            seen = 0;
+            kind = FMT_DISP;
+            while (k < g_fmt_n) {
+                if (g_fmt_kind[k] != FMT_LIT) {
+                    if (seen == j) { kind = g_fmt_kind[k]; break; }
+                    seen = seen + 1;
+                }
+                k = k + 1;
+            }
+            if (at != TY_INVALID) {
+                if (kind == FMT_HEX && !ty_is_integer(at) && !ty_is_untyped_lit(at)) {
+                    ck_err_fmt(arg, "`{:x}` needs an integer",
+                               "Hexadecimal formatting is defined for integer types only.");
+                } else if (kind == FMT_DISP && !ck_fmt_displayable(at)) {
+                    ck_err_fmt(arg, "this type cannot be displayed",
+                               "`{}` accepts integers, floats, bool, char, and &str in M1.");
+                }
+            }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+
+// ---------------------------------------------------------------------------
 // Function context (the body currently being checked).
 // ---------------------------------------------------------------------------
 int g_fn_ret_ty[64];   // return type id per nesting level

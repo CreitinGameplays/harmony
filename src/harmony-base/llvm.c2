@@ -26,6 +26,11 @@ char* ll_fn_symbol(struct AstNode* fn);
 char* ll_sized_field_type(int id);
 int   ll_is_aggregate(int ty);
 char* ll_method_symbol(int rt, char* name);
+int   ll_str_intern(char* body, int len);
+char* ll_str_symbol(int i);
+void  ll_emit_str_def(int i);
+void  ll_collect_strings(struct AstNode* n);
+void  ll_out_hex_byte(int b);
 
 // ---------------------------------------------------------------------------
 // Output buffer: the module text is assembled whole, then flushed (arena
@@ -89,6 +94,14 @@ void ll_out_int(int v) {
 }
 
 void ll_out_nl(void) { ll_out_char('\n'); }
+
+// Two lowercase hex digits (used to escape string-literal bytes).
+void ll_out_hex_byte(int b) {
+    char* hex;
+    hex = "0123456789abcdef";
+    ll_out_char(hex[(b >> 4) & 0xF]);
+    ll_out_char(hex[b & 0xF]);
+}
 
 // ---------------------------------------------------------------------------
 // SSA / label counters (reset per function).
@@ -160,13 +173,14 @@ char* ll_type_name(int id) {
     if (id == TY_F64 || id == TY_FLOAT_LIT) { return "double"; }
     if (id == TY_UNIT || id == TY_NEVER) { return "void"; }
     k = ty_kind(id);
-    if (k == CTY_SLICE) {
-        // Every slice element shape shares one fat-pair layout (§5.2); the
-        // pointer is opaque, so the element type does not appear in the IR.
+    if (k == CTY_SLICE || k == CTY_STRREF) {
+        // Slices and `&str` share one (data pointer, length) pair layout
+        // (§5.2, §5.3); the pointer is opaque, so the element type does not
+        // appear in the IR.
         return "%slice";
     }
     if (k == CTY_REF || k == CTY_MUTREF || k == CTY_HEAP || k == CTY_PTR
-        || k == CTY_MUTPTR || k == CTY_STRREF) {
+        || k == CTY_MUTPTR) {
         return "ptr";
     }
     if (k == CTY_STRUCT) {
@@ -216,12 +230,11 @@ char* ll_zero_of(int id) {
     if (id == TY_BOOL) { return "false"; }
     if (ll_is_float_ty(id)) { return "0.0"; }
     if (ty_kind(id) == CTY_STRUCT || ty_kind(id) == CTY_ENUM || ty_is_array(id)
-        || ty_kind(id) == CTY_SLICE) {
+        || ty_kind(id) == CTY_SLICE || ty_kind(id) == CTY_STRREF) {
         return "zeroinitializer";
     }
     if (ty_kind(id) == CTY_REF || ty_kind(id) == CTY_MUTREF || ty_kind(id) == CTY_HEAP
-        || ty_kind(id) == CTY_PTR || ty_kind(id) == CTY_MUTPTR
-        || ty_kind(id) == CTY_STRREF) {
+        || ty_kind(id) == CTY_PTR || ty_kind(id) == CTY_MUTPTR) {
         return "null";
     }
     return "0";
@@ -315,6 +328,147 @@ int ll_sret_on(void) { return g_sret_on; }
 int ll_sret_ty(void) { return g_sret_ty; }
 
 // ---------------------------------------------------------------------------
+// String-literal pool. Each distinct literal becomes one private global
+// `@.str.N = private unnamed_addr constant [n x i8] c"...", align 1`. The
+// pool dedups by bytes and is reset per module, so the emitted symbols are a
+// pure function of the input (determinism, §19.4).
+// ---------------------------------------------------------------------------
+const int LL_MAX_STRS = 1024;
+char* g_str_body[1024];      // the bytes (may contain NULs)
+int   g_str_len[1024];       // byte length
+int   g_nstrs;
+
+void ll_strs_reset(void) { g_nstrs = 0; }
+
+// Interns a literal; returns its index. The bytes are copied into a private
+// buffer (the source may live in a scratch arena that gets reused), and
+// deduped by (bytes, len).
+int ll_str_intern(char* body, int len) {
+    int i;
+    i = 0;
+    while (i < g_nstrs) {
+        char* prev;
+        prev = g_str_body[i];
+        if (g_str_len[i] == len) {
+            int k;
+            int same;
+            same = 1;
+            k = 0;
+            while (k < len) {
+                if (prev[k] != body[k]) { same = 0; break; }
+                k = k + 1;
+            }
+            if (same) { return i; }
+        }
+        i = i + 1;
+    }
+    if (g_nstrs >= LL_MAX_STRS) { return 0; }
+    g_str_body[g_nstrs] = str_prefix(body, len);
+    g_str_len[g_nstrs] = len;
+    g_nstrs = g_nstrs + 1;
+    return g_nstrs - 1;
+}
+
+// The symbol for interned literal `i`.
+char* ll_str_symbol(int i) {
+    char* r;
+    r = arena_alloc(24);
+    ll_str_into(r, "@.str.");
+    ll_int_into(r + ll_str_len(r), i);
+    return r;
+}
+
+// Emits one global definition. Bytes are escaped two hex digits per char so
+// any content (NULs, UTF-8) round-trips through the text IR.
+void ll_emit_str_def(int i) {
+    char* sym;
+    int k;
+    sym = ll_str_symbol(i);
+    ll_out_str(sym);
+    ll_out_str(" = private unnamed_addr constant [");
+    ll_out_int(g_str_len[i] + 1);   // include the trailing NUL
+    ll_out_str(" x i8] c\"");
+    k = 0;
+    while (k < g_str_len[i]) {
+        int b;
+        b = g_str_body[i][k];
+        // LLVM string literals use `\XX` hex escapes; the backslash is
+        // required or the digits are read as literal characters.
+        ll_out_char('\\');
+        ll_out_hex_byte(b & 0xFF);
+        k = k + 1;
+    }
+    ll_out_str("\\00\", align 1\n");
+}
+
+// True when `n` is a call to a print-family builtin (recognized by name here;
+// the checker marks the node in `n->ival`).
+int ll_is_format_call(struct AstNode* n) {
+    if (n->kind != AST_CALL) { return 0; }
+    if (n->a == 0 || n->a->kind != AST_PATH) { return 0; }
+    if (str_eq(n->a->sval, "print")) { return 1; }
+    if (str_eq(n->a->sval, "println")) { return 1; }
+    if (str_eq(n->a->sval, "eprintln")) { return 1; }
+    return 0;
+}
+
+// Walks the AST and interns every string literal, in source order, so the
+// pool (and the `@.str.N` numbering) is deterministic and complete before any
+// function is emitted. A format string's *decoded* literal runs are interned
+// here too (the raw format text is not a value), so the emitter's later
+// re-parse finds them already pooled.
+void ll_collect_strings(struct AstNode* n) {
+    if (n == 0) { return; }
+    if (ll_is_format_call(n) && n->kids != 0 && n->kids->len > 0) {
+        struct AstNode* fmt;
+        fmt = n->kids->items[0];
+        if (fmt->kind == AST_STRING_LIT && fmt_parse(fmt->sval, fmt->ival) >= 0) {
+            int k;
+            k = 0;
+            while (k < g_fmt_n) {
+                if (g_fmt_kind[k] == FMT_LIT && g_fmt_len[k] > 0) {
+                    ll_str_intern(g_fmt_litbuf + g_fmt_start[k], g_fmt_len[k]);
+                }
+                k = k + 1;
+            }
+        }
+        // Recurse into the value arguments (the format literal is handled).
+        ll_collect_strings(fmt);
+        {
+            int i;
+            i = 1;
+            while (i < n->kids->len) {
+                ll_collect_strings(n->kids->items[i]);
+                i = i + 1;
+            }
+        }
+        return;
+    }
+    if (n->kind == AST_STRING_LIT) {
+        ll_str_intern(n->sval, n->ival);
+    }
+    ll_collect_strings(n->a);
+    ll_collect_strings(n->b);
+    ll_collect_strings(n->c);
+    if (n->kids != 0) {
+        int i;
+        i = 0;
+        while (i < n->kids->len) {
+            ll_collect_strings(n->kids->items[i]);
+            i = i + 1;
+        }
+    }
+    if (n->kids2 != 0) {
+        int i;
+        i = 0;
+        while (i < n->kids2->len) {
+            ll_collect_strings(n->kids2->items[i]);
+            i = i + 1;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Module driver.
 // ---------------------------------------------------------------------------
 void ll_emit_module(struct AstNode* prog) {
@@ -323,6 +477,11 @@ void ll_emit_module(struct AstNode* prog) {
 
     ll_out_reset();
     ll_env_reset();
+    ll_strs_reset();
+
+    // Intern every string literal before emitting anything, so `@.str.N`
+    // numbering follows source order.
+    ll_collect_strings(prog);
 
     ll_out_str("; harmony module — generated by harmony-base\n");
     ll_out_str("target triple = \"x86_64-pc-linux-gnu\"\n\n");
@@ -334,7 +493,26 @@ void ll_emit_module(struct AstNode* prog) {
     ll_out_str("declare void @lc_trap(i64, i64, i64, i64)\n");
     ll_out_str("declare void @lc_check_index(i64, i64, i64, i64)\n");
     ll_out_str("declare void @lc_check_slice(i64, i64, i64, i64, i64)\n");
-    ll_out_str("declare ptr @lc_alloc(i64)\n\n");
+    ll_out_str("declare ptr @lc_alloc(i64)\n");
+    // Formatting hooks (§15.1): the compiler lowers print/println/eprintln to
+    // these; the bodies live in the library (§19.8.6).
+    ll_out_str("declare void @lc_set_fd(i64)\n");
+    ll_out_str("declare void @lc_flush()\n");
+    ll_out_str("declare void @lc_put_str(ptr, i64)\n");
+    ll_out_str("declare void @lc_put_i64(i64, i64, i64)\n");
+    ll_out_str("declare void @lc_put_u64(i64, i64, i64)\n");
+    ll_out_str("declare void @lc_put_hex(i64, i64, i64)\n");
+    ll_out_str("declare void @lc_put_bool(i64, i64, i64)\n");
+    ll_out_str("declare void @lc_put_char(i64)\n");
+    ll_out_str("declare void @lc_put_f64(double, i64, i64, i64)\n\n");
+
+    // String-literal globals (§5.3), in pool order.
+    {
+        int s;
+        s = 0;
+        while (s < g_nstrs) { ll_emit_str_def(s); s = s + 1; }
+        if (g_nstrs > 0) { ll_out_nl(); }
+    }
 
     items = prog->kids;
     if (items == 0) { return; }
@@ -567,7 +745,8 @@ void ll_emit_param_types(struct AstList* params) {
 
 int ll_is_aggregate(int ty) {
     return ty_kind(ty) == CTY_STRUCT || ty_kind(ty) == CTY_ENUM
-        || ty_is_array(ty) || ty_kind(ty) == CTY_SLICE;
+        || ty_is_array(ty) || ty_kind(ty) == CTY_SLICE
+        || ty_kind(ty) == CTY_STRREF;
 }
 
 char* ll_fn_symbol(struct AstNode* fn) {

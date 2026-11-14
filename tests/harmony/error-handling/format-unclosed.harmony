@@ -1,0 +1,6 @@
+// WANT: FMT-01
+// An unclosed placeholder is a malformed format (§15.1).
+fn main() -> i32 {
+    println("bad {");
+    return 0;
+}

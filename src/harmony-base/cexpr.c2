@@ -479,6 +479,25 @@ int ck_expr_call(struct AstNode* n) {
         if (str_contains(callee->sval, "::")) {
             return ck_expr_assoc_call(n, callee, args);
         }
+        // The print family is recognized by the compiler only for its format
+        // string (§15.1, §19.8.6): there are no variadics, so the placeholder
+        // count and argument types are checked here (FMT-01). `n->ival` marks
+        // which builtin this is for the backend.
+        if (str_eq(callee->sval, "print")) {
+            n->ival = 1;
+            ck_check_format(n, "print", args);
+            return TY_UNIT;
+        }
+        if (str_eq(callee->sval, "println")) {
+            n->ival = 2;
+            ck_check_format(n, "println", args);
+            return TY_UNIT;
+        }
+        if (str_eq(callee->sval, "eprintln")) {
+            n->ival = 3;
+            ck_check_format(n, "eprintln", args);
+            return TY_UNIT;
+        }
         sym = ck_lookup(callee->sval);
         if (sym < 0 || g_sym_kind[sym] != SK_FN) {
             ck_err_unknown_name(callee->sval, callee, "did you mean to call a function?");

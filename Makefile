@@ -14,6 +14,7 @@ HB_SRC    := \
 	src/harmony-base/lexlit.c2 \
 	src/harmony-base/lexer.c2 \
 	src/harmony-base/types.c2 \
+	src/harmony-base/fmt.c2 \
 	src/harmony-base/check.c2 \
 	src/harmony-base/cexpr.c2 \
 	src/harmony-base/llvm.c2 \

@@ -2555,6 +2555,7 @@ generates `rt.h` for the C backend).
 | move | `memcpy`-classed register/value handling; the source is dead, no code needed |
 | drop with a drop flag | `br` on the flag; drop glue call in its own block |
 | `trap(...)` | `call lc_trap(...)`, declared `noreturn` |
+| `print`/`println`/`eprintln` | the compiler parses the format (`FMT-01`) and emits a run of `lc_put_*` calls (literal text, `lc_put_i64`/`lc_put_f64`/… with width/precision); `eprintln` selects fd 2 |
 | `unchecked` operation | emitted as the plain IR operation; no extra checks |
 | `extern fn` | a plain C-ABI declaration |
 

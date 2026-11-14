@@ -240,6 +240,21 @@ int ty_is_ref(int id) {
     return k == CTY_REF || k == CTY_MUTREF || k == CTY_STRREF;
 }
 
+// A thin reference is a single pointer (`&T`, `&mut T`): LLVM `ptr`. A fat
+// reference (`&str`, `&[T]`) is a (pointer, length) pair and prints as
+// `%slice`/`%str`; the two groups need different handling in the backend.
+int ty_is_thin_ref(int id) {
+    int k;
+    k = ty_kind(id);
+    return k == CTY_REF || k == CTY_MUTREF;
+}
+
+int ty_is_fatref(int id) {
+    int k;
+    k = ty_kind(id);
+    return k == CTY_STRREF || k == CTY_SLICE;
+}
+
 int ty_is_heap(int id) { return ty_kind(id) == CTY_HEAP; }
 
 int ty_is_array(int id) { return ty_kind(id) == CTY_ARRAY; }

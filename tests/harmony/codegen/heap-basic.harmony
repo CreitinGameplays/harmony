@@ -1,0 +1,7 @@
+// EXPECT: 12
+// heap(x): allocate one value, write through the box, read it back.
+fn main() -> i32 {
+    let p = heap(7);
+    *p += 5;
+    return *p;
+}

@@ -1,0 +1,18 @@
+// EXPECT: 42
+// References: `&mut T` parameters mutate through the borrow; `&T` reads.
+// IR: define void @harmony__bump
+struct C { n: i32; }
+
+fn bump(c: &mut C) {
+    c.n += 1;
+}
+
+fn get(c: &C) -> i32 {
+    return c.n;
+}
+
+fn main() -> i32 {
+    let mut c = C { .n = 41 };
+    bump(&mut c);
+    return get(&c);
+}

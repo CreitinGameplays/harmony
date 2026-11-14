@@ -33,6 +33,20 @@ static long sys(long n, long a, long b, long c) {
     return ret;
 }
 
+// mmap(NULL, len, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) —
+// six arguments, so the 4th/5th/6th go in r10/r8/r9.
+static long sys_mmap(long len) {
+    long ret;
+    register long r10 __asm__("r10") = 0x22;   // MAP_PRIVATE | MAP_ANONYMOUS
+    register long r8  __asm__("r8") = -1;      // fd
+    register long r9  __asm__("r9") = 0;       // offset
+    __asm__ volatile("syscall"
+                     : "=a"(ret)
+                     : "a"(9), "D"(0), "S"(len), "d"(3), "r"(r10), "r"(r8), "r"(r9)
+                     : "rcx", "r11", "memory");
+    return ret;
+}
+
 // ---------------------------------------------------------------------------
 // Output. Buffered so a sequence of writes costs one syscall.
 // ---------------------------------------------------------------------------
@@ -159,13 +173,13 @@ static char *heap_base;
 static usize_t heap_used;
 static usize_t heap_cap;
 
-static void *lc_alloc(usize_t n) {
+void *lc_alloc(usize_t n) {
     // 16-byte alignment keeps every Harmony aggregate naturally aligned.
     n = (n + 15) & ~(usize_t) 15;
     if (heap_base == 0 || heap_used + n > heap_cap) {
         usize_t want = 1024 * 1024;
         if (n > want) { want = (n + 4095) & ~(usize_t) 4095; }
-        long p = sys(SYS_mmap, 0, (long) want, 3 /*PROT_READ|WRITE*/);
+        long p = sys_mmap((long) want);
         if (p < 0) { lc_trap(T_OOM, 0, 0, (long) n); }
         heap_base = (char *) p;
         heap_used = 0;

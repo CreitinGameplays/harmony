@@ -1,0 +1,21 @@
+// EXPECT: 40
+// IR: define i32 @harmony__sum
+// Structs by value: literals, field reads/writes, by-value parameters, and
+// sret returns.
+struct Point { x: i32; y: i32; }
+
+fn sum(p: Point) -> i32 {
+    return p.x + p.y;
+}
+
+fn make(sx: i32, sy: i32) -> Point {
+    return Point { .x = sx, .y = sy };
+}
+
+fn main() -> i32 {
+    let p = Point { .x = 10, .y = 20 };
+    let mut q = make(1, 2);
+    q.x = 5;
+    let a = [3, 4, 5, 6];
+    return sum(p) + q.x + a[2];   // 30 + 5 + 5 = 40
+}

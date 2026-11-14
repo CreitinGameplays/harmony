@@ -1,0 +1,18 @@
+// EXPECT: 2
+// IR: %enum.Color = type
+// switch on an enum: tag tests against variants, no default needed when all
+// variants are covered (the checker proved exhaustiveness).
+enum Color { Red, Green, Blue, }
+
+fn code(c: Color) -> i32 {
+    switch (c) {
+        case Color::Red: { return 1; }
+        case Color::Green: { return 2; }
+        case Color::Blue: { return 3; }
+    }
+    return 0;
+}
+
+fn main() -> i32 {
+    return code(Color::Green);
+}

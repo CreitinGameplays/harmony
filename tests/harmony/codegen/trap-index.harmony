@@ -1,0 +1,8 @@
+// EXPECT-TRAP: T-INDEX
+// Array indexing is bounds-checked at runtime (§3.2): the trap carries the
+// offending index.
+fn main() -> i32 {
+    let a = [10, 20, 30];
+    let i = 7;
+    return a[i];
+}

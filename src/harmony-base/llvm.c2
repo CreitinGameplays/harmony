@@ -24,6 +24,8 @@ void ll_emit_fn(struct AstNode* fn);
 void ll_emit_param_types(struct AstList* params);
 char* ll_fn_symbol(struct AstNode* fn);
 char* ll_sized_field_type(int id);
+int   ll_is_aggregate(int ty);
+char* ll_method_symbol(int rt, char* name);
 
 // ---------------------------------------------------------------------------
 // Output buffer: the module text is assembled whole, then flushed (arena
@@ -286,6 +288,22 @@ void ll_set_terminated(int v) { g_terminated = v; }
 int  ll_get_terminated(void) { return g_terminated; }
 
 // ---------------------------------------------------------------------------
+// sret convention for aggregate returns. When the current function returns a
+// struct/enum/array, LLVM gives it a hidden leading pointer argument; `return`
+// copies the aggregate there and returns that pointer.
+// ---------------------------------------------------------------------------
+int g_sret_on;      // current function returns an aggregate
+int g_sret_ty;      // ... of this type
+
+void ll_set_sret(int on, int ty) {
+    g_sret_on = on;
+    g_sret_ty = ty;
+}
+
+int ll_sret_on(void) { return g_sret_on; }
+int ll_sret_ty(void) { return g_sret_ty; }
+
+// ---------------------------------------------------------------------------
 // Module driver.
 // ---------------------------------------------------------------------------
 void ll_emit_module(struct AstNode* prog) {
@@ -306,25 +324,44 @@ void ll_emit_module(struct AstNode* prog) {
     items = prog->kids;
     if (items == 0) { return; }
 
-    // Nominal type definitions, in declaration order (deterministic).
+    // Nominal type definitions, in declaration order (deterministic). A
+    // struct/enum decl node does not carry its own type id (the checker keys
+    // types by name), so walk the program's decls and resolve each name.
     i = 0;
     while (i < items->len) {
         struct AstNode* it;
         it = items->items[i];
         if (it->kind == AST_STRUCT || it->kind == AST_ENUM) {
-            ll_emit_type_def(it->ty);
+            int id;
+            id = ck_lookup_type(it->sval);
+            if (id != TY_INVALID) { ll_emit_type_def(id); }
         }
         i = i + 1;
     }
     ll_out_nl();
 
-    // Functions.
+    // Functions. Two passes so every definition precedes no other (order in
+    // the file is kept): free functions first, then methods.
     i = 0;
     while (i < items->len) {
         struct AstNode* it;
         it = items->items[i];
         if (it->kind == AST_FN || it->kind == AST_EXTERN_FN) {
             ll_emit_fn(it);
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while (i < items->len) {
+        struct AstNode* it;
+        it = items->items[i];
+        if (it->kind == AST_METHODS && it->kids2 != 0) {
+            int k;
+            k = 0;
+            while (k < it->kids2->len) {
+                ll_emit_fn(it->kids2->items[k]);
+                k = k + 1;
+            }
         }
         i = i + 1;
     }
@@ -370,29 +407,47 @@ void ll_emit_fn(struct AstNode* fn) {
     int i;
     char* name;
     int retty;
+    int sret;
 
     name = ll_fn_symbol(fn);
     params = fn->kids2;
     retty = fn->ty;
     if (retty == 0) { retty = TY_UNIT; }
+    // A struct/enum/array return uses the sret convention (§19.4: structs are
+    // named types; LLVM returns aggregates through a caller-provided slot).
+    sret = ll_is_aggregate(retty);
+    ll_set_sret(sret, retty);
 
     if (fn->b == 0) {
         // extern fn: a plain C-ABI declaration.
         ll_out_str("declare ");
-        ll_out_str(ll_type_name(retty));
+        if (sret) { ll_out_str("void "); } else { ll_out_str(ll_type_name(retty)); }
         ll_out_str(" @");
         ll_out_str(name);
         ll_out_str("(");
+        if (sret) {
+            ll_out_str("ptr sret(");
+            ll_out_str(ll_type_name(retty));
+            ll_out_str(") %sret");
+            // A comma only when there are real parameters.
+            if (params != 0 && params->len > 0) { ll_out_str(", "); }
+        }
         ll_emit_param_types(params);
         ll_out_str(")\n\n");
         return;
     }
 
     ll_out_str("define ");
-    ll_out_str(ll_type_name(retty));
+    if (sret) { ll_out_str("void "); } else { ll_out_str(ll_type_name(retty)); }
     ll_out_str(" @");
     ll_out_str(name);
     ll_out_str("(");
+    if (sret) {
+        ll_out_str("ptr sret(");
+        ll_out_str(ll_type_name(retty));
+        ll_out_str(") %sret");
+        if (params != 0 && params->len > 0) { ll_out_str(", "); }
+    }
     ll_emit_param_types(params);
     ll_out_str(") {\n");
     ll_out_str("entry:\n");
@@ -402,28 +457,45 @@ void ll_emit_fn(struct AstNode* fn) {
     g_nlscope = 0;
     g_terminated = 0;
 
-    // Parameters: spill each SSA arg into an alloca slot.
+    // Parameters: spill each SSA arg into an alloca slot. Three cases:
+    //  - an aggregate-by-value arg arrives as a pointer to the value, so its
+    //    slot IS that pointer;
+    //  - a by-value `self` receiver likewise binds directly;
+    //  - everything else (including references) gets an ordinary alloca and
+    //    a store, so loads through the slot work.
     if (params != 0) {
         i = 0;
         while (i < params->len) {
             struct AstNode* p;
+            char* bindname;
             p = params->items[i];
-            if (!ck_is_self_param(p)) {
+            bindname = p->sval;
+            if (ck_is_self_param(p)) { bindname = "self"; }
+            if ((ll_is_aggregate(p->ty) && !ty_is_ref(p->ty))
+                || (ck_is_self_param(p) && !ty_is_ref(p->ty))) {
+                // Pointer-passed aggregate by value: bind directly.
+                lexbuf_reset();
+                lexbuf_push_str("%arg");
+                lexbuf_push_int(i);
+                ll_local_declare(bindname, lexbuf_finish(), p->ty);
+            } else {
                 char* slot;
+                int isref;
+                isref = ty_is_ref(p->ty);
                 slot = ll_new_reg();
                 ll_out_str("  ");
                 ll_out_str(slot);
                 ll_out_str(" = alloca ");
-                ll_out_str(ll_type_name(p->ty));
+                if (isref) { ll_out_str("ptr"); } else { ll_out_str(ll_type_name(p->ty)); }
                 ll_out_nl();
                 ll_out_str("  store ");
-                ll_out_str(ll_type_name(p->ty));
+                if (isref) { ll_out_str("ptr"); } else { ll_out_str(ll_type_name(p->ty)); }
                 ll_out_str(" %arg");
                 ll_out_int(i);
                 ll_out_str(", ptr ");
                 ll_out_str(slot);
                 ll_out_nl();
-                ll_local_declare(p->sval, slot, p->ty);
+                ll_local_declare(bindname, slot, p->ty);
             }
             i = i + 1;
         }
@@ -433,6 +505,8 @@ void ll_emit_fn(struct AstNode* fn) {
 
     if (!g_terminated) {
         if (fn->ty == TY_UNIT || fn->ty == TY_NEVER) {
+            ll_out_str("  ret void\n");
+        } else if (sret) {
             ll_out_str("  ret void\n");
         } else {
             ll_out_str("  ret ");
@@ -454,25 +528,60 @@ void ll_emit_param_types(struct AstList* params) {
     while (i < params->len) {
         struct AstNode* p;
         p = params->items[i];
-        if (!ck_is_self_param(p)) {
-            if (n > 0) { ll_out_str(", "); }
+        // `self` parameters ARE emitted (they are the receiver); only the
+        // hidden sret slot is implicit.
+        if (n > 0) { ll_out_str(", "); }
+        // Struct/enum/array parameters pass by pointer (an aggregate cannot
+        // be an SSA function argument in LLVM); a receiver of `&self` shape
+        // is a pointer already.
+        if (ll_is_aggregate(p->ty) || ty_is_ref(p->ty) || ck_is_self_param(p)) {
+            ll_out_str("ptr %arg");
+        } else {
             ll_out_str(ll_type_name(p->ty));
             ll_out_str(" %arg");
-            ll_out_int(i);
-            n = n + 1;
         }
+        ll_out_int(i);
+        n = n + 1;
         i = i + 1;
     }
 }
 
+int ll_is_aggregate(int ty) {
+    return ty_kind(ty) == CTY_STRUCT || ty_kind(ty) == CTY_ENUM || ty_is_array(ty);
+}
+
 char* ll_fn_symbol(struct AstNode* fn) {
+    int i;
+    int fidx;
+    // A method (registered with a receiver type) mangles to `Type__method`
+    // so call sites and definitions agree.
+    fidx = 0;
+    while (fidx < ck_nfn()) {
+        if (ck_fn(fidx) == fn) {
+            if (ck_fn_self_ty(fidx) != 0) {
+                return ll_method_symbol(ck_fn_self_ty(fidx), fn->sval);
+            }
+            break;
+        }
+        fidx = fidx + 1;
+    }
     lexbuf_reset();
     if (str_eq(fn->sval, "main")) {
         lexbuf_push_str("harmony_main");
         return lexbuf_finish();
     }
     lexbuf_push_str("harmony__");
-    lexbuf_push_str(fn->sval);
+    i = 0;
+    while (fn->sval[i] != 0) {
+        if (fn->sval[i] == ':' && fn->sval[i + 1] == ':') {
+            lexbuf_push('_');
+            lexbuf_push('_');
+            i = i + 2;
+            continue;
+        }
+        lexbuf_push(fn->sval[i]);
+        i = i + 1;
+    }
     return lexbuf_finish();
 }
 

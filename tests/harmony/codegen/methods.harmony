@@ -1,0 +1,23 @@
+// EXPECT: 41
+// IR: define void @harmony__C__bump
+// Methods: associated construction (`C::make`), `&mut self` mutation, and
+// `&self` reads, with `Type__method` mangling.
+struct C { n: i32; }
+
+methods C {
+    fn make() -> C {
+        return C { .n = 40 };
+    }
+    fn bump(&mut self) {
+        self.n += 1;
+    }
+    fn get(&self) -> i32 {
+        return self.n;
+    }
+}
+
+fn main() -> i32 {
+    let mut c = C::make();
+    c.bump();
+    return c.get();
+}

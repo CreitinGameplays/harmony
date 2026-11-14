@@ -23,6 +23,23 @@ char* ll_expr_field(struct AstNode* n);
 char* ll_expr_index(struct AstNode* n);
 char* ll_expr_call(struct AstNode* n);
 char* ll_expr_cast(struct AstNode* n);
+char* ll_expr_struct_init(struct AstNode* n);
+char* ll_expr_borrow(struct AstNode* n);
+char* ll_expr_deref(struct AstNode* n);
+char* ll_expr_heap(struct AstNode* n);
+char* ll_expr_array_lit(struct AstNode* n);
+char* ll_expr_variant(struct AstNode* n);
+char* ll_make_enum(int ty, int tag);
+char* ll_addr(struct AstNode* n);
+char* ll_field_addr(struct AstNode* n);
+char* ll_index_addr(struct AstNode* n);
+char* ll_struct_gep(char* base, int struct_ty, int field);
+char* ll_array_gep(char* base, int elem, char* idx);
+void  ll_bounds_check(char* idx, int n, struct AstNode* at);
+char* ll_widen_index(char* idx);
+int   ty_array_len(int id);
+char* ll_int_convert(char* v, int from, int to);
+char* ll_fp_convert(char* v, int from, int to, int is_float_seq);
 char* ll_int_cmp(char* op, int ty, char* l, char* r);
 char* ll_logical_and(struct AstNode* n);
 char* ll_logical_or(struct AstNode* n);
@@ -31,7 +48,16 @@ char* ll_div_checked(int ty, struct AstNode* n, char* l, char* r, int is_rem);
 char* ll_shift(int ty, struct AstNode* n, char* l, char* r, int is_right);
 char* ll_float_bin(char* op, struct AstNode* n, char* l, char* r);
 void  ll_str_append(char* buf, char* s);
+void  ll_str_copy(char* dst, char* src);
+int   ll_is_aggregate(int ty);
+int   ll_sret_on(void);
+int   ll_sret_ty(void);
+void  ll_set_sret(int on, int ty);
 char* ll_call_symbol(char* name);
+char* ll_method_call(struct AstNode* n, struct AstNode* callee, struct AstList* args, int retty);
+char* ll_emit_call(char* symbol, char* arglist, int retty, int agg);
+int   ll_find_method(int rt, char* name);
+char* ll_method_symbol(int rt, char* name);
 char* ll_checked_bin(char* op, int ty, struct AstNode* n, char* l, char* r);
 int   ll_get_terminated(void);
 void  ll_set_terminated(int v);
@@ -177,6 +203,11 @@ char* ll_expr(struct AstNode* n) {
     if (n->kind == AST_INDEX) { return ll_expr_index(n); }
     if (n->kind == AST_CALL) { return ll_expr_call(n); }
     if (n->kind == AST_AS) { return ll_expr_cast(n); }
+    if (n->kind == AST_STRUCT_INIT) { return ll_expr_struct_init(n); }
+    if (n->kind == AST_BORROW) { return ll_expr_borrow(n); }
+    if (n->kind == AST_DEREF) { return ll_expr_deref(n); }
+    if (n->kind == AST_HEAP) { return ll_expr_heap(n); }
+    if (n->kind == AST_ARRAY_LIT) { return ll_expr_array_lit(n); }
     if (n->kind == AST_SIZEOF) {
         g_expr_ty = TY_USIZE;
         return ll_const_int(ty_size(ck_resolve_type(n->a)), TY_USIZE);
@@ -185,16 +216,68 @@ char* ll_expr(struct AstNode* n) {
     return ll_zero_of(g_expr_ty);
 }
 
-// A local binding: load from its alloca slot.
+// A local binding: load from its alloca slot. An aggregate binding is
+// returned by address (the caller's place logic handles it).
 char* ll_expr_path(struct AstNode* n) {
     char* slot;
+    int ty;
+    // A qualified path (`Enum::Variant`, `Type::assoc`) is not a local.
+    if (str_contains(n->sval, "::")) {
+        return ll_expr_variant(n);
+    }
     slot = ll_local_slot(n->sval);
     if (slot != 0) {
-        g_expr_ty = ll_local_ty(n->sval);
-        return ll_load(g_expr_ty, slot);
+        ty = ll_local_ty(n->sval);
+        g_expr_ty = ty;
+        if (ty_kind(ty) == CTY_STRUCT || ty_kind(ty) == CTY_ENUM || ty_is_array(ty)) {
+            return slot;
+        }
+        return ll_load(ty, slot);
     }
     g_expr_ty = ll_node_ty(n);
     return ll_zero_of(g_expr_ty);
+}
+
+// A bare enum variant value (`Enum::Variant`, or the prelude's bare `Empty`):
+// build the tagged aggregate with the payload cleared.
+char* ll_expr_variant(struct AstNode* n) {
+    char* vname;
+    int ty;
+    int vi;
+    vname = n->sval;
+    if (str_contains(vname, "::")) {
+        vname = vname + str_rfind(vname, "::") + 2;
+    }
+    ty = ll_node_ty(n);
+    if (ty_kind(ty) != CTY_ENUM) { return ll_zero_of(ty); }
+    vi = ty_find_member(ty, vname);
+    if (vi < 0) { vi = 0; }
+    return ll_make_enum(ty, vi);
+}
+
+// Builds `{ i32 tag, [N x i8] payload }` with the payload zeroed.
+char* ll_make_enum(int ty, int tag) {
+    char* slot;
+    char* tp;
+    slot = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(slot);
+    ll_out_str(" = alloca ");
+    ll_out_str(ll_type_name(ty));
+    ll_out_nl();
+    ll_out_str("  store ");
+    ll_out_str(ll_type_name(ty));
+    ll_out_str(" zeroinitializer, ptr ");
+    ll_out_str(slot);
+    ll_out_nl();
+    tp = ll_struct_gep(slot, ty, 0);
+    ll_out_str("  store i32 ");
+    ll_out_int(tag);
+    ll_out_str(", ptr ");
+    ll_out_str(tp);
+    ll_out_nl();
+    g_expr_ty = ty;
+    return slot;   // aggregates are represented by their address
 }
 
 // ---------------------------------------------------------------------------
@@ -528,18 +611,308 @@ char* ll_expr_unary(struct AstNode* n) {
 }
 
 // ---------------------------------------------------------------------------
-// Not-yet-lowered expression forms (M1 next batch). They return a zero of the
-// node's checked type so the IR stays valid; the driver reports ICE-01 for
-// programs that use them, so nothing silently miscompiles.
+// Lvalues: compute the address of a place (variable, field, array element,
+// dereference). Returns a pointer-valued SSA name.
+// ---------------------------------------------------------------------------
+char* ll_addr(struct AstNode* n) {
+    if (n == 0) { return "null"; }
+    if (n->kind == AST_PATH) {
+        char* slot;
+        slot = ll_local_slot(n->sval);
+        if (slot != 0) { return slot; }
+        return "null";
+    }
+    if (n->kind == AST_DEREF) {
+        // `*p` — the pointer value itself is the address.
+        return ll_expr(n->a);
+    }
+    if (n->kind == AST_FIELD_ACC) { return ll_field_addr(n); }
+    if (n->kind == AST_INDEX) { return ll_index_addr(n); }
+    return "null";
+}
+
+// Address of `base.field`.
+char* ll_field_addr(struct AstNode* n) {
+    int bt;
+    char* baseaddr;
+    int fi;
+    bt = n->a->ty;
+    if (ty_is_ref(bt) || ty_is_heap(bt)) {
+        // `r.field`: the base is a pointer already.
+        baseaddr = ll_expr(n->a);
+        bt = ty_elem(bt);
+    } else {
+        baseaddr = ll_addr(n->a);
+    }
+    fi = ty_find_member(bt, n->sval);
+    if (fi < 0) { fi = 0; }
+    return ll_struct_gep(baseaddr, bt, fi);
+}
+
+// `getelementptr inbounds %struct.X, ptr base, i32 0, i32 i`.
+char* ll_struct_gep(char* base, int struct_ty, int field) {
+    char* r;
+    r = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(r);
+    ll_out_str(" = getelementptr inbounds ");
+    ll_out_str(ll_type_name(struct_ty));
+    ll_out_str(", ptr ");
+    ll_out_str(base);
+    ll_out_str(", i32 0, i32 ");
+    ll_out_int(field);
+    ll_out_nl();
+    return r;
+}
+
+// Address of `base[i]` with a bounds check (§3.2).
+char* ll_index_addr(struct AstNode* n) {
+    int bt;
+    int elem;
+    int alen;
+    char* baseaddr;
+    char* idx;
+
+    bt = n->a->ty;
+    if (ty_is_ref(bt) || ty_is_ptr(bt)) {
+        baseaddr = ll_expr(n->a);
+        bt = ty_elem(bt);
+    } else {
+        baseaddr = ll_addr(n->a);
+    }
+    idx = ll_expr(n->b);
+
+    if (ty_is_array(bt)) {
+        elem = ty_elem(bt);
+        alen = ty_array_len(bt);
+        ll_bounds_check(idx, alen, n);
+        return ll_array_gep(baseaddr, elem, idx);
+    }
+    elem = ty_elem(bt);
+    if (elem == 0) { elem = TY_I32; }
+    return ll_array_gep(baseaddr, elem, idx);
+}
+
+// `getelementptr T, ptr base, i64 idx` (T is the element type).
+char* ll_array_gep(char* base, int elem, char* idx) {
+    char* r;
+    char* wide;
+    wide = ll_widen_index(idx);
+    r = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(r);
+    ll_out_str(" = getelementptr inbounds ");
+    ll_out_str(ll_type_name(elem));
+    ll_out_str(", ptr ");
+    ll_out_str(base);
+    ll_out_str(", i64 ");
+    ll_out_str(wide);
+    ll_out_nl();
+    return r;
+}
+
+// `call void @lc_check_index(i, n, file, col)` — the runtime traps on OOB.
+// The index is sign-extended to the runtime's i64 (a negative index is a
+// trap, not a wraparound).
+void ll_bounds_check(char* idx, int n, struct AstNode* at) {
+    char* wide;
+    wide = ll_widen_index(idx);
+    ll_out_str("  call void @lc_check_index(i64 ");
+    ll_out_str(wide);
+    ll_out_str(", i64 ");
+    ll_out_int(n);
+    ll_out_str(", i64 ");
+    ll_out_int(at->file);
+    ll_out_str(", i64 ");
+    ll_out_int(at->start);
+    ll_out_str(")\n");
+}
+
+// Widens an index value to i64 for the runtime call.
+char* ll_widen_index(char* idx) {
+    char* r;
+    if (str_eq(idx, "0")) { return "0"; }
+    r = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(r);
+    ll_out_str(" = sext i32 ");
+    ll_out_str(idx);
+    ll_out_str(" to i64\n");
+    return r;
+}
+
+int ty_array_len(int id) {
+    if (id <= 0 || id >= g_ntypes) { return 0; }
+    return g_types[id].b;
+}
+
+// ---------------------------------------------------------------------------
+// Field / index reads and struct literals.
 // ---------------------------------------------------------------------------
 char* ll_expr_field(struct AstNode* n) {
-    g_expr_ty = ll_node_ty(n);
-    return ll_zero_of(g_expr_ty);
+    char* addr;
+    int ft;
+    addr = ll_addr(n);
+    ft = ll_node_ty(n);
+    g_expr_ty = ft;
+    if (ft == TY_UNIT || ty_kind(ft) == CTY_STRUCT || ty_kind(ft) == CTY_ENUM
+        || ty_is_array(ft)) {
+        return addr;   // aggregates are addressed, not loaded
+    }
+    return ll_load(ft, addr);
 }
 
 char* ll_expr_index(struct AstNode* n) {
+    char* addr;
+    int et;
+    addr = ll_addr(n);
+    et = ll_node_ty(n);
+    g_expr_ty = et;
+    if (et == TY_UNIT || ty_kind(et) == CTY_STRUCT || ty_kind(et) == CTY_ENUM
+        || ty_is_array(et)) {
+        return addr;
+    }
+    return ll_load(et, addr);
+}
+
+// `[a, b, c]` or `[v; n]`: an alloca, per-element stores, then the aggregate.
+char* ll_expr_array_lit(struct AstNode* n) {
+    int ty;
+    int et;
+    char* slot;
+    ty = ll_node_ty(n);
+    et = ty_elem(ty);
+    slot = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(slot);
+    ll_out_str(" = alloca ");
+    ll_out_str(ll_type_name(ty));
+    ll_out_nl();
+    if (n->kids != 0 && n->kids->len > 0) {
+        int i;
+        i = 0;
+        while (i < n->kids->len) {
+            char* v;
+            char* addr;
+            v = ll_expr(n->kids->items[i]);
+            addr = ll_array_gep(slot, et, ll_const_int(i, TY_USIZE));
+            ll_out_str("  store ");
+            ll_out_str(ll_type_name(et));
+            ll_out_str(" ");
+            ll_out_str(v);
+            ll_out_str(", ptr ");
+            ll_out_str(addr);
+            ll_out_nl();
+            i = i + 1;
+        }
+    } else if (n->a != 0) {
+        // `[v; n]`: store the value at every index.
+        int count;
+        int i;
+        char* v;
+        count = ty_array_len(ty);
+        v = ll_expr(n->a);
+        i = 0;
+        while (i < count) {
+            char* addr;
+            addr = ll_array_gep(slot, et, ll_const_int(i, TY_USIZE));
+            ll_out_str("  store ");
+            ll_out_str(ll_type_name(et));
+            ll_out_str(" ");
+            ll_out_str(v);
+            ll_out_str(", ptr ");
+            ll_out_str(addr);
+            ll_out_nl();
+            i = i + 1;
+        }
+    }
+    g_expr_ty = ty;
+    return slot;   // aggregates are represented by their address
+}
+
+// `Name { .f = v, ... }` — an alloca, per-field stores, then the aggregate.
+char* ll_expr_struct_init(struct AstNode* n) {
+    int ty;
+    char* slot;
+    struct AstList* inits;
+    int i;
+    ty = ll_node_ty(n);
+    slot = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(slot);
+    ll_out_str(" = alloca ");
+    ll_out_str(ll_type_name(ty));
+    ll_out_nl();
+    inits = n->kids;
+    if (inits != 0) {
+        i = 0;
+        while (i < inits->len) {
+            struct AstNode* fi;
+            int ft;
+            char* addr;
+            char* v;
+            fi = inits->items[i];
+            ft = ty_member_type(ty, ty_find_member(ty, fi->sval));
+            v = ll_expr(fi->a);            // evaluate in written order (§7.5)
+            addr = ll_struct_gep(slot, ty, ty_find_member(ty, fi->sval));
+            ll_out_str("  store ");
+            ll_out_str(ll_type_name(ft));
+            ll_out_str(" ");
+            ll_out_str(v);
+            ll_out_str(", ptr ");
+            ll_out_str(addr);
+            ll_out_nl();
+            i = i + 1;
+        }
+    }
+    g_expr_ty = ty;
+    return slot;   // aggregates are represented by their address
+}
+
+// ---------------------------------------------------------------------------
+// References and heap.
+// ---------------------------------------------------------------------------
+char* ll_expr_borrow(struct AstNode* n) {
+    // `&x` / `&mut x` is the address of the place.
     g_expr_ty = ll_node_ty(n);
-    return ll_zero_of(g_expr_ty);
+    return ll_addr(n->a);
+}
+
+char* ll_expr_deref(struct AstNode* n) {
+    char* ptr;
+    int t;
+    ptr = ll_expr(n->a);
+    t = ll_node_ty(n);
+    g_expr_ty = t;
+    if (t == TY_UNIT || ty_kind(t) == CTY_STRUCT || ty_kind(t) == CTY_ENUM
+        || ty_is_array(t)) {
+        return ptr;   // aggregate: the pointer is the address
+    }
+    return ll_load(t, ptr);
+}
+
+char* ll_expr_heap(struct AstNode* n) {
+    int et;
+    char* raw;
+    char* v;
+    et = ty_elem(ll_node_ty(n));   // pointee type
+    if (et == 0) { et = ll_node_ty(n->a); }
+    raw = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(raw);
+    ll_out_str(" = call ptr @lc_alloc(i64 ");
+    ll_out_int(ty_size(et));
+    ll_out_str(")\n");
+    v = ll_expr(n->a);
+    ll_out_str("  store ");
+    ll_out_str(ll_type_name(et));
+    ll_out_str(" ");
+    ll_out_str(v);
+    ll_out_str(", ptr ");
+    ll_out_str(raw);
+    ll_out_nl();
+    g_expr_ty = ll_node_ty(n);
+    return raw;
 }
 
 char* ll_expr_call(struct AstNode* n) {
@@ -554,13 +927,18 @@ char* ll_expr_call(struct AstNode* n) {
     callee = n->a;
     args = n->kids;
 
-    if (callee == 0 || callee->kind != AST_PATH) {
-        // Method calls and indirect calls arrive in the next batch.
+    if (callee == 0) {
         g_expr_ty = retty;
         return ll_zero_of(retty);
     }
+    if (callee->kind == AST_FIELD_ACC) {
+        // Method call `recv.name(args)`: find the method on the receiver's
+        // type and pass the receiver as the implicit first argument.
+        return ll_method_call(n, callee, args, retty);
+    }
 
     // Emit the arguments left to right (§7.5) into a register list.
+    // An aggregate argument is passed as a pointer to its value.
     buf = arena_alloc(256);
     buf[0] = 0;
     if (args != 0) {
@@ -571,40 +949,226 @@ char* ll_expr_call(struct AstNode* n) {
             a = ll_expr(args->items[i]);
             aty = g_expr_ty;
             if (i > 0) { ll_str_append(buf, ", "); }
-            ll_str_append(buf, ll_type_name(aty));
-            ll_str_append(buf, " ");
+            if (ll_is_aggregate(aty)) {
+                ll_str_append(buf, "ptr ");
+            } else {
+                ll_str_append(buf, ll_type_name(aty));
+                ll_str_append(buf, " ");
+            }
             ll_str_append(buf, a);
             i = i + 1;
         }
     }
 
-    if (retty == TY_UNIT || retty == TY_NEVER) {
-        ll_out_str("  call void @");
+    // An aggregate-returning function uses the sret convention: allocate the
+    // result slot and pass its address as the hidden first argument.
+    {
+        int agg;
+        char* sslot;
+        agg = ll_is_aggregate(retty);
+        sslot = 0;
+        if (agg && retty != TY_UNIT && retty != TY_NEVER) {
+            sslot = ll_new_reg();
+            ll_out_str("  ");
+            ll_out_str(sslot);
+            ll_out_str(" = alloca ");
+            ll_out_str(ll_type_name(retty));
+            ll_out_nl();
+        }
+        if (retty == TY_UNIT || retty == TY_NEVER) {
+            ll_out_str("  call void @");
+            ll_out_str(ll_call_symbol(callee->sval));
+            ll_out_str("(");
+            ll_out_str(buf);
+            ll_out_str(")\n");
+            if (retty == TY_NEVER) {
+                ll_out_str("  unreachable\n");
+                ll_set_terminated(1);
+            }
+            g_expr_ty = retty;
+            return "0";
+        }
+        if (agg) {
+            ll_out_str("  call void @");
+            ll_out_str(ll_call_symbol(callee->sval));
+            ll_out_str("(ptr sret(");
+            ll_out_str(ll_type_name(retty));
+            ll_out_str(") ");
+            ll_out_str(sslot);
+            if (buf[0] != 0) {
+                ll_out_str(", ");
+                ll_out_str(buf);
+            }
+            ll_out_str(")\n");
+            g_expr_ty = retty;
+            return sslot;   // the address of the result
+        }
+        ret = ll_new_reg();
+        ll_out_str("  ");
+        ll_out_str(ret);
+        ll_out_str(" = call ");
+        ll_out_str(ll_type_name(retty));
+        ll_out_str(" @");
         ll_out_str(ll_call_symbol(callee->sval));
         ll_out_str("(");
         ll_out_str(buf);
         ll_out_str(")\n");
+        g_expr_ty = retty;
+        return ret;
+    }
+}
+
+// Method call `recv.name(args)`. Resolution mirrors the checker: find the
+// method registered for the receiver's (auto-derefed) type. The receiver is
+// the implicit first argument — by pointer for `&self`/`&mut self`/self
+// aggregates, by value for scalars.
+char* ll_method_call(struct AstNode* n, struct AstNode* callee, struct AstList* args, int retty) {
+    int rt;
+    int m;
+    int fidx;
+    char* selfv;
+    char* buf;
+    char* ret;
+    int agg;
+
+    rt = callee->a->ty;
+    // Evaluate the receiver once; auto-deref through references/boxes to the
+    // underlying value's address.
+    selfv = ll_addr(callee->a);
+    m = ll_find_method(rt, callee->sval);
+    if (m < 0) {
+        g_expr_ty = retty;
+        return ll_zero_of(retty);
+    }
+    fidx = ck_meth_fn(m);
+
+    buf = arena_alloc(256);
+    buf[0] = 0;
+    ll_str_append(buf, "ptr ");
+    ll_str_append(buf, selfv);
+    {
+        int i;
+        if (args != 0) {
+            i = 0;
+            while (i < args->len) {
+                char* a;
+                int aty;
+                if (i > 0) { ll_str_append(buf, ", "); }
+                a = ll_expr(args->items[i]);
+                aty = g_expr_ty;
+                if (ll_is_aggregate(aty)) {
+                    ll_str_append(buf, "ptr ");
+                } else {
+                    ll_str_append(buf, ll_type_name(aty));
+                    ll_str_append(buf, " ");
+                }
+                ll_str_append(buf, a);
+                i = i + 1;
+            }
+        }
+    }
+
+    agg = ll_is_aggregate(retty);
+    ret = ll_emit_call(ll_method_symbol(rt, callee->sval), buf, retty, agg);
+    g_expr_ty = retty;
+    return ret;
+}
+
+// Emits the `call` instruction; returns the value (or the sret slot for an
+// aggregate return).
+char* ll_emit_call(char* symbol, char* arglist, int retty, int agg) {
+    char* sslot;
+    char* ret;
+    sslot = 0;
+    if (agg) {
+        sslot = ll_new_reg();
+        ll_out_str("  ");
+        ll_out_str(sslot);
+        ll_out_str(" = alloca ");
+        ll_out_str(ll_type_name(retty));
+        ll_out_nl();
+    }
+    if (retty == TY_UNIT || retty == TY_NEVER) {
+        if (agg) {
+            ll_out_str("  call void @");
+            ll_out_str(symbol);
+            ll_out_str("(ptr sret(");
+            ll_out_str(ll_type_name(retty));
+            ll_out_str(") ");
+            ll_out_str(sslot);
+            if (arglist != 0 && arglist[0] != 0) {
+                ll_out_str(", ");
+                ll_out_str(arglist);
+            }
+            ll_out_str(")\n");
+        } else {
+            ll_out_str("  call void @");
+            ll_out_str(symbol);
+            ll_out_str("(");
+            ll_out_str(arglist);
+            ll_out_str(")\n");
+        }
         if (retty == TY_NEVER) {
-            // A `never` call does not return; the block ends here.
             ll_out_str("  unreachable\n");
             ll_set_terminated(1);
         }
-        g_expr_ty = retty;
         return "0";
     }
-
+    if (agg) {
+        ll_out_str("  call void @");
+        ll_out_str(symbol);
+        ll_out_str("(ptr sret(");
+        ll_out_str(ll_type_name(retty));
+        ll_out_str(") ");
+        ll_out_str(sslot);
+        if (arglist != 0 && arglist[0] != 0) {
+            ll_out_str(", ");
+            ll_out_str(arglist);
+        }
+        ll_out_str(")\n");
+        return sslot;
+    }
     ret = ll_new_reg();
     ll_out_str("  ");
     ll_out_str(ret);
     ll_out_str(" = call ");
     ll_out_str(ll_type_name(retty));
     ll_out_str(" @");
-    ll_out_str(ll_call_symbol(callee->sval));
+    ll_out_str(symbol);
     ll_out_str("(");
-    ll_out_str(buf);
+    ll_out_str(arglist);
     ll_out_str(")\n");
-    g_expr_ty = retty;
     return ret;
+}
+
+// Finds a method by receiver type + name; -1 when absent.
+int ll_find_method(int rt, char* name) {
+    int i;
+    // Search directly on the type; fall back one auto-deref level through a
+    // reference/heap receiver.
+    i = 0;
+    while (i < ck_nmeth()) {
+        if (ck_meth_ty(i) == rt && str_eq(ck_meth_name(i), name)) { return i; }
+        i = i + 1;
+    }
+    if (ty_is_ref(rt) || ty_is_heap(rt)) {
+        return ll_find_method(ty_elem(rt), name);
+    }
+    return -1;
+}
+
+// `Type__method` — the §19.4 mangling for methods (no colons in IR names).
+char* ll_method_symbol(int rt, char* name) {
+    lexbuf_reset();
+    lexbuf_push_str("harmony__");
+    lexbuf_push_str(ty_display(rt));
+    lexbuf_push_str("__");
+    lexbuf_push_str(name);
+    return lexbuf_finish();
+}
+
+void ll_str_copy(char* dst, char* src) {
+    ll_str_into(dst, src);
 }
 
 // Appends `s` to the NUL-terminated buffer `buf`.
@@ -615,23 +1179,81 @@ void ll_str_append(char* buf, char* s) {
 }
 
 // `name` -> the emitted symbol for a called function (`main` -> harmony_main,
-// others -> harmony__name). Associated calls and methods land later.
+// others -> harmony__name). A qualified path (`Type::name`, an associated
+// function) mangles `::` to `__` (colons are not valid in IR names).
 char* ll_call_symbol(char* name) {
+    int i;
     if (str_eq(name, "main")) { return "harmony_main"; }
     lexbuf_reset();
     lexbuf_push_str("harmony__");
-    lexbuf_push_str(name);
+    i = 0;
+    while (name[i] != 0) {
+        if (name[i] == ':' && name[i + 1] == ':') {
+            lexbuf_push('_');
+            lexbuf_push('_');
+            i = i + 2;
+            continue;
+        }
+        lexbuf_push(name[i]);
+        i = i + 1;
+    }
     return lexbuf_finish();
 }
 
 char* ll_expr_cast(struct AstNode* n) {
-    // A cast is a value-preserving reinterpret for the widths M1 allows; the
-    // source value passes through (the checker restricted conversions to
-    // width-compatible families).
     char* v;
+    int from;
+    int to;
     v = ll_expr(n->a);
-    g_expr_ty = ll_node_ty(n);
+    from = g_expr_ty;
+    to = ll_node_ty(n);
+    g_expr_ty = to;
+    if (ty_is_untyped_lit(from)) { from = to; }
+    if (from == to) { return v; }
+    if (ty_is_integer(from) && ty_is_integer(to)) { return ll_int_convert(v, from, to); }
+    if (ty_is_integer(from) && ll_is_float_ty(to)) { return ll_fp_convert(v, from, to, 0); }
+    if (ll_is_float_ty(from) && ll_is_float_ty(to)) { return ll_fp_convert(v, from, to, 1); }
     return v;
+}
+
+// Integer <-> float conversions (sitofp / uitofp / fptosi / fptoui).
+// Widening/narrowing between integer widths (sign/zero-extend or truncate).
+char* ll_int_convert(char* v, int from, int to) {
+    int fw;
+    int tw;
+    fw = ty_bit_width(from);
+    tw = ty_bit_width(to);
+    if (fw == tw) { return v; }
+    if (ty_is_bool(from) && tw > 1) { return ll_bin("zext", TY_BOOL, v, v); }
+    if (tw < fw) { return ll_bin("trunc", to, v, v); }
+    if (ty_is_signed(from)) { return ll_bin("sext", to, v, v); }
+    return ll_bin("zext", to, v, v);
+}
+
+char* ll_fp_convert(char* v, int from, int to, int is_float_seq) {
+    char* r;
+    char* op;
+    if (is_float_seq) {
+        op = "fpext";
+        to = TY_F64;
+    } else if (ll_is_float_ty(to)) {
+        if (ty_is_unsigned(from)) { op = "uitofp"; } else { op = "sitofp"; }
+    } else {
+        if (ty_is_unsigned(to)) { op = "fptoui"; } else { op = "fptosi"; }
+    }
+    r = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(r);
+    ll_out_str(" = ");
+    ll_out_str(op);
+    ll_out_str(" ");
+    ll_out_str(ll_type_name(from));
+    ll_out_str(" ");
+    ll_out_str(v);
+    ll_out_str(" to ");
+    ll_out_str(ll_type_name(to));
+    ll_out_nl();
+    return r;
 }
 
 char* ll_int_type_suffix(int ty) {

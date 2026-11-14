@@ -162,12 +162,16 @@ These c2x-seed defects were found and fixed while bootstrapping (see
       exit status; trap exit status 70 (§14.3).
 - [x] Byte-deterministic `.ll` output (`emit-llvm` twice diffs clean); name
       mangling `harmony__name` (`main` -> `harmony_main`). No hashes, no paths.
-- [ ] Struct/enum field access, indexing (`a[i]` + bounds checks), calls to
-      methods/associated/field-based callees, casts, `heap`, `sizeof`,
-      `switch` lowering, `&T`/`&mut T` (`noalias`), generic monomorphization.
-      (The checker accepts these; the emitter currently zeroes them and the
-      program must avoid them.)
-- [ ] Diagnostics for `FMT-01`; stack-overflow guard (`T-STACK`).
+- [x] Struct/enum/array values and field access (aggregates are lowered as
+      addresses; by-value params/returns use the sret convention), indexing
+      (`a[i]` + `lc_check_index` bounds checks, T-INDEX), method and
+      associated calls (`Type__method` mangling, `self` shapes), casts
+      (`as`, sext/zext/trunc/sitofp/fptosi), `heap(x)` + `lc_alloc`,
+      `&T`/`&mut T`, `switch` on scalars (exact, or-patterns, ranges) and
+      enums (tag tests). (codegen.sh, 21 cases.)
+- [ ] Remaining M1 gaps: generic monomorphization, slices (`&[T]` fat
+      pointers), `extern fn` calls through `unchecked`, `FMT-01`, the
+      stack-overflow guard (`T-STACK`), `noalias` on `&mut` params.
 
 ### M2 — Ownership: moves + drop elaboration (§9, §19.7)
 

@@ -588,6 +588,8 @@ int ck_resolve_type(struct AstNode* t);    // type AST node -> type id
 int ceval_const_int(struct AstNode* n);    // const-fold an expression (-1 = no)
 char* ck_ref_name(char* pre, int inner);   // "&T"-style display name
 int ck_lookup(char* name);                 // innermost binding of a name
+// Resolves a *type* name to its type id (TY_INVALID when unknown).
+int ck_lookup_type(char* name);
 int ck_coercible(int want, int got);       // assignment/arg compatibility
 void ck_err_type_mismatch(struct AstNode* at, int want, int got, char* what);
 void ck_err_unknown_name(char* name, struct AstNode* at, char* what);
@@ -626,6 +628,20 @@ char* ll_load(int ty, char* ptr);
 void  ll_int_into(char* buf, int v);
 void  ll_str_into(char* dst, char* src);
 int   ll_str_len(char* s);
+
+// ---------------------------------------------------------------------------
+// Checker registries the backend needs (populated by check.c2).
+// ---------------------------------------------------------------------------
+// Accessors keep the table layouts private to check.c2.
+int ck_nfn(void);                          // number of registered functions
+struct AstNode* ck_fn(int i);              // AST_FN node by index
+int ck_nmeth(void);                        // number of registered methods
+int ck_meth_fn(int i);                     // method i's function index
+char* ck_meth_name(int i);                 // method i's name
+int ck_meth_ty(int i);                     // method i's receiver type
+int ck_fn_self_ty(int i);                  // function i's receiver type (0 = free)
+int ck_fn_ret_ty(struct AstNode* fn);      // resolved return type id
+int ck_sym_kind(char* name);               // symbol-kind id (0 = unknown)
 
 // ---------------------------------------------------------------------------
 // Toolchain driver (emit.c2, docs/harmony.md §19.4/§19.5): turn the emitted

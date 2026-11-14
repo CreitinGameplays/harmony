@@ -30,6 +30,8 @@ void ck_scope_push(void);
 void ck_scope_pop(void);
 int ck_declare(char* name, int kind, int ty, struct AstNode* decl, int mut);
 int ck_lookup(char* name);
+int ck_lookup_type(char* name);
+int ck_sym_kind(char* name);
 void ck_err_name_taken(char* name, struct AstNode* at);
 void ck_err_unknown_name(char* name, struct AstNode* at, char* what);
 void ck_err_unknown_type(char* name, struct AstNode* at);
@@ -146,6 +148,71 @@ int ck_lookup(char* name) {
         i = i - 1;
     }
     return -1;
+}
+
+// ---- Registry accessors for the backend (see common.c2) ----
+
+int ck_nfn(void) { return g_nfn; }
+
+struct AstNode* ck_fn(int i) {
+    if (i < 0 || i >= g_nfn) { return 0; }
+    return g_fn_decl[i];
+}
+
+int ck_nmeth(void) { return g_nmeth; }
+
+int ck_meth_fn(int i) {
+    if (i < 0 || i >= g_nmeth) { return -1; }
+    return g_meth_fn[i];
+}
+
+char* ck_meth_name(int i) {
+    if (i < 0 || i >= g_nmeth) { return 0; }
+    return g_meth_name[i];
+}
+
+int ck_meth_ty(int i) {
+    if (i < 0 || i >= g_nmeth) { return 0; }
+    return g_meth_ty[i];
+}
+
+int ck_fn_self_ty(int i) {
+    if (i < 0 || i >= 1024) { return 0; }
+    return g_fn_self_ty[i];
+}
+
+int ck_fn_ret_ty(struct AstNode* fn) {
+    if (fn == 0) { return TY_UNIT; }
+    if (fn->ty == 0) { return TY_UNIT; }
+    return fn->ty;
+}
+
+// The symbol-kind id of a name (or 0), for the backend's queries.
+int ck_sym_kind(char* name) {
+    int i;
+    i = g_nsyms - 1;
+    while (i >= 0) {
+        if (str_eq(g_sym_name[i], name)) { return g_sym_kind[i]; }
+        i = i - 1;
+    }
+    return 0;
+}
+
+// Resolves a type name to its type id, or TY_INVALID. Looks for a nominal
+// type or a generic parameter (both register as SK_TYPE / SK_GEN).
+int ck_lookup_type(char* name) {
+    int i;
+    i = g_nsyms - 1;
+    while (i >= 0) {
+        if (str_eq(g_sym_name[i], name)) {
+            if (g_sym_kind[i] == SK_TYPE || g_sym_kind[i] == SK_GEN) {
+                return g_sym_ty[i];
+            }
+            return TY_INVALID;
+        }
+        i = i - 1;
+    }
+    return TY_INVALID;
 }
 
 // ---------------------------------------------------------------------------
@@ -601,17 +668,28 @@ void ck_check_fn(struct AstNode* fn, int idx) {
     g_fn_idx[g_fn_depth] = idx;
     g_fn_depth = g_fn_depth + 1;
     ck_scope_push();
-    // A method's `self` is a binding like any other parameter (§6.6).
+    // A method's `self` is a binding like any other parameter (§6.6). Its
+    // type mirrors the declared shape: `self`/`mut self` take the receiver by
+    // value; `&self`/`&mut self` take a reference to it (the checker already
+    // resolved that reference type onto the param node).
     if (g_fn_self_ty[idx] != 0) {
         int smut;
+        int selfty;
+        struct AstNode* sp;
         smut = 0;
+        selfty = g_fn_self_ty[idx];
+        sp = 0;
         params = fn->kids2;
-        if (params != 0 && params->len > 0
-            && (str_eq(params->items[0]->sval, "mut self")
-                || str_eq(params->items[0]->sval, "&mut self"))) {
-            smut = 1;
+        if (params != 0 && params->len > 0) {
+            sp = params->items[0];
+            if (ck_is_self_param(sp) && sp->ty != 0) {
+                selfty = sp->ty;   // the reference-typed shape
+            }
+            if (str_eq(sp->sval, "mut self") || str_eq(sp->sval, "&mut self")) {
+                smut = 1;
+            }
         }
-        ck_declare("self", SK_SELF, g_fn_self_ty[idx], fn, smut);
+        ck_declare("self", SK_SELF, selfty, fn, smut);
     }
     params = fn->kids2;
     if (params != 0) {
@@ -775,8 +853,13 @@ void ck_check_place_mut(struct AstNode* n) {
     if (n->kind == AST_PATH && n->a == 0) {
         int sym;
         sym = ck_lookup(n->sval);
-        if (sym >= 0 && !g_sym_mut[sym]) {
-            if (g_sym_kind[sym] == SK_LET || g_sym_kind[sym] == SK_PARAM) {
+        if (sym < 0) { return; }
+        // Writing through a `&mut T` place is always allowed: the reference
+        // is the capability (§10). The binding itself may still be read-only.
+        if (ty_kind(g_sym_ty[sym]) == CTY_MUTREF) { return; }
+        if (!g_sym_mut[sym]) {
+            if (g_sym_kind[sym] == SK_LET || g_sym_kind[sym] == SK_PARAM
+                || g_sym_kind[sym] == SK_SELF) {
                 ck_err_not_mut(n, n->sval);
             }
         }

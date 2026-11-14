@@ -28,12 +28,17 @@ char* ll_type_name(int id);
 char* ll_zero_of(int id);
 char* ll_load(int ty, char* ptr);
 char* ll_checked_bin(char* op, int ty, struct AstNode* n, char* l, char* r);
+char* ll_addr(struct AstNode* n);
+int   ll_node_ty(struct AstNode* n);
+int   ll_sret_on(void);
+int   ll_sret_ty(void);
+int   ty_size(int id);
+int   ll_is_float_ty(int id);
 void  ll_local_declare(char* name, char* slot, int ty);
 void  ll_env_scope_push(void);
 void  ll_env_scope_pop(void);
 char* ll_local_slot(char* name);
 int   ll_local_ty(char* name);
-int   ll_node_ty(struct AstNode* n);
 void  ll_out_str(char* s);
 void  ll_out_int(int v);
 void  ll_out_nl(void);
@@ -48,6 +53,15 @@ void ll_stmt_for(struct AstNode* n);
 void ll_stmt_break(struct AstNode* n);
 void ll_stmt_continue(struct AstNode* n);
 void ll_stmt_return(struct AstNode* n);
+void ll_stmt_switch(struct AstNode* n);
+void ll_switch_test(struct AstList* pats, int st, char* subjslot, char* armlbl, char* nextlbl);
+char* ll_pattern_test(struct AstNode* p, int st, char* subjslot);
+char* ll_enum_tag_test(int enum_ty, char* subjslot, int index);
+char* ll_load_ptr(char* ptr);
+char* ll_bin(char* op, int ty, char* a, char* b);
+char* ll_cmp(char* op, int ty, char* a, char* b);
+char* ll_const_int(int v, int ty);
+char* ll_struct_gep(char* base, int struct_ty, int field);
 char* ll_compound(char* opassign, struct AstNode* n, int ty, char* cur);
 char* ll_compound_op(char* opassign);
 void ll_loop_push(char* brk, char* cont);
@@ -92,7 +106,8 @@ void ll_stmt(struct AstNode* n) {
     if (n->kind == AST_CONTINUE) { ll_stmt_continue(n); return; }
     if (n->kind == AST_BLOCK) { ll_block(n); return; }
     if (n->kind == AST_UNCHECKED) { ll_block(n->a); return; }
-    // switch/struct-init etc. arrive in the next batch; evaluate for effect.
+    if (n->kind == AST_SWITCH) { ll_stmt_switch(n); return; }
+    // Anything else: evaluate for effect.
     ll_expr(n);
 }
 
@@ -111,13 +126,25 @@ void ll_stmt_let(struct AstNode* n) {
     if (n->b != 0) {
         char* v;
         v = ll_expr(n->b);
-        ll_out_str("  store ");
-        ll_out_str(ll_type_name(ty));
-        ll_out_str(" ");
-        ll_out_str(v);
-        ll_out_str(", ptr ");
-        ll_out_str(slot);
-        ll_out_nl();
+        if (ll_is_aggregate(ty)) {
+            // Aggregate values are represented by their address: copy the
+            // bytes into the new binding's slot (copy = by-value binding).
+            ll_out_str("  call void @llvm.memcpy.p0.p0.i64(ptr align 8 ");
+            ll_out_str(slot);
+            ll_out_str(", ptr align 8 ");
+            ll_out_str(v);
+            ll_out_str(", i64 ");
+            ll_out_int(ty_size(ty));
+            ll_out_str(", i1 false)\n");
+        } else {
+            ll_out_str("  store ");
+            ll_out_str(ll_type_name(ty));
+            ll_out_str(" ");
+            ll_out_str(v);
+            ll_out_str(", ptr ");
+            ll_out_str(slot);
+            ll_out_nl();
+        }
     }
     // `_` discards: still allocate so the initializer is evaluated, but do
     // not bind a name.
@@ -130,18 +157,35 @@ void ll_stmt_assign(struct AstNode* n) {
     char* slot;
     int ty;
     char* v;
-    // M1: simple `name = value` and `name op= value`. Field/index/deref
-    // targets land with the aggregates batch.
-    if (n->a->kind != AST_PATH) { return; }
-    slot = ll_local_slot(n->a->sval);
-    if (slot == 0) { return; }
-    ty = ll_local_ty(n->a->sval);
+    if (n->a->kind == AST_PATH) {
+        // Local binding.
+        slot = ll_local_slot(n->a->sval);
+        if (slot == 0) { return; }
+        ty = ll_local_ty(n->a->sval);
+    } else {
+        // Field, index, or deref target: compute the address of the place.
+        slot = ll_addr(n->a);
+        ty = ll_node_ty(n->a);
+    }
 
     if (str_eq(n->sval, "=")) {
         v = ll_expr(n->b);
+        ty = g_expr_ty;   // the stored value's type (for casts that adapt)
+        if (ll_is_aggregate(ty)) {
+            // Aggregate values are represented by their address.
+            ll_out_str("  call void @llvm.memcpy.p0.p0.i64(ptr align 8 ");
+            ll_out_str(slot);
+            ll_out_str(", ptr align 8 ");
+            ll_out_str(v);
+            ll_out_str(", i64 ");
+            ll_out_int(ty_size(ty));
+            ll_out_str(", i1 false)\n");
+            return;
+        }
     } else {
         // Compound: desugar `x op= y` to `x = x op y` on the current value.
         char* cur;
+        if (ty_kind(ty) == CTY_STRUCT || ty_is_array(ty)) { return; }  // no struct compound
         cur = ll_load(ty, slot);
         v = ll_compound(n->sval, n, ty, cur);
     }
@@ -358,7 +402,259 @@ void ll_stmt_continue(struct AstNode* n) {
 // ---------------------------------------------------------------------------
 // return.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// switch. M1 lowers it to a chain of tests: evaluate the subject once, then
+// for each arm compare against its pattern(s) and branch to the arm body or
+// on to the next test. Enum subjects compare the hidden tag; scalar subjects
+// compare the value. A `default` arm (or the end) is the fall-through.
+// ---------------------------------------------------------------------------
+void ll_stmt_switch(struct AstNode* n) {
+    int st;
+    char* subj;
+    char* subjslot;
+    char* endlbl;
+    struct AstList* arms;
+    int i;
+    int has_default;
+    char* deflbl;
+
+    st = n->a->ty;
+    subj = ll_expr(n->a);
+    if (ll_is_aggregate(st)) {
+        // An aggregate subject arrives as an address (the callee's sret slot
+        // or its own alloca) — spill the *pointer*, not the value.
+        subjslot = ll_new_reg();
+        ll_out_str("  ");
+        ll_out_str(subjslot);
+        ll_out_str(" = alloca ptr\n");
+        ll_out_str("  store ptr ");
+        ll_out_str(subj);
+        ll_out_str(", ptr ");
+        ll_out_str(subjslot);
+        ll_out_nl();
+        // From here on, the subject's address is loaded once.
+        subj = ll_load_ptr(subjslot);
+        subjslot = subj;
+    } else {
+        subjslot = ll_new_reg();
+        ll_out_str("  ");
+        ll_out_str(subjslot);
+        ll_out_str(" = alloca ");
+        ll_out_str(ll_type_name(st));
+        ll_out_nl();
+        ll_out_str("  store ");
+        ll_out_str(ll_type_name(st));
+        ll_out_str(" ");
+        ll_out_str(subj);
+        ll_out_str(", ptr ");
+        ll_out_str(subjslot);
+        ll_out_nl();
+    }
+
+    endlbl = ll_new_label("switch.end");
+    arms = n->kids;
+    has_default = 0;
+    deflbl = 0;
+    if (arms != 0) {
+        i = 0;
+        while (i < arms->len) {
+            struct AstNode* arm;
+            arm = arms->items[i];
+            if (arm->kids == 0 || arm->kids->len == 0) {
+                has_default = 1;
+                deflbl = ll_new_label("switch.default");
+            }
+            i = i + 1;
+        }
+    }
+    if (!has_default) { deflbl = endlbl; }
+
+    // Emit the tests and arm bodies in order.
+    if (arms != 0) {
+        i = 0;
+        while (i < arms->len) {
+            struct AstNode* arm;
+            char* armlbl;
+            char* nextlbl;
+            arm = arms->items[i];
+            if (arm->kids == 0 || arm->kids->len == 0) {
+                ll_out_str("  br label %");
+                ll_out_str(deflbl);
+                ll_out_nl();
+                ll_label(deflbl);
+                ll_block(arm->b);
+                if (!ll_get_terminated()) {
+                    ll_out_str("  br label %");
+                    ll_out_str(endlbl);
+                    ll_out_nl();
+                }
+                ll_set_terminated(0);
+                ll_label(endlbl);
+                ll_set_terminated(0);
+                return;
+            }
+            armlbl = ll_new_label("switch.arm");
+            nextlbl = ll_new_label("switch.test");
+            // One test per pattern in this arm (or-patterns are `||`).
+            ll_switch_test(arm->kids, st, subjslot, armlbl, nextlbl);
+            ll_label(armlbl);
+            ll_block(arm->b);
+            if (!ll_get_terminated()) {
+                ll_out_str("  br label %");
+                ll_out_str(endlbl);
+                ll_out_nl();
+            }
+            ll_set_terminated(0);
+            ll_label(nextlbl);
+            i = i + 1;
+        }
+    }
+    // Fall through to the default/end.
+    if (has_default) {
+        ll_out_str("  br label %");
+        ll_out_str(deflbl);
+        ll_out_nl();
+    } else {
+        ll_out_str("  br label %");
+        ll_out_str(deflbl);
+        ll_out_nl();
+    }
+    if (!has_default) {
+        ll_label(endlbl);
+        ll_set_terminated(0);
+    }
+}
+
+// Groups an arm's patterns into a branch to `armlbl` when any matches, else
+// to `nextlbl`. Emits `br i1 <any>, label %armlbl, label %nextlbl`.
+void ll_switch_test(struct AstList* pats, int st, char* subjslot, char* armlbl, char* nextlbl) {
+    // Build the boolean with `||` semantics; M1 folds with `or i1` after
+    // evaluating each test (patterns are constants, so no short-circuit cost).
+    char* acc;
+    int k;
+    acc = 0;
+    k = 0;
+    while (k < pats->len) {
+        struct AstNode* p;
+        char* t;
+        p = pats->items[k];
+        t = ll_pattern_test(p, st, subjslot);
+        if (t == 0) {
+            // A wildcard/binding pattern matches everything: go straight to
+            // the arm.
+            ll_out_str("  br label %");
+            ll_out_str(armlbl);
+            ll_out_nl();
+            return;
+        }
+        if (acc == 0) {
+            acc = t;
+        } else {
+            acc = ll_bin("or", TY_BOOL, acc, t);
+        }
+        k = k + 1;
+    }
+    if (acc == 0) { acc = "false"; }
+    ll_out_str("  br i1 ");
+    ll_out_str(acc);
+    ll_out_str(", label %");
+    ll_out_str(armlbl);
+    ll_out_str(", label %");
+    ll_out_str(nextlbl);
+    ll_out_nl();
+}
+
+// The `i1` test for one pattern against the spilled subject. Returns 0 for a
+// catch-all pattern (wildcard / plain binding), which matches everything.
+char* ll_pattern_test(struct AstNode* p, int st, char* subjslot) {
+    if (p == 0) { return 0; }
+    if (p->kind == AST_PAT_WILD) { return 0; }
+    if (p->kind == AST_PAT_BIND) {
+        // A bare name may be a unit variant (enum subject) or a catch-all.
+        if (ty_kind(st) == CTY_ENUM) {
+            char* vname;
+            vname = p->sval;
+            if (str_contains(vname, "::")) { vname = vname + str_rfind(vname, "::") + 2; }
+            if (ty_find_member(st, vname) >= 0) {
+                return ll_enum_tag_test(st, subjslot, ty_find_member(st, vname));
+            }
+        }
+        return 0;
+    }
+    if (p->kind == AST_PAT_VARIANT) {
+        char* vname;
+        vname = p->sval;
+        if (str_contains(vname, "::")) { vname = vname + str_rfind(vname, "::") + 2; }
+        return ll_enum_tag_test(st, subjslot, ty_find_member(st, vname));
+    }
+    if (p->kind == AST_PAT_LIT) {
+        char* v;
+        char* cur;
+        v = ll_expr(p->a);
+        cur = ll_load(st, subjslot);
+        if (ll_is_float_ty(st)) { return ll_cmp("fcmp oeq", st, cur, v); }
+        return ll_cmp("icmp eq", st, cur, v);
+    }
+    if (p->kind == AST_PAT_RANGE) {
+        // lo <= cur && cur <= hi
+        char* cur;
+        char* lo;
+        char* hi;
+        char* a;
+        char* b;
+        cur = ll_load(st, subjslot);
+        lo = ll_expr(p->a);
+        hi = ll_expr(p->b);
+        a = ll_cmp("icmp sge", st, cur, lo);
+        b = ll_cmp("icmp sle", st, cur, hi);
+        return ll_bin("and", TY_BOOL, a, b);
+    }
+    return 0;
+}
+
+// `tag(subject) == index` for an enum-typed subject.
+char* ll_enum_tag_test(int enum_ty, char* subjslot, int index) {
+    char* tp;
+    char* tag;
+    tp = ll_struct_gep(subjslot, enum_ty, 0);
+    tag = ll_load(TY_I32, tp);
+    return ll_cmp("icmp eq", TY_I32, tag, ll_const_int(index, TY_I32));
+}
+
+// Loads a pointer-typed value from `ptr`.
+char* ll_load_ptr(char* ptr) {
+    char* r;
+    r = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(r);
+    ll_out_str(" = load ptr, ptr ");
+    ll_out_str(ptr);
+    ll_out_nl();
+    return r;
+}
+
+// ---------------------------------------------------------------------------
+// return.
+// ---------------------------------------------------------------------------
 void ll_stmt_return(struct AstNode* n) {
+    if (ll_sret_on()) {
+        // The aggregate is returned through the hidden `%sret` slot: copy the
+        // value there and return the pointer.
+        int retty;
+        char* v;
+        retty = ll_sret_ty();
+        v = ll_expr(n->a);
+        // `v` is the address of the aggregate (aggregate expressions yield
+        // addresses in this backend).
+        ll_out_str("  call void @llvm.memcpy.p0.p0.i64(ptr align 8 %sret, ptr align 8 ");
+        ll_out_str(v);
+        ll_out_str(", i64 ");
+        ll_out_int(ty_size(retty));
+        ll_out_str(", i1 false)\n");
+        ll_out_str("  ret void\n");
+        ll_set_terminated(1);
+        return;
+    }
     if (n->a != 0) {
         int ty;
         char* v;

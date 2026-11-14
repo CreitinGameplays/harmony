@@ -1,5 +1,5 @@
 # Harmony language
-File Extension: .harmony
+File Extension: .harmony (default), .hr (secondary)
 
 # Rules
 - Read the project layout first.

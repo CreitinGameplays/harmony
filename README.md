@@ -3,7 +3,7 @@
 Harmony is a small, statically-typed, **GC-free** systems language with
 value semantics, one owner per value, checked borrows, explicit lifetimes
 (`life`), and a single auditable escape hatch (`unchecked`). Source files use
-the `.harmony` extension.
+the `.harmony` (or `.hr`) extension.
 
 The design lives in [`docs/harmony.md`](docs/harmony.md). This repository is a
 working compiler for it.

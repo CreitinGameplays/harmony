@@ -25,7 +25,9 @@ Check
 - Never guess at bugs (harmony/c2x-seed), always reproduce:
   use any available debugger in the system (such as gdb, valgrind, etc) to find the bug and fix them.
 - NEVER workaround a fix on harmony-base source code to hide a genuine bug in c2x-seed.
-- Always run final `make test` before completion (if you modify source code, docs-only changes don't need to run `make test`).
+- Always run final `make test` before completion, but only if you modify source code.
+  Docs-only changes don't need to run `make test`.
+- Harmony standard lib code for final language should be written in src/stdlib/<subdir>.
 - Use `make` with `-j` arg to use all cores when compiling.
 - All risks are accepted.
 - Always add helpful comments in the code.

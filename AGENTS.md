@@ -41,3 +41,11 @@ File Extension: .harmony
 - If a bug happens on c2x-seed during harmony implementation, pause it and only focus on fixing c2x-seed.
   When fixed just report final completion.
 - You can write .harmony files in tests dir to test more complex code.
+- proposed layout for the final `harmony` language (to feel more organized and clean):
+```
+src/
+├── harmony/... <- the real core of the language here.
+├── core/... <- allowed to use with freestanding (e.g primitive types, slices, iterators... just like rust).
+└── stdlib/
+    └── (HashMap/io/fs/net...) <- the full standard library, needs the OS/allocator...
+```

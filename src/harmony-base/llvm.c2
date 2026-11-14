@@ -534,12 +534,14 @@ void ll_emit_module(struct AstNode* prog) {
     ll_out_nl();
 
     // Functions. Two passes so every definition precedes no other (order in
-    // the file is kept): free functions first, then methods.
+    // the file is kept): free functions first, then methods. A generic
+    // template (`fn id<T>`) has no concrete signature and is skipped; its
+    // monomorphized instances are emitted after the source functions.
     i = 0;
     while (i < items->len) {
         struct AstNode* it;
         it = items->items[i];
-        if (it->kind == AST_FN || it->kind == AST_EXTERN_FN) {
+        if ((it->kind == AST_FN || it->kind == AST_EXTERN_FN) && it->kids == 0) {
             ll_emit_fn(it);
         }
         i = i + 1;
@@ -556,6 +558,12 @@ void ll_emit_module(struct AstNode* prog) {
                 k = k + 1;
             }
         }
+        i = i + 1;
+    }
+    // Monomorphized generic instances, in instantiation order (deterministic).
+    i = 0;
+    while (i < ck_ngen_inst()) {
+        ll_emit_fn(ck_gen_inst(i));
         i = i + 1;
     }
 }

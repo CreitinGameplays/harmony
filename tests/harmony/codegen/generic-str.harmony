@@ -1,0 +1,12 @@
+// EXPECT: 42
+// A generic instance over `&str`: the mangled symbol must stay identifier-safe
+// (punctuation in the type display is folded to letters).
+fn first<T>(xs: &[T]) -> T {
+    return xs[0];
+}
+
+fn main() -> i32 {
+    let words: [&str; 2] = ["hi", "yo"];
+    let w = first<&str>(&words[..]);
+    return w.len() as i32 + 40;   // 2 + 40 = 42
+}

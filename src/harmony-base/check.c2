@@ -174,6 +174,14 @@ struct AstNode* ck_fn(int i) {
 
 int ck_nmeth(void) { return g_nmeth; }
 
+// Generic-function instances (monomorphized templates), emitted alongside the
+// source functions.
+int ck_ngen_inst(void) { return g_ngen_inst; }
+struct AstNode* ck_gen_inst(int i) {
+    if (i < 0 || i >= g_ngen_inst) { return 0; }
+    return g_gen_inst[i];
+}
+
 int ck_meth_fn(int i) {
     if (i < 0 || i >= g_nmeth) { return -1; }
     return g_meth_fn[i];
@@ -248,6 +256,18 @@ int ck_lookup_type(char* name) {
 // ---------------------------------------------------------------------------
 struct AstNode* g_fn_decl[1024];   // AST_FN nodes, in declaration order
 int g_nfn;
+
+// Generic-function templates and their monomorphized instances (§18). A
+// generic `fn` is *not* registered as a callable symbol; each call site with
+// explicit type arguments clones the template, substitutes the type nodes, and
+// registers a concrete instance (`id__i32`) as an ordinary function, which the
+// normal body-checking and emission then handle.
+struct AstNode* g_gen_decl[256];   // template AST_FN nodes
+char* g_gen_name[256];
+int g_ngen;
+
+struct AstNode* g_gen_inst[512];   // instantiated AST_FN clones (emitted too)
+int g_ngen_inst;
 
 int g_meth_ty[1024];               // receiver type id per method
 char* g_meth_name[1024];
@@ -516,8 +536,7 @@ int ck_check_format(struct AstNode* n, char* fname, struct AstList* args) {
 // ---------------------------------------------------------------------------
 // Function context (the body currently being checked).
 // ---------------------------------------------------------------------------
-int g_fn_ret_ty[64];   // return type id per nesting level
-int g_fn_idx[64];      // index into g_fn_decl
+int g_fn_ret_ty[64];   // return type id per nesting levelint g_fn_idx[64];      // index into g_fn_decl
 int g_fn_depth;
 int g_loop_depth;
 
@@ -575,6 +594,11 @@ int ck_resolve_type(struct AstNode* t) {
     }
     if (k == AST_TYPE_REF) {
         int inner;
+        // `&str` is the fat string-reference type (§5.3): `str` is unsized, so
+        // it only appears behind a reference and resolves to the pair itself.
+        if (t->a != 0 && t->a->kind == AST_TYPE_NAME && str_eq(t->a->sval, "str")) {
+            return ty_new(CTY_STRREF, "&str", TY_U8, 0);
+        }
         // `&[T]` is a slice reference: the fat (pointer, length) pair is the
         // value itself (§5.2), so no extra reference layer is added.
         if (t->a != 0 && t->a->kind == AST_TYPE_SLICE) {
@@ -745,13 +769,17 @@ void ck_register_const(struct AstNode* n) {
     ck_declare(n->sval, SK_CONST, ty, n, 0);
 }
 
-// Registers a function: its signature (params + return type) so calls from
-// any body resolve. The body is checked in pass 2.
-void ck_register_fn(struct AstNode* n) {
+// Registers a function node in the function table and resolves its signature.
+// `declare_name` is non-null to bind it as a callable symbol; an instance of a
+// generic template (a synthesized node) passes null and is registered only in
+// the function table, since it is reached through `ck_instantiate`.
+int ck_fn_register_node(struct AstNode* n) {
     int ret;
     int i;
+    int idx;
     struct AstList* params;
-    if (g_nfn >= 1024) { return; }
+    if (g_nfn >= 1024) { return -1; }
+    idx = g_nfn;
     g_fn_decl[g_nfn] = n;
     // The body node carries the function index for return-type lookup; an
     // extern declaration has no body (it lowers to a `declare`).
@@ -774,7 +802,227 @@ void ck_register_fn(struct AstNode* n) {
             i = i + 1;
         }
     }
-    ck_declare(n->sval, SK_FN, ret, n, 0);
+    return idx;
+}
+
+// Registers a function: its signature (params + return type) so calls from
+// any body resolve. The body is checked in pass 2. A generic function is
+// instead recorded as a *template* (its `T` has no type yet) and is not
+// callable by name — only instantiations are.
+void ck_register_fn(struct AstNode* n) {
+    // A generic `fn id<T>(...)` is a template (§18): record it, do not bind a
+    // symbol. Its `T` type nodes cannot resolve without concrete arguments.
+    if (n->kids != 0) {
+        if (g_ngen < 256) {
+            g_gen_decl[g_ngen] = n;
+            g_gen_name[g_ngen] = n->sval;
+            g_ngen = g_ngen + 1;
+        }
+        return;
+    }
+    {
+        int idx;
+        idx = ck_fn_register_node(n);
+        if (idx < 0) { return; }
+        ck_declare(n->sval, SK_FN, n->ty, n, 0);
+    }
+}
+
+// Looks up a generic template by name (index, or -1).
+int ck_find_template(char* name) {
+    int i;
+    i = 0;
+    while (i < g_ngen) {
+        if (str_eq(g_gen_name[i], name)) { return i; }
+        i = i + 1;
+    }
+    return -1;
+}
+
+// The i-th generic parameter name of a template (or 0). A bounded parameter
+// is stored as `T: ord`, so the bound suffix after `:` is trimmed here.
+char* ck_template_param(struct AstNode* tmpl, int i) {
+    char* s;
+    int c;
+    if (tmpl->kids == 0 || i >= tmpl->kids->len) { return 0; }
+    s = tmpl->kids->items[i]->sval;
+    if (s == 0) { return 0; }
+    c = str_rfind(s, ":");
+    if (c >= 0) { return str_prefix(s, c); }
+    return s;
+}
+
+// Substitutes generic parameter names in a type node with the concrete type
+// nodes for an instantiation. Walks `n` in place, replacing any
+// `AST_TYPE_NAME` whose name matches a template parameter with a clone of the
+// corresponding argument. Returns 1, or 0 when an unbound parameter remains.
+int ck_subst_type(struct AstNode* n, struct AstNode* tmpl, struct AstList* targs, int ntargs) {
+    int i;
+    if (n == 0) { return 1; }
+    if (n->kind == AST_TYPE_NAME) {
+        i = 0;
+        while (i < ntargs) {
+            char* pname;
+            pname = ck_template_param(tmpl, i);
+            if (pname != 0 && str_eq(n->sval, pname)) {
+                struct AstNode* arg;
+                arg = ast_clone(targs->items[i]);
+                // Copy the argument's shape into this node (it may be any
+                // type form: name, ref, array, slice, path with args).
+                n->kind = arg->kind;
+                n->file = arg->file;
+                n->start = arg->start;
+                n->end = arg->end;
+                n->ival = arg->ival;
+                n->sval = arg->sval;
+                n->a = arg->a;
+                n->b = arg->b;
+                n->c = arg->c;
+                n->kids = arg->kids;
+                n->kids2 = arg->kids2;
+                return 1;
+            }
+            i = i + 1;
+        }
+        return 1;   // a concrete (non-parameter) name survives
+    }
+    if (!ck_subst_type(n->a, tmpl, targs, ntargs)) { return 0; }
+    if (!ck_subst_type(n->b, tmpl, targs, ntargs)) { return 0; }
+    if (!ck_subst_type(n->c, tmpl, targs, ntargs)) { return 0; }
+    if (n->kids != 0) {
+        i = 0;
+        while (i < n->kids->len) {
+            if (!ck_subst_type(n->kids->items[i], tmpl, targs, ntargs)) { return 0; }
+            i = i + 1;
+        }
+    }
+    if (n->kids2 != 0) {
+        i = 0;
+        while (i < n->kids2->len) {
+            if (!ck_subst_type(n->kids2->items[i], tmpl, targs, ntargs)) { return 0; }
+            i = i + 1;
+        }
+    }
+    return 1;
+}
+
+// The mangled instance name: `id__i32`, `first__Rstr`, etc. Type displays can
+// contain characters that are illegal in a symbol (`&`, `[`, `]`, `;`), so
+// each is mapped to a distinct letter (never dropped, which could collide:
+// `&[i32]` and `i32` must stay apart).
+char* ck_mangle_ty(int ty) {
+    char* d;
+    int i;
+    lexbuf_reset();
+    d = ty_display(ty);
+    i = 0;
+    while (d[i] != 0) {
+        char c;
+        c = d[i];
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+            || (c >= '0' && c <= '9') || c == '_') {
+            lexbuf_push(c);
+        } else if (c == '&') { lexbuf_push('R'); }   // reference
+        else if (c == '[')  { lexbuf_push('A'); }    // array / slice
+        else if (c == ']')  { lexbuf_push('Z'); }
+        else if (c == ';')  { lexbuf_push('S'); }
+        else if (c != ' ')  { lexbuf_push('X'); }    // other punctuation (skip spaces)
+        i = i + 1;
+    }
+    return lexbuf_finish();
+}
+
+char* ck_instance_name(char* base, struct AstList* targs) {
+    int i;
+    int n;
+    char* parts[16];
+    n = targs->len;
+    if (n > 16) { n = 16; }
+    // Resolve every mangled type first: each builds in the shared scratch
+    // buffer, so they cannot be produced while the outer name is mid-build.
+    i = 0;
+    while (i < n) {
+        parts[i] = ck_mangle_ty(ck_resolve_type(targs->items[i]));
+        i = i + 1;
+    }
+    lexbuf_reset();
+    lexbuf_push_str(base);
+    i = 0;
+    while (i < n) {
+        lexbuf_push_str("__");
+        lexbuf_push_str(parts[i]);
+        i = i + 1;
+    }
+    return lexbuf_finish();
+}
+
+// Instantiates `name<args>`: clones the template, substitutes the parameters,
+// registers the instance, and returns its function index (or -1 after a stop).
+int ck_instantiate(struct AstNode* n, char* name, struct AstList* targs) {
+    int ti;
+    int ntargs;
+    struct AstNode* tmpl;
+    struct AstNode* inst;
+    char* iname;
+    int idx;
+    int i;
+
+    ti = ck_find_template(name);
+    if (ti < 0) {
+        ck_err_unknown_name(name, n, "no generic function of that name is in scope");
+        return -1;
+    }
+    tmpl = g_gen_decl[ti];
+    ntargs = 0;
+    if (tmpl->kids != 0) { ntargs = tmpl->kids->len; }
+    if (targs == 0 || targs->len != ntargs) {
+        ck_err_arity(n, name, ntargs, ast_list_len(targs));
+        return -1;
+    }
+    // Only type parameters are supported for now: a `life` parameter has
+    // ival bit 0 set and is rejected clearly instead of mis-substituted.
+    i = 0;
+    while (i < ntargs) {
+        if (tmpl->kids->items[i]->ival != 0) {
+            diag_stop("TYPE-01", "life parameters are not implemented yet",
+                      "Generic life parameters arrive with the borrow checker (M4).",
+                      diag_file(n->file), n->start, n->end);
+            return -1;
+        }
+        i = i + 1;
+    }
+
+    iname = ck_instance_name(name, targs);
+    // Reuse an existing instance of the same concrete signature.
+    i = 0;
+    while (i < g_nfn) {
+        if (str_eq(g_fn_decl[i]->sval, iname)) { return i; }
+        i = i + 1;
+    }
+    if (g_nfn >= 1024) { return -1; }
+
+    inst = ast_clone(tmpl);
+    inst->sval = iname;
+    if (!ck_subst_type(inst->a, tmpl, targs, ntargs)) { return -1; }
+    if (inst->kids2 != 0) {
+        i = 0;
+        while (i < inst->kids2->len) {
+            struct AstNode* p;
+            p = inst->kids2->items[i];
+            if (!ck_subst_type(p->a, tmpl, targs, ntargs)) { return -1; }
+            i = i + 1;
+        }
+    }
+    // Substitute inside the body too (nested generic calls, `let x: T = ...`).
+    if (!ck_subst_type(inst->b, tmpl, targs, ntargs)) { return -1; }
+
+    idx = ck_fn_register_node(inst);
+    if (idx < 0) { return -1; }
+    if (g_ngen_inst < 512) {
+        g_gen_inst[g_ngen_inst] = inst;
+        g_ngen_inst = g_ngen_inst + 1;
+    }
+    return idx;
 }
 
 void ck_register_extern(struct AstNode* n) {

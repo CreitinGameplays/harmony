@@ -46,6 +46,7 @@ char* ll_len_value(struct AstNode* n);
 void  ll_store_value(char* addr, int ty, char* v);
 char* ll_str_literal(char* s, int len);
 char* ll_format_call(struct AstNode* n, struct AstList* args);
+char* ll_emit_call_args(struct AstNode* n, char* symbol, int retty, struct AstList* args);
 char* ll_widen_index(char* idx);
 int   ty_array_len(int id);
 char* ll_int_convert(char* v, int from, int to);
@@ -1348,6 +1349,82 @@ char* ll_expr_heap(struct AstNode* n) {
     return raw;
 }
 
+// Emits a call to the already-mangled `symbol` with the evaluated arguments.
+// Shared by ordinary calls (which mangle the callee name) and monomorphized
+// generic calls (whose instance `sval` is already the symbol).
+char* ll_emit_call_args(struct AstNode* n, char* symbol, int retty, struct AstList* args) {
+    int i;
+    char* ret;
+    char* buf;
+    buf = arena_alloc(256);
+    buf[0] = 0;
+    if (args != 0) {
+        i = 0;
+        while (i < args->len) {
+            char* a;
+            int aty;
+            a = ll_expr(args->items[i]);
+            aty = g_expr_ty;
+            if (i > 0) { ll_str_append(buf, ", "); }
+            if (ll_is_aggregate(aty)) {
+                ll_str_append(buf, "ptr ");
+            } else {
+                ll_str_append(buf, ll_type_name(aty));
+                ll_str_append(buf, " ");
+            }
+            ll_str_append(buf, a);
+            i = i + 1;
+        }
+    }
+    if (retty == TY_UNIT || retty == TY_NEVER) {
+        ll_out_str("  call void @");
+        ll_out_str(symbol);
+        ll_out_str("(");
+        ll_out_str(buf);
+        ll_out_str(")\n");
+        if (retty == TY_NEVER) {
+            ll_out_str("  unreachable\n");
+            ll_set_terminated(1);
+        }
+        g_expr_ty = retty;
+        return "0";
+    }
+    if (ll_is_aggregate(retty)) {
+        char* sslot;
+        sslot = ll_new_reg();
+        ll_out_str("  ");
+        ll_out_str(sslot);
+        ll_out_str(" = alloca ");
+        ll_out_str(ll_type_name(retty));
+        ll_out_nl();
+        ll_out_str("  call void @");
+        ll_out_str(symbol);
+        ll_out_str("(ptr sret(");
+        ll_out_str(ll_type_name(retty));
+        ll_out_str(") ");
+        ll_out_str(sslot);
+        if (buf[0] != 0) {
+            ll_out_str(", ");
+            ll_out_str(buf);
+        }
+        ll_out_str(")\n");
+        g_expr_ty = retty;
+        return sslot;
+    }
+    ret = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(ret);
+    ll_out_str(" = call ");
+    ll_out_str(ll_type_name(retty));
+    ll_out_str(" @");
+    ll_out_str(symbol);
+    ll_out_str("(");
+    ll_out_str(buf);
+    ll_out_str(")\n");
+    g_expr_ty = retty;
+    return ret;
+}
+
 char* ll_expr_call(struct AstNode* n) {
     struct AstNode* callee;
     struct AstList* args;
@@ -1361,6 +1438,11 @@ char* ll_expr_call(struct AstNode* n) {
     args = n->kids;
 
     if (callee == 0) {
+        // Generic call `name<T>(args)`: the checker instantiated it and stored
+        // the concrete instance in `n->b`, whose `sval` is the instance name.
+        if (n->b != 0) {
+            return ll_emit_call_args(n, ll_call_symbol(n->b->sval), n->b->ty, args);
+        }
         g_expr_ty = retty;
         return ll_zero_of(retty);
     }

@@ -1,0 +1,33 @@
+// EXPECT: 42
+// Generic functions (§18, M1 monomorphization). A `fn id<T>(...)` template is
+// cloned per call site with explicit type arguments; each instance becomes a
+// concrete `name__Ty` function. Multiple instantiations of one template, a
+// bounded parameter, and a nested instantiation all coexist.
+fn id<T>(x: T) -> T {
+    return x;
+}
+
+fn max<T: ord>(a: T, b: T) -> T {
+    if (a < b) { return b; }
+    return a;
+}
+
+fn first<T>(xs: &[T]) -> T {
+    return xs[0];
+}
+
+fn twice<T>(x: T) -> T {
+    return id<T>(x);
+}
+
+fn main() -> i32 {
+    let a = max<i32>(3, 7);        // 7
+    let b = max<i32>(9, 2);        // 9
+    let c = id<i32>(40);           // 40
+    let d = id<u8>(2);             // 2
+    let e = twice<i32>(5);         // 5
+    let arr: [i32; 3] = [11, 22, 33];
+    let f = first<i32>(&arr[..]);  // 11
+    // 7 + 9 + 40 + 2 + 5 + 11 = 74; 74 - 32 = 42.
+    return a + b + c + (d as i32) + e + f - 32;
+}

@@ -158,6 +158,45 @@ struct AstList* ast_list_concat(struct AstList* a, struct AstList* b) {
 }
 
 // ---------------------------------------------------------------------------
+// Deep copy. Generic-function monomorphization clones a template body per
+// instantiation, and each clone gets its own `ty` fields as it is checked, so
+// a shallow copy would let two instantiations fight over one node. Copies
+// every child recursively; `ty` starts unset on the copy (the checker fills
+// it), while payload spans are preserved so diagnostics point at the source.
+// ---------------------------------------------------------------------------
+struct AstNode* ast_clone(struct AstNode* n) {
+    struct AstNode* c;
+    int i;
+    if (n == 0) { return 0; }
+    c = ast_node_new(n->kind);
+    c->file = n->file;
+    c->start = n->start;
+    c->end = n->end;
+    c->ival = n->ival;
+    c->sval = n->sval;
+    c->a = ast_clone(n->a);
+    c->b = ast_clone(n->b);
+    c->c = ast_clone(n->c);
+    if (n->kids != 0) {
+        c->kids = ast_list_new();
+        i = 0;
+        while (i < n->kids->len) {
+            ast_list_push(c->kids, ast_clone(n->kids->items[i]));
+            i = i + 1;
+        }
+    }
+    if (n->kids2 != 0) {
+        c->kids2 = ast_list_new();
+        i = 0;
+        while (i < n->kids2->len) {
+            ast_list_push(c->kids2, ast_clone(n->kids2->items[i]));
+            i = i + 1;
+        }
+    }
+    return c;
+}
+
+// ---------------------------------------------------------------------------
 // Small helpers used by the parser and diagnostics.
 // ---------------------------------------------------------------------------
 

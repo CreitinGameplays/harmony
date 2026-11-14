@@ -500,6 +500,20 @@ int ck_expr_call(struct AstNode* n) {
         }
         sym = ck_lookup(callee->sval);
         if (sym < 0 || g_sym_kind[sym] != SK_FN) {
+            // A generic function is not callable without explicit type
+            // arguments: point at the fix rather than "unknown name".
+            if (ck_find_template(callee->sval) >= 0) {
+                lexbuf_reset();
+                lexbuf_push_str("`");
+                lexbuf_push_str(callee->sval);
+                lexbuf_push_str("` is generic; give its type arguments, e.g. `");
+                lexbuf_push_str(callee->sval);
+                lexbuf_push_str("<i32>(...)`");
+                diag_stop("TYPE-01", "generic call needs type arguments",
+                          lexbuf_finish(),
+                          diag_file(callee->file), callee->start, callee->end);
+                return TY_INVALID;
+            }
             ck_err_unknown_name(callee->sval, callee, "did you mean to call a function?");
             return TY_INVALID;
         }
@@ -554,18 +568,50 @@ int ck_expr_call(struct AstNode* n) {
 }
 
 // Generic call `name<T, ...>(args)`. The parser stores the name in sval and
-// the type arguments in kids2 (`a` stays empty).
-//
-// M1 gap: monomorphization. The diagnostic is temporary; the rewrite replaces
-// this with instantiation of a concrete `name__T` function.
+// the type arguments in kids2 (`a` stays empty). We instantiate the template
+// (a concrete `name__T` function) and check the call against it.
 int ck_expr_generic_call(struct AstNode* n) {
-    lexbuf_reset();
-    lexbuf_push_str("generic calls (");
-    lexbuf_push_str(n->sval);
-    lexbuf_push_str("<...>) are not implemented yet");
-    diag_stop("TYPE-01", "generic calls are not implemented yet", lexbuf_finish(),
-              diag_file(n->file), n->start, n->end);
-    return TY_INVALID;
+    int idx;
+    struct AstNode* inst;
+    struct AstList* params;
+    struct AstList* args;
+    int i;
+    int np;
+    int na;
+
+    idx = ck_instantiate(n, n->sval, n->kids2);
+    if (idx < 0) { return TY_INVALID; }
+    inst = g_fn_decl[idx];
+    // The instance is now an ordinary function; record it on the call node so
+    // the backend can call the mangled symbol directly.
+    n->b = inst;
+    n->ty = inst->ty;
+
+    args = n->kids;
+    params = inst->kids2;
+    np = 0;
+    na = 0;
+    if (params != 0) { np = params->len; }
+    if (args != 0) { na = args->len; }
+    // Skip a `self` receiver that an instance would carry (none today for a
+    // free generic function, so np == na).
+    if (np != na) {
+        ck_err_arity(n, n->sval, np, na);
+        return inst->ty;
+    }
+    i = 0;
+    while (i < na) {
+        int at;
+        at = ck_expr(args->items[i]);
+        if (at != TY_INVALID && params->items[i]->ty != TY_INVALID
+            && !ck_coercible(params->items[i]->ty, at)) {
+            ck_err_type_mismatch(args->items[i], params->items[i]->ty, at,
+                                 "argument");
+        }
+        ck_stamp_lits(args->items[i], params->items[i]->ty);
+        i = i + 1;
+    }
+    return inst->ty;
 }
 
 // `recv.name(args)`: find the method on the receiver's type and check args.
@@ -583,8 +629,14 @@ int ck_expr_method_call(struct AstNode* n, struct AstNode* callee, struct AstLis
     if (str_eq(callee->sval, "len") && (args == 0 || args->len == 0)) {
         int lt;
         lt = recv;
-        while (ty_is_ref(lt) && ty_kind(lt) != CTY_SLICE) { lt = ty_elem(lt); }
-        if (ty_is_array(lt) || ty_kind(lt) == CTY_SLICE) {
+        // A slice or `&str` is the fat pair itself (its length is the second
+        // half); a plain reference to an array has to be unwrapped first.
+        if (ty_kind(lt) == CTY_SLICE || ty_kind(lt) == CTY_STRREF) {
+            n->ival = 1;
+            return TY_USIZE;
+        }
+        while (ty_is_ref(lt)) { lt = ty_elem(lt); }
+        if (ty_is_array(lt)) {
             n->ival = 1;
             return TY_USIZE;
         }

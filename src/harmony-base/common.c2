@@ -522,6 +522,7 @@ const int CTY_FLOAT_LIT = 208;// untyped float literal (adapts)
 const int CTY_PTR = 209;     // raw T (unchecked; M6)
 const int CTY_MUTPTR = 210;  // raw mut T
 const int CTY_SLICE = 211;   // [T] fat pointer { ptr, len }
+const int CTY_GENPARAM = 212;// a generic parameter placeholder (`T`)
 
 // Registers the user types of a program (structs/enums) from their AST decls.
 // Called once before checking bodies. Implemented in check.c2 (it needs the
@@ -558,6 +559,7 @@ int ty_is_heap(int id);          // heap box
 int ty_is_array(int id);
 int ty_is_nominal(int id);       // struct / enum
 int ty_is_ptr(int id);           // raw T / raw mut T (M6)
+int ty_is_genparam(int id);      // a generic parameter placeholder (`T`)
 int ty_bit_width(int id);        // 8/16/32/64/1, 0 for non-scalars
 int ty_is_copy(int id);          // §5.6 (requires the copy flags below)
 int ty_eq(int a, int b);         // structural equality (names for nominal)
@@ -595,6 +597,7 @@ int ck_lookup(char* name);                 // innermost binding of a name
 // Resolves a *type* name to its type id (TY_INVALID when unknown).
 int ck_lookup_type(char* name);
 int ck_coercible(int want, int got);       // assignment/arg compatibility
+int ck_find_template(char* name);          // generic template index, or -1
 int ck_check_format(struct AstNode* n, char* fname, struct AstList* args);
 int ck_fmt_displayable(int ty);            // can `{}` render this type?
 void ck_err_type_mismatch(struct AstNode* at, int want, int got, char* what);
@@ -641,6 +644,8 @@ int   ll_str_len(char* s);
 // Accessors keep the table layouts private to check.c2.
 int ck_nfn(void);                          // number of registered functions
 struct AstNode* ck_fn(int i);              // AST_FN node by index
+int ck_ngen_inst(void);                    // monomorphized generic instances
+struct AstNode* ck_gen_inst(int i);        // instance AST_FN by index
 int ck_nmeth(void);                        // number of registered methods
 int ck_meth_fn(int i);                     // method i's function index
 char* ck_meth_name(int i);                 // method i's name
@@ -670,6 +675,7 @@ void ast_list_push(struct AstList* l, struct AstNode* n);
 int ast_list_len(struct AstList* l);
 struct AstNode* ast_list_get(struct AstList* l, int i);
 struct AstList* ast_list_concat(struct AstList* a, struct AstList* b);
+struct AstNode* ast_clone(struct AstNode* n);
 char* ast_kind_name(int kind);
 int ast_is_item(int kind);
 int ast_is_stmt(int kind);

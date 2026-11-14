@@ -1,0 +1,9 @@
+// WANT: TYPE-03
+// The number of type arguments must match the template's parameters (§18).
+fn id<T>(x: T) -> T {
+    return x;
+}
+
+fn main() -> i32 {
+    return id<i32, u8>(1);
+}

@@ -195,8 +195,17 @@ These c2x-seed defects were found and fixed while bootstrapping (see
       The lowering calls the runtime's `lc_*` hooks with the width/precision/
       zero-pad each placeholder carries (`{}`, `{:5}`, `{:.2}`, `{:05}`,
       `{{`/`}}`); `&str`/`char`/`bool`/floats display, `{:x}` prints hex.
-- [ ] Remaining M1 gaps: generic monomorphization and `noalias`
-      on `&mut [T]` slices (mutability of the fat pair is not tracked yet).
+- [x] Generic monomorphization (§18): a `fn id<T>(...)` template is recorded
+      (not callable by name); `id<i32>(x)` clones the template, substitutes the
+      type parameters (including inside the body), and registers a concrete
+      `name__Ty` instance that the normal checker/emitter handle. Instances
+      dedup by signature, bounded params (`<T: ord>`) work, and nested
+      explicit instantiations (`id<T>` inside `twice<T>`) resolve. Instance
+      symbols fold type punctuation to identifier-safe letters. `&str` now
+      resolves as a type (`str` behind a reference is the fat pair).
+- [ ] Remaining M1 gaps: inferred generic calls (`id(x)` without `<T>`, needs
+      type inference) and `noalias` on `&mut [T]` slices (mutability of the
+      fat pair is not tracked yet).
 
 ### M2 — Ownership: moves + drop elaboration (§9, §19.7)
 

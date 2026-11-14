@@ -271,6 +271,8 @@ int ty_is_ptr(int id) {
     return k == CTY_PTR || k == CTY_MUTPTR;
 }
 
+int ty_is_genparam(int id) { return ty_kind(id) == CTY_GENPARAM; }
+
 // The element/pointee of a composite (0 for primitives).
 int ty_elem(int id) {
     if (id <= 0 || id >= g_ntypes) { return 0; }

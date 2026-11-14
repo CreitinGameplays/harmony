@@ -1,0 +1,5 @@
+// WANT: NAME-01
+// A generic call must name a declared template (§18).
+fn main() -> i32 {
+    return nope<i32>(1);
+}

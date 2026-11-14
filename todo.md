@@ -181,12 +181,16 @@ These c2x-seed defects were found and fixed while bootstrapping (see
 - [x] Quiet toolchain output: clang's stderr is captured to a log; a failed
       IR compile prints one summary + the first error (`-v` replays the whole
       log) instead of clang's full diagnostic block.
+- [x] Stack-overflow guard (§14.2): the runtime installs a SIGSEGV handler on
+      an alternate signal stack at startup, so runaway recursion traps
+      `T-STACK` (exit 70) instead of crashing. `run`/`build` now also report
+      a child killed by a signal as `128 + signo`, so a crash never looks
+      like success.
 - [x] Untyped literals adapt at every coercion site (§5.9) and the adapted
       type is stamped on the node, so `let x: i64 = 1`, `f(1)` with an i64
       parameter, `return 0` in an i64 function, and `x + 1` lower correctly.
-- [ ] Remaining M1 gaps: generic monomorphization, `FMT-01`, the
-      stack-overflow guard (`T-STACK`), and `noalias` on `&mut [T]`
-      slices (mutability of the fat pair is not tracked yet).
+- [ ] Remaining M1 gaps: generic monomorphization, `FMT-01`, and `noalias`
+      on `&mut [T]` slices (mutability of the fat pair is not tracked yet).
 
 ### M2 — Ownership: moves + drop elaboration (§9, §19.7)
 

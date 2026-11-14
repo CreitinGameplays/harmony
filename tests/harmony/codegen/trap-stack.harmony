@@ -1,0 +1,11 @@
+// EXPECT-TRAP: T-STACK
+// Runaway recursion must trap T-STACK, not crash (§14.2). The recursion is
+// non-tail, so it cannot be optimized into a loop: it exhausts the stack and
+// the runtime's guard handler turns the guard-page fault into a trap.
+fn boom(n: i32) -> i32 {
+    return boom(n + 1) + n;
+}
+
+fn main() -> i32 {
+    return boom(0);
+}

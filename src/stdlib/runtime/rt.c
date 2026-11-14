@@ -13,6 +13,8 @@
 //   lc_check_index    bounds check for `a[i]` (T-INDEX).
 //   lc_check_slice    bounds check for `&a[lo..hi]` (T-SLICE).
 //   lc_alloc          bump/heap allocation that traps on OOM (T-OOM).
+//   stack guard       a SIGSEGV handler on an alternate stack that turns
+//                     stack exhaustion into a T-STACK trap (§14.2).
 //
 // Everything is deterministic and allocation-free on the hot path.
 
@@ -23,7 +25,15 @@ typedef long          isize_t;
 #define SYS_read   0
 #define SYS_write  1
 #define SYS_mmap   9
+#define SYS_rt_sigaction 13
 #define SYS_exit   60
+#define SYS_sigaltstack 131
+
+// The signal we guard against, and the flag bits it needs.
+#define SIGSEGV    11
+#define SA_ONSTACK 0x08000000
+#define SA_RESTORER 0x04000000
+#define ALT_STACK_SIZE (64 * 1024)
 
 static long sys(long n, long a, long b, long c) {
     long ret;
@@ -33,6 +43,22 @@ static long sys(long n, long a, long b, long c) {
                      : "rcx", "r11", "memory");
     return ret;
 }
+
+// The kernel's rt_sigaction ABI on x86-64: handler, flags, restorer, mask.
+struct ksigaction {
+    void (*handler)(int);
+    unsigned long flags;
+    void (*restorer)(void);
+    unsigned long mask;
+};
+
+// The kernel's stack_t for sigaltstack.
+struct kstack {
+    void *ss_sp;
+    int   ss_flags;
+    unsigned long ss_size;
+};
+
 
 // mmap(NULL, len, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) —
 // six arguments, so the 4th/5th/6th go in r10/r8/r9.
@@ -44,6 +70,17 @@ static long sys_mmap(long len) {
     __asm__ volatile("syscall"
                      : "=a"(ret)
                      : "a"(9), "D"(0), "S"(len), "d"(3), "r"(r10), "r"(r8), "r"(r9)
+                     : "rcx", "r11", "memory");
+    return ret;
+}
+
+// A four-argument syscall (rt_sigaction needs the mask size in r10).
+static long sys4(long n, long a, long b, long c, long d) {
+    long ret;
+    register long r10 __asm__("r10") = d;
+    __asm__ volatile("syscall"
+                     : "=a"(ret)
+                     : "a"(n), "D"(a), "S"(b), "d"(c), "r"(r10)
                      : "rcx", "r11", "memory");
     return ret;
 }
@@ -211,6 +248,62 @@ long lc_syscall3(long n, long a, long b, long c) {
 }
 
 // ---------------------------------------------------------------------------
+// Stack-overflow guard (§14.2, T-STACK). A recursive runaway would otherwise
+// hit the guard page and die with SIGSEGV. We install a handler on an
+// alternate signal stack, and where the kernel's SA_RESTORER needs a
+// `sigreturn` trampoline we provide the canonical `mov rax, 15; syscall`
+// sequence. The handler then turns the fault into a normal `T-STACK` trap
+// (exit 70), which is what the language promises.
+//
+// A thread that never returns runs out of stack where the kernel placed the
+// guard; the handler only prints a fixed message and exits, so it needs no
+// ucontext decoding.
+// ---------------------------------------------------------------------------
+static char alt_stack[ALT_STACK_SIZE];
+
+// The restorer the kernel expects for SA_RESTORER on x86-64: invoke
+// `rt_sigreturn` (syscall 15).
+static void sigrestorer(void) {
+    __asm__ volatile("mov $15, %rax\n\tsyscall");
+}
+
+static void segv_handler(int sig) {
+    (void) sig;
+    // The main stack is gone; write through the trap formatting used by
+    // lc_trap's message, then exit 70 (§14.3).
+    out_flush();
+    sys(SYS_write, 2, (long) "TRAP  T-STACK  stack exhausted\n", 31);
+    sys(SYS_exit, 70, 0, 0);
+    for (;;) { }
+}
+
+// Installs the handler. Returns 0 on success.
+static int install_stack_guard(void) {
+    struct kstack ss;
+    struct ksigaction sa;
+    long r;
+
+    ss.ss_sp = alt_stack;
+    ss.ss_flags = 0;
+    ss.ss_size = ALT_STACK_SIZE;
+    r = sys(SYS_sigaltstack, (long) &ss, 0, 0);
+    if (r < 0) { return -1; }
+
+    // SA_ONSTACK so the handler runs on alt_stack, never on the exhausted
+    // main stack; SA_RESTORER names the sigreturn trampoline (required for a
+    // hand-built sigaction on x86-64).
+    sa.handler = segv_handler;
+    sa.flags = SA_ONSTACK | SA_RESTORER;
+    sa.restorer = sigrestorer;
+    sa.mask = 0;
+    // rt_sigaction(sig, &sa, old, sigset_size): the kernel requires the last
+    // argument to be 8 on x86-64.
+    r = sys4(SYS_rt_sigaction, SIGSEGV, (long) &sa, 0, 8);
+    if (r < 0) { return -1; }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
 // Entry point. The program's `main` is emitted by the compiler as
 // `harmony_main` (an i32 return); `_start` calls it and exits with the low
 // byte as the status, matching §6.3.
@@ -218,7 +311,9 @@ long lc_syscall3(long n, long a, long b, long c) {
 extern int harmony_main(void);
 
 __attribute__((noreturn)) void _start(void) {
-    int code = harmony_main();
+    int code;
+    install_stack_guard();
+    code = harmony_main();
     out_flush();
     sys(SYS_exit, code & 0xff, 0, 0);
     for (;;) { }

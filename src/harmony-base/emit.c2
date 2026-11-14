@@ -75,6 +75,10 @@ int sys_spawn_log(char** argv, char* logpath) {
     // Wait for this specific child.
     w = syscall_wait4(pid, &status, 0, 0);
     if (w < 0) { return -1; }
+    // WIFSIGNALED: the low 7 bits hold the signal, and there is no exit
+    // status. Report it as 128+signal so a caller sees an abnormal death
+    // (a `run` that crashed must not look like a success).
+    if ((status & 0x7f) != 0) { return 128 + (status & 0x7f); }
     // exit status is in bits 8..15 when WIFEXITED.
     return (status >> 8) & 0xff;
 }

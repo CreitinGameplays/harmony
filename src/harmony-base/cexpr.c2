@@ -29,6 +29,8 @@ int ck_expr_generic_call(struct AstNode* n);
 int ck_expr_method_call(struct AstNode* n, struct AstNode* callee, struct AstList* args);
 int ck_expr_assoc_call(struct AstNode* n, struct AstNode* callee, struct AstList* args);
 int ck_enum_construct(struct AstNode* n, struct AstNode* callee, struct AstList* args);
+int ck_enum_construct_unqualified(struct AstNode* n, struct AstList* args);
+int ck_enum_construct_ty(struct AstNode* n, int ty, char* vname, struct AstList* args);
 int ck_argc(struct AstList* args);
 int ck_expr_as(struct AstNode* n);
 int ck_expr_struct_init(struct AstNode* n);
@@ -47,6 +49,11 @@ int ck_coercible(int want, int got) {
     // `never` (a `trap`/`exit`/`unreachable` expression) coerces to any type
     // (§5.1): control never reaches the point where the value is used.
     if (got == TY_NEVER) { return 1; }
+    // A `Heap<T>` borrows to `&T` (§12.2): the box owns the value, so a
+    // shared reference to it is always sound.
+    if (ty_is_thin_ref(want) && ty_is_heap(got)) {
+        if (ty_eq(ty_elem(want), ty_elem(got))) { return 1; }
+    }
     // Widening integer conversions are explicit-only (§5.8): no implicit
     // widening, no implicit sign change. Only the untyped-literal rules above
     // (in ty_eq) adapt.
@@ -488,6 +495,13 @@ int ck_expr_call(struct AstNode* n) {
             if (ev != TY_INVALID) { return ev; }
             return ck_expr_assoc_call(n, callee, args);
         }
+        // An unqualified variant construction `Has(x)` (§6.5): resolve against
+        // every in-scope enum before treating it as an ordinary function.
+        {
+            int ev;
+            ev = ck_enum_construct_unqualified(n, args);
+            if (ev != TY_INVALID) { return ev; }
+        }
         // The print family is recognized by the compiler only for its format
         // string (§15.1, §19.8.6): there are no variadics, so the placeholder
         // count and argument types are checked here (FMT-01). `n->ival` marks
@@ -721,27 +735,16 @@ int ck_expr_method_call(struct AstNode* n, struct AstNode* callee, struct AstLis
 
 // `Type::method(args)`: an associated function (a method with no `self`).
 // The parser flattens the path to "Type::method", so split on the last `::`.
-// `Enum::Variant(payload...)` constructs an enum value (§6.5). The tag is the
-// variant index; the payload fields are the variant's members. Returns
-// TY_INVALID (and leaves no diagnostic) when the name is not an enum variant,
-// so the caller can fall through to a type associated-function call.
-int ck_enum_construct(struct AstNode* n, struct AstNode* callee, struct AstList* args) {
-    int cut;
-    char* ename;
-    char* vname;
-    int sym;
-    int ty;
+// The shared construction core: `ty` is the enum, `vname` the variant. Checks
+// payload arity and argument types, marks the call node, and returns the enum
+// type. Returns TY_INVALID without a diagnostic when the variant does not
+// exist.
+int ck_enum_construct_ty(struct AstNode* n, int ty, char* vname, struct AstList* args) {
     int vi;
     int pid;
     int i;
     int np;
     int na;
-    cut = str_rfind(callee->sval, "::");
-    ename = str_prefix(callee->sval, cut);
-    vname = callee->sval + cut + 2;
-    sym = ck_lookup(ename);
-    if (sym < 0 || g_sym_kind[sym] != SK_TYPE) { return TY_INVALID; }
-    ty = g_sym_ty[sym];
     if (ty_kind(ty) != CTY_ENUM) { return TY_INVALID; }
     vi = ty_find_member(ty, vname);
     if (vi < 0) { return TY_INVALID; }
@@ -750,7 +753,7 @@ int ck_enum_construct(struct AstNode* n, struct AstNode* callee, struct AstList*
     np = ty_member_count(pid);
     na = ck_argc(args);
     if (np != na) {
-        ck_err_arity(n, callee->sval, np, na);
+        ck_err_arity(n, vname, np, na);
         return ty;
     }
     i = 0;
@@ -772,6 +775,49 @@ int ck_enum_construct(struct AstNode* n, struct AstNode* callee, struct AstList*
     n->ival = 1000 + vi;
     n->ty = ty;
     return ty;
+}
+
+// `Enum::Variant(payload...)` constructs an enum value (§6.5). The tag is the
+// variant index; the payload fields are the variant's members. Returns
+// TY_INVALID (and leaves no diagnostic) when the name is not an enum variant,
+// so the caller can fall through to a type associated-function call.
+int ck_enum_construct(struct AstNode* n, struct AstNode* callee, struct AstList* args) {
+    int cut;
+    char* ename;
+    char* vname;
+    int sym;
+    int ty;
+    cut = str_rfind(callee->sval, "::");
+    ename = str_prefix(callee->sval, cut);
+    vname = callee->sval + cut + 2;
+    sym = ck_lookup(ename);
+    if (sym < 0 || g_sym_kind[sym] != SK_TYPE) { return TY_INVALID; }
+    ty = g_sym_ty[sym];
+    return ck_enum_construct_ty(n, ty, vname, args);
+}
+
+// An unqualified `Variant(payload...)` call (§6.5): resolve the variant
+// against every in-scope enum, rejecting ambiguity. Returns TY_INVALID (no
+// diagnostic) when no enum defines the name.
+int ck_enum_construct_unqualified(struct AstNode* n, struct AstList* args) {
+    int i;
+    int found;
+    int fty;
+    found = 0;
+    fty = TY_INVALID;
+    i = 0;
+    while (i < g_nsyms) {
+        if (g_sym_kind[i] == SK_TYPE && ty_kind(g_sym_ty[i]) == CTY_ENUM) {
+            if (ty_find_member(g_sym_ty[i], n->a->sval) >= 0) {
+                if (found) { return TY_INVALID; }   // ambiguous
+                found = 1;
+                fty = g_sym_ty[i];
+            }
+        }
+        i = i + 1;
+    }
+    if (!found) { return TY_INVALID; }
+    return ck_enum_construct_ty(n, fty, n->a->sval, args);
 }
 
 int ck_expr_assoc_call(struct AstNode* n, struct AstNode* callee, struct AstList* args) {

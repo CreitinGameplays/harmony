@@ -85,6 +85,11 @@ binary is `harmony-base` (the spec's `lc`).
   - **Slices** (`&[T]`): a fat `{ ptr, i64 }` pair; `&a[lo..hi]`/`&a[..]`/
     `&a[..hi]`/`&a[lo..]`/`&a[lo..=hi]`, `lc_check_slice` (T-SLICE), runtime
     length indexing, `.len()`, re-slicing, by-value store/return.
+  - **Recursive `Heap<T>` trees** (§12): `Heap<T>` resolves in type position;
+    `heap(x)` memcpy's aggregate values into the allocation; switching through
+    `&`/`Heap` unwraps to the pointee; `Heap<T>` coerces to `&T` at call
+    sites; unqualified variant construction `Has(x)` resolves against
+    in-scope enums (ambiguity rejected).
   - **`extern fn` FFI** through `unchecked` (UNCK-01/02/05); `lc_syscall3`
     proves the C ABI without a libc.
   - **`FMT-01`** (§15.1): `print`/`println`/`eprintln` format strings parsed
@@ -98,7 +103,7 @@ binary is `harmony-base` (the spec's `lc`).
   - Quiet toolchain: clang stderr captured to a log; one-line summary + first
     error by default, `-v` replays the whole log.
   - Untyped literals adapt at every coercion site (§5.9), stamped on the node.
-  - Tests: codegen.sh 36, error-handling.sh 17, checker.sh 24, parser.sh 53,
+  - Tests: codegen.sh 47, error-handling.sh 23, checker.sh 24, parser.sh 53,
     lexer.sh 21, golden.sh 9, run.sh 28, fuzz.sh 24, determinism.sh 4.
 
 - [x] **M5 (driver part) — diagnostic model + renderers.**

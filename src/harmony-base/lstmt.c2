@@ -421,6 +421,12 @@ void ll_stmt_switch(struct AstNode* n) {
 
     st = n->a->ty;
     subj = ll_expr(n->a);
+    // Switching through a reference or heap box switches on the pointee
+    // (§10.1). `ll_expr` of a reference/box value already yields the pointee's
+    // address (a loaded pointer), so only the type needs unwrapping.
+    while (ty_is_ref(st) || ty_is_heap(st)) {
+        st = ty_elem(st);
+    }
     if (ll_is_aggregate(st)) {
         // An aggregate subject arrives as an address (the callee's sret slot
         // or its own alloca) — spill the *pointer*, not the value.

@@ -581,6 +581,18 @@ int ck_resolve_type(struct AstNode* t) {
     k = t->kind;
     if (k == AST_TYPE_NAME) {
         int sym;
+        // `Heap<T>` is a §12 compiler-recognized type (the `heap(x)` form is
+        // its constructor): resolve it to the box type directly.
+        if (str_eq(t->sval, "Heap")) {
+            int inner;
+            if (t->kids == 0 || t->kids->len == 0) {
+                ck_err_unknown_type(t->sval, t);
+                return TY_INVALID;
+            }
+            inner = ck_resolve_type(t->kids->items[0]);
+            if (inner == TY_INVALID) { return TY_INVALID; }
+            return ty_new(CTY_HEAP, ck_ref_name("heap", inner), inner, 0);
+        }
         sym = ck_lookup(t->sval);
         if (sym < 0) {
             ck_err_unknown_type(t->sval, t);
@@ -1459,6 +1471,10 @@ void ck_stmt_switch(struct AstNode* n) {
     int seen[64];      // variant indices already covered
     int nseen;
     st = ck_expr(n->a);
+    // Switching through a reference or heap box switches on the pointee
+    // (§10.1: a place reached through `&`/`Heap`); the patterns see the
+    // underlying enum.
+    while (ty_is_ref(st) || ty_is_heap(st)) { st = ty_elem(st); }
     n->ty = TY_UNIT;
     arms = n->kids;
     if (arms == 0) { return; }

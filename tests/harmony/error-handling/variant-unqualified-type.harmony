@@ -1,0 +1,11 @@
+// WANT: TYPE-01
+// An unqualified variant construction is checked like a qualified one; the
+// payload types must match (§6.5).
+enum Expr {
+    Lit(i32),
+}
+
+fn main() -> i32 {
+    let e = Lit("oops");
+    return 0;
+}

@@ -1,0 +1,33 @@
+// EXPECT: 42
+// Recursive data structures over `Heap<T>` (§12.2/§12.3): an expression tree
+// whose branches are boxes, switched through a reference, with unqualified
+// variant construction and a generic helper.
+enum Expr {
+    Lit(i32),
+    Neg(Heap<Expr>),
+    Add(Heap<Expr>, Heap<Expr>),
+}
+
+fn eval(e: &Expr) -> i32 {
+    switch (e) {
+        case Lit(n):     { return n; }
+        case Neg(inner): { return 0 - eval(inner); }
+        case Add(l, r):  { return eval(l) + eval(r); }
+    }
+    return 0;
+}
+
+fn max<T: ord>(a: T, b: T) -> T {
+    if (a < b) { return b; }
+    return a;
+}
+
+fn main() -> i32 {
+    // -(4 + 5) + 6 = -3
+    let a = Add(heap(Lit(4)), heap(Lit(5)));
+    let n = Neg(heap(a));
+    let root = Add(heap(n), heap(Lit(6)));
+    let v = eval(&root);          // -9 + 6 = -3
+    let m = max<i32>(v, 42);      // 42
+    return m;
+}

@@ -2545,7 +2545,7 @@ generates `rt.h` for the C backend).
 | `&T`, `&mut T` | `T*`, `noalias` + (for `&mut`) `nocapture` where the signature proves it; never null by construction |
 | `&[T]`, `&str` | `{ T*, i64 }` (pointer + length) |
 | `[T; N]` | `[N x T]` (copies by value) |
-| `struct` / `enum` | named `%struct` types; enums are `{ i32 tag, [payload] }` with the payload unioned as a fields-of-max-size struct (no `undefined` type-punning; the tag picks the interpretation) |
+| `struct` / `enum` | named `%struct` types; an enum is `{ i32 tag, [4 x i8], [payload x i8] }` — the 8-byte tag region puts the payload at byte offset 8, matching `ty_size` (the tag picks the interpretation) |
 | `Heap<T>` | the library `Heap` struct is `{ ptr }`; `heap(x)` = `T*` from `lc_alloc(sizeof(T))` (constructed in place when `x` is a literal); freed by drop glue |
 | `Maybe<Heap<T>>`, `Maybe<&T>` | a bare pointer, `null` = `Empty` (niche optimization) |
 | `a[i]` | `call lc_check_index(i, N, loc)` before the GEP; direct GEP in `unchecked` |

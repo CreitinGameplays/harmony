@@ -51,6 +51,8 @@ char* ll_builtin_trap(struct AstNode* n, struct AstList* args);
 char* ll_builtin_assert(struct AstNode* n, struct AstList* args);
 char* ll_builtin_unreachable(struct AstNode* n, struct AstList* args);
 char* ll_builtin_exit(struct AstNode* n, struct AstList* args);
+char* ll_enum_construct(struct AstNode* n, int ty, int vi, struct AstList* args);
+char* ll_offset_addr(char* base, int byteoff);
 char* ll_str_arg(struct AstNode* a);
 void  ll_call_noreturn(char* symbol, char* arglist);
 void  ll_call_void(char* symbol, char* arglist);
@@ -1130,6 +1132,65 @@ char* ll_builtin_exit(struct AstNode* n, struct AstList* args) {
     return "0";
 }
 
+// `Enum::Variant(payload...)` (§6.5): allocate the `{ i32 tag, [N x i8] }`
+// aggregate, zero it, store the tag, then store each payload field at its
+// offset within the payload area (8 bytes in, since the enum is 8-aligned).
+char* ll_enum_construct(struct AstNode* n, int ty, int vi, struct AstList* args) {
+    int pid;
+    char* slot;
+    char* tp;
+    int i;
+    pid = ty_member_type(ty, vi);
+    slot = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(slot);
+    ll_out_str(" = alloca ");
+    ll_out_str(ll_type_name(ty));
+    ll_out_nl();
+    ll_out_str("  store ");
+    ll_out_str(ll_type_name(ty));
+    ll_out_str(" zeroinitializer, ptr ");
+    ll_out_str(slot);
+    ll_out_nl();
+    tp = ll_struct_gep(slot, ty, 0);
+    ll_out_str("  store i32 ");
+    ll_out_int(vi);
+    ll_out_str(", ptr ");
+    ll_out_str(tp);
+    ll_out_nl();
+    // Payload: a byte offset into the enum, starting past the 8-byte header.
+    if (args != 0) {
+        i = 0;
+        while (i < args->len) {
+            int ft;
+            char* v;
+            char* addr;
+            ft = ty_member_type(pid, i);
+            v = ll_expr(args->items[i]);
+            addr = ll_offset_addr(slot, 8 + ty_field_offset(pid, i));
+            ll_store_value(addr, ft, v);
+            i = i + 1;
+        }
+    }
+    g_expr_ty = ty;
+    return slot;
+}
+
+// The address of `base + byteoff` as an i8 pointer (for enum payloads).
+char* ll_offset_addr(char* base, int byteoff) {
+    char* r;
+    if (byteoff == 0) { return base; }
+    r = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(r);
+    ll_out_str(" = getelementptr inbounds i8, ptr ");
+    ll_out_str(base);
+    ll_out_str(", i64 ");
+    ll_out_int(byteoff);
+    ll_out_nl();
+    return r;
+}
+
 // Kept for callers that only have an i32 index; same as ll_index_to_i64.
 char* ll_widen_index(char* idx) {
     return ll_index_to_i64(idx);
@@ -1562,6 +1623,13 @@ char* ll_expr_call(struct AstNode* n) {
         // Method call `recv.name(args)`: find the method on the receiver's
         // type and pass the receiver as the implicit first argument.
         return ll_method_call(n, callee, args, retty);
+    }
+    // `Enum::Variant(payload)` (§6.5): the checker marked the node with
+    // `n->ival >= 1000` (variant index) and `n->ty` is the enum; re-resolve the
+    // enum type from the callee path and build the tagged aggregate.
+    if (n->ival >= 1000 && callee->kind == AST_PATH
+        && ty_kind(retty) == CTY_ENUM) {
+        return ll_enum_construct(n, retty, n->ival - 1000, args);
     }
     // `print`/`println`/`eprintln` (§15.1): the checker marked the builtin in
     // `n->ival`; lower to the runtime's `lc_*` formatting hooks.

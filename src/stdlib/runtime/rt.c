@@ -557,6 +557,10 @@ extern int harmony_main(void);
 
 __attribute__((noreturn)) void _start(void) {
     int code;
+    // The kernel enters us 16-byte aligned; the SysV ABI expects a callee to
+    // see `%rsp % 16 == 8` (a return address was pushed). Round `%rsp` down to
+    // 16 before the call so a `movaps` in `harmony_main` never faults.
+    __asm__ volatile("and $-16, %rsp");
     install_stack_guard();
     code = harmony_main();
     out_flush();

@@ -79,7 +79,9 @@ binary is `harmony-base` (the spec's `lc`).
   - Aggregates (struct/enum/array) lowered as addresses; by-value params/
     returns via `sret`; indexing + `lc_check_index` (T-INDEX); methods and
     associated calls (`Type__method`); casts (`as`); `heap(x)` + `lc_alloc`;
-    `&T`/`&mut T` (`noalias` on `&mut`); `switch` on scalars and enums.
+    `&T`/`&mut T` (`noalias` on `&mut`); `switch` on scalars and enums;
+    payload enums (`Enum::Variant(args)` construction and `case V(w, h)`
+    payload binding, §6.4/§6.5; payload at byte offset 8, tag region 8 bytes).
   - **Slices** (`&[T]`): a fat `{ ptr, i64 }` pair; `&a[lo..hi]`/`&a[..]`/
     `&a[..hi]`/`&a[lo..]`/`&a[lo..=hi]`, `lc_check_slice` (T-SLICE), runtime
     length indexing, `.len()`, re-slicing, by-value store/return.

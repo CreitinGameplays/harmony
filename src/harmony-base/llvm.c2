@@ -600,10 +600,13 @@ void ll_emit_type_def(int id) {
             i = i + 1;
         }
         if (maxpay == 0) { maxpay = 1; }
+        // The tag region occupies 8 bytes (i32 tag + 4 padding) so the payload
+        // starts at byte offset 8, matching `ty_size` (align_up(4,8) +
+        // align_up(maxpay,8)). The payload is rounded up to an 8-byte stride.
         ll_out_str("%enum.");
         ll_out_str(ty_display(id));
-        ll_out_str(" = type { i32, [");
-        ll_out_int(maxpay);
+        ll_out_str(" = type { i32, [4 x i8], [");
+        ll_out_int((maxpay + 7) & (0 - 8));
         ll_out_str(" x i8] }\n");
     }
 }

@@ -603,6 +603,8 @@ int ck_builtin_trap(struct AstNode* n, struct AstList* args);
 int ck_builtin_assert(struct AstNode* n, struct AstList* args);
 int ck_builtin_unreachable(struct AstNode* n, struct AstList* args);
 int ck_builtin_exit(struct AstNode* n, struct AstList* args);
+int ck_enum_construct(struct AstNode* n, struct AstNode* callee, struct AstList* args);
+int ck_argc(struct AstList* args);
 int ck_fmt_displayable(int ty);            // can `{}` render this type?
 void ck_err_type_mismatch(struct AstNode* at, int want, int got, char* what);
 void ck_err_unknown_name(char* name, struct AstNode* at, char* what);

@@ -1,0 +1,8 @@
+// WANT: TYPE-01
+// A variant payload field has a fixed type; a string is not an `i32` (§6.5).
+enum Shape { Circle(i32), Point }
+
+fn main() -> i32 {
+    let s = Shape::Circle("oops");
+    return 0;
+}

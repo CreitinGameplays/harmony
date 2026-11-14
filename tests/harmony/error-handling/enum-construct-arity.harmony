@@ -1,0 +1,8 @@
+// WANT: TYPE-03
+// A variant construction must pass exactly its payload fields (§6.5).
+enum Shape { Rect(i32, i32), Point }
+
+fn main() -> i32 {
+    let s = Shape::Rect(1);
+    return 0;
+}

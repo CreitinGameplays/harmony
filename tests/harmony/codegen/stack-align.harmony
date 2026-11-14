@@ -1,0 +1,24 @@
+// EXPECT: 42
+// Guards `_start` stack alignment: `harmony_main` may use SSE (`movaps`) that
+// faults if `%rsp` is not 16-aligned at the call. A large local struct forces
+// the compiler to emit aligned moves; the arithmetic must still come out.
+struct Big {
+    a: i32;
+    b: i32;
+    c: i32;
+    d: i32;
+    e: i32;
+    f: i32;
+    g: i32;
+    h: i32;
+}
+
+fn summed(v: Big) -> i32 {
+    return v.a + v.b + v.c + v.d + v.e + v.f + v.g + v.h;
+}
+
+fn main() -> i32 {
+    let v = Big { .a = 1, .b = 2, .c = 3, .d = 4, .e = 5, .f = 6, .g = 7, .h = 8 };
+    let total = summed(v) + summed(v);   // 36 + 36 = 72
+    return total - 30;                   // 42
+}

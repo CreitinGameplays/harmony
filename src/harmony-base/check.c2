@@ -1474,6 +1474,9 @@ void ck_stmt_switch(struct AstNode* n) {
             saw_default = 1;
         } else {
             int k;
+            // Each arm is its own scope: `case Circle(r)` binds `r` for that
+            // arm's body only.
+            ck_scope_push();
             k = 0;
             while (k < arm->kids->len) {
                 ck_check_pattern(arm->kids->items[k], st, seen, &nseen);
@@ -1481,6 +1484,7 @@ void ck_stmt_switch(struct AstNode* n) {
             }
         }
         ck_stmt_block(arm->b);
+        if (arm->kids != 0 && arm->kids->len != 0) { ck_scope_pop(); }
         i = i + 1;
     }
     // Exhaustiveness (§8.4): a switch on an enum must cover every variant or
@@ -1545,6 +1549,29 @@ void ck_check_pattern(struct AstNode* p, int st, int* seen, int* nseen) {
                 ck_err_no_field(p, st, vname);
             } else {
                 ck_note_variant(p, st, vi, seen, nseen);
+                // Bind the payload sub-patterns: `Circle(r)` binds `r` to the
+                // variant's first payload field (§8.6). A payload field is a
+                // member of the variant's payload struct.
+                if (p->kids != 0) {
+                    int pid;
+                    int k;
+                    pid = ty_member_type(st, vi);
+                    k = 0;
+                    while (k < p->kids->len && k < ty_member_count(pid)) {
+                        struct AstNode* sub;
+                        sub = p->kids->items[k];
+                        if (sub->kind == AST_PAT_BIND) {
+                            int si;
+                            si = ck_declare(sub->sval, SK_LET, ty_member_type(pid, k), sub, 1);
+                            // A pattern binding holds a value from the match:
+                            // mark it initialized (INIT-01).
+                            if (si >= 0) { g_sym_init[si] = 1; }
+                        } else if (sub->kind != AST_PAT_WILD) {
+                            ck_check_pattern(sub, ty_member_type(pid, k), seen, nseen);
+                        }
+                        k = k + 1;
+                    }
+                }
             }
         } else {
             ck_err_unknown_name(p->sval, p, "switch patterns name an enum variant");

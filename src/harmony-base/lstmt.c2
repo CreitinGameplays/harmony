@@ -56,6 +56,7 @@ void ll_stmt_return(struct AstNode* n);
 void ll_stmt_switch(struct AstNode* n);
 void ll_switch_test(struct AstList* pats, int st, char* subjslot, char* armlbl, char* nextlbl);
 char* ll_pattern_test(struct AstNode* p, int st, char* subjslot);
+void  ll_bind_pattern(struct AstList* pats, int st, char* subjslot);
 char* ll_enum_tag_test(int enum_ty, char* subjslot, int index);
 char* ll_load_ptr(char* ptr);
 char* ll_bin(char* op, int ty, char* a, char* b);
@@ -498,6 +499,9 @@ void ll_stmt_switch(struct AstNode* n) {
             // One test per pattern in this arm (or-patterns are `||`).
             ll_switch_test(arm->kids, st, subjslot, armlbl, nextlbl);
             ll_label(armlbl);
+            // Bind any variant payload patterns (`case Circle(r)`) before the
+            // arm body runs (§8.6). The subject's address is `subjslot`.
+            ll_bind_pattern(arm->kids, st, subjslot);
             ll_block(arm->b);
             if (!ll_get_terminated()) {
                 ll_out_str("  br label %");
@@ -566,6 +570,64 @@ void ll_switch_test(struct AstList* pats, int st, char* subjslot, char* armlbl, 
 
 // The `i1` test for one pattern against the spilled subject. Returns 0 for a
 // catch-all pattern (wildcard / plain binding), which matches everything.
+// Binds the payload variables of variant patterns for one arm (§8.6). For
+// each `Enum::Variant(sub...)` pattern, load every payload field from the
+// subject aggregate (tag at offset 0, payload from offset 8) into an alloca,
+// and declare the sub-pattern's name. A non-binding sub-pattern is skipped
+// (nested patterns are not bound in M1).
+void ll_bind_pattern(struct AstList* pats, int st, char* subjslot) {
+    int k;
+    if (pats == 0) { return; }
+    if (ty_kind(st) != CTY_ENUM) { return; }
+    k = 0;
+    while (k < pats->len) {
+        struct AstNode* p;
+        p = pats->items[k];
+        if (p->kind == AST_PAT_VARIANT && p->kids != 0) {
+            char* vname;
+            int vi;
+            int pid;
+            int j;
+            vname = p->sval;
+            if (str_contains(vname, "::")) { vname = vname + str_rfind(vname, "::") + 2; }
+            vi = ty_find_member(st, vname);
+            if (vi >= 0) {
+                pid = ty_member_type(st, vi);
+                j = 0;
+                while (j < p->kids->len && j < ty_member_count(pid)) {
+                    struct AstNode* sub;
+                    int ft;
+                    char* addr;
+                    char* v;
+                    char* slot;
+                    sub = p->kids->items[j];
+                    ft = ty_member_type(pid, j);
+                    addr = ll_offset_addr(subjslot, 8 + ty_field_offset(pid, j));
+                    v = ll_load(ft, addr);
+                    if (sub->kind == AST_PAT_BIND) {
+                        slot = ll_new_reg();
+                        ll_out_str("  ");
+                        ll_out_str(slot);
+                        ll_out_str(" = alloca ");
+                        ll_out_str(ll_type_name(ft));
+                        ll_out_nl();
+                        ll_out_str("  store ");
+                        ll_out_str(ll_type_name(ft));
+                        ll_out_str(" ");
+                        ll_out_str(v);
+                        ll_out_str(", ptr ");
+                        ll_out_str(slot);
+                        ll_out_nl();
+                        ll_local_declare(sub->sval, slot, ft);
+                    }
+                    j = j + 1;
+                }
+            }
+        }
+        k = k + 1;
+    }
+}
+
 char* ll_pattern_test(struct AstNode* p, int st, char* subjslot) {
     if (p == 0) { return 0; }
     if (p->kind == AST_PAT_WILD) { return 0; }

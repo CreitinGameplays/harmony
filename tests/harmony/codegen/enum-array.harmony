@@ -1,0 +1,43 @@
+// EXPECT: 42
+// A loop over an array of payload enums, built and indexed at runtime, then
+// dispatched through a `switch`. Guards the enum-array element stride and the
+// by-value aggregate argument path.
+enum Token {
+    Num(i32),
+    Add,
+}
+
+struct Stack {
+    data: [i32; 16];
+    top: i32;
+}
+
+fn push(s: &mut Stack, v: i32) {
+    s.data[s.top] = v;
+    s.top = s.top + 1;
+}
+
+fn pop(s: &mut Stack) -> i32 {
+    s.top = s.top - 1;
+    return s.data[s.top];
+}
+
+fn apply(s: &mut Stack, t: Token) -> i32 {
+    switch (t) {
+        case Num(n): { push(s, n); return 0; }
+        case Add:    { let b = pop(s); let a = pop(s); push(s, a + b); return 0; }
+    }
+    return 1;
+}
+
+fn main() -> i32 {
+    let mut s = Stack { .data = [0; 16], .top = 0 };
+    let ops: [Token; 3] = [Token::Num(20), Token::Num(22), Token::Add];
+    let mut i: usize = 0;
+    while (i < ops.len()) {
+        let r = apply(&mut s, ops[i]);
+        if (r != 0) { return 9; }
+        i = i + 1;
+    }
+    return pop(&mut s);   // 20 + 22 = 42
+}

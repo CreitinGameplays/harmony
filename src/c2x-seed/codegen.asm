@@ -150,6 +150,13 @@ struc symbol_t
                             ;      stays the element count for those, so
                             ;      bounds checks keep working AND chained
                             ;      `arr[i]->field` can resolve the pointee.
+    .elem_ty    resq 1      ; 64 (encoded element type for arrays of
+                            ;      pointers, e.g. TOK_KW_CHAR + PTR_TYPE_FLAG
+                            ;      for char* arr[N]; 0 otherwise). The array
+                            ;      itself is registered as TOK_KW_INT (8-byte
+                            ;      elements), so this is the only place the
+                            ;      pointee type survives for a chained
+                            ;      `arr[i][j]` to scale by the pointee size.
 endstruc
 
 SYMBOL_TABLE_INITIAL_CAPACITY equ 256
@@ -561,17 +568,35 @@ section .bss
                                         ; field_array_ptr for arrays of struct
                                         ; pointers (0 otherwise). Consumed and
                                         ; cleared by the add_* helpers.
+    pending_symbol_elem_ty resq 1       ; set by the caller of add_symbol /
+                                        ; add_global_symbol: the encoded element
+                                        ; type for arrays of pointers (e.g.
+                                        ; TOK_KW_CHAR + PTR_TYPE_FLAG), 0
+                                        ; otherwise. Consumed and cleared by
+                                        ; the add_* helpers.
     found_symbol_fields resq 1          ; set by find_symbol / find_global_symbol
                                         ; on a hit: the symbol's `.fields`
                                         ; slot, so index handlers can chain
                                         ; `arr[i]->field` without a second
                                         ; lookup.
+    found_symbol_elem_ty resq 1         ; set by find_symbol / find_global_symbol
+                                        ; on a hit: the symbol's `.elem_ty` slot,
+                                        ; the encoded element type for arrays
+                                        ; of pointers, so `arr[i][j]` scales by
+                                        ; the pointee size.
     gen_index_elem_fields resq 1        ; pointee field array of the element
                                         ; being indexed (captured from
                                         ; found_symbol_fields by the ident
                                         ; fast paths; 0 for member/expression
                                         ; bases, which resolve fields through
                                         ; gen_expr_struct_fields instead).
+    gen_index_elem_ty resq 1            ; encoded element type of the array
+                                        ; being indexed (captured from
+                                        ; found_symbol_elem_ty by the ident
+                                        ; fast paths). A pointer element
+                                        ; (char* arr[N]) becomes the loaded
+                                        ; value's type, so a chained
+                                        ; `arr[i][j]` scales by the pointee.
     symbols_storage:        resb SYMBOL_TABLE_INITIAL_CAPACITY * symbol_t_size
     symbol_initialized_storage: resb SYMBOL_TABLE_INITIAL_CAPACITY  ; 1 byte per symbol: 0=uninit, 1=initialized
     symbol_used_storage:        resb SYMBOL_TABLE_INITIAL_CAPACITY  ; 1 byte per symbol: 0=unused, 1=used (read or written)
@@ -1005,6 +1030,10 @@ register_globals:
     ; Pointer-type array: each element is 8 bytes (pointer size).
     ; Register as TOK_KW_INT so that indexing uses pointer-size scaling.
     ; Keep r8 = element count (from data3) for bounds checking.
+    ; The element's own encoded type (e.g. TOK_KW_CHAR + PTR_TYPE_FLAG) rides
+    ; in the symbol's `.elem_ty` slot so a chained `arr[i][j]` scales by the
+    ; pointee size instead of the pointer stride.
+    mov [pending_symbol_elem_ty], rcx
     mov rcx, TOK_KW_INT
     ; Keep the pointee's field array in the symbol's `.fields` slot so
     ; `arr[i]->field` can resolve the pointee's members (extra stays the
@@ -1760,6 +1789,7 @@ collect_symbols:
     mov rax, r8
     shl rax, 3                         ; count * 8
     ; Store type as TOK_KW_INT (8-byte elements) so indexing uses pointer-size scaling
+    mov [pending_symbol_elem_ty], rcx
     mov rcx, TOK_KW_INT
     ; Keep the pointee's field array in the symbol's `.fields` slot so
     ; `arr[i]->field` can resolve the pointee's members (extra stays the
@@ -2461,8 +2491,11 @@ add_symbol:
     mov r9, [pending_symbol_fields]
     mov [rbx + symbol_t.fields], r9
     mov qword [pending_symbol_fields], 0
-
-    ; Store source location from current_ast_node
+    ; Encoded element type for arrays of pointers (0 otherwise): lets a
+    ; chained `arr[i][j]` scale by the pointee size.
+    mov r9, [pending_symbol_elem_ty]
+    mov [rbx + symbol_t.elem_ty], r9
+    mov qword [pending_symbol_elem_ty], 0
     mov rax, [current_ast_node]
     test rax, rax
     jz .skip_loc
@@ -2705,6 +2738,8 @@ find_symbol:
     push rax
     mov rax, [rsi + symbol_t.fields]
     mov [found_symbol_fields], rax
+    mov rax, [rsi + symbol_t.elem_ty]
+    mov [found_symbol_elem_ty], rax
     pop rax
 
     pop r10
@@ -2723,6 +2758,7 @@ find_symbol:
     xor rbx, rbx
     xor rcx, rcx
     mov qword [found_symbol_fields], 0
+    mov qword [found_symbol_elem_ty], 0
     pop r10
     pop r9
     pop r8
@@ -2765,6 +2801,10 @@ add_global_symbol:
     mov r9, [pending_symbol_fields]
     mov [rbx + symbol_t.fields], r9
     mov qword [pending_symbol_fields], 0
+    ; Encoded element type for arrays of pointers (0 otherwise).
+    mov r9, [pending_symbol_elem_ty]
+    mov [rbx + symbol_t.elem_ty], r9
+    mov qword [pending_symbol_elem_ty], 0
 
     inc qword [global_symbol_count]
 
@@ -2835,6 +2875,8 @@ find_global_symbol:
     ; handlers can chain `arr[i]->field` without a second lookup.
     mov rax, [rsi + symbol_t.fields]
     mov [found_symbol_fields], rax
+    mov rax, [rsi + symbol_t.elem_ty]
+    mov [found_symbol_elem_ty], rax
     mov rax, [rsi + symbol_t.name_ptr]   ; rax = name_ptr (restore)
     pop r10
     pop r9
@@ -2852,6 +2894,7 @@ find_global_symbol:
     xor rbx, rbx
     xor rcx, rcx
     mov qword [found_symbol_fields], 0
+    mov qword [found_symbol_elem_ty], 0
     pop r10
     pop r9
     pop r8
@@ -3468,6 +3511,9 @@ emit_global_vars:
     ; path, emitting resb (type_encoding * count) — a wildly wrong size.
     cmp rax, PTR_TYPE_FLAG
     jb .dabn_check_struct_kind
+    ; Pointer-type array: remember the element's encoded type so a chained
+    ; `arr[i][j]` scales by the pointee size. Consumed by add_global_symbol.
+    mov [pending_symbol_elem_ty], rax
     mov rdx, rax
     sub rdx, PTR_TYPE_FLAG
     cmp rdx, TOK_KW_STRUCT
@@ -7967,6 +8013,8 @@ gen_expr:
     mov qword [gen_index_elem_fields], 0   ; reset: only the ident fast paths
                                            ; below set it (from the symbol's
                                            ; `.fields` slot).
+    mov qword [gen_index_elem_ty], 0       ; reset: the encoded element type for
+                                           ; arrays of pointers (`.elem_ty`).
     mov rdi, [r12 + ast_node_t.data1]   ; base expression
     mov rax, [rdi + ast_node_t.type]
     cmp rax, AST_IDENT
@@ -7976,11 +8024,13 @@ gen_expr:
     push rdi
     call find_symbol
     ; rax = negative offset, rbx = type, rcx = extra (element count / struct info)
-    ; Capture the pointee field array (arrays of struct pointers) before any
-    ; later lookup can overwrite found_symbol_fields.
+    ; Capture the pointee field array and encoded element type (arrays of
+    ; pointers) before any later lookup can overwrite the found_* slots.
     push rax
     mov rax, [found_symbol_fields]
     mov [gen_index_elem_fields], rax
+    mov rax, [found_symbol_elem_ty]
+    mov [gen_index_elem_ty], rax
     pop rax
     test rax, rax
     jnz .index_local
@@ -7993,6 +8043,8 @@ gen_expr:
     push rax
     mov rax, [found_symbol_fields]
     mov [gen_index_elem_fields], rax
+    mov rax, [found_symbol_elem_ty]
+    mov [gen_index_elem_ty], rax
     pop rax
     test rax, rax
     jz .index_no_base
@@ -8518,6 +8570,16 @@ gen_expr:
     call emit_string
 .index_loaded:
     mov [gen_expr_type], r14              ; element type
+    ; Arrays of pointers register their element as TOK_KW_INT (8-byte stride),
+    ; but the *element's* own type (e.g. char* for char* arr[N]) rides in
+    ; gen_index_elem_ty. Report that as the loaded value's type so a chained
+    ; `arr[i][j]` scales by the pointee size, not the pointer stride. The load
+    ; itself already happened with the correct (qword) width.
+    mov rax, [gen_index_elem_ty]
+    test rax, rax
+    jz .index_loaded_ty_done
+    mov [gen_expr_type], rax
+.index_loaded_ty_done:
     ; If the element is a pointer to a struct (struct T*, struct T**, ...),
     ; remember the pointee's field array (the symbol's `extra`, held in rbx on
     ; every path through .index_common) so `p->field` and `p[i]->field` can

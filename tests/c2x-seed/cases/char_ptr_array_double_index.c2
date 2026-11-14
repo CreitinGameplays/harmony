@@ -1,0 +1,22 @@
+// EXPECT: 42
+// Regression: `char* arr[N]` elements are 8-byte pointers, but the *pointee*
+// is one byte. `arr[0][1]` used to scale the second index by the pointer
+// stride (8) instead of the pointee size (1), reading past the buffer.
+// Failing shape: a global array of `char*` whose element is itself indexed.
+char* g[4];
+
+int main() {
+    char src[4];
+    char* p;
+    src[0] = 65;
+    src[1] = 66;
+    src[2] = 67;
+    src[3] = 0;
+    g[0] = src;
+    if (g[0][0] != 65) { return 1; }
+    if (g[0][1] != 66) { return 2; }
+    if (g[0][2] != 67) { return 3; }
+    p = g[0];
+    if (p[3] != 0) { return 4; }
+    return 42;
+}

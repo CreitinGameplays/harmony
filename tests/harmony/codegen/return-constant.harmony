@@ -1,0 +1,5 @@
+// EXPECT: 42
+// A minimal program: `main`'s i32 return becomes the exit status (§6.3).
+fn main() -> i32 {
+    return 42;
+}

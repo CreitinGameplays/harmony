@@ -14,6 +14,11 @@ extern int syscall_write(int fd, char* buf, int count);
 extern int syscall_open(char* path, int flags, int mode);
 extern int syscall_close(int fd);
 extern int syscall_exit(int code);
+// Process control (the seed's runtime emits these; used by `run` to drive
+// the toolchain and the compiled program).
+extern int syscall_fork(void);
+extern int syscall_execve(char* path, char** argv, char** envp);
+extern int syscall_wait4(int pid, int* status, int options, int rusage);
 
 const int FD_STDOUT = 1;
 const int FD_STDERR = 2;
@@ -589,6 +594,51 @@ void ck_err_unknown_name(char* name, struct AstNode* at, char* what);
 void ck_err_no_field(struct AstNode* at, int ty, char* field);
 void ck_err_arity(struct AstNode* at, char* name, int want, int got);
 void check_program(struct AstNode* prog);  // driver: register + check
+
+// ---------------------------------------------------------------------------
+// LLVM backend (llvm.c2 + lexpr.c2 + lstmt.c2, docs/harmony.md §19.4).
+// Declared here because the three lowering files call each other and
+// c2x-seed resolves names from earlier text only.
+// ---------------------------------------------------------------------------
+void  ll_emit_module(struct AstNode* prog);   // whole module -> g_out
+char* ll_expr(struct AstNode* n);             // lower an expression -> SSA name
+char* ll_addr(struct AstNode* n);             // lower an lvalue -> an address
+void  ll_block(struct AstNode* blk);          // lower a block
+void  ll_stmt(struct AstNode* n);             // lower one statement
+void  ll_emit_trap(int code, struct AstNode* at, char* detail);
+char* ll_new_reg(void);
+char* ll_new_label(char* hint);
+char* ll_type_name(int id);
+char* ll_zero_of(int id);
+int   ll_is_float_ty(int id);
+char* ll_checked_bin(char* op, int ty, struct AstNode* n, char* l, char* r);
+int   ll_node_ty(struct AstNode* n);
+char* ll_int_type_suffix(int ty);
+void  ll_local_declare(char* name, char* slot, int ty);
+char* ll_local_slot(char* name);
+int   ll_local_ty(char* name);
+void  ll_env_scope_push(void);
+void  ll_env_scope_pop(void);
+void  ll_out_str(char* s);
+void  ll_out_int(int v);
+void  ll_out_nl(void);
+char* ll_load(int ty, char* ptr);
+void  ll_int_into(char* buf, int v);
+void  ll_str_into(char* dst, char* src);
+int   ll_str_len(char* s);
+
+// ---------------------------------------------------------------------------
+// Toolchain driver (emit.c2, docs/harmony.md §19.4/§19.5): turn the emitted
+// IR into an object/executable and, for `run`, execute it.
+// ---------------------------------------------------------------------------
+// Writes `text` to `path`. Returns 0, or a negative errno.
+int emit_write_file(char* path, char* text, int len);
+// Forks and execs argv[0] with the given arguments (argv NULL-terminated).
+// Returns the child's exit code, or -1 on spawn failure.
+int sys_spawn(char** argv);
+// Implements `emit-llvm` / `build` / `run` for one checked program and
+// returns an exit code (§16.6).
+int emit_command(struct Options* opts, struct AstNode* prog);
 
 struct AstNode* ast_node_new(int kind);
 void ast_span(struct AstNode* n, int file, int start, int end);

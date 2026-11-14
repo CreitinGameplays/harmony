@@ -1,0 +1,7 @@
+// EXPECT-TRAP: T-DIV0
+// Division by zero traps (T-DIV0, §7.3).
+fn main() -> i32 {
+    let a = 10;
+    let b = 0;
+    return a / b;
+}

@@ -1,0 +1,17 @@
+// EXPECT: 20
+// Recursion, `if`, and comparison.
+fn fib(n: i32) -> i32 {
+    if (n < 2) { return n; }
+    return fib(n - 1) + fib(n - 2);
+}
+
+fn main() -> i32 {
+    // fib(0..=6) = 0,1,1,2,3,5,8 -> sum 20
+    let mut i = 0;
+    let mut sum = 0;
+    while (i < 7) {
+        sum += fib(i);
+        i += 1;
+    }
+    return sum;
+}

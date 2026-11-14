@@ -1,0 +1,12 @@
+// EXPECT: 20
+// IR: define i32 @harmony__add
+// Functions, parameters, calls, and checked arithmetic.
+fn add(a: i32, b: i32) -> i32 {
+    return a + b;
+}
+
+fn main() -> i32 {
+    let x = add(7, 8);
+    let y = add(x, 5);
+    return y;   // 7 + 8 + 5 = 20
+}

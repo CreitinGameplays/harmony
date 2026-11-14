@@ -148,19 +148,26 @@ These c2x-seed defects were found and fixed while bootstrapping (see
 
 ### M1 — Types + first codegen: "LLVM with types and traps" (§19.7)
 
-- [ ] Type checker for scalars, functions, structs, enums, `switch`
-      (no ownership yet). Codes: `TYPE-01..04`, `MUT-01..03`, `INIT-01`,
-      `CASE-01/02` (on enums), `FMT-01`.
-- [ ] LLVM IR text emission for the same subset (§19.4 mapping table):
-      checked arithmetic via `llvm.*.with.overflow` + `lc_trap`,
-      bounds-checked indexing before GEP, `main` entry, `extern fn`
-      declarations, `noalias` for `&mut`.
-- [ ] Runtime (`rt.bc` + `rt.h` from one source): `lc_alloc`/`lc_free`
-      (trap on OOM), `lc_trap` + trap codes `T-*` (§14.1), buffered output,
-      argv access, stack-guard handler (`T-STACK`).
-- [ ] `lc run` builds via `llc`/linker and spawns; trap exit status 70 (§14.3).
-- [ ] Byte-deterministic `.ll` output; name mangling `module__Type__method`
-      with readable type-argument suffixes (§19.4). No hashes, no paths.
+- [x] Type checker for scalars, functions, structs, enums, `switch`, arrays,
+      references, `heap`, `sizeof`, casts. Codes: `TYPE-01..06`,
+      `MUT-01`, `INIT-01`, `CASE-01/02`, `NAME-01/03`, `RET-01` (checker.sh,
+      24 cases). (`FMT-01` waits for format strings.)
+- [x] LLVM IR text emission for scalars + control flow (§19.4 mapping table):
+      checked arithmetic via `llvm.*.with.overflow` + `lc_trap`, division and
+      shift traps, `main` entry via `harmony_main`, `extern fn` declarations,
+      `if`/`while`/`for`/`return`/`break`/`continue` (codegen.sh).
+- [x] Freestanding runtime (`src/stdlib/runtime/rt.c`): `_start`, `lc_trap`
+      with `T-*` codes + exit 70, `lc_check_index`, `lc_alloc` on mmap.
+- [x] `run` compiles with clang, links the runtime, spawns, and forwards the
+      exit status; trap exit status 70 (§14.3).
+- [x] Byte-deterministic `.ll` output (`emit-llvm` twice diffs clean); name
+      mangling `harmony__name` (`main` -> `harmony_main`). No hashes, no paths.
+- [ ] Struct/enum field access, indexing (`a[i]` + bounds checks), calls to
+      methods/associated/field-based callees, casts, `heap`, `sizeof`,
+      `switch` lowering, `&T`/`&mut T` (`noalias`), generic monomorphization.
+      (The checker accepts these; the emitter currently zeroes them and the
+      program must avoid them.)
+- [ ] Diagnostics for `FMT-01`; stack-overflow guard (`T-STACK`).
 
 ### M2 — Ownership: moves + drop elaboration (§9, §19.7)
 

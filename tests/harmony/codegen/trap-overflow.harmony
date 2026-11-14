@@ -1,0 +1,7 @@
+// EXPECT-TRAP: T-OVERFLOW
+// Checked addition traps instead of wrapping (§3.2, §7.3).
+fn main() -> i32 {
+    let x: i32 = 2147483647;
+    let y = x + 1;
+    return y;
+}

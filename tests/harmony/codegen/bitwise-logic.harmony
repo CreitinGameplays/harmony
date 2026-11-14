@@ -1,0 +1,15 @@
+// EXPECT: 25
+// Bitwise operators, shifts, and short-circuit logic.
+fn main() -> i32 {
+    let flags = 0xF0;
+    let mask = 0x0F;
+    let a = flags | mask;      // 0xFF = 255
+    let b = a >> 0;            // 255
+    let c = b & 0x1F;          // 31
+    let d = c ^ 6;             // 25
+    // `&&` short-circuits: the right side must not evaluate.
+    if (d > 0 && d < 100) {
+        return d;
+    }
+    return 0;
+}

@@ -4,6 +4,7 @@ File Extension: .harmony
 # Rules
 - Read the project layout first.
 - Read important parts of the docs (but not everything at once).
+- **Never** hardcode "/opencode/" in any part of the source code.
 - Use c2x-seed to write the harmony language:
   harmony-base: basic implementation with few features, written in c2x-seed.
   harmony: full rewrite in harmony-base itself.
@@ -19,14 +20,13 @@ File Extension: .harmony
 - Use makefile to build harmony lang. build.sh builds the c2x-seed, which is written in assembly.
 - Always make or update tests for any new implementation/feature,
   as well as fuzzing/aggressive tests, and add them to makefile rules.
-- Use your edit tool to edit source files *instead of shell scripts (including python)*.
+- **ALWAYS** use your edit tool to edit source files *instead of shell scripts (including python)*.
 - Never guess at bugs (harmony/c2x-seed), always reproduce:
   use any available debugger in the system (such as gdb, valgrind, etc) to find the bug and fix them.
 - NEVER workaround a fix on harmony-base source code to hide a genuine bug in c2x-seed.
 - Always run final `make test` before completion, but only if you modify source code.
   Docs-only changes don't need to run `make test`.
 - Harmony standard lib code for final language should be written in src/stdlib/<subdir>.
-- `harmony-base` is freestanding (it doesn't assume standard library presence or standard `main`).
 - It's good to also add purposely bad code (simple and complex codes)
   in error-handling directory in `tests` to verify if compiler is handling it well.
 - Use `make` with `-j$(nproc)` arg to use all cores when compiling.

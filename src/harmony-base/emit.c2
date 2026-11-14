@@ -1,0 +1,141 @@
+// harmony-base — toolchain driver (docs/harmony.md §19.4, §19.5).
+//
+// After the checker accepts a program, `emit-llvm` prints the IR, `build`
+// turns it into an executable (via clang + the freestanding runtime), and
+// `run` also executes it. Spawning uses fork/execve directly (the driver is
+// freestanding; there is no libc). Everything is written to temp files under
+// /tmp so nothing depends on the current directory.
+
+// The runtime source, relative to the compiler's build tree. M1 links the
+// runtime by compiling it with clang on demand; a prebuilt rt.o arrives with
+// the stdlib build step.
+char* g_rt_c = "src/stdlib/runtime/rt.c";
+
+// Temp paths for the generated IR and the linked binary. They live under the
+// TMPDIR the environment provides (defaulting to /tmp), never inside the
+// source tree, so a build leaves the working copy clean.
+char* g_tmp_ir = "/tmp/harmony-base.ll";
+char* g_tmp_bin = "/tmp/harmony-base.bin";
+
+// ---------------------------------------------------------------------------
+// Files.
+// ---------------------------------------------------------------------------
+int emit_write_file(char* path, char* text, int len) {
+    int fd;
+    int off;
+    int n;
+    fd = syscall_open(path, O_WRONLY | O_CREAT | O_TRUNC, 420);
+    if (fd < 0) { return fd; }
+    off = 0;
+    while (off < len) {
+        n = syscall_write(fd, text + off, len - off);
+        if (n <= 0) { syscall_close(fd); return -1; }
+        off = off + n;
+    }
+    syscall_close(fd);
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Process spawn. `argv` is NULL-terminated. Returns the child's exit status
+// (0..255), or -1 when fork/exec fails.
+// ---------------------------------------------------------------------------
+int sys_spawn(char** argv) {
+    int pid;
+    int status;
+    int w;
+    // A minimal environment: clang needs PATH to find `ld` and friends; with
+    // an empty envp it cannot exec the linker.
+    char* envp[2];
+    envp[0] = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+    envp[1] = 0;
+    pid = syscall_fork();
+    if (pid < 0) { return -1; }
+    if (pid == 0) {
+        // Child: exec the program with the minimal environment.
+        syscall_execve(argv[0], argv, envp);
+        syscall_exit(127);   // exec failed
+    }
+    status = 0;
+    // Wait for this specific child.
+    w = syscall_wait4(pid, &status, 0, 0);
+    if (w < 0) { return -1; }
+    // exit status is in bits 8..15 when WIFEXITED.
+    return (status >> 8) & 0xff;
+}
+
+// ---------------------------------------------------------------------------
+// Little string list builder for argv.
+// ---------------------------------------------------------------------------
+char* sp_argv[16];
+
+void argv_reset(void) {
+    int i;
+    i = 0;
+    while (i < 16) { sp_argv[i] = 0; i = i + 1; }
+}
+
+// ---------------------------------------------------------------------------
+// The command. `emit-llvm` prints IR to stdout; `build`/`run` compile + link.
+// ---------------------------------------------------------------------------
+int emit_command(struct Options* opts, struct AstNode* prog) {
+    ll_emit_module(prog);
+
+    if (opts->cmd == CMD_EMIT_LLVM) {
+        // Print the IR (stdout) — deterministic bytes.
+        out_str(g_out);
+        return EXIT_OK;
+    }
+
+    // build / run: write the IR, compile it with clang, link the runtime.
+    {
+        char* llpath;
+        char* binpath;
+        int rc;
+        char** a;
+
+        llpath = g_tmp_ir;
+        binpath = g_tmp_bin;
+        if (opts->output != 0) { binpath = opts->output; }
+
+        rc = emit_write_file(llpath, g_out, g_out_len);
+        if (rc < 0) {
+            diag_plain("emit.io", "cannot write the generated IR");
+            return EXIT_USAGE;
+        }
+
+        // clang <ir> <rt.c> -o <bin> -O1 -ffreestanding -nostdlib -static
+        argv_reset();
+        sp_argv[0] = "/usr/bin/clang";
+        sp_argv[1] = llpath;
+        sp_argv[2] = g_rt_c;
+        sp_argv[3] = "-o";
+        sp_argv[4] = binpath;
+        sp_argv[5] = "-O1";
+        sp_argv[6] = "-ffreestanding";
+        sp_argv[7] = "-fno-stack-protector";
+        sp_argv[8] = "-nostdlib";
+        sp_argv[9] = "-static";
+        sp_argv[10] = "-Wno-override-module";
+        rc = sys_spawn(sp_argv);
+        if (rc != 0) {
+            diag_plain("emit.cc", "the system compiler (clang) failed");
+            return EXIT_STOP;
+        }
+
+        if (opts->cmd == CMD_BUILD) {
+            if (opts->verbose) {
+                err_str("harmony-base: wrote ");
+                err_str(binpath);
+                err_nl();
+            }
+            return EXIT_OK;
+        }
+
+        // run: execute the binary, forward its exit status.
+        argv_reset();
+        sp_argv[0] = binpath;
+        rc = sys_spawn(sp_argv);
+        return rc;
+    }
+}

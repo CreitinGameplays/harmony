@@ -1,1 +1,1 @@
-build main.harmony
+emit-c main.harmony

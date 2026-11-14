@@ -74,18 +74,23 @@ int pipeline_run(struct Options* opts) {
         }
     }
 
-    // Emission stages of the pipeline (§19.1 stage 9) are not implemented yet.
-    // Requesting one is an honest stop with a fix, not a silent exit: the
-    // driver only advertises what it can run. `build`/`run` imply codegen too.
-    if (opts->cmd == CMD_EMIT_LLVM || opts->cmd == CMD_EMIT_C
-        || opts->cmd == CMD_BUILD || opts->cmd == CMD_RUN) {
+    // Emission stages (§19.1 stage 9). `emit-llvm`/`build`/`run` now have a
+    // working LLVM backend for the M1 slice; `emit-c` is M7 (§19.4b).
+    if (opts->cmd == CMD_EMIT_LLVM || opts->cmd == CMD_BUILD || opts->cmd == CMD_RUN) {
+        if (diag_stop_count() > 0) {
+            diag_flush(opts->format, opts->all);
+            return EXIT_STOP;
+        }
+        return emit_command(opts, root);
+    }
+    if (opts->cmd == CMD_EMIT_C) {
         int idx;
         idx = diag_stop("ICE-01",
-                        "the LLVM backend is not implemented in this build yet",
-                        "Code emission (pipeline stage 9) lands with milestone M1. `check` runs every analysis that exists today.",
+                        "the C backend is not implemented in this build yet",
+                        "The C backend (`emit-c`) is the cross-check backend and lands with milestone M7 (§19.4b). The LLVM path (`emit-llvm`, `build`, `run`) works today.",
                         &sf, 0, 1);
         if (idx >= 0) {
-            diag_fix(diag_get(idx), "run analyses only", "harmony-base check main.harmony");
+            diag_fix(diag_get(idx), "use the LLVM backend", "harmony-base emit-llvm main.harmony");
         }
     }
 

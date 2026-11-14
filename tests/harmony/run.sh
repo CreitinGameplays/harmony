@@ -68,30 +68,39 @@ else
     fail=$((fail + 1)); printf 'FAIL verbose prints byte count\n'
 fi
 
-# Codegen is not implemented: build/run/emit-llvm/emit-c all stop with ICE-01 (§16.6).
-"$HB" build "$TMP/hello.harmony" >/dev/null 2>&1
-check "build exits 1 (no backend)" 1 $?
-"$HB" run "$TMP/hello.harmony" >/dev/null 2>&1
-check "run exits 1 (no backend)" 1 $?
-"$HB" emit-llvm "$TMP/hello.harmony" >/dev/null 2>&1
-check "emit-llvm exits 1 (no backend)" 1 $?
-"$HB" emit-c "$TMP/hello.harmony" >/dev/null 2>&1
-check "emit-c exits 1 (no backend)" 1 $?
+# Codegen paths. The LLVM backend works for the M1 slice; emit-c is still M7.
+# The LLVM backend works for the M1 slice: emit-llvm prints IR, build
+# produces an executable, run executes it. emit-c is still M7.
+"$HB" emit-llvm "$TMP/hello.harmony" >"$TMP/ir.ll" 2>/dev/null
+check "emit-llvm exits 0" 0 $?
+if grep -q "@harmony_main" "$TMP/ir.ll"; then
+    pass=$((pass + 1)); printf 'ok   emit-llvm defines harmony_main\n'
+else
+    fail=$((fail + 1)); printf 'FAIL emit-llvm defines harmony_main\n'
+fi
+"$HB" build "$TMP/hello.harmony" -o "$TMP/hello.bin" >/dev/null 2>&1
+check "build exits 0" 0 $?
+if [ -x "$TMP/hello.bin" ]; then
+    pass=$((pass + 1)); printf 'ok   build produces an executable\n'
+else
+    fail=$((fail + 1)); printf 'FAIL build produces an executable\n'
+fi
+# emit-c is the cross-check backend, still M7: an honest ICE-01 with a fix.
+"$HB" emit-c "$TMP/hello.harmony" 2>/dev/null | grep -q "ICE-01"
+if [ $? -eq 0 ]; then
+    pass=$((pass + 1)); printf 'ok   emit-c stops with ICE-01 (M7)\n'
+else
+    fail=$((fail + 1)); printf 'FAIL emit-c stops with ICE-01 (M7)\n'
+fi
 
 # The stop renders in every format and names its code.
-"$HB" build "$TMP/hello.harmony" 2>/dev/null | grep -q "ICE-01"
-if [ $? -eq 0 ]; then
-    pass=$((pass + 1)); printf 'ok   build stop mentions ICE-01\n'
-else
-    fail=$((fail + 1)); printf 'FAIL build stop mentions ICE-01\n'
-fi
-"$HB" --format=line build "$TMP/hello.harmony" 2>/dev/null | grep -q "stop\[ICE-01\]"
+"$HB" --format=line emit-c "$TMP/hello.harmony" 2>/dev/null | grep -q "stop\[ICE-01\]"
 if [ $? -eq 0 ]; then
     pass=$((pass + 1)); printf 'ok   --format=line renders one line\n'
 else
     fail=$((fail + 1)); printf 'FAIL --format=line renders one line\n'
 fi
-"$HB" --format=json build "$TMP/hello.harmony" 2>/dev/null | grep -q '"code": "ICE-01"'
+"$HB" --format=json emit-c "$TMP/hello.harmony" 2>/dev/null | grep -q '"code": "ICE-01"'
 if [ $? -eq 0 ]; then
     pass=$((pass + 1)); printf 'ok   --format=json renders an object\n'
 else

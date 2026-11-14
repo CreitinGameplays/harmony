@@ -1,0 +1,28 @@
+
+
+
+name = "Harmony"
+grammar = "harmony"
+path_suffixes = ["harmony"]
+
+# Harmony v0.3.3 lexical comment forms.
+line_comments = ["//"]
+block_comment = ["/*", "*/"]
+
+# C-like formatting defaults.
+tab_size = 4
+hard_tabs = false
+word_characters = ["_"]
+autoclose_before = ";,)]}"
+
+brackets = [
+  { start = "{", end = "}", close = true, newline = true },
+  { start = "[", end = "]", close = true, newline = false },
+  { start = "(", end = ")", close = true, newline = false },
+  { start = "\"", end = "\"", close = true, newline = false, not_in = ["string", "comment"] },
+  { start = "'", end = "'", close = true, newline = false, not_in = ["string", "comment"] },
+]
+
+# Indent after block-opening constructs; closing braces align with their opener.
+increase_indent_pattern = "\\b(if|else|while|for|switch|methods|struct|enum|unchecked)\\b.*\\{\\s*$"
+decrease_indent_pattern = "^\\s*\\}"

@@ -1,0 +1,376 @@
+// harmony-base — LLVM lowering, part 3: statements, blocks, control flow
+// (docs/harmony.md §8, §19.4).
+//
+// Control flow uses explicit, deterministic block labels (`if.then.N`,
+// `while.cond.N`, ...) and a loop stack for `break`/`continue` targets. A
+// block that already ended in a terminator is not emitted into again, so the
+// IR stays well formed even for code the M1 checker lets through after a
+// `return`.
+
+// Loop context: break/continue targets, innermost last.
+char* g_brk_label[64];
+char* g_cont_label[64];
+int   g_loop_label_depth;
+
+// Terminator state lives in llvm.c2 (shared with the expression lowerer),
+// reached through these accessors.
+int  ll_get_terminated(void);
+void ll_set_terminated(int v);
+
+// ---- shared decls (llvm.c2 / lexpr.c2) ----
+char* ll_expr(struct AstNode* n);
+void  ll_block(struct AstNode* blk);
+void  ll_stmt(struct AstNode* n);
+void  ll_emit_trap(int code, struct AstNode* at, char* detail);
+char* ll_new_reg(void);
+char* ll_new_label(char* hint);
+char* ll_type_name(int id);
+char* ll_zero_of(int id);
+char* ll_load(int ty, char* ptr);
+char* ll_checked_bin(char* op, int ty, struct AstNode* n, char* l, char* r);
+void  ll_local_declare(char* name, char* slot, int ty);
+void  ll_env_scope_push(void);
+void  ll_env_scope_pop(void);
+char* ll_local_slot(char* name);
+int   ll_local_ty(char* name);
+int   ll_node_ty(struct AstNode* n);
+void  ll_out_str(char* s);
+void  ll_out_int(int v);
+void  ll_out_nl(void);
+
+// ---- Forward declarations for this file ----
+void ll_label(char* label);
+void ll_stmt_let(struct AstNode* n);
+void ll_stmt_assign(struct AstNode* n);
+void ll_stmt_if(struct AstNode* n);
+void ll_stmt_while(struct AstNode* n);
+void ll_stmt_for(struct AstNode* n);
+void ll_stmt_break(struct AstNode* n);
+void ll_stmt_continue(struct AstNode* n);
+void ll_stmt_return(struct AstNode* n);
+char* ll_compound(char* opassign, struct AstNode* n, int ty, char* cur);
+char* ll_compound_op(char* opassign);
+void ll_loop_push(char* brk, char* cont);
+void ll_loop_pop(void);
+
+// Emits a `label:` line.
+void ll_label(char* label) {
+    ll_out_str(label);
+    ll_out_str(":\n");
+}
+
+// ---------------------------------------------------------------------------
+// Blocks and statements.
+// ---------------------------------------------------------------------------
+void ll_block(struct AstNode* blk) {
+    struct AstList* stmts;
+    int i;
+    if (blk == 0) { return; }
+    ll_env_scope_push();
+    stmts = blk->kids;
+    if (stmts != 0) {
+        i = 0;
+        while (i < stmts->len) {
+            ll_stmt(stmts->items[i]);
+            i = i + 1;
+        }
+    }
+    ll_env_scope_pop();
+}
+
+void ll_stmt(struct AstNode* n) {
+    if (n == 0) { return; }
+    if (ll_get_terminated()) { return; }   // dead code after ret/br
+    if (n->kind == AST_LET) { ll_stmt_let(n); return; }
+    if (n->kind == AST_ASSIGN) { ll_stmt_assign(n); return; }
+    if (n->kind == AST_EXPR_STMT) { ll_expr(n->a); return; }
+    if (n->kind == AST_IF) { ll_stmt_if(n); return; }
+    if (n->kind == AST_WHILE) { ll_stmt_while(n); return; }
+    if (n->kind == AST_FOR) { ll_stmt_for(n); return; }
+    if (n->kind == AST_RETURN) { ll_stmt_return(n); return; }
+    if (n->kind == AST_BREAK) { ll_stmt_break(n); return; }
+    if (n->kind == AST_CONTINUE) { ll_stmt_continue(n); return; }
+    if (n->kind == AST_BLOCK) { ll_block(n); return; }
+    if (n->kind == AST_UNCHECKED) { ll_block(n->a); return; }
+    // switch/struct-init etc. arrive in the next batch; evaluate for effect.
+    ll_expr(n);
+}
+
+// `let [mut] name [: T] = init;` — an alloca slot plus an initial store.
+// A deferred `let x: T;` (no initializer) allocates an uninitialized slot.
+void ll_stmt_let(struct AstNode* n) {
+    int ty;
+    char* slot;
+    ty = ll_node_ty(n);
+    slot = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(slot);
+    ll_out_str(" = alloca ");
+    ll_out_str(ll_type_name(ty));
+    ll_out_nl();
+    if (n->b != 0) {
+        char* v;
+        v = ll_expr(n->b);
+        ll_out_str("  store ");
+        ll_out_str(ll_type_name(ty));
+        ll_out_str(" ");
+        ll_out_str(v);
+        ll_out_str(", ptr ");
+        ll_out_str(slot);
+        ll_out_nl();
+    }
+    // `_` discards: still allocate so the initializer is evaluated, but do
+    // not bind a name.
+    if (!str_eq(n->sval, "_")) {
+        ll_local_declare(n->sval, slot, ty);
+    }
+}
+
+void ll_stmt_assign(struct AstNode* n) {
+    char* slot;
+    int ty;
+    char* v;
+    // M1: simple `name = value` and `name op= value`. Field/index/deref
+    // targets land with the aggregates batch.
+    if (n->a->kind != AST_PATH) { return; }
+    slot = ll_local_slot(n->a->sval);
+    if (slot == 0) { return; }
+    ty = ll_local_ty(n->a->sval);
+
+    if (str_eq(n->sval, "=")) {
+        v = ll_expr(n->b);
+    } else {
+        // Compound: desugar `x op= y` to `x = x op y` on the current value.
+        char* cur;
+        cur = ll_load(ty, slot);
+        v = ll_compound(n->sval, n, ty, cur);
+    }
+    ll_out_str("  store ");
+    ll_out_str(ll_type_name(ty));
+    ll_out_str(" ");
+    ll_out_str(v);
+    ll_out_str(", ptr ");
+    ll_out_str(slot);
+    ll_out_nl();
+}
+
+// Applies a compound assignment's operator to the loaded current value.
+char* ll_compound(char* opassign, struct AstNode* n, int ty, char* cur) {
+    char* rhs;
+    char* op;
+    rhs = ll_expr(n->b);
+    op = ll_compound_op(opassign);
+    if (op == 0) { return cur; }
+    return ll_checked_bin(op, ty, n, cur, rhs);
+}
+
+// Maps `+=` -> "+", `<<=` -> "<<", etc.
+char* ll_compound_op(char* opassign) {
+    if (str_eq(opassign, "+=")) { return "+"; }
+    if (str_eq(opassign, "-=")) { return "-"; }
+    if (str_eq(opassign, "*=")) { return "*"; }
+    if (str_eq(opassign, "/=")) { return "/"; }
+    if (str_eq(opassign, "%=")) { return "%"; }
+    if (str_eq(opassign, "&=")) { return "&"; }
+    if (str_eq(opassign, "|=")) { return "|"; }
+    if (str_eq(opassign, "^=")) { return "^"; }
+    if (str_eq(opassign, "<<=")) { return "<<"; }
+    if (str_eq(opassign, ">>=")) { return ">>"; }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// if / else.
+// ---------------------------------------------------------------------------
+void ll_stmt_if(struct AstNode* n) {
+    char* cond;
+    char* thenlbl;
+    char* elselbl;
+    char* endlbl;
+    cond = ll_expr(n->a);
+    ll_set_terminated(0);
+    thenlbl = ll_new_label("if.then");
+    elselbl = ll_new_label("if.else");
+    endlbl = ll_new_label("if.end");
+    if (n->c != 0) {
+        ll_out_str("  br i1 ");
+        ll_out_str(cond);
+        ll_out_str(", label %");
+        ll_out_str(thenlbl);
+        ll_out_str(", label %");
+        ll_out_str(elselbl);
+        ll_out_nl();
+    } else {
+        ll_out_str("  br i1 ");
+        ll_out_str(cond);
+        ll_out_str(", label %");
+        ll_out_str(thenlbl);
+        ll_out_str(", label %");
+        ll_out_str(endlbl);
+        ll_out_nl();
+    }
+    ll_label(thenlbl);
+    ll_block(n->b);
+    if (!ll_get_terminated()) {
+        ll_out_str("  br label %");
+        ll_out_str(endlbl);
+        ll_out_nl();
+    }
+    if (n->c != 0) {
+        ll_label(elselbl);
+        if (n->c->kind == AST_BLOCK) {
+            ll_block(n->c);
+        } else {
+            ll_stmt_if(n->c);   // else if
+        }
+        if (!ll_get_terminated()) {
+            ll_out_str("  br label %");
+            ll_out_str(endlbl);
+            ll_out_nl();
+        }
+    }
+    ll_label(endlbl);
+    ll_set_terminated(0);
+}
+
+// ---------------------------------------------------------------------------
+// while.
+// ---------------------------------------------------------------------------
+void ll_stmt_while(struct AstNode* n) {
+    char* condlbl;
+    char* bodylbl;
+    char* endlbl;
+    condlbl = ll_new_label("while.cond");
+    bodylbl = ll_new_label("while.body");
+    endlbl = ll_new_label("while.end");
+    ll_out_str("  br label %");
+    ll_out_str(condlbl);
+    ll_out_nl();
+    ll_label(condlbl);
+    {
+        char* cond;
+        cond = ll_expr(n->a);
+        ll_out_str("  br i1 ");
+        ll_out_str(cond);
+        ll_out_str(", label %");
+        ll_out_str(bodylbl);
+        ll_out_str(", label %");
+        ll_out_str(endlbl);
+        ll_out_nl();
+    }
+    ll_label(bodylbl);
+    ll_loop_push(endlbl, condlbl);
+    ll_set_terminated(0);
+    ll_block(n->b);
+    ll_loop_pop();
+    if (!ll_get_terminated()) {
+        ll_out_str("  br label %");
+        ll_out_str(condlbl);
+        ll_out_nl();
+    }
+    ll_label(endlbl);
+    ll_set_terminated(0);
+}
+
+// for (let i = a; cond; step) { body } — lowered to the while shape with the
+// step at the end of the body and `continue` targeting the step.
+void ll_stmt_for(struct AstNode* n) {
+    char* condlbl;
+    char* bodylbl;
+    char* steplbl;
+    char* endlbl;
+    ll_env_scope_push();
+    if (n->a != 0) { ll_stmt(n->a); }   // init, e.g. let i = 0;
+    condlbl = ll_new_label("for.cond");
+    bodylbl = ll_new_label("for.body");
+    steplbl = ll_new_label("for.step");
+    endlbl = ll_new_label("for.end");
+    ll_out_str("  br label %");
+    ll_out_str(condlbl);
+    ll_out_nl();
+    ll_label(condlbl);
+    if (n->b != 0) {
+        char* cond;
+        cond = ll_expr(n->b);
+        ll_out_str("  br i1 ");
+        ll_out_str(cond);
+        ll_out_str(", label %");
+        ll_out_str(bodylbl);
+        ll_out_str(", label %");
+        ll_out_str(endlbl);
+        ll_out_nl();
+    } else {
+        ll_out_str("  br label %");
+        ll_out_str(bodylbl);
+        ll_out_nl();
+    }
+    ll_label(bodylbl);
+    ll_loop_push(endlbl, steplbl);
+    ll_set_terminated(0);
+    if (n->kids != 0 && n->kids->len > 0) {
+        ll_block(n->kids->items[0]);
+    } else if (n->b != 0 && n->b->kind == AST_BLOCK) {
+        ll_block(n->b);
+    }
+    ll_loop_pop();
+    if (!ll_get_terminated()) {
+        ll_out_str("  br label %");
+        ll_out_str(steplbl);
+        ll_out_nl();
+    }
+    ll_label(steplbl);
+    ll_set_terminated(0);
+    if (n->c != 0) { ll_stmt(n->c); }   // step
+    ll_out_str("  br label %");
+    ll_out_str(condlbl);
+    ll_out_nl();
+    ll_label(endlbl);
+    ll_set_terminated(0);
+    ll_env_scope_pop();
+}
+
+void ll_loop_push(char* brk, char* cont) {
+    g_brk_label[g_loop_label_depth] = brk;
+    g_cont_label[g_loop_label_depth] = cont;
+    g_loop_label_depth = g_loop_label_depth + 1;
+}
+
+void ll_loop_pop(void) {
+    if (g_loop_label_depth > 0) { g_loop_label_depth = g_loop_label_depth - 1; }
+}
+
+void ll_stmt_break(struct AstNode* n) {
+    if (g_loop_label_depth <= 0) { return; }
+    ll_out_str("  br label %");
+    ll_out_str(g_brk_label[g_loop_label_depth - 1]);
+    ll_out_nl();
+    ll_set_terminated(1);
+}
+
+void ll_stmt_continue(struct AstNode* n) {
+    if (g_loop_label_depth <= 0) { return; }
+    ll_out_str("  br label %");
+    ll_out_str(g_cont_label[g_loop_label_depth - 1]);
+    ll_out_nl();
+    ll_set_terminated(1);
+}
+
+// ---------------------------------------------------------------------------
+// return.
+// ---------------------------------------------------------------------------
+void ll_stmt_return(struct AstNode* n) {
+    if (n->a != 0) {
+        int ty;
+        char* v;
+        v = ll_expr(n->a);
+        ty = g_expr_ty;
+        ll_out_str("  ret ");
+        ll_out_str(ll_type_name(ty));
+        ll_out_str(" ");
+        ll_out_str(v);
+        ll_out_nl();
+    } else {
+        ll_out_str("  ret void\n");
+    }
+    ll_set_terminated(1);
+}

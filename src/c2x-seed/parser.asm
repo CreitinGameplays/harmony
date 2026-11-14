@@ -1161,6 +1161,47 @@ parser_parse_program:
     jmp .parse_toplevel
 
 .store_global:
+    ; Merge by name with any global already stored (C tentative-definition
+    ; semantics): two `int x;` across two files denote the same object, so
+    ; emitting the label twice would be a duplicate-definition error at
+    ; assembly time. Keep the first; drop a later same-named definition.
+    push rax                              ; save the new node
+    mov rdi, [rax + ast_node_t.data2]     ; new name_ptr
+    mov rsi, rdi
+    call strlen
+    push rdi                              ; [rsp] = new name_ptr
+    push rax                              ; [rsp] = new name length
+    xor rbx, rbx
+.sg_scan:
+    cmp rbx, r14
+    jge .sg_scan_done
+    mov rcx, [r15 + 8 + rbx * 8]          ; existing node
+    test rcx, rcx
+    jz .sg_scan_next
+    mov rsi, [rcx + ast_node_t.data2]     ; existing name_ptr
+    push rsi
+    mov rdi, rsi
+    call strlen
+    pop rsi
+    cmp rax, [rsp]                        ; same length?
+    jne .sg_scan_next
+    mov rdi, [rsp + 8]                    ; new name_ptr
+    mov rdx, [rsp]                        ; new name length
+    call mem_eq
+    test rax, rax
+    jnz .sg_scan_next
+    jmp .sg_dup
+.sg_scan_next:
+    inc rbx
+    jmp .sg_scan
+.sg_dup:
+    add rsp, 16                           ; discard saved name ptr/len
+    pop rax                               ; discard the duplicate node
+    jmp .parse_toplevel
+.sg_scan_done:
+    add rsp, 16                           ; discard saved name ptr/len
+    pop rax                               ; restore the new node
+
     ; Store global var/array/struct in global array — grow if at capacity
     mov rbx, [prog_global_capacity]
     cmp r14, rbx

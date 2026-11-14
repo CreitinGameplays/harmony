@@ -1,0 +1,642 @@
+// harmony-base — LLVM lowering, part 2: expressions (docs/harmony.md §7, §19.4).
+//
+// Every expression lowers to an SSA value name (or a literal constant string)
+// and records its type in `g_expr_ty`. Trapping arithmetic (§7.3) uses the
+// `llvm.*.with.overflow` intrinsics and calls @lc_trap when the overflow bit
+// is set; division, remainder and shifts get explicit checks.
+//
+// M1 slice: literals, local paths, integer/float arithmetic, comparisons,
+// and short-circuit `&&`/`||`. Fields, indexing, calls, casts, structs,
+// enums, and `switch` land in the next batch (their AST nodes fall through
+// to a zeroed value, and the checker has already validated the program).
+
+// ---- Forward declarations (c2x-seed resolves names from earlier text) ----
+char* ll_bin(char* op, int ty, char* a, char* b);
+char* ll_cmp(char* op, int ty, char* a, char* b);
+char* ll_const_int(int v, int ty);
+char* ll_load(int ty, char* ptr);
+int   ll_suffix_ty(char* suffix);
+char* ll_expr_path(struct AstNode* n);
+char* ll_expr_binary(struct AstNode* n);
+char* ll_expr_unary(struct AstNode* n);
+char* ll_expr_field(struct AstNode* n);
+char* ll_expr_index(struct AstNode* n);
+char* ll_expr_call(struct AstNode* n);
+char* ll_expr_cast(struct AstNode* n);
+char* ll_int_cmp(char* op, int ty, char* l, char* r);
+char* ll_logical_and(struct AstNode* n);
+char* ll_logical_or(struct AstNode* n);
+char* ll_overflow_op(char* which, int ty, struct AstNode* n, char* l, char* r);
+char* ll_div_checked(int ty, struct AstNode* n, char* l, char* r, int is_rem);
+char* ll_shift(int ty, struct AstNode* n, char* l, char* r, int is_right);
+char* ll_float_bin(char* op, struct AstNode* n, char* l, char* r);
+void  ll_str_append(char* buf, char* s);
+char* ll_call_symbol(char* name);
+char* ll_checked_bin(char* op, int ty, struct AstNode* n, char* l, char* r);
+int   ll_get_terminated(void);
+void  ll_set_terminated(int v);
+
+int g_expr_ty;   // type of the most recently lowered expression
+
+// ---- Declarations shared across the lowering files (llvm.c2 / lstmt.c2) ----
+char* ll_expr(struct AstNode* n);
+void  ll_block(struct AstNode* blk);
+void  ll_stmt(struct AstNode* n);
+void  ll_emit_trap(int code, struct AstNode* at, char* detail);
+char* ll_new_reg(void);
+char* ll_new_label(char* hint);
+char* ll_type_name(int id);
+char* ll_zero_of(int id);
+int   ll_is_float_ty(int id);
+char* ll_local_slot(char* name);
+int   ll_local_ty(char* name);
+void  ll_local_declare(char* name, char* slot, int ty);
+void  ll_out_str(char* s);
+void  ll_out_int(int v);
+void  ll_out_nl(void);
+char* ll_int_type_suffix(int ty);
+
+// ---------------------------------------------------------------------------
+// Small instruction helpers.
+// ---------------------------------------------------------------------------
+char* ll_bin(char* op, int ty, char* a, char* b) {
+    char* r;
+    r = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(r);
+    ll_out_str(" = ");
+    ll_out_str(op);
+    ll_out_str(" ");
+    ll_out_str(ll_type_name(ty));
+    ll_out_str(" ");
+    ll_out_str(a);
+    ll_out_str(", ");
+    ll_out_str(b);
+    ll_out_nl();
+    return r;
+}
+
+char* ll_cmp(char* op, int ty, char* a, char* b) {
+    char* r;
+    r = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(r);
+    ll_out_str(" = ");
+    ll_out_str(op);
+    ll_out_str(" ");
+    ll_out_str(ll_type_name(ty));
+    ll_out_str(" ");
+    ll_out_str(a);
+    ll_out_str(", ");
+    ll_out_str(b);
+    ll_out_nl();
+    return r;
+}
+
+char* ll_const_int(int v, int ty) {
+    char* r;
+    r = arena_alloc(24);
+    g_expr_ty = ty;
+    ll_int_into(r, v);
+    return r;
+}
+
+// Loads a value of `ty` from pointer `ptr`.
+char* ll_load(int ty, char* ptr) {
+    char* r;
+    r = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(r);
+    ll_out_str(" = load ");
+    ll_out_str(ll_type_name(ty));
+    ll_out_str(", ptr ");
+    ll_out_str(ptr);
+    ll_out_nl();
+    return r;
+}
+
+// ---------------------------------------------------------------------------
+// Literals.
+// ---------------------------------------------------------------------------
+int ll_suffix_ty(char* suffix) {
+    if (str_eq(suffix, "u8")) { return TY_U8; }
+    if (str_eq(suffix, "u16")) { return TY_U16; }
+    if (str_eq(suffix, "u32")) { return TY_U32; }
+    if (str_eq(suffix, "u64")) { return TY_U64; }
+    if (str_eq(suffix, "usize")) { return TY_USIZE; }
+    if (str_eq(suffix, "i8")) { return TY_I8; }
+    if (str_eq(suffix, "i16")) { return TY_I16; }
+    if (str_eq(suffix, "i32")) { return TY_I32; }
+    if (str_eq(suffix, "i64")) { return TY_I64; }
+    if (str_eq(suffix, "isize")) { return TY_ISIZE; }
+    return TY_I32;
+}
+
+// The type an expression node was given by the checker (0 -> i32 fallback).
+int ll_node_ty(struct AstNode* n) {
+    if (n == 0 || n->ty == 0) { return TY_I32; }
+    if (n->ty == TY_UINT_LIT) { return TY_I32; }
+    if (n->ty == TY_FLOAT_LIT) { return TY_F64; }
+    return n->ty;
+}
+
+// ---------------------------------------------------------------------------
+// Expression entry point.
+// ---------------------------------------------------------------------------
+char* ll_expr(struct AstNode* n) {
+    if (n == 0) { g_expr_ty = TY_UNIT; return "0"; }
+    if (n->kind == AST_BOOL_LIT) {
+        g_expr_ty = TY_BOOL;
+        if (n->ival != 0) { return "true"; }
+        return "false";
+    }
+    if (n->kind == AST_INT_LIT) {
+        char* r;
+        r = arena_alloc(24);
+        if (n->sval != 0) {
+            g_expr_ty = ll_suffix_ty(n->sval);
+        } else {
+            g_expr_ty = TY_I32;
+        }
+        ll_int_into(r, n->ival);
+        return r;
+    }
+    if (n->kind == AST_FLOAT_LIT) { g_expr_ty = TY_F64; return n->sval; }
+    if (n->kind == AST_CHAR_LIT) {
+        char* r;
+        r = arena_alloc(24);
+        g_expr_ty = TY_CHAR;
+        ll_int_into(r, n->ival);
+        return r;
+    }
+    if (n->kind == AST_UNIT_LIT) { g_expr_ty = TY_UNIT; return "0"; }
+    if (n->kind == AST_PATH) { return ll_expr_path(n); }
+    if (n->kind == AST_BINARY) { return ll_expr_binary(n); }
+    if (n->kind == AST_UNARY) { return ll_expr_unary(n); }
+    if (n->kind == AST_FIELD_ACC) { return ll_expr_field(n); }
+    if (n->kind == AST_INDEX) { return ll_expr_index(n); }
+    if (n->kind == AST_CALL) { return ll_expr_call(n); }
+    if (n->kind == AST_AS) { return ll_expr_cast(n); }
+    if (n->kind == AST_SIZEOF) {
+        g_expr_ty = TY_USIZE;
+        return ll_const_int(ty_size(ck_resolve_type(n->a)), TY_USIZE);
+    }
+    g_expr_ty = ll_node_ty(n);
+    return ll_zero_of(g_expr_ty);
+}
+
+// A local binding: load from its alloca slot.
+char* ll_expr_path(struct AstNode* n) {
+    char* slot;
+    slot = ll_local_slot(n->sval);
+    if (slot != 0) {
+        g_expr_ty = ll_local_ty(n->sval);
+        return ll_load(g_expr_ty, slot);
+    }
+    g_expr_ty = ll_node_ty(n);
+    return ll_zero_of(g_expr_ty);
+}
+
+// ---------------------------------------------------------------------------
+// Binary operators.
+// ---------------------------------------------------------------------------
+char* ll_expr_binary(struct AstNode* n) {
+    char* op;
+    char* l;
+    char* r;
+    int lt;
+    int rt;
+    op = n->sval;
+
+    if (str_eq(op, "&&")) { return ll_logical_and(n); }
+    if (str_eq(op, "||")) { return ll_logical_or(n); }
+
+    l = ll_expr(n->a);
+    lt = g_expr_ty;
+    r = ll_expr(n->b);
+    rt = g_expr_ty;
+    if (ty_is_untyped_lit(lt)) { lt = rt; }
+    return ll_checked_bin(op, lt, n, l, r);
+}
+
+// Applies an operator to already-lowered operands. Shared by binary
+// expressions and compound assignments (`x += y`).
+char* ll_checked_bin(char* op, int ty, struct AstNode* n, char* l, char* r) {
+    if (ll_is_float_ty(ty)) { return ll_float_bin(op, n, l, r); }
+    if (str_eq(op, "==") || str_eq(op, "!=") || str_eq(op, "<") || str_eq(op, "<=")
+        || str_eq(op, ">") || str_eq(op, ">=")) {
+        return ll_int_cmp(op, ty, l, r);
+    }
+    if (str_eq(op, "+")) { return ll_overflow_op("add", ty, n, l, r); }
+    if (str_eq(op, "-")) { return ll_overflow_op("sub", ty, n, l, r); }
+    if (str_eq(op, "*")) { return ll_overflow_op("mul", ty, n, l, r); }
+    if (str_eq(op, "/")) { return ll_div_checked(ty, n, l, r, 0); }
+    if (str_eq(op, "%")) { return ll_div_checked(ty, n, l, r, 1); }
+    if (str_eq(op, "&")) { g_expr_ty = ty; return ll_bin("and", ty, l, r); }
+    if (str_eq(op, "|")) { g_expr_ty = ty; return ll_bin("or", ty, l, r); }
+    if (str_eq(op, "^")) { g_expr_ty = ty; return ll_bin("xor", ty, l, r); }
+    if (str_eq(op, "<<")) { return ll_shift(ty, n, l, r, 0); }
+    if (str_eq(op, ">>")) { return ll_shift(ty, n, l, r, 1); }
+    g_expr_ty = ty;
+    return ll_zero_of(ty);
+}
+
+char* ll_int_cmp(char* op, int ty, char* l, char* r) {
+    char* ir;
+    int sgnd;
+    sgnd = 1;
+    if (ty_is_unsigned(ty) || ty == TY_BOOL) { sgnd = 0; }
+    if (str_eq(op, "==")) { ir = "icmp eq"; }
+    else if (str_eq(op, "!=")) { ir = "icmp ne"; }
+    else if (str_eq(op, "<")) { if (sgnd) { ir = "icmp slt"; } else { ir = "icmp ult"; } }
+    else if (str_eq(op, "<=")) { if (sgnd) { ir = "icmp sle"; } else { ir = "icmp ule"; } }
+    else if (str_eq(op, ">")) { if (sgnd) { ir = "icmp sgt"; } else { ir = "icmp ugt"; } }
+    else { if (sgnd) { ir = "icmp sge"; } else { ir = "icmp uge"; } }
+    g_expr_ty = TY_BOOL;
+    return ll_cmp(ir, ty, l, r);
+}
+
+// `&&`: evaluate the right side only when the left is true.
+char* ll_logical_and(struct AstNode* n) {
+    char* l;
+    char* lslot;
+    char* rhslbl;
+    char* endlbl;
+    char* res;
+    l = ll_expr(n->a);
+    lslot = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(lslot);
+    ll_out_str(" = alloca i1\n  store i1 ");
+    ll_out_str(l);
+    ll_out_str(", ptr ");
+    ll_out_str(lslot);
+    ll_out_nl();
+    rhslbl = ll_new_label("and.rhs");
+    endlbl = ll_new_label("and.end");
+    ll_out_str("  br i1 ");
+    ll_out_str(l);
+    ll_out_str(", label %");
+    ll_out_str(rhslbl);
+    ll_out_str(", label %");
+    ll_out_str(endlbl);
+    ll_out_nl();
+    ll_out_str(rhslbl);
+    ll_out_str(":\n");
+    {
+        char* rr;
+        rr = ll_expr(n->b);
+        ll_out_str("  store i1 ");
+        ll_out_str(rr);
+        ll_out_str(", ptr ");
+        ll_out_str(lslot);
+        ll_out_nl();
+        ll_out_str("  br label %");
+        ll_out_str(endlbl);
+        ll_out_nl();
+    }
+    ll_out_str(endlbl);
+    ll_out_str(":\n");
+    res = ll_load(TY_BOOL, lslot);
+    g_expr_ty = TY_BOOL;
+    return res;
+}
+
+char* ll_logical_or(struct AstNode* n) {
+    char* l;
+    char* lslot;
+    char* rhslbl;
+    char* endlbl;
+    char* res;
+    l = ll_expr(n->a);
+    lslot = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(lslot);
+    ll_out_str(" = alloca i1\n  store i1 ");
+    ll_out_str(l);
+    ll_out_str(", ptr ");
+    ll_out_str(lslot);
+    ll_out_nl();
+    rhslbl = ll_new_label("or.rhs");
+    endlbl = ll_new_label("or.end");
+    ll_out_str("  br i1 ");
+    ll_out_str(l);
+    ll_out_str(", label %");
+    ll_out_str(endlbl);
+    ll_out_str(", label %");
+    ll_out_str(rhslbl);
+    ll_out_nl();
+    ll_out_str(rhslbl);
+    ll_out_str(":\n");
+    {
+        char* rr;
+        rr = ll_expr(n->b);
+        ll_out_str("  store i1 ");
+        ll_out_str(rr);
+        ll_out_str(", ptr ");
+        ll_out_str(lslot);
+        ll_out_nl();
+        ll_out_str("  br label %");
+        ll_out_str(endlbl);
+        ll_out_nl();
+    }
+    ll_out_str(endlbl);
+    ll_out_str(":\n");
+    res = ll_load(TY_BOOL, lslot);
+    g_expr_ty = TY_BOOL;
+    return res;
+}
+
+// Checked + - *: `llvm.{s,u}{add,sub,mul}.with.overflow`, then trap on bit 1.
+char* ll_overflow_op(char* which, int ty, struct AstNode* n, char* l, char* r) {
+    char* pair;
+    char* val;
+    char* ovf;
+    char* oklbl;
+    char* taplbl;
+    pair = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(pair);
+    ll_out_str(" = call { ");
+    ll_out_str(ll_type_name(ty));
+    ll_out_str(", i1 } @llvm.");
+    if (ty_is_unsigned(ty)) { ll_out_str("u"); } else { ll_out_str("s"); }
+    ll_out_str(which);
+    ll_out_str(".with.overflow.");
+    ll_out_str(ll_int_type_suffix(ty));
+    ll_out_str("(");
+    ll_out_str(ll_type_name(ty));
+    ll_out_str(" ");
+    ll_out_str(l);
+    ll_out_str(", ");
+    ll_out_str(ll_type_name(ty));
+    ll_out_str(" ");
+    ll_out_str(r);
+    ll_out_str(")\n");
+    val = ll_new_reg();
+    ovf = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(val);
+    ll_out_str(" = extractvalue { ");
+    ll_out_str(ll_type_name(ty));
+    ll_out_str(", i1 } ");
+    ll_out_str(pair);
+    ll_out_str(", 0\n  ");
+    ll_out_str(ovf);
+    ll_out_str(" = extractvalue { ");
+    ll_out_str(ll_type_name(ty));
+    ll_out_str(", i1 } ");
+    ll_out_str(pair);
+    ll_out_str(", 1\n");
+    oklbl = ll_new_label("arith.ok");
+    taplbl = ll_new_label("arith.trap");
+    ll_out_str("  br i1 ");
+    ll_out_str(ovf);
+    ll_out_str(", label %");
+    ll_out_str(taplbl);
+    ll_out_str(", label %");
+    ll_out_str(oklbl);
+    ll_out_nl();
+    ll_out_str(taplbl);
+    ll_out_str(":\n");
+    ll_emit_trap(3 /* T-OVERFLOW */, n, 0);
+    ll_out_str(oklbl);
+    ll_out_str(":\n");
+    g_expr_ty = ty;
+    return val;
+}
+
+// Division/remainder: reject a zero divisor (T-DIV0), then divide.
+char* ll_div_checked(int ty, struct AstNode* n, char* l, char* r, int is_rem) {
+    char* iszero;
+    char* zerolbl;
+    char* oklbl;
+    iszero = ll_cmp("icmp eq", ty, r, "0");
+    zerolbl = ll_new_label("div.zero");
+    oklbl = ll_new_label("div.ok");
+    ll_out_str("  br i1 ");
+    ll_out_str(iszero);
+    ll_out_str(", label %");
+    ll_out_str(zerolbl);
+    ll_out_str(", label %");
+    ll_out_str(oklbl);
+    ll_out_nl();
+    ll_out_str(zerolbl);
+    ll_out_str(":\n");
+    ll_emit_trap(4 /* T-DIV0 */, n, 0);
+    ll_out_str(oklbl);
+    ll_out_str(":\n");
+    g_expr_ty = ty;
+    if (is_rem) { return ll_bin("srem", ty, l, r); }
+    if (ty_is_unsigned(ty)) { return ll_bin("udiv", ty, l, r); }
+    return ll_bin("sdiv", ty, l, r);
+}
+
+// Shifts: the amount must be < the bit width (T-SHIFT).
+char* ll_shift(int ty, struct AstNode* n, char* l, char* r, int is_right) {
+    char* inrange;
+    char* badlbl;
+    char* oklbl;
+    inrange = ll_cmp("icmp ult", ty, r, ll_const_int(ty_bit_width(ty), ty));
+    badlbl = ll_new_label("shift.bad");
+    oklbl = ll_new_label("shift.ok");
+    ll_out_str("  br i1 ");
+    ll_out_str(inrange);
+    ll_out_str(", label %");
+    ll_out_str(oklbl);
+    ll_out_str(", label %");
+    ll_out_str(badlbl);
+    ll_out_nl();
+    ll_out_str(badlbl);
+    ll_out_str(":\n");
+    ll_emit_trap(5 /* T-SHIFT */, n, 0);
+    ll_out_str(oklbl);
+    ll_out_str(":\n");
+    g_expr_ty = ty;
+    if (is_right) {
+        if (ty_is_unsigned(ty)) { return ll_bin("lshr", ty, l, r); }
+        return ll_bin("ashr", ty, l, r);
+    }
+    return ll_bin("shl", ty, l, r);
+}
+
+// Float arithmetic / comparison (IEEE, no traps, §7.3).
+char* ll_float_bin(char* op, struct AstNode* n, char* l, char* r) {
+    int ty;
+    ty = TY_F64;
+    if (str_eq(op, "==") || str_eq(op, "!=") || str_eq(op, "<") || str_eq(op, "<=")
+        || str_eq(op, ">") || str_eq(op, ">=")) {
+        char* ir;
+        if (str_eq(op, "==")) { ir = "fcmp oeq"; }
+        else if (str_eq(op, "!=")) { ir = "fcmp une"; }
+        else if (str_eq(op, "<")) { ir = "fcmp olt"; }
+        else if (str_eq(op, "<=")) { ir = "fcmp ole"; }
+        else if (str_eq(op, ">")) { ir = "fcmp ogt"; }
+        else { ir = "fcmp oge"; }
+        g_expr_ty = TY_BOOL;
+        return ll_cmp(ir, ty, l, r);
+    }
+    g_expr_ty = ty;
+    if (str_eq(op, "+")) { return ll_bin("fadd", ty, l, r); }
+    if (str_eq(op, "-")) { return ll_bin("fsub", ty, l, r); }
+    if (str_eq(op, "*")) { return ll_bin("fmul", ty, l, r); }
+    if (str_eq(op, "/")) { return ll_bin("fdiv", ty, l, r); }
+    g_expr_ty = ty;
+    return ll_zero_of(ty);
+}
+
+// ---------------------------------------------------------------------------
+// Unary operators.
+// ---------------------------------------------------------------------------
+char* ll_expr_unary(struct AstNode* n) {
+    char* op;
+    op = n->sval;
+    if (str_eq(op, "-")) {
+        char* v;
+        int ty;
+        v = ll_expr(n->a);
+        ty = g_expr_ty;
+        if (ll_is_float_ty(ty)) {
+            g_expr_ty = ty;
+            return ll_bin("fsub", ty, ll_zero_of(ty), v);
+        }
+        // MIN negation traps; reuse the checked-sub logic with l = 0.
+        return ll_overflow_op("sub", ty, n, ll_zero_of(ty), v);
+    }
+    if (str_eq(op, "!")) {
+        char* v;
+        char* r;
+        v = ll_expr(n->a);
+        r = ll_new_reg();
+        ll_out_str("  ");
+        ll_out_str(r);
+        ll_out_str(" = xor i1 ");
+        ll_out_str(v);
+        ll_out_str(", true\n");
+        g_expr_ty = TY_BOOL;
+        return r;
+    }
+    if (str_eq(op, "~")) {
+        char* v;
+        int ty;
+        v = ll_expr(n->a);
+        ty = g_expr_ty;
+        g_expr_ty = ty;
+        return ll_bin("xor", ty, v, "-1");
+    }
+    return ll_expr(n->a);
+}
+
+// ---------------------------------------------------------------------------
+// Not-yet-lowered expression forms (M1 next batch). They return a zero of the
+// node's checked type so the IR stays valid; the driver reports ICE-01 for
+// programs that use them, so nothing silently miscompiles.
+// ---------------------------------------------------------------------------
+char* ll_expr_field(struct AstNode* n) {
+    g_expr_ty = ll_node_ty(n);
+    return ll_zero_of(g_expr_ty);
+}
+
+char* ll_expr_index(struct AstNode* n) {
+    g_expr_ty = ll_node_ty(n);
+    return ll_zero_of(g_expr_ty);
+}
+
+char* ll_expr_call(struct AstNode* n) {
+    struct AstNode* callee;
+    struct AstList* args;
+    int retty;
+    int i;
+    char* ret;
+    char* buf;
+
+    retty = ll_node_ty(n);
+    callee = n->a;
+    args = n->kids;
+
+    if (callee == 0 || callee->kind != AST_PATH) {
+        // Method calls and indirect calls arrive in the next batch.
+        g_expr_ty = retty;
+        return ll_zero_of(retty);
+    }
+
+    // Emit the arguments left to right (§7.5) into a register list.
+    buf = arena_alloc(256);
+    buf[0] = 0;
+    if (args != 0) {
+        i = 0;
+        while (i < args->len) {
+            char* a;
+            int aty;
+            a = ll_expr(args->items[i]);
+            aty = g_expr_ty;
+            if (i > 0) { ll_str_append(buf, ", "); }
+            ll_str_append(buf, ll_type_name(aty));
+            ll_str_append(buf, " ");
+            ll_str_append(buf, a);
+            i = i + 1;
+        }
+    }
+
+    if (retty == TY_UNIT || retty == TY_NEVER) {
+        ll_out_str("  call void @");
+        ll_out_str(ll_call_symbol(callee->sval));
+        ll_out_str("(");
+        ll_out_str(buf);
+        ll_out_str(")\n");
+        if (retty == TY_NEVER) {
+            // A `never` call does not return; the block ends here.
+            ll_out_str("  unreachable\n");
+            ll_set_terminated(1);
+        }
+        g_expr_ty = retty;
+        return "0";
+    }
+
+    ret = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(ret);
+    ll_out_str(" = call ");
+    ll_out_str(ll_type_name(retty));
+    ll_out_str(" @");
+    ll_out_str(ll_call_symbol(callee->sval));
+    ll_out_str("(");
+    ll_out_str(buf);
+    ll_out_str(")\n");
+    g_expr_ty = retty;
+    return ret;
+}
+
+// Appends `s` to the NUL-terminated buffer `buf`.
+void ll_str_append(char* buf, char* s) {
+    int n;
+    n = ll_str_len(buf);
+    ll_str_into(buf + n, s);
+}
+
+// `name` -> the emitted symbol for a called function (`main` -> harmony_main,
+// others -> harmony__name). Associated calls and methods land later.
+char* ll_call_symbol(char* name) {
+    if (str_eq(name, "main")) { return "harmony_main"; }
+    lexbuf_reset();
+    lexbuf_push_str("harmony__");
+    lexbuf_push_str(name);
+    return lexbuf_finish();
+}
+
+char* ll_expr_cast(struct AstNode* n) {
+    // A cast is a value-preserving reinterpret for the widths M1 allows; the
+    // source value passes through (the checker restricted conversions to
+    // width-compatible families).
+    char* v;
+    v = ll_expr(n->a);
+    g_expr_ty = ll_node_ty(n);
+    return v;
+}
+
+char* ll_int_type_suffix(int ty) {
+    if (ty_bit_width(ty) == 8) { return "i8"; }
+    if (ty_bit_width(ty) == 16) { return "i16"; }
+    if (ty_bit_width(ty) == 64) { return "i64"; }
+    return "i32";
+}

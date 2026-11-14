@@ -16,6 +16,10 @@ HB_SRC    := \
 	src/harmony-base/types.c2 \
 	src/harmony-base/check.c2 \
 	src/harmony-base/cexpr.c2 \
+	src/harmony-base/llvm.c2 \
+	src/harmony-base/lexpr.c2 \
+	src/harmony-base/lstmt.c2 \
+	src/harmony-base/emit.c2 \
 	src/harmony-base/parser.c2 \
 	src/harmony-base/pstmts.c2 \
 	src/harmony-base/pexpr.c2 \
@@ -43,6 +47,7 @@ test: test-seed harmony-base
 	bash tests/harmony/parser.sh
 	bash tests/harmony/checker.sh
 	bash tests/harmony/error-handling.sh
+	bash tests/harmony/codegen.sh
 	bash tests/harmony/golden.sh
 	bash tests/harmony/determinism.sh
 

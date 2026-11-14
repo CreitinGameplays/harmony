@@ -1,0 +1,505 @@
+// harmony-base — LLVM IR text emitter, part 1: module, types, functions
+// (docs/harmony.md §19.4, the primary backend).
+//
+// The emitter produces deterministic `.ll` text: readable symbol names
+// (`harmony__name`, `%struct.X`), a fixed type/definition order, no
+// addresses or timestamps. Two runs on one input diff clean.
+//
+// Layout:
+//   llvm.c2  — output buffer, type names, the module/function driver, locals
+//   lexpr.c2 — expression lowering (returns an SSA value name)
+//   lstmt.c2 — statement/block lowering
+//
+// Register model: an expression lowers to an SSA value name (e.g. "%3"),
+// returned as an arena string; instructions are appended as they are
+// produced, so evaluation order is exactly the source order (§7.5). Locals
+// live in `alloca` slots so they are addressable (needed for &x, fields, and
+// loops); loads/stores go through them.
+
+// ---------------------------------------------------------------------------
+// Forward declarations (c2x-seed resolves names from earlier text only).
+// ---------------------------------------------------------------------------
+void ll_emit_type_def(int id);
+void ll_emit_fn(struct AstNode* fn);
+void ll_emit_param_types(struct AstList* params);
+char* ll_fn_symbol(struct AstNode* fn);
+char* ll_sized_field_type(int id);
+
+// ---------------------------------------------------------------------------
+// Output buffer: the module text is assembled whole, then flushed (arena
+// backed, doubling, per the project's "prefer auto-resizable" rule).
+// ---------------------------------------------------------------------------
+char* g_out;
+int g_out_len;
+int g_out_cap;
+
+void ll_out_reset(void) {
+    g_out_cap = 65536;
+    g_out = arena_alloc(g_out_cap);
+    g_out_len = 0;
+    g_out[0] = 0;
+}
+
+void ll_out_grow(void) {
+    char* bigger;
+    int i;
+    int ncap;
+    ncap = g_out_cap * 2;
+    bigger = arena_alloc(ncap);
+    i = 0;
+    while (i < g_out_len) { bigger[i] = g_out[i]; i = i + 1; }
+    g_out = bigger;
+    g_out_cap = ncap;
+}
+
+void ll_out_char(char c) {
+    if (g_out_len + 2 >= g_out_cap) { ll_out_grow(); }
+    g_out[g_out_len] = c;
+    g_out_len = g_out_len + 1;
+    g_out[g_out_len] = 0;
+}
+
+void ll_out_str(char* s) {
+    int i;
+    i = 0;
+    while (s[i] != 0) { ll_out_char(s[i]); i = i + 1; }
+}
+
+void ll_out_int(int v) {
+    int neg;
+    int div;
+    int rem;
+    char tmp[12];
+    int n;
+    neg = 0;
+    if (v < 0) { neg = 1; v = -v; }
+    n = 0;
+    if (v == 0) { ll_out_char('0'); return; }
+    while (v > 0) {
+        div = v / 10;
+        rem = v - div * 10;
+        tmp[n] = (char) ('0' + rem);
+        n = n + 1;
+        v = div;
+    }
+    if (neg) { ll_out_char('-'); }
+    while (n > 0) { n = n - 1; ll_out_char(tmp[n]); }
+}
+
+void ll_out_nl(void) { ll_out_char('\n'); }
+
+// ---------------------------------------------------------------------------
+// SSA / label counters (reset per function).
+// ---------------------------------------------------------------------------
+int g_ssa;
+int g_label;
+
+char* ll_new_reg(void) {
+    char* r;
+    g_ssa = g_ssa + 1;
+    r = arena_alloc(16);
+    r[0] = '%';
+    ll_int_into(r + 1, g_ssa);
+    return r;
+}
+
+char* ll_new_label(char* hint) {
+    char* l;
+    g_label = g_label + 1;
+    l = arena_alloc(64);
+    ll_str_into(l, hint);
+    {
+        int n;
+        n = ll_str_len(l);
+        l[n] = '.';
+        ll_int_into(l + n + 1, g_label);
+    }
+    return l;
+}
+
+// Writes `v` as decimal into `buf` (NUL-terminated); returns nothing.
+void ll_int_into(char* buf, int v) {
+    char tmp[12];
+    int n;
+    int i;
+    n = 0;
+    if (v == 0) { buf[0] = '0'; buf[1] = 0; return; }
+    while (v > 0) { tmp[n] = (char) ('0' + (v - (v / 10) * 10)); n = n + 1; v = v / 10; }
+    i = 0;
+    while (n > 0) { n = n - 1; buf[i] = tmp[n]; i = i + 1; }
+    buf[i] = 0;
+}
+
+void ll_str_into(char* dst, char* src) {
+    int i;
+    i = 0;
+    while (src[i] != 0) { dst[i] = src[i]; i = i + 1; }
+    dst[i] = 0;
+}
+
+int ll_str_len(char* s) {
+    int n;
+    n = 0;
+    while (s[n] != 0) { n = n + 1; }
+    return n;
+}
+
+// ---------------------------------------------------------------------------
+// Type names in LLVM IR.
+// ---------------------------------------------------------------------------
+char* ll_type_name(int id) {
+    int k;
+    if (id == TY_BOOL) { return "i1"; }
+    if (id == TY_CHAR || id == TY_I32 || id == TY_U32 || id == TY_UINT_LIT) { return "i32"; }
+    if (id == TY_I8 || id == TY_U8) { return "i8"; }
+    if (id == TY_I16 || id == TY_U16) { return "i16"; }
+    if (id == TY_I64 || id == TY_U64 || id == TY_ISIZE || id == TY_USIZE) { return "i64"; }
+    if (id == TY_F32) { return "float"; }
+    if (id == TY_F64 || id == TY_FLOAT_LIT) { return "double"; }
+    if (id == TY_UNIT || id == TY_NEVER) { return "void"; }
+    k = ty_kind(id);
+    if (k == CTY_REF || k == CTY_MUTREF || k == CTY_HEAP || k == CTY_PTR
+        || k == CTY_MUTPTR || k == CTY_STRREF || k == CTY_SLICE) {
+        return "ptr";
+    }
+    if (k == CTY_STRUCT) {
+        lexbuf_reset();
+        lexbuf_push_str("%struct.");
+        lexbuf_push_str(ty_display(id));
+        return lexbuf_finish();
+    }
+    if (k == CTY_ENUM) {
+        lexbuf_reset();
+        lexbuf_push_str("%enum.");
+        lexbuf_push_str(ty_display(id));
+        return lexbuf_finish();
+    }
+    if (k == CTY_ARRAY) {
+        int esz;
+        esz = ty_size(ty_elem(id));
+        if (esz == 0) { esz = 1; }
+        lexbuf_reset();
+        lexbuf_push_str("[");
+        lexbuf_push_int(ty_size(id) / esz);
+        lexbuf_push_str(" x ");
+        lexbuf_push_str(ll_type_name(ty_elem(id)));
+        lexbuf_push_str("]");
+        return lexbuf_finish();
+    }
+    return "i32";
+}
+
+// A struct-field type as a *sized* LLVM type: bool/unit store as i8, char as
+// i32, so every field occupies at least one byte.
+char* ll_sized_field_type(int id) {
+    if (id == TY_UNIT || id == TY_NEVER || id == TY_BOOL) { return "i8"; }
+    return ll_type_name(id);
+}
+
+int ll_is_float_ty(int id) {
+    return id == TY_F32 || id == TY_F64 || id == TY_FLOAT_LIT;
+}
+
+char* ll_zero_of(int id) {
+    if (id == TY_BOOL) { return "false"; }
+    if (ll_is_float_ty(id)) { return "0.0"; }
+    if (ty_kind(id) == CTY_STRUCT || ty_kind(id) == CTY_ENUM || ty_is_array(id)) {
+        return "zeroinitializer";
+    }
+    if (ty_kind(id) == CTY_REF || ty_kind(id) == CTY_MUTREF || ty_kind(id) == CTY_HEAP
+        || ty_kind(id) == CTY_PTR || ty_kind(id) == CTY_MUTPTR
+        || ty_kind(id) == CTY_STRREF || ty_kind(id) == CTY_SLICE) {
+        return "null";
+    }
+    return "0";
+}
+
+// ---------------------------------------------------------------------------
+// Local-variable environment: name -> alloca slot + type. Resizable, with
+// scope marks so shadowed names and block scopes work.
+// ---------------------------------------------------------------------------
+const int LL_MAX_LOCALS = 4096;
+char* g_loc_name[4096];
+char* g_loc_slot[4096];
+int   g_loc_ty[4096];
+int   g_nlocals;
+int   g_lscope[256];
+int   g_nlscope;
+
+void ll_env_reset(void) {
+    g_nlocals = 0;
+    g_nlscope = 0;
+}
+
+void ll_env_scope_push(void) {
+    g_lscope[g_nlscope] = g_nlocals;
+    g_nlscope = g_nlscope + 1;
+}
+
+void ll_env_scope_pop(void) {
+    if (g_nlscope > 0) {
+        g_nlscope = g_nlscope - 1;
+        g_nlocals = g_lscope[g_nlscope];
+    }
+}
+
+void ll_local_declare(char* name, char* slot, int ty) {
+    g_loc_name[g_nlocals] = name;
+    g_loc_slot[g_nlocals] = slot;
+    g_loc_ty[g_nlocals] = ty;
+    g_nlocals = g_nlocals + 1;
+}
+
+int ll_local_find(char* name) {
+    int i;
+    i = g_nlocals - 1;
+    while (i >= 0) {
+        if (str_eq(g_loc_name[i], name)) { return i; }
+        i = i - 1;
+    }
+    return -1;
+}
+
+char* ll_local_slot(char* name) {
+    int i;
+    i = ll_local_find(name);
+    if (i < 0) { return 0; }
+    return g_loc_slot[i];
+}
+
+int ll_local_ty(char* name) {
+    int i;
+    i = ll_local_find(name);
+    if (i < 0) { return TY_INVALID; }
+    return g_loc_ty[i];
+}
+
+// ---------------------------------------------------------------------------
+// Block/terminator tracking. A block "has a terminator" once it ends with
+// ret/br/unreachable; emitting more instructions there is invalid IR, so the
+// statement emitter guards on this. Shared by lexpr.c2 (which restores it
+// after a guarded trap sequence) and lstmt.c2.
+// ---------------------------------------------------------------------------
+int g_terminated;
+
+void ll_set_terminated(int v) { g_terminated = v; }
+int  ll_get_terminated(void) { return g_terminated; }
+
+// ---------------------------------------------------------------------------
+// Module driver.
+// ---------------------------------------------------------------------------
+void ll_emit_module(struct AstNode* prog) {
+    int i;
+    struct AstList* items;
+
+    ll_out_reset();
+    ll_env_reset();
+
+    ll_out_str("; harmony module — generated by harmony-base\n");
+    ll_out_str("target triple = \"x86_64-pc-linux-gnu\"\n\n");
+
+    // Runtime hooks the compiler emits calls to (§19.8.4: only names/shapes).
+    ll_out_str("declare void @lc_trap(i64, i64, i64, i64)\n");
+    ll_out_str("declare void @lc_check_index(i64, i64, i64, i64)\n");
+    ll_out_str("declare ptr @lc_alloc(i64)\n\n");
+
+    items = prog->kids;
+    if (items == 0) { return; }
+
+    // Nominal type definitions, in declaration order (deterministic).
+    i = 0;
+    while (i < items->len) {
+        struct AstNode* it;
+        it = items->items[i];
+        if (it->kind == AST_STRUCT || it->kind == AST_ENUM) {
+            ll_emit_type_def(it->ty);
+        }
+        i = i + 1;
+    }
+    ll_out_nl();
+
+    // Functions.
+    i = 0;
+    while (i < items->len) {
+        struct AstNode* it;
+        it = items->items[i];
+        if (it->kind == AST_FN || it->kind == AST_EXTERN_FN) {
+            ll_emit_fn(it);
+        }
+        i = i + 1;
+    }
+}
+
+void ll_emit_type_def(int id) {
+    int k;
+    int i;
+    k = ty_kind(id);
+    if (k == CTY_STRUCT) {
+        ll_out_str("%struct.");
+        ll_out_str(ty_display(id));
+        ll_out_str(" = type { ");
+        if (ty_member_count(id) == 0) { ll_out_str("i8"); }
+        i = 0;
+        while (i < ty_member_count(id)) {
+            if (i > 0) { ll_out_str(", "); }
+            ll_out_str(ll_sized_field_type(ty_member_type(id, i)));
+            i = i + 1;
+        }
+        ll_out_str(" }\n");
+    } else if (k == CTY_ENUM) {
+        int maxpay;
+        maxpay = 0;
+        i = 0;
+        while (i < ty_member_count(id)) {
+            int ps;
+            ps = ty_size(ty_member_type(id, i));
+            if (ps > maxpay) { maxpay = ps; }
+            i = i + 1;
+        }
+        if (maxpay == 0) { maxpay = 1; }
+        ll_out_str("%enum.");
+        ll_out_str(ty_display(id));
+        ll_out_str(" = type { i32, [");
+        ll_out_int(maxpay);
+        ll_out_str(" x i8] }\n");
+    }
+}
+
+void ll_emit_fn(struct AstNode* fn) {
+    struct AstList* params;
+    int i;
+    char* name;
+    int retty;
+
+    name = ll_fn_symbol(fn);
+    params = fn->kids2;
+    retty = fn->ty;
+    if (retty == 0) { retty = TY_UNIT; }
+
+    if (fn->b == 0) {
+        // extern fn: a plain C-ABI declaration.
+        ll_out_str("declare ");
+        ll_out_str(ll_type_name(retty));
+        ll_out_str(" @");
+        ll_out_str(name);
+        ll_out_str("(");
+        ll_emit_param_types(params);
+        ll_out_str(")\n\n");
+        return;
+    }
+
+    ll_out_str("define ");
+    ll_out_str(ll_type_name(retty));
+    ll_out_str(" @");
+    ll_out_str(name);
+    ll_out_str("(");
+    ll_emit_param_types(params);
+    ll_out_str(") {\n");
+    ll_out_str("entry:\n");
+    g_ssa = 0;
+    g_label = 0;
+    g_nlocals = 0;
+    g_nlscope = 0;
+    g_terminated = 0;
+
+    // Parameters: spill each SSA arg into an alloca slot.
+    if (params != 0) {
+        i = 0;
+        while (i < params->len) {
+            struct AstNode* p;
+            p = params->items[i];
+            if (!ck_is_self_param(p)) {
+                char* slot;
+                slot = ll_new_reg();
+                ll_out_str("  ");
+                ll_out_str(slot);
+                ll_out_str(" = alloca ");
+                ll_out_str(ll_type_name(p->ty));
+                ll_out_nl();
+                ll_out_str("  store ");
+                ll_out_str(ll_type_name(p->ty));
+                ll_out_str(" %arg");
+                ll_out_int(i);
+                ll_out_str(", ptr ");
+                ll_out_str(slot);
+                ll_out_nl();
+                ll_local_declare(p->sval, slot, p->ty);
+            }
+            i = i + 1;
+        }
+    }
+
+    ll_block(fn->b);
+
+    if (!g_terminated) {
+        if (fn->ty == TY_UNIT || fn->ty == TY_NEVER) {
+            ll_out_str("  ret void\n");
+        } else {
+            ll_out_str("  ret ");
+            ll_out_str(ll_type_name(fn->ty));
+            ll_out_str(" ");
+            ll_out_str(ll_zero_of(fn->ty));
+            ll_out_nl();
+        }
+    }
+    ll_out_str("}\n\n");
+}
+
+void ll_emit_param_types(struct AstList* params) {
+    int i;
+    int n;
+    if (params == 0) { return; }
+    n = 0;
+    i = 0;
+    while (i < params->len) {
+        struct AstNode* p;
+        p = params->items[i];
+        if (!ck_is_self_param(p)) {
+            if (n > 0) { ll_out_str(", "); }
+            ll_out_str(ll_type_name(p->ty));
+            ll_out_str(" %arg");
+            ll_out_int(i);
+            n = n + 1;
+        }
+        i = i + 1;
+    }
+}
+
+char* ll_fn_symbol(struct AstNode* fn) {
+    lexbuf_reset();
+    if (str_eq(fn->sval, "main")) {
+        lexbuf_push_str("harmony_main");
+        return lexbuf_finish();
+    }
+    lexbuf_push_str("harmony__");
+    lexbuf_push_str(fn->sval);
+    return lexbuf_finish();
+}
+
+// ---------------------------------------------------------------------------
+// Trap helper: emits a call to @lc_trap(code, line, col, detail) and marks
+// the block terminated (lc_trap is noreturn, §14.1).
+//
+// Callers emit a `br` to the trap block and continue in a fresh block; the
+// terminator flag belongs to *that* trap block, so this helper saves and
+// restores the ambient flag. The following block (which the caller labels
+// next) must still be emittable into.
+// ---------------------------------------------------------------------------
+void ll_emit_trap(int code, struct AstNode* at, char* detail) {
+    int saved;
+    saved = g_terminated;
+    ll_out_str("  call void @lc_trap(i64 ");
+    ll_out_int(code);
+    ll_out_str(", i64 ");
+    ll_out_int(at->file);
+    ll_out_str(", i64 ");
+    ll_out_int(at->start);
+    ll_out_str(", i64 ");
+    if (detail == 0) {
+        ll_out_str("0");
+    } else {
+        ll_out_str(detail);
+    }
+    ll_out_str(")\n  unreachable\n");
+    g_terminated = saved;
+}

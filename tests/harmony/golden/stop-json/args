@@ -1,1 +1,1 @@
---format=json build main.harmony
+--format=json emit-c main.harmony

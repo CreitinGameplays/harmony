@@ -1,1 +1,1 @@
---format=line build main.harmony
+--format=line emit-c main.harmony

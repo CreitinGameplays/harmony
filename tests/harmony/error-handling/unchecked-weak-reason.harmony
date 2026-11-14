@@ -1,0 +1,10 @@
+// WANT: UNCK-02
+// `unchecked("trust me")` is rejected by the length rule (§13.2): the reason
+// must be a real sentence, at least 12 characters.
+fn main() -> i32 {
+    let x = 7;
+    unchecked("trust me") {
+        x = x + 1;
+    }
+    return x;
+}

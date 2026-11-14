@@ -43,6 +43,13 @@ void ck_err_not_mut(struct AstNode* at, char* name);
 void ck_err_uninit(struct AstNode* at, char* name);
 void ck_err_nonexhaustive(struct AstNode* at, int ty);
 void ck_err_missing_return(struct AstNode* fn);
+void ck_stamp_lits(struct AstNode* n, int want);
+void ck_err_needs_unchecked(struct AstNode* at, char* what);
+void ck_err_needs_unchecked_fn(struct AstNode* at, char* name);
+void ck_err_weak_reason(struct AstNode* at);
+void ck_err_deny_unchecked(struct AstNode* at);
+void ck_set_deny_unchecked(int on);
+int  ck_in_unchecked(void);
 int ck_cur_fn(void);
 int ck_is_self_param(struct AstNode* p);
 int ck_resolve_type(struct AstNode* t);
@@ -84,6 +91,12 @@ const int SK_PARAM  = 4;   // parameter
 const int SK_TYPE   = 5;   // nominal type: ty = type id
 const int SK_SELF   = 6;   // `self` inside a methods block
 const int SK_GEN    = 7;   // generic parameter (T): ty = its placeholder id
+
+// `unchecked` state (§13): a depth counter so nested blocks work, and the
+// --deny-unchecked switch (UNCK-05). Both are consulted by expression checks
+// for operations that need the escape hatch (extern calls, unchecked fns).
+int g_unchecked_depth;
+int g_deny_unchecked;
 
 char* g_sym_name[4096];
 int g_sym_kind[4096];
@@ -193,6 +206,21 @@ int ck_sym_kind(char* name) {
     i = g_nsyms - 1;
     while (i >= 0) {
         if (str_eq(g_sym_name[i], name)) { return g_sym_kind[i]; }
+        i = i - 1;
+    }
+    return 0;
+}
+
+// True when `name` resolves to an `extern fn` declaration (the backend keeps
+// the C symbol unmangled for it).
+int ck_sym_is_extern(char* name) {
+    int i;
+    i = g_nsyms - 1;
+    while (i >= 0) {
+        if (str_eq(g_sym_name[i], name)) {
+            return g_sym_kind[i] == SK_FN && g_sym_decl[i] != 0
+                && g_sym_decl[i]->kind == AST_EXTERN_FN;
+        }
         i = i - 1;
     }
     return 0;
@@ -345,6 +373,44 @@ void ck_err_missing_return(struct AstNode* fn) {
     diag_stop("RET-01", "missing return value", lexbuf_finish(),
               diag_file(fn->file), fn->start, fn->end);
 }
+
+// UNCK-01: an unlocked operation (here: calling an `extern fn`) outside an
+// `unchecked("...")` block (§13.2).
+void ck_err_needs_unchecked(struct AstNode* at, char* what) {
+    lexbuf_reset();
+    lexbuf_push_str(what);
+    lexbuf_push_str(" needs `unchecked(\"why\") { ... }`");
+    diag_stop("UNCK-01", "operation needs `unchecked`", lexbuf_finish(),
+              diag_file(at->file), at->start, at->end);
+}
+
+// UNCK-04: calling a function whose declaration itself carries a contract
+// (`unchecked("...") fn ...`) without promising it at the call site (§13.4).
+void ck_err_needs_unchecked_fn(struct AstNode* at, char* name) {
+    lexbuf_reset();
+    lexbuf_push_str("`");
+    lexbuf_push_str(name);
+    lexbuf_push_str("` is an `unchecked fn`; calling it needs an `unchecked` block");
+    diag_stop("UNCK-04", "calling a contract without promising it", lexbuf_finish(),
+              diag_file(at->file), at->start, at->end);
+}
+
+// UNCK-02: the reason must be a real reason — at least 12 characters.
+void ck_err_weak_reason(struct AstNode* at) {
+    diag_stop("UNCK-02", "the reason has to be a reason",
+              "`unchecked` reasons must be at least 12 characters; say what makes the operation sound.",
+              diag_file(at->file), at->start, at->end);
+}
+
+// UNCK-05: --deny-unchecked forbids the escape hatch entirely (§13.4).
+void ck_err_deny_unchecked(struct AstNode* at) {
+    diag_stop("UNCK-05", "`unchecked` is disabled by --deny-unchecked",
+              "This build forbids the escape hatch. Remove the block or drop the flag.",
+              diag_file(at->file), at->start, at->end);
+}
+
+void ck_set_deny_unchecked(int on) { g_deny_unchecked = on; }
+int ck_in_unchecked(void) { return g_unchecked_depth > 0; }
 
 // ---------------------------------------------------------------------------
 // Function context (the body currently being checked).
@@ -573,7 +639,9 @@ void ck_register_fn(struct AstNode* n) {
     struct AstList* params;
     if (g_nfn >= 1024) { return; }
     g_fn_decl[g_nfn] = n;
-    n->b->ival = g_nfn;          // stash the fn index on the body block
+    // The body node carries the function index for return-type lookup; an
+    // extern declaration has no body (it lowers to a `declare`).
+    if (n->b != 0) { n->b->ival = g_nfn; }
     g_nfn = g_nfn + 1;
     ret = TY_UNIT;
     if (n->a != 0) {
@@ -767,7 +835,17 @@ void ck_stmt(struct AstNode* n) {
         return;
     }
     if (n->kind == AST_BLOCK) { ck_stmt_block(n); n->ty = TY_UNIT; return; }
-    if (n->kind == AST_UNCHECKED) { ck_stmt_block(n->a); n->ty = TY_UNIT; return; }
+    if (n->kind == AST_UNCHECKED) {
+        // §13.2: the reason is a promise, and a promise needs substance.
+        // §13.4: --deny-unchecked refuses the block outright.
+        if (g_deny_unchecked) { ck_err_deny_unchecked(n); }
+        if (n->sval == 0 || str_len(n->sval) < 12) { ck_err_weak_reason(n); }
+        g_unchecked_depth = g_unchecked_depth + 1;
+        ck_stmt_block(n->a);
+        g_unchecked_depth = g_unchecked_depth - 1;
+        n->ty = TY_UNIT;
+        return;
+    }
     // Unknown statement kind: evaluate as an expression statement if it can be.
     ck_expr(n);
     n->ty = TY_UNIT;
@@ -795,6 +873,9 @@ void ck_stmt_let(struct AstNode* n) {
         } else if (!ty_eq(ty, n->b->ty)) {
             ck_err_type_mismatch(n, ty, n->b->ty, "`let` initializer");
         }
+        // Adopt the concrete type on untyped literals (§5.9) so the backend
+        // emits the right width (`let x: i64 = 1` stores an i64).
+        ck_stamp_lits(n->b, ty);
     }
     if (ty == 0) {
         // No type and no initializer: unusable (INIT-01 will fire on use).
@@ -822,6 +903,8 @@ void ck_stmt_assign(struct AstNode* n) {
     if (!ty_eq(lt, rt)) {
         ck_err_type_mismatch(n, lt, rt, "assignment");
     }
+    // `x = 1` / `x += 1` with x: i64 adapts the literal to the place's type.
+    ck_stamp_lits(n->b, lt);
 }
 
 // Checks an lvalue (assignment target): returns its type, or TY_INVALID.
@@ -1059,6 +1142,7 @@ void ck_stmt_return(struct AstNode* n) {
     if (!ty_eq(want, got)) {
         ck_err_type_mismatch(n, want, got, "`return` value");
     }
+    if (n->a != 0) { ck_stamp_lits(n->a, want); }
 }
 
 // ---------------------------------------------------------------------------

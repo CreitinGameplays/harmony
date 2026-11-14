@@ -193,6 +193,15 @@ void *lc_alloc(usize_t n) {
 }
 
 // ---------------------------------------------------------------------------
+// FFI hook (library code): a raw three-argument Linux syscall. The future
+// `sys` module is built on this; `extern fn` programs can reach the kernel
+// without a libc.
+// ---------------------------------------------------------------------------
+long lc_syscall3(long n, long a, long b, long c) {
+    return sys(n, a, b, c);
+}
+
+// ---------------------------------------------------------------------------
 // Entry point. The program's `main` is emitted by the compiler as
 // `harmony_main` (an i32 return); `_start` calls it and exits with the low
 // byte as the status, matching §6.3.

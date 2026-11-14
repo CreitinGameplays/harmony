@@ -65,6 +65,7 @@ int pipeline_run(struct Options* opts) {
     // to understand the program; `--dump-ast` skips it so the parse tree can
     // be inspected even when the program does not type-check yet.
     if (!opts->dump_ast) {
+        ck_set_deny_unchecked(opts->deny_unchecked);
         check_program(root);
         if (opts->verbose) {
             err_str("harmony-base: checked ");

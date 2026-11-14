@@ -39,6 +39,7 @@ void  ll_bounds_check(char* idx, int n, struct AstNode* at);
 char* ll_widen_index(char* idx);
 int   ty_array_len(int id);
 char* ll_int_convert(char* v, int from, int to);
+char* ll_convert_instr(char* op, char* v, int from, int to);
 char* ll_fp_convert(char* v, int from, int to, int is_float_seq);
 char* ll_int_cmp(char* op, int ty, char* l, char* r);
 char* ll_logical_and(struct AstNode* n);
@@ -179,7 +180,11 @@ char* ll_expr(struct AstNode* n) {
     if (n->kind == AST_INT_LIT) {
         char* r;
         r = arena_alloc(24);
-        if (n->sval != 0) {
+        // The checker stamps the concrete type when a literal adapts to its
+        // context (§5.9); otherwise a suffix wins, then the i32 default.
+        if (n->ty != 0 && !ty_is_untyped_lit(n->ty)) {
+            g_expr_ty = n->ty;
+        } else if (n->sval != 0) {
             g_expr_ty = ll_suffix_ty(n->sval);
         } else {
             g_expr_ty = TY_I32;
@@ -187,7 +192,11 @@ char* ll_expr(struct AstNode* n) {
         ll_int_into(r, n->ival);
         return r;
     }
-    if (n->kind == AST_FLOAT_LIT) { g_expr_ty = TY_F64; return n->sval; }
+    if (n->kind == AST_FLOAT_LIT) {
+        if (n->ty != 0 && !ty_is_untyped_lit(n->ty)) { g_expr_ty = n->ty; }
+        else { g_expr_ty = TY_F64; }
+        return n->sval;
+    }
     if (n->kind == AST_CHAR_LIT) {
         char* r;
         r = arena_alloc(24);
@@ -1178,11 +1187,13 @@ void ll_str_append(char* buf, char* s) {
     ll_str_into(buf + n, s);
 }
 
-// `name` -> the emitted symbol for a called function (`main` -> harmony_main,
-// others -> harmony__name). A qualified path (`Type::name`, an associated
-// function) mangles `::` to `__` (colons are not valid in IR names).
+// `name` -> the emitted symbol for a called function. An `extern fn` keeps
+// its plain C name (§6.5 FFI: the symbol is the C one, no module prefix).
+// `main` becomes `harmony_main` (the runtime owns `_start`); everything else
+// mangles `::` to `__` (colons are not valid in IR names).
 char* ll_call_symbol(char* name) {
     int i;
+    if (ck_sym_is_extern(name)) { return name; }
     if (str_eq(name, "main")) { return "harmony_main"; }
     lexbuf_reset();
     lexbuf_push_str("harmony__");
@@ -1218,16 +1229,34 @@ char* ll_expr_cast(struct AstNode* n) {
 
 // Integer <-> float conversions (sitofp / uitofp / fptosi / fptoui).
 // Widening/narrowing between integer widths (sign/zero-extend or truncate).
+// Emits `%r = <op> <from> <v> to <to>` (sext/zext/trunc/fp conversions).
+char* ll_convert_instr(char* op, char* v, int from, int to) {
+    char* r;
+    r = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(r);
+    ll_out_str(" = ");
+    ll_out_str(op);
+    ll_out_str(" ");
+    ll_out_str(ll_type_name(from));
+    ll_out_str(" ");
+    ll_out_str(v);
+    ll_out_str(" to ");
+    ll_out_str(ll_type_name(to));
+    ll_out_nl();
+    return r;
+}
+
 char* ll_int_convert(char* v, int from, int to) {
     int fw;
     int tw;
     fw = ty_bit_width(from);
     tw = ty_bit_width(to);
     if (fw == tw) { return v; }
-    if (ty_is_bool(from) && tw > 1) { return ll_bin("zext", TY_BOOL, v, v); }
-    if (tw < fw) { return ll_bin("trunc", to, v, v); }
-    if (ty_is_signed(from)) { return ll_bin("sext", to, v, v); }
-    return ll_bin("zext", to, v, v);
+    if (ty_is_bool(from) && tw > 1) { return ll_convert_instr("zext", v, TY_BOOL, to); }
+    if (tw < fw) { return ll_convert_instr("trunc", v, from, to); }
+    if (ty_is_signed(from)) { return ll_convert_instr("sext", v, from, to); }
+    return ll_convert_instr("zext", v, from, to);
 }
 
 char* ll_fp_convert(char* v, int from, int to, int is_float_seq) {

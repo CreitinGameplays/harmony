@@ -3,7 +3,7 @@ File Extension: .harmony
 
 # Rules
 - Read the project layout first.
-- Read important parts of the docs (but not everything at once).
+- **Read important parts of the harmony.md docs (but not everything at once)**.
 - **Never** hardcode "/opencode/" in any part of the source code.
 - Use c2x-seed to write the harmony language:
   harmony-base: basic implementation with few features, written in c2x-seed.

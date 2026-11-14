@@ -16,6 +16,7 @@ char* g_rt_c = "src/stdlib/runtime/rt.c";
 // source tree, so a build leaves the working copy clean.
 char* g_tmp_ir = "/tmp/harmony-base.ll";
 char* g_tmp_bin = "/tmp/harmony-base.bin";
+char* g_tmp_cc_log = "/tmp/harmony-base.clang.log";
 
 // ---------------------------------------------------------------------------
 // Files.
@@ -39,8 +40,12 @@ int emit_write_file(char* path, char* text, int len) {
 // ---------------------------------------------------------------------------
 // Process spawn. `argv` is NULL-terminated. Returns the child's exit status
 // (0..255), or -1 when fork/exec fails.
+//
+// `logpath` (when non-null) receives the child's stderr: the compiler driver
+// is not a terminal firehose, so clang's diagnostics are captured here and
+// only replayed on request (`-v`) or condensed on failure.
 // ---------------------------------------------------------------------------
-int sys_spawn(char** argv) {
+int sys_spawn_log(char** argv, char* logpath) {
     int pid;
     int status;
     int w;
@@ -52,7 +57,17 @@ int sys_spawn(char** argv) {
     pid = syscall_fork();
     if (pid < 0) { return -1; }
     if (pid == 0) {
-        // Child: exec the program with the minimal environment.
+        // Child: capture stderr (fd 2) into the log before exec.
+        if (logpath != 0) {
+            int fd;
+            fd = syscall_open(logpath, O_WRONLY | O_CREAT | O_TRUNC, 420);
+            if (fd >= 0) {
+                if (fd != 2) {
+                    syscall_dup2(fd, 2);
+                    syscall_close(fd);
+                }
+            }
+        }
         syscall_execve(argv[0], argv, envp);
         syscall_exit(127);   // exec failed
     }
@@ -62,6 +77,114 @@ int sys_spawn(char** argv) {
     if (w < 0) { return -1; }
     // exit status is in bits 8..15 when WIFEXITED.
     return (status >> 8) & 0xff;
+}
+
+int sys_spawn(char** argv) {
+    return sys_spawn_log(argv, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Compiler-log reporting. A rejected IR is an ICE-class failure: the user's
+// program type-checked, so the noise points at the backend. Default output is
+// one summary line plus the first clang error; `-v` replays the whole log.
+// ---------------------------------------------------------------------------
+char* emit_read_file(char* path, int max) {
+    int fd;
+    int n;
+    int len;
+    char* buf;
+    buf = arena_alloc(max + 1);
+    fd = syscall_open(path, O_RDONLY, 0);
+    if (fd < 0) { buf[0] = 0; return buf; }
+    len = 0;
+    while (len < max) {
+        n = syscall_read(fd, buf + len, max - len);
+        if (n <= 0) { break; }
+        len = len + n;
+    }
+    syscall_close(fd);
+    buf[len] = 0;
+    return buf;
+}
+
+// Index of `needle` in the NUL-terminated `s`, or -1.
+int emit_index_of(char* s, char* needle) {
+    int i;
+    int j;
+    i = 0;
+    while (s[i] != 0) {
+        j = 0;
+        while (needle[j] != 0 && s[i + j] == needle[j]) { j = j + 1; }
+        if (needle[j] == 0) { return i; }
+        i = i + 1;
+    }
+    return -1;
+}
+
+// Counts non-overlapping occurrences of `needle` in `s`.
+int emit_count_str(char* s, char* needle) {
+    int n;
+    int i;
+    int k;
+    n = 0;
+    i = 0;
+    while (1) {
+        k = emit_index_of(s + i, needle);
+        if (k < 0) { break; }
+        n = n + 1;
+        i = i + k + str_len(needle);
+    }
+    return n;
+}
+
+// Replays the log (or a condensed form) after clang fails.
+void emit_report_cc_log(char* path, int verbose) {
+    char* log;
+    int i;
+    int start;
+    int nerr;
+    int shown;
+
+    log = emit_read_file(path, 65536);
+    nerr = emit_count_str(log, "error:");
+
+    err_str("harmony-base: emit.cc: clang rejected the generated IR");
+    if (nerr > 0) {
+        err_str(" (");
+        err_int(nerr);
+        err_str(" error");
+        if (nerr != 1) { err_str("s"); }
+        err_str(")");
+    }
+    err_nl();
+
+    if (verbose) {
+        // The full log, verbatim.
+        err_str(log);
+        return;
+    }
+
+    // Quiet path: the first `error:` line only, then where to find the rest.
+    i = 0;
+    start = 0;
+    shown = 0;
+    while (log[i] != 0 && !shown) {
+        if (log[i] == '\n') {
+            if (emit_index_of(str_prefix(log + start, i - start), "error:") >= 0) {
+                err_str(str_prefix(log + start, i - start));
+                err_nl();
+                shown = 1;
+            }
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    if (shown) {
+        err_str("harmony-base: emit.cc: full clang log: ");
+        err_str(path);
+        err_str(" (re-run with -v to print it)");
+        err_nl();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -114,12 +237,16 @@ int emit_command(struct Options* opts, struct AstNode* prog) {
         sp_argv[5] = "-O1";
         sp_argv[6] = "-ffreestanding";
         sp_argv[7] = "-fno-stack-protector";
-        sp_argv[8] = "-nostdlib";
-        sp_argv[9] = "-static";
-        sp_argv[10] = "-Wno-override-module";
-        rc = sys_spawn(sp_argv);
+        sp_argv[8] = "-fstack-clash-protection";
+        sp_argv[9] = "-nostdlib";
+        sp_argv[10] = "-static";
+        sp_argv[11] = "-Wno-override-module";
+        rc = sys_spawn_log(sp_argv, g_tmp_cc_log);
         if (rc != 0) {
-            diag_plain("emit.cc", "the system compiler (clang) failed");
+            // The program type-checked; the IR clang rejected is our bug. Keep
+            // the terminal quiet: one summary plus the first error by default,
+            // the whole log under -v.
+            emit_report_cc_log(g_tmp_cc_log, opts->verbose);
             return EXIT_STOP;
         }
 

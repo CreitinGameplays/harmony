@@ -169,9 +169,18 @@ These c2x-seed defects were found and fixed while bootstrapping (see
       (`as`, sext/zext/trunc/sitofp/fptosi), `heap(x)` + `lc_alloc`,
       `&T`/`&mut T`, `switch` on scalars (exact, or-patterns, ranges) and
       enums (tag tests). (codegen.sh, 21 cases.)
+- [x] `extern fn` FFI: unmangled C symbols, `declare` emission, calls gated
+      on `unchecked` (UNCK-01) with the runtime's `lc_syscall3` hook proving
+      the ABI; `unchecked` reason checks (UNCK-02) and `--deny-unchecked`
+      (UNCK-05). `&mut` parameters carry `noalias` in the emitted IR.
+- [x] Quiet toolchain output: clang's stderr is captured to a log; a failed
+      IR compile prints one summary + the first error (`-v` replays the whole
+      log) instead of clang's full diagnostic block.
+- [x] Untyped literals adapt at every coercion site (§5.9) and the adapted
+      type is stamped on the node, so `let x: i64 = 1`, `f(1)` with an i64
+      parameter, `return 0` in an i64 function, and `x + 1` lower correctly.
 - [ ] Remaining M1 gaps: generic monomorphization, slices (`&[T]` fat
-      pointers), `extern fn` calls through `unchecked`, `FMT-01`, the
-      stack-overflow guard (`T-STACK`), `noalias` on `&mut` params.
+      pointers), `FMT-01`, the stack-overflow guard (`T-STACK`).
 
 ### M2 — Ownership: moves + drop elaboration (§9, §19.7)
 

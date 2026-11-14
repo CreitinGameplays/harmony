@@ -1,0 +1,8 @@
+// WANT: UNCK-01
+// Calling an `extern fn` outside an `unchecked` block is an unlocked
+// operation (§13.2): the compiler cannot see across the C boundary.
+extern fn lc_syscall3(n: i64, a: i64, b: i64, c: i64) -> i64;
+
+fn main() -> i32 {
+    return lc_syscall3(39, 0, 0, 0) as i32;
+}

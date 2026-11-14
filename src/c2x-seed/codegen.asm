@@ -217,6 +217,11 @@ section .data
                         db "    mov rax, 3", 10
                         db "    syscall", 10
                         db "    ret", 10, 0
+    asm_sys_dup2        db "global syscall_dup2", 10
+                        db "syscall_dup2:", 10
+                        db "    mov rax, 33", 10
+                        db "    syscall", 10
+                        db "    ret", 10, 0
     asm_sys_exit        db "global syscall_exit", 10
                         db "syscall_exit:", 10
                         db "    mov rax, 60", 10
@@ -1236,6 +1241,8 @@ codegen_generate:
     mov rsi, asm_sys_open
     call emit_string
     mov rsi, asm_sys_close
+    call emit_string
+    mov rsi, asm_sys_dup2
     call emit_string
     mov rsi, asm_sys_exit
     call emit_string

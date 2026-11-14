@@ -535,7 +535,11 @@ void ll_emit_param_types(struct AstList* params) {
         // be an SSA function argument in LLVM); a receiver of `&self` shape
         // is a pointer already.
         if (ll_is_aggregate(p->ty) || ty_is_ref(p->ty) || ck_is_self_param(p)) {
-            ll_out_str("ptr %arg");
+            ll_out_str("ptr ");
+            // §5.4: a `&mut T` is exclusive, so it can carry `noalias` (the
+            // borrow rules guarantee nothing else reaches the same place).
+            if (ty_kind(p->ty) == CTY_MUTREF) { ll_out_str("noalias "); }
+            ll_out_str("%arg");
         } else {
             ll_out_str(ll_type_name(p->ty));
             ll_out_str(" %arg");
@@ -553,6 +557,8 @@ int ll_is_aggregate(int ty) {
 char* ll_fn_symbol(struct AstNode* fn) {
     int i;
     int fidx;
+    // An `extern fn` is a C symbol: no mangling at all (§6.5, §19.4).
+    if (fn->kind == AST_EXTERN_FN) { return fn->sval; }
     // A method (registered with a receiver type) mangles to `Type__method`
     // so call sites and definitions agree.
     fidx = 0;

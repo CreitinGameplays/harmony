@@ -1,0 +1,18 @@
+// EXPECT: 44
+// Untyped literals adopt their context's width (§5.9): bindings, arguments,
+// returns, arithmetic operands, and casts all see the concrete type.
+fn add(a: i64, b: i64) -> i64 {
+    return a + b;
+}
+
+fn answer() -> i64 {
+    return 40;
+}
+
+fn main() -> i32 {
+    let x: i64 = 1;             // literal → i64 binding
+    let y: u8 = 2;              // literal → u8 binding
+    let v = add(x, answer()) + 1;   // literal argument + literal operand
+    let n = v as i32;           // i64 → i32 cast
+    return n + (y as i32);      // 1 + 40 + 1 + 2 = 44
+}

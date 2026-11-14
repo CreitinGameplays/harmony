@@ -25,6 +25,7 @@ int ck_expr_unary(struct AstNode* n);
 int ck_expr_field(struct AstNode* n);
 int ck_expr_index(struct AstNode* n);
 int ck_expr_call(struct AstNode* n);
+int ck_expr_generic_call(struct AstNode* n);
 int ck_expr_method_call(struct AstNode* n, struct AstNode* callee, struct AstList* args);
 int ck_expr_assoc_call(struct AstNode* n, struct AstNode* callee, struct AstList* args);
 int ck_expr_as(struct AstNode* n);
@@ -45,6 +46,19 @@ int ck_coercible(int want, int got) {
     // widening, no implicit sign change. Only the untyped-literal rules above
     // (in ty_eq) adapt.
     return 0;
+}
+
+// Adopts `want` on untyped literal nodes (§5.9). The checker lets a literal
+// flow into any numeric context; the backend emits each node from its own
+// `ty`, so contexts stamp the concrete type here (`let x: i64 = 1`, `f(1)`
+// with an i64 parameter, `x + 1` with x: i64) instead of leaving "untyped
+// integer" behind. Only literal-shaped subtrees are touched: a child with a
+// concrete type stops the recursion, so no expression is silently converted.
+void ck_stamp_lits(struct AstNode* n, int want) {
+    if (n == 0) { return; }
+    if (n->a != 0 && ty_is_untyped_lit(n->a->ty)) { ck_stamp_lits(n->a, want); }
+    if (n->b != 0 && ty_is_untyped_lit(n->b->ty)) { ck_stamp_lits(n->b, want); }
+    if (ty_is_untyped_lit(n->ty)) { n->ty = want; }
 }
 
 // Checks an expression and returns its type id (TY_INVALID after a stop).
@@ -225,6 +239,16 @@ int ck_expr_binary(struct AstNode* n) {
     lt = ck_expr(n->a);
     rt = ck_expr(n->b);
     if (lt == TY_INVALID || rt == TY_INVALID) { return TY_INVALID; }
+    // An untyped literal adopts the other operand's type (§5.9); stamping the
+    // leaves keeps the backend's per-node types exact (`x + 1` with x: i64
+    // must emit an i64 add, and a shift amount must match its value type).
+    if (ty_is_untyped_lit(lt) && !ty_is_untyped_lit(rt)) {
+        ck_stamp_lits(n->a, rt);
+        lt = rt;
+    } else if (ty_is_untyped_lit(rt) && !ty_is_untyped_lit(lt)) {
+        ck_stamp_lits(n->b, lt);
+        rt = lt;
+    }
     if (str_eq(op, "==") || str_eq(op, "!=") || str_eq(op, "<")
         || str_eq(op, "<=") || str_eq(op, ">") || str_eq(op, ">=")
         || str_eq(op, "&&") || str_eq(op, "||")) {
@@ -380,7 +404,7 @@ int ck_expr_index(struct AstNode* n) {
     return TY_INVALID;
 }
 
-// Calls: free functions, methods, and (later) function values.
+// Calls: free functions, methods, generic calls, and (later) function values.
 int ck_expr_call(struct AstNode* n) {
     struct AstNode* callee;
     struct AstList* args;
@@ -388,6 +412,11 @@ int ck_expr_call(struct AstNode* n) {
     int ret;
     callee = n->a;
     args = n->kids;   // AST_CALL: a = callee, kids = argument list
+    // Generic call `name<T, ...>(args)`: the parser puts the callee's name in
+    // sval and the type arguments in kids2, leaving `a` empty (§18).
+    if (callee == 0) {
+        return ck_expr_generic_call(n);
+    }
     // Method call: callee is a field-access-shaped path `recv.name`.
     if (callee->kind == AST_FIELD_ACC) {
         return ck_expr_method_call(n, callee, args);
@@ -408,6 +437,18 @@ int ck_expr_call(struct AstNode* n) {
         if (sym < 0 || g_sym_kind[sym] != SK_FN) {
             ck_err_unknown_name(callee->sval, callee, "did you mean to call a function?");
             return TY_INVALID;
+        }
+        // The escape hatch (§13.2/§13.4): an `extern fn` call is unlocked
+        // (UNCK-01), and calling an `unchecked fn` needs a promise too
+        // (UNCK-04). Both are fine inside `unchecked("...")`.
+        if (!ck_in_unchecked()) {
+            struct AstNode* fndecl;
+            fndecl = g_sym_decl[sym];
+            if (fndecl != 0 && fndecl->kind == AST_EXTERN_FN) {
+                ck_err_needs_unchecked(callee, "calling an `extern fn`");
+            } else if (fndecl != 0 && (fndecl->ival & 1)) {
+                ck_err_needs_unchecked_fn(callee, callee->sval);
+            }
         }
         ret = g_sym_ty[sym];
     }
@@ -439,11 +480,27 @@ int ck_expr_call(struct AstNode* n) {
                     ck_err_type_mismatch(args->items[i], params->items[i]->ty, at,
                                          "argument");
                 }
+                ck_stamp_lits(args->items[i], params->items[i]->ty);
                 i = i + 1;
             }
         }
     }
     return ret;
+}
+
+// Generic call `name<T, ...>(args)`. The parser stores the name in sval and
+// the type arguments in kids2 (`a` stays empty).
+//
+// M1 gap: monomorphization. The diagnostic is temporary; the rewrite replaces
+// this with instantiation of a concrete `name__T` function.
+int ck_expr_generic_call(struct AstNode* n) {
+    lexbuf_reset();
+    lexbuf_push_str("generic calls (");
+    lexbuf_push_str(n->sval);
+    lexbuf_push_str("<...>) are not implemented yet");
+    diag_stop("TYPE-01", "generic calls are not implemented yet", lexbuf_finish(),
+              diag_file(n->file), n->start, n->end);
+    return TY_INVALID;
 }
 
 // `recv.name(args)`: find the method on the receiver's type and check args.
@@ -497,6 +554,7 @@ int ck_expr_method_call(struct AstNode* n, struct AstNode* callee, struct AstLis
                 ck_err_type_mismatch(args->items[i], params->items[i + 1]->ty, at,
                                      "argument");
             }
+            ck_stamp_lits(args->items[i], params->items[i + 1]->ty);
             i = i + 1;
         }
     }
@@ -550,6 +608,7 @@ int ck_expr_assoc_call(struct AstNode* n, struct AstNode* callee, struct AstList
                         ck_err_type_mismatch(args->items[k], params->items[k]->ty, at,
                                              "argument");
                     }
+                    ck_stamp_lits(args->items[k], params->items[k]->ty);
                     k = k + 1;
                 }
             }
@@ -606,6 +665,7 @@ int ck_expr_struct_init(struct AstNode* n) {
                 if (vt != TY_INVALID && want != TY_INVALID && !ck_coercible(want, vt)) {
                     ck_err_type_mismatch(fi, want, vt, "field value");
                 }
+                ck_stamp_lits(fi->a, want);
             }
             i = i + 1;
         }
@@ -633,6 +693,13 @@ int ck_expr_array_lit(struct AstNode* n) {
         }
         if (et == TY_UINT_LIT) { et = TY_I32; }
         if (et == TY_FLOAT_LIT) { et = TY_F64; }
+        if (els != 0) {
+            i = 0;
+            while (i < els->len) {
+                ck_stamp_lits(els->items[i], et);
+                i = i + 1;
+            }
+        }
         lexbuf_reset();
         lexbuf_push_str("[");
         lexbuf_push_str(ty_display(et));
@@ -646,6 +713,7 @@ int ck_expr_array_lit(struct AstNode* n) {
         et = ck_expr(n->a);
         if (et == TY_UINT_LIT) { et = TY_I32; }
         if (et == TY_FLOAT_LIT) { et = TY_F64; }
+        ck_stamp_lits(n->a, et);
         {
             int len;
             len = ceval_const_int(n->b);

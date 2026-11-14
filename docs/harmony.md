@@ -2535,7 +2535,9 @@ Every analysis records **events** with provenance as it works: `born(place, span
 
 The primary backend emits **LLVM IR text** (`.ll`), assembled by the system
 toolchain. The runtime is linked in as `rt.bc` (built from the same source that
-generates `rt.h` for the C backend).
+generates `rt.h` for the C backend). `build`/`run` hand the IR to clang on
+stdin (`clang -x ir - …`), so no `.ll` file hits the disk by default;
+`emit-llvm` still prints the deterministic IR text to stdout.
 
 | Source construct | Emitted LLVM IR |
 |---|---|

@@ -88,6 +88,72 @@ int sys_spawn(char** argv) {
 }
 
 // ---------------------------------------------------------------------------
+// Spawn with a text payload on the child's stdin. Used to feed the generated
+// LLVM IR straight to clang (`-x ir -`) with no `.ll` temp file (AGENTS.md).
+// The parent writes `text` into a pipe and the child reads it as stdin; a
+// large IR would block if we waited, so fork first, dup the read end to fd 0
+// in the child, then write in the parent before waiting.
+// ---------------------------------------------------------------------------
+int sys_spawn_stdin(char** argv, char* text, int len, char* logpath) {
+    char fdbuf[16];
+    int fd0;
+    int fd1;
+    int pid;
+    int status;
+    int w;
+    int off;
+    char* envp[2];
+    // pipe2 writes two 32-bit fds, but a c2x-seed `int` is 8 bytes, so the
+    // pair is decoded from a byte buffer (little-endian), not an int[2].
+    if (syscall_pipe2(fdbuf, 0) < 0) { return -1; }
+    fd0 = (fdbuf[0] & 0xFF) | ((fdbuf[1] & 0xFF) << 8)
+        | ((fdbuf[2] & 0xFF) << 16) | ((fdbuf[3] & 0xFF) << 24);
+    fd1 = (fdbuf[4] & 0xFF) | ((fdbuf[5] & 0xFF) << 8)
+        | ((fdbuf[6] & 0xFF) << 16) | ((fdbuf[7] & 0xFF) << 24);
+    envp[0] = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+    envp[1] = 0;
+    pid = syscall_fork();
+    if (pid < 0) {
+        syscall_close(fd0);
+        syscall_close(fd1);
+        return -1;
+    }
+    if (pid == 0) {
+        // Child: read end becomes stdin; capture stderr into the log.
+        syscall_dup2(fd0, 0);
+        syscall_close(fd0);
+        syscall_close(fd1);
+        if (logpath != 0) {
+            int fd;
+            fd = syscall_open(logpath, O_WRONLY | O_CREAT | O_TRUNC, 420);
+            if (fd >= 0) {
+                if (fd != 2) {
+                    syscall_dup2(fd, 2);
+                    syscall_close(fd);
+                }
+            }
+        }
+        syscall_execve(argv[0], argv, envp);
+        syscall_exit(127);
+    }
+    // Parent: write the whole payload, then close so the child sees EOF.
+    syscall_close(fd0);
+    off = 0;
+    while (off < len) {
+        int n;
+        n = syscall_write(fd1, text + off, len - off);
+        if (n <= 0) { break; }
+        off = off + n;
+    }
+    syscall_close(fd1);
+    status = 0;
+    w = syscall_wait4(pid, &status, 0, 0);
+    if (w < 0) { return -1; }
+    if ((status & 0x7f) != 0) { return 128 + (status & 0x7f); }
+    return (status >> 8) & 0xff;
+}
+
+// ---------------------------------------------------------------------------
 // Compiler-log reporting. A rejected IR is an ICE-class failure: the user's
 // program type-checked, so the noise points at the backend. Default output is
 // one summary line plus the first clang error; `-v` replays the whole log.
@@ -194,12 +260,12 @@ void emit_report_cc_log(char* path, int verbose) {
 // ---------------------------------------------------------------------------
 // Little string list builder for argv.
 // ---------------------------------------------------------------------------
-char* sp_argv[16];
+char* sp_argv[32];
 
 void argv_reset(void) {
     int i;
     i = 0;
-    while (i < 16) { sp_argv[i] = 0; i = i + 1; }
+    while (i < 32) { sp_argv[i] = 0; i = i + 1; }
 }
 
 // ---------------------------------------------------------------------------
@@ -214,42 +280,44 @@ int emit_command(struct Options* opts, struct AstNode* prog) {
         return EXIT_OK;
     }
 
-    // build / run: write the IR, compile it with clang, link the runtime.
+    // build / run: feed the IR to clang on stdin (`-x ir -`) and link the
+    // runtime — no `.ll` temp file (AGENTS.md). The IR bytes are `g_out`.
     {
-        char* llpath;
         char* binpath;
         int rc;
-        char** a;
 
-        llpath = g_tmp_ir;
         binpath = g_tmp_bin;
         if (opts->output != 0) { binpath = opts->output; }
 
-        rc = emit_write_file(llpath, g_out, g_out_len);
-        if (rc < 0) {
-            diag_plain("emit.io", "cannot write the generated IR");
-            return EXIT_USAGE;
-        }
-
-        // clang <ir> <rt.c> -o <bin> -O1 -ffreestanding -nostdlib -static
+        // clang -x ir - -x c <rt.c> -o <bin> -O1 -ffreestanding ...
+        // The `-x ir` applies to `-`; `-x c` resets for the runtime file
+        // (otherwise clang would parse rt.c as IR and hang).
         argv_reset();
         sp_argv[0] = "/usr/bin/clang";
-        sp_argv[1] = llpath;
-        sp_argv[2] = g_rt_c;
-        sp_argv[3] = "-o";
-        sp_argv[4] = binpath;
-        sp_argv[5] = "-O1";
-        sp_argv[6] = "-ffreestanding";
-        sp_argv[7] = "-fno-stack-protector";
-        sp_argv[8] = "-fstack-clash-protection";
-        sp_argv[9] = "-nostdlib";
-        sp_argv[10] = "-static";
-        sp_argv[11] = "-Wno-override-module";
-        rc = sys_spawn_log(sp_argv, g_tmp_cc_log);
+        sp_argv[1] = "-x";
+        sp_argv[2] = "ir";
+        sp_argv[3] = "-";
+        sp_argv[4] = "-x";
+        sp_argv[5] = "c";
+        sp_argv[6] = g_rt_c;
+        sp_argv[7] = "-o";
+        sp_argv[8] = binpath;
+        sp_argv[9] = "-O1";
+        sp_argv[10] = "-ffreestanding";
+        sp_argv[11] = "-fno-stack-protector";
+        sp_argv[12] = "-fstack-clash-protection";
+        sp_argv[13] = "-nostdlib";
+        sp_argv[14] = "-static";
+        sp_argv[15] = "-Wno-override-module";
+        rc = sys_spawn_stdin(sp_argv, g_out, g_out_len, g_tmp_cc_log);
         if (rc != 0) {
-            // The program type-checked; the IR clang rejected is our bug. Keep
-            // the terminal quiet: one summary plus the first error by default,
-            // the whole log under -v.
+            // A rejected IR is our bug (the program type-checked). Keep the
+            // terminal quiet: one summary plus the first error by default, the
+            // whole log under -v. When -v is set, also keep a copy of the IR
+            // so it can be inspected.
+            if (opts->verbose) {
+                emit_write_file(g_tmp_ir, g_out, g_out_len);
+            }
             emit_report_cc_log(g_tmp_cc_log, opts->verbose);
             return EXIT_STOP;
         }

@@ -131,10 +131,11 @@ binary is `harmony-base` (the spec's `lc`).
       hook).
 - [ ] `harmony-base audit` — list every `unchecked` site with reason (§13.6);
       today it returns an empty listing (needs M6 surface).
-- [ ] In-memory LLVM IR (AGENTS.md): compile the generated IR by feeding it to
-      clang on stdin instead of writing a `.ll` temp file by default. The
-      current driver writes `/tmp/harmony-base.ll` then passes the path; the
-      IR text is already a buffer (`g_out`), so this is a plumb-through.
+- [x] In-memory LLVM IR (AGENTS.md): `build`/`run` feed the generated IR to
+      clang on stdin (`clang -x ir - -x c rt.c ...`) through a pipe — no `.ll`
+      temp file by default. New `sys_spawn_stdin` (c2x-seed gains a `pipe2`
+      stub) writes the IR buffer to the child; `-v` keeps a `/tmp` copy for
+      debugging a rejected IR. (`emit-llvm` still prints the IR to stdout.)
 - [ ] Continue growing accept/reject suites per feature; add a runtime
       `T-ASSERT` trap test once `assert` exists.
 

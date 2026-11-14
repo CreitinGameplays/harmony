@@ -14,6 +14,7 @@ extern int syscall_write(int fd, char* buf, int count);
 extern int syscall_open(char* path, int flags, int mode);
 extern int syscall_close(int fd);
 extern int syscall_dup2(int oldfd, int newfd);
+extern int syscall_pipe2(char* fds, int flags);
 extern int syscall_exit(int code);
 // Process control (the seed's runtime emits these; used by `run` to drive
 // the toolchain and the compiled program).

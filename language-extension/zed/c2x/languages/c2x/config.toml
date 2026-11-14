@@ -1,0 +1,4 @@
+name = "C2X"
+grammar = "c"
+path_suffixes = ["c2x", "c2"]
+line_comments = ["// "]

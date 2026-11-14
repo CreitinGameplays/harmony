@@ -468,6 +468,79 @@ const int AST_NODE_SIZE = 104;   // 13 fields * 8
 const int AST_LIST_SIZE = 24;    // len, cap, items
 const int AST_NODE_PTR_SIZE = 8;
 
+// ---------------------------------------------------------------------------
+// Type model (M1, docs/harmony.md §5). Types are ids into a table: fixed ids
+// for primitives, dynamic ids (>= TY_DYNAMIC) for composites. Every checked
+// AST node stores its type id in `ty` (0 = unset).
+// ---------------------------------------------------------------------------
+const int TY_INVALID = 0;
+const int TY_I8 = 1;
+const int TY_I16 = 2;
+const int TY_I32 = 3;
+const int TY_I64 = 4;
+const int TY_ISIZE = 5;
+const int TY_U8 = 6;
+const int TY_U16 = 7;
+const int TY_U32 = 8;
+const int TY_U64 = 9;
+const int TY_USIZE = 10;
+const int TY_F32 = 11;
+const int TY_F64 = 12;
+const int TY_BOOL = 13;
+const int TY_CHAR = 14;
+const int TY_NEVER = 15;
+const int TY_UNIT = 16;     // ()
+const int TY_DYNAMIC = 100; // composite type ids start here
+
+// Composite type kinds (kind stored on ids >= TY_DYNAMIC).
+const int CTY_STRUCT = 1;   // a = 0; decl on cty_decl
+const int CTY_ENUM = 2;
+const int CTY_ARRAY = 3;    // a = elem ty, b = length
+const int CTY_REF = 4;      // a = pointee (shared)
+const int CTY_MUTREF = 5;   // a = pointee (exclusive)
+const int CTY_STRREF = 6;   // &str (fat pointer { ptr, len })
+const int CTY_HEAP = 7;     // heap box over a = elem ty (§12)
+const int CTY_UINT_LIT = 8; // untyped integer literal (adapts, §5.9)
+const int CTY_FLOAT_LIT = 9;// untyped float literal (adapts)
+const int CTY_PTR = 10;     // raw T (unchecked; M6)
+const int CTY_MUTPTR = 11;  // raw mut T
+
+// Registers the user types of a program (structs/enums) from their AST decls.
+// Called once before checking bodies.
+void types_init(void);
+
+// Composite constructor. Returns the new type id.
+int ty_new(int kind, char* name, int a, int b);
+
+// Composite constructor keyed on an existing decl node (dedup by name).
+int ty_new_typed(int kind, char* name, struct AstNode* decl);
+
+// Kind of a type id: 1..16 = primitive marker (returns the id itself for
+// prims), otherwise CTY_*.
+int ty_kind(int id);
+
+char* ty_display(int id);        // stable name for diagnostics ("i32", "Point")
+int ty_is_primitive(int id);     // true for the fixed primitive ids
+int ty_is_integer(int id);       // i*/u*/isize/usize (not untyped literals)
+int ty_is_float(int id);         // f32/f64
+int ty_is_bool(int id);
+int ty_is_char(int id);
+int ty_is_never(int id);
+int ty_is_untyped_lit(int id);   // CTY_UINT_LIT / CTY_FLOAT_LIT
+int ty_is_copy(int id);          // §5.6 (requires the copy flags below)
+int ty_eq(int a, int b);         // structural equality (names for nominal)
+int ty_size(int id);             // byte size (0 = unknown/not computed)
+int ty_align(int id);
+int ty_elem(int id);             // elem/pointee for composites, 0 otherwise
+
+// A `copy` type needs no drop glue (M2 prepares the flag; v0 prims are copy).
+void ty_set_nocopy(int id);
+
+// Byte size of a *type AST node* (resolved by the checker): array lengths
+// use the const evaluator. Returns 0 when the type node cannot be resolved.
+int sizeof_type_node(struct AstNode* t);
+
+
 struct AstNode* ast_node_new(int kind);
 void ast_span(struct AstNode* n, int file, int start, int end);
 struct AstList* ast_list_new(void);

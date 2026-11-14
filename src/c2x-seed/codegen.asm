@@ -134,7 +134,7 @@ endstruc
 %define VLA_FLAG        1       ; AST_ARRAY_DECL data5: runtime-sized (VLA)
 
 ; ------------------------------------------------------------
-; Symbol entry (7 qwords = 56 bytes)
+; Symbol entry (8 qwords = 64 bytes)
 ; ------------------------------------------------------------
 struc symbol_t
     .name_ptr   resq 1      ; 0
@@ -144,6 +144,11 @@ struc symbol_t
     .extra      resq 1      ; 32 (array count, struct type id, or 0)
     .line       resq 1      ; 40 (source line of declaration)
     .column     resq 1      ; 48 (source column of declaration)
+    .fields     resq 1      ; 56 (pointee field_array_ptr for arrays of
+                            ;      struct pointers; 0 otherwise). `extra`
+                            ;      stays the element count for those, so
+                            ;      bounds checks keep working AND chained
+                            ;      `arr[i]->field` can resolve the pointee.
 endstruc
 
 SYMBOL_TABLE_INITIAL_CAPACITY equ 256
@@ -545,6 +550,22 @@ section .bss
     gen_expr_array_count resq 1
     gen_index_2d_dim2   resq 1          ; 2D array: dim2 (0 = 1D, nonzero = 2D second dim)
     find_field_is_const resq 1          ; set by find_field: 1 if the found field was declared const
+    pending_symbol_fields resq 1        ; set by the caller of add_symbol /
+                                        ; add_global_symbol: the pointee
+                                        ; field_array_ptr for arrays of struct
+                                        ; pointers (0 otherwise). Consumed and
+                                        ; cleared by the add_* helpers.
+    found_symbol_fields resq 1          ; set by find_symbol / find_global_symbol
+                                        ; on a hit: the symbol's `.fields`
+                                        ; slot, so index handlers can chain
+                                        ; `arr[i]->field` without a second
+                                        ; lookup.
+    gen_index_elem_fields resq 1        ; pointee field array of the element
+                                        ; being indexed (captured from
+                                        ; found_symbol_fields by the ident
+                                        ; fast paths; 0 for member/expression
+                                        ; bases, which resolve fields through
+                                        ; gen_expr_struct_fields instead).
     symbols_storage:        resb SYMBOL_TABLE_INITIAL_CAPACITY * symbol_t_size
     symbol_initialized_storage: resb SYMBOL_TABLE_INITIAL_CAPACITY  ; 1 byte per symbol: 0=uninit, 1=initialized
     symbol_used_storage:        resb SYMBOL_TABLE_INITIAL_CAPACITY  ; 1 byte per symbol: 0=unused, 1=used (read or written)
@@ -914,15 +935,19 @@ register_globals:
     pop rdi
     mov rcx, [r13 + ast_node_t.data1]  ; type
     xor r8, r8                         ; extra = 0
-    ; Check if struct pointer: set extra = field_array_ptr from data4
+    ; Check if struct pointer: set extra = field_array_ptr from data4.
+    ; Use the depth-agnostic helper so `struct T**` (and deeper) globals
+    ; carry the pointee field array too, matching collect_symbols.
     cmp rcx, PTR_TYPE_FLAG
     jb .rv_not_struct_ptr
     push rax
-    mov rax, rcx
-    sub rax, PTR_TYPE_FLAG
-    cmp rax, TOK_KW_STRUCT
+    push rdi
+    mov rdi, rcx
+    call type_base_is_struct
+    pop rdi
     pop rax
-    jne .rv_not_struct_ptr
+    test rax, rax
+    jz .rv_not_struct_ptr
     mov rax, [r13 + ast_node_t.data4]
     test rax, rax
     jz .rv_not_struct_ptr
@@ -975,6 +1000,14 @@ register_globals:
     ; Register as TOK_KW_INT so that indexing uses pointer-size scaling.
     ; Keep r8 = element count (from data3) for bounds checking.
     mov rcx, TOK_KW_INT
+    ; Keep the pointee's field array in the symbol's `.fields` slot so
+    ; `arr[i]->field` can resolve the pointee's members (extra stays the
+    ; element count, so bounds checks keep working). data4 holds it for
+    ; struct-pointer arrays; 0 for char**/int**-style arrays.
+    push rax
+    mov rax, [r13 + ast_node_t.data4]
+    mov [pending_symbol_fields], rax
+    pop rax
     jmp .array_register
 .array_not_struct:
     ; rcx and r8 already set from data1 and data3
@@ -1071,6 +1104,19 @@ get_ptr_scale:
     je .done                             ; rax = 1 for char*
     mov rax, 8
 .done:
+    ret
+
+; type_is_struct_or_ptr(rdi = type) -> rax = 1 if the type is a struct by
+; value OR a pointer to a struct at any depth. Used where an indexed element
+; may be either (e.g. `struct T arr[i]` and `struct T* p[i]` both need the
+; pointee/element field array in gen_expr_struct_fields).
+; ================================================================
+type_is_struct_or_ptr:
+    cmp rdi, TOK_KW_STRUCT
+    je .tsp_yes
+    jmp type_base_is_struct             ; tail call: returns rax = 0/1
+.tsp_yes:
+    mov rax, 1
     ret
 
 ; ================================================================
@@ -1707,6 +1753,14 @@ collect_symbols:
     shl rax, 3                         ; count * 8
     ; Store type as TOK_KW_INT (8-byte elements) so indexing uses pointer-size scaling
     mov rcx, TOK_KW_INT
+    ; Keep the pointee's field array in the symbol's `.fields` slot so
+    ; `arr[i]->field` can resolve the pointee's members (extra stays the
+    ; element count, so bounds checks keep working). data4 holds it for
+    ; struct-pointer arrays; 0 for char**/int**-style arrays.
+    push rax
+    mov rax, [rbx + ast_node_t.data4]
+    mov [pending_symbol_fields], rax
+    pop rax
     jmp .array_do_size
 .array_not_struct:
     ; Compute frame size addition = elem_size * count
@@ -2352,6 +2406,10 @@ add_symbol:
     mov [rbx + symbol_t.offset], rdx
     mov [rbx + symbol_t.type], rcx
     mov [rbx + symbol_t.extra], r8
+    ; Pointee field array for arrays of struct pointers (0 otherwise).
+    mov r9, [pending_symbol_fields]
+    mov [rbx + symbol_t.fields], r9
+    mov qword [pending_symbol_fields], 0
 
     ; Store source location from current_ast_node
     mov rax, [current_ast_node]
@@ -2591,6 +2649,12 @@ find_symbol:
     mov rax, [rsi + symbol_t.offset]
     mov rbx, [rsi + symbol_t.type]
     mov rcx, [rsi + symbol_t.extra]
+    ; Expose the pointee field array (arrays of struct pointers) so index
+    ; handlers can chain `arr[i]->field` without a second lookup.
+    push rax
+    mov rax, [rsi + symbol_t.fields]
+    mov [found_symbol_fields], rax
+    pop rax
 
     pop r10
     pop r9
@@ -2607,6 +2671,7 @@ find_symbol:
     xor rax, rax
     xor rbx, rbx
     xor rcx, rcx
+    mov qword [found_symbol_fields], 0
     pop r10
     pop r9
     pop r8
@@ -2645,6 +2710,10 @@ add_global_symbol:
     mov qword [rbx + symbol_t.offset], 0       ; offset not used for globals
     mov [rbx + symbol_t.type], rcx
     mov [rbx + symbol_t.extra], r8
+    ; Pointee field array for arrays of struct pointers (0 otherwise).
+    mov r9, [pending_symbol_fields]
+    mov [rbx + symbol_t.fields], r9
+    mov qword [pending_symbol_fields], 0
 
     inc qword [global_symbol_count]
 
@@ -2711,6 +2780,11 @@ find_global_symbol:
     mov rax, [rsi + symbol_t.name_ptr]   ; rax = name_ptr
     mov rbx, [rsi + symbol_t.type]
     mov rcx, [rsi + symbol_t.extra]
+    ; Expose the pointee field array (arrays of struct pointers) so index
+    ; handlers can chain `arr[i]->field` without a second lookup.
+    mov rax, [rsi + symbol_t.fields]
+    mov [found_symbol_fields], rax
+    mov rax, [rsi + symbol_t.name_ptr]   ; rax = name_ptr (restore)
     pop r10
     pop r9
     pop r8
@@ -2726,6 +2800,7 @@ find_global_symbol:
     xor rax, rax
     xor rbx, rbx
     xor rcx, rcx
+    mov qword [found_symbol_fields], 0
     pop r10
     pop r9
     pop r8
@@ -5869,6 +5944,13 @@ gen_assign:
 .ai_gen_not_const_field:
     ; Save element type in r14 (callee-saved, preserved by subsequent gen_expr)
     mov r14, [gen_expr_type]
+    ; gen_index_elem_fields != 0 means the base was an array whose elements
+    ; are pointers to structs (s.ptrs[i] = ...): the element type IS a
+    ; pointer, so keep it (8-byte stride) instead of stripping the flag,
+    ; which would treat the element as a by-value struct and skip scaling.
+    mov rax, [gen_index_elem_fields]
+    test rax, rax
+    jnz .ai_gen_ptr_elem
     ; rax = address of array field
     mov rsi, asm_push_rax
     call emit_string                     ; push base address
@@ -5921,6 +6003,26 @@ gen_assign:
     mov rsi, asm_mov_rbx_rax
     call emit_string
     jmp .done
+.ai_gen_ptr_elem:
+    ; Array-of-pointer base: keep the pointer element type, push the base
+    ; address, evaluate the index (bounds-checked against the packed count),
+    ; and scale by 8.
+    mov rsi, asm_push_rax
+    call emit_string                     ; push base address
+    pop r15                              ; r15 = AST_INDEX node
+    mov rdi, [r15 + ast_node_t.data2]
+    call gen_expr                         ; rax = index
+    mov rdi, [gen_expr_array_count]
+    test rdi, rdi
+    jz .ai_gen_ptr_nobounds
+    call emit_bounds_check
+    mov qword [gen_expr_array_count], 0
+.ai_gen_ptr_nobounds:
+    mov rsi, asm_pop_rbx
+    call emit_string
+    mov rsi, asm_shl_rax_3
+    call emit_string                     ; 8-byte pointer elements
+    jmp .ai_gen_no_scale
 .ai_gen_store_char:
     mov rsi, asm_mov_rbx_al
     call emit_string
@@ -7806,6 +7908,9 @@ gen_expr:
 .index:
     ; base[index] — data1 = base expr, data2 = index expr
     ; Fast path: if base is AST_IDENT (simple array variable), use lea
+    mov qword [gen_index_elem_fields], 0   ; reset: only the ident fast paths
+                                           ; below set it (from the symbol's
+                                           ; `.fields` slot).
     mov rdi, [r12 + ast_node_t.data1]   ; base expression
     mov rax, [rdi + ast_node_t.type]
     cmp rax, AST_IDENT
@@ -7815,6 +7920,12 @@ gen_expr:
     push rdi
     call find_symbol
     ; rax = negative offset, rbx = type, rcx = extra (element count / struct info)
+    ; Capture the pointee field array (arrays of struct pointers) before any
+    ; later lookup can overwrite found_symbol_fields.
+    push rax
+    mov rax, [found_symbol_fields]
+    mov [gen_index_elem_fields], rax
+    pop rax
     test rax, rax
     jnz .index_local
     ; Try global
@@ -7822,6 +7933,11 @@ gen_expr:
     push rdi
     call find_global_symbol
     ; rax = name_ptr (nonzero), rbx = type, rcx = extra
+    ; Capture again for the global path (the local lookup missed).
+    push rax
+    mov rax, [found_symbol_fields]
+    mov [gen_index_elem_fields], rax
+    pop rax
     test rax, rax
     jz .index_no_base
     ; Global array
@@ -7852,12 +7968,21 @@ gen_expr:
     push r12
     mov rdi, [r12 + ast_node_t.data1]
     call gen_expr
+    ; gen_index_elem_fields != 0 means the base was an array whose elements
+    ; are pointers to structs (s.ptrs[i], g_arr[i]): the element type IS a
+    ; pointer, so keep it instead of stripping the flag (which would make the
+    ; code treat the element as a by-value struct and scale by struct size).
+    mov rax, [gen_index_elem_fields]
+    test rax, rax
+    jnz .index_gen_ptr_elem
     ; Save element type: strip PTR_TYPE_FLAG if present
     mov r14, [gen_expr_type]
     cmp r14, PTR_TYPE_FLAG
     jb .index_gen_not_ptr
     sub r14, PTR_TYPE_FLAG               ; strip pointer flag to get element type
     jmp .index_gen_have_type
+.index_gen_ptr_elem:
+    mov r14, [gen_expr_type]             ; element type = the pointer type
 .index_gen_not_ptr:
     ; Not a pointer type — keep as-is (e.g., TOK_KW_CHAR from *ptr deref)
 .index_gen_have_type:
@@ -7968,6 +8093,13 @@ gen_expr:
     call emit_string
     xor rax, rax
 .index_general_loaded:
+    ; Pointer-element arrays: chain the pointee's field array so a following
+    ; `->field` resolves (gen_index_elem_fields is 0 for every other case).
+    mov rax, [gen_index_elem_fields]
+    test rax, rax
+    jz .index_general_done
+    mov [gen_expr_struct_fields], rax
+.index_general_done:
     jmp .done
 
 .index_global_ptr:
@@ -7981,6 +8113,19 @@ gen_expr:
     call emit_string
     mov rsi, asm_close_bracket
     call emit_string
+    ; A pointer to a struct carries the pointee's field array in `extra`
+    ; (rbx here). Set it so the struct-element stride resolves instead of
+    ; depending on a stale gen_expr_struct_fields from an earlier expression.
+    push rax
+    push rdi
+    mov rdi, r14
+    call type_is_struct_or_ptr
+    pop rdi
+    test rax, rax
+    jz .index_global_ptr_nofield
+    mov [gen_expr_struct_fields], rbx
+.index_global_ptr_nofield:
+    pop rax
     jmp .index_common
 
 .index_local:
@@ -8135,6 +8280,19 @@ gen_expr:
     pop rdi
     ; Strip PTR_TYPE_FLAG to get base type for scaling
     sub r14, PTR_TYPE_FLAG
+    ; A pointer to a struct carries the pointee's field array in `extra`
+    ; (rbx here). Set it so the struct-element stride resolves instead of
+    ; depending on a stale gen_expr_struct_fields from an earlier expression.
+    push rax
+    push rdi
+    mov rdi, r14
+    call type_is_struct_or_ptr
+    pop rdi
+    test rax, rax
+    jz .index_local_ptr_nofield
+    mov [gen_expr_struct_fields], rbx
+.index_local_ptr_nofield:
+    pop rax
 
 .index_common:
     ; r13 = extra (0 for non-struct, or field_array_ptr for struct array)
@@ -8316,8 +8474,19 @@ gen_expr:
     pop rbx
     pop rax
     test r8, r8
-    jz .index_loaded_done
+    jz .index_loaded_nofield
     mov [gen_expr_struct_fields], rbx
+    jmp .index_loaded_done
+.index_loaded_nofield:
+    ; Arrays of struct pointers register their element as TOK_KW_INT (8-byte
+    ; elements), so the type alone cannot say the pointee is a struct. The
+    ; pointee's field array rides in the symbol's `.fields` slot, captured
+    ; from found_symbol_fields by the ident fast paths into
+    ; gen_index_elem_fields.
+    mov rax, [gen_index_elem_fields]
+    test rax, rax
+    jz .index_loaded_done
+    mov [gen_expr_struct_fields], rax
 .index_loaded_done:
     jmp .done
 
@@ -8983,6 +9152,20 @@ gen_expr:
     mov [gen_expr_struct_fields], rax
     jmp .mga_type_done
 .mga_scalar:
+    ; Pointer-element array fields pack [count, pointee_field_array] into an
+    ; info struct; scalar array fields keep a bare count.
+    mov rax, r14
+    sub rax, ARRAY_TYPE_FLAG
+    cmp rax, PTR_TYPE_FLAG
+    jb .mga_scalar_count
+    push rax
+    mov rax, [r9]
+    mov [gen_expr_array_count], rax
+    mov rax, [r9 + 8]
+    mov [gen_index_elem_fields], rax
+    pop rax
+    jmp .mga_type_done
+.mga_scalar_count:
     mov [gen_expr_array_count], r9       ; save element count for bounds checking
 .mga_type_done:
     sub r14, ARRAY_TYPE_FLAG             ; r14 = element type
@@ -9084,6 +9267,20 @@ gen_expr:
     mov [gen_expr_struct_fields], rax
     jmp .mcla_type_done
 .mcla_scalar:
+    ; Pointer-element array fields pack [count, pointee_field_array] into an
+    ; info struct; scalar array fields keep a bare count.
+    mov rax, r13
+    sub rax, ARRAY_TYPE_FLAG
+    cmp rax, PTR_TYPE_FLAG
+    jb .mcla_scalar_count
+    push rax
+    mov rax, [r9]
+    mov [gen_expr_array_count], rax
+    mov rax, [r9 + 8]
+    mov [gen_index_elem_fields], rax
+    pop rax
+    jmp .mcla_type_done
+.mcla_scalar_count:
     mov [gen_expr_array_count], r9       ; save element count for bounds checking
 .mcla_type_done:
     sub r13, ARRAY_TYPE_FLAG             ; r13 = element type
@@ -9176,6 +9373,21 @@ gen_expr:
     mov [gen_expr_struct_fields], rax
     jmp .mla_type_done
 .mla_scalar:
+    ; Pointer-element array fields pack [count, pointee_field_array] into an
+    ; info struct (see parser .ns_no_struct_info); scalar array fields keep a
+    ; bare count. The stripped element type tells them apart.
+    mov rax, r14
+    sub rax, ARRAY_TYPE_FLAG
+    cmp rax, PTR_TYPE_FLAG
+    jb .mla_scalar_count
+    push rax
+    mov rax, [r9]                        ; info[0] = element count
+    mov [gen_expr_array_count], rax
+    mov rax, [r9 + 8]                    ; info[8] = pointee field_array_ptr
+    mov [gen_index_elem_fields], rax
+    pop rax
+    jmp .mla_type_done
+.mla_scalar_count:
     mov [gen_expr_array_count], r9       ; save element count for bounds checking
 .mla_type_done:
     sub r14, ARRAY_TYPE_FLAG             ; r14 = element type
@@ -9889,6 +10101,19 @@ gen_addr:
     call emit_string
     mov rsi, asm_close_bracket
     call emit_string
+    ; A pointer to a struct carries the pointee's field array in `extra`
+    ; (r14 here). Set it so the struct-element stride resolves instead of
+    ; depending on a stale gen_expr_struct_fields from an earlier expression.
+    push rax
+    push rdi
+    mov rdi, r15
+    call type_is_struct_or_ptr
+    pop rdi
+    test rax, rax
+    jz .ga_index_global_ptr_nofield
+    mov [gen_expr_struct_fields], r14
+.ga_index_global_ptr_nofield:
+    pop rax
     jmp .ga_index_finish
 
 .ga_index_local:
@@ -9921,6 +10146,19 @@ gen_addr:
     mov rsi, asm_close_bracket
     call emit_string
     pop rdi
+    ; A pointer to a struct carries the pointee's field array in `extra`
+    ; (r14 here). Set it so the struct-element stride resolves instead of
+    ; depending on a stale gen_expr_struct_fields from an earlier expression.
+    push rax
+    push rdi
+    mov rdi, r15
+    call type_is_struct_or_ptr
+    pop rdi
+    test rax, rax
+    jz .ga_index_local_ptr_nofield
+    mov [gen_expr_struct_fields], r14
+.ga_index_local_ptr_nofield:
+    pop rax
     jmp .ga_index_finish
 .ga_index_local_strip_flag:
     mov rax, rbx
@@ -9940,6 +10178,19 @@ gen_addr:
     mov rsi, asm_close_bracket
     call emit_string
     pop rdi
+    ; A pointer to a struct carries the pointee's field array in `extra`
+    ; (r14 here). Set it so the struct-element stride resolves instead of
+    ; depending on a stale gen_expr_struct_fields from an earlier expression.
+    push rax
+    push rdi
+    mov rdi, r15
+    call type_is_struct_or_ptr
+    pop rdi
+    test rax, rax
+    jz .ga_index_local_strip_nofield
+    mov [gen_expr_struct_fields], r14
+.ga_index_local_strip_nofield:
+    pop rax
     jmp .ga_index_finish
 .ga_index_local_flag_arr:
     mov r15, rax                        ; element type

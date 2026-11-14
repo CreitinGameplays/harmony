@@ -28,6 +28,9 @@ Check
 - Always run final `make test` before completion, but only if you modify source code.
   Docs-only changes don't need to run `make test`.
 - Harmony standard lib code for final language should be written in src/stdlib/<subdir>.
+- `harmony-base` is freestanding (it doesn't assume standard library presence or standard `main`).
+- It's good to also add purposely bad code (simple and complex codes)
+  in error-handling directory in `tests` to verify if compiler is handling it well.
 - Use `make` with `-j` arg to use all cores when compiling.
 - All risks are accepted.
 - Always add helpful comments in the code.

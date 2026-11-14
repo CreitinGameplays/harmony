@@ -1,0 +1,19 @@
+// EXPECT: 7
+// Regression: a struct field that is an array of struct pointers
+// (`s.ptrs[i]->field`) treated the pointer element as a by-value struct:
+// the index was scaled by the pointee's struct size instead of 8 and the
+// field offset was applied to the wrong address. Array fields whose element
+// is a pointer now pack [count, pointee_field_array] into the descriptor's
+// info struct, and the index keeps the pointer element type.
+struct E { int kind; int a; };
+struct S { struct E* ptrs[2]; };
+int main() {
+    struct E x;
+    struct S s;
+    x.a = 9;
+    s.ptrs[0] = &x;
+    s.ptrs[1] = &x;
+    if (s.ptrs[0]->a != 9) { return 1; }
+    if (s.ptrs[1]->a != 9) { return 2; }
+    return 7;
+}

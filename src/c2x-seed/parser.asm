@@ -3518,7 +3518,31 @@ parse_struct_def:
     mov r8, rdx                      ; r8 = info struct ptr (as sub_array_ptr)
     jmp .ns_field_semi
 .ns_no_struct_info:
-    ; For pointer-to-struct arrays or other array fields, use element count directly
+    ; Pointer-to-struct array fields: sub_array_ptr cannot hold both the
+    ; element count and the pointee's field array, so pack them into the same
+    ; 16-byte info struct struct-array fields use: [count, field_array_ptr].
+    ; The field type keeps ARRAY_TYPE_FLAG + PTR_TYPE_FLAG + base, which the
+    ; member-array codegen paths use to tell this case apart (a stripped
+    ; element type >= PTR_TYPE_FLAG means "info struct", not a bare count).
+    mov rax, r14
+    sub rax, ARRAY_TYPE_FLAG
+    cmp rax, PTR_TYPE_FLAG
+    jb .ns_plain_array_info
+    push r8                          ; save field_array_ptr
+    push rcx                         ; save field size (heap_alloc_zero clobbers rcx)
+    push r9                          ; save element count
+    mov rdi, 16
+    call heap_alloc_zero
+    mov rdx, rax                     ; rdx = info struct ptr
+    pop r9
+    pop rcx
+    pop r8
+    mov [rdx], r9                    ; info[0] = element count
+    mov [rdx + 8], r8                ; info[8] = pointee field_array_ptr
+    mov r8, rdx                      ; r8 = info struct ptr (as sub_array_ptr)
+    jmp .ns_field_semi
+.ns_plain_array_info:
+    ; Scalar (int/char) array fields: sub_array_ptr = element count directly
     mov r8, r9                       ; sub_array_ptr = element count
 
 .ns_field_semi:

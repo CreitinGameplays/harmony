@@ -8,6 +8,12 @@ the `.harmony` extension.
 The design lives in [`docs/harmony.md`](docs/harmony.md). This repository is a
 working compiler for it.
 
+## Toolchain (debian)
+```bash
+sudo apt update
+sudo apt install make gcc clang file python3 python-is-python3 linux-perf xxd nano gdb valgrind strace nasm git ripgrep llvm -y 
+```
+
 ## Layout
 
 | Path | What it is |

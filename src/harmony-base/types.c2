@@ -1,0 +1,444 @@
+// harmony-base — the type model (docs/harmony.md §5).
+//
+// Types are small integer ids. The primitives get fixed ids (TY_I8..TY_UNIT)
+// so several modules can compare them without a lookup. Composite types are
+// created on demand and get ids starting at TY_DYNAMIC. The table grows by
+// doubling and lives in the arena, like every other structure here.
+//
+// Layout note: c2x-seed lays out every struct field as one qword, so an
+// array-of-structs copy helper below copies field by field, never with a
+// byte-size trick. The harmony *language* layout is computed separately by
+// ty_size / ty_align / the codegen layout pass; those are the numbers that
+// appear in emitted LLVM.
+
+// ---------------------------------------------------------------------------
+// Member and type-table storage.
+// ---------------------------------------------------------------------------
+struct TyMember {
+    char* name;     // field name / variant name
+    int   ty;       // field type, or (for a variant) its payload struct type
+    int   ival;     // reserved (flags)
+};
+
+struct TypeEntry {
+    int   kind;       // primitive id, or CTY_* for composites
+    int   a;          // element / pointee / payload element
+    int   b;          // array length
+    char* name;       // display name ("i32", "Point", "Shape::Circle")
+    int   nmembers;   // struct fields / enum variants
+    struct TyMember** members;
+    struct AstNode* decl;   // the decl node (0 for built-ins)
+    int   size;       // cached byte size (0 = not yet computed)
+    int   align;      // cached alignment
+    int   busy;       // re-entrancy guard while computing size
+    int   nocopy;     // 1 = owns a resource (never copy) — M2 drop glue
+    int   is_computing;
+};
+
+struct TypeEntry** g_types;   // indexed by type id; [0] unused
+int g_ntypes;
+int g_tcap;
+
+// Creates an empty entry at the next id.
+int ty_alloc(void) {
+    struct TypeEntry* e;
+    if (g_ntypes >= g_tcap) {
+        int ncap;
+        struct TypeEntry** nt;
+        int i;
+        ncap = g_tcap * 2;
+        nt = arena_alloc(ncap * 8);
+        i = 0;
+        while (i < g_ntypes) { nt[i] = g_types[i]; i = i + 1; }
+        g_types = nt;
+        g_tcap = ncap;
+    }
+    e = arena_alloc(96);   // 12 fields * 8
+    e->kind = 0; e->a = 0; e->b = 0; e->name = 0;
+    e->nmembers = 0; e->members = 0; e->decl = 0;
+    e->size = 0; e->align = 0; e->busy = 0; e->nocopy = 0;
+    e->is_computing = 0;
+    g_types[g_ntypes] = e;
+    g_ntypes = g_ntypes + 1;
+    return g_ntypes - 1;
+}
+
+int ty_new(int kind, char* name, int a, int b) {
+    int id;
+    struct TypeEntry* e;
+    id = ty_alloc();
+    e = g_types[id];
+    e->kind = kind;
+    e->name = name;
+    e->a = a;
+    e->b = b;
+    return id;
+}
+
+// As ty_new, but records the originating decl node (used for nominal types).
+int ty_new_typed(int kind, char* name, struct AstNode* decl) {
+    int id;
+    struct TypeEntry* e;
+    id = ty_alloc();
+    e = g_types[id];
+    e->kind = kind;
+    e->name = name;
+    e->decl = decl;
+    return id;
+}
+
+struct TypeEntry* ty_entry(int id) {
+    if (id <= 0 || id >= g_ntypes) { return 0; }
+    return g_types[id];
+}
+
+int ty_kind(int id) {
+    struct TypeEntry* e;
+    if (id <= 0 || id >= g_ntypes) { return 0; }
+    return g_types[id]->kind;
+}
+
+char* ty_display(int id) {
+    struct TypeEntry* e;
+    if (id <= 0 || id >= g_ntypes) { return "?"; }
+    e = g_types[id];
+    if (e->name == 0) { return "?"; }
+    return e->name;
+}
+
+// ---------------------------------------------------------------------------
+// Primitive predicates.
+// ---------------------------------------------------------------------------
+int ty_is_primitive(int id) {
+    return id >= TY_I8 && id <= TY_UNIT;
+}
+
+int ty_is_integer(int id) {
+    if (id >= TY_I8 && id <= TY_ISIZE) { return 1; }
+    if (id >= TY_U8 && id <= TY_USIZE) { return 1; }
+    return 0;
+}
+
+int ty_is_signed(int id) {
+    return id >= TY_I8 && id <= TY_ISIZE;
+}
+
+int ty_is_unsigned(int id) {
+    return id >= TY_U8 && id <= TY_USIZE;
+}
+
+int ty_is_float(int id) {
+    return id == TY_F32 || id == TY_F64;
+}
+
+int ty_is_bool(int id) { return id == TY_BOOL; }
+int ty_is_char(int id) { return id == TY_CHAR; }
+int ty_is_never(int id) { return id == TY_NEVER; }
+
+int ty_is_untyped_lit(int id) {
+    return id == CTY_UINT_LIT || id == CTY_FLOAT_LIT;
+}
+
+int ty_is_ref(int id) {
+    int k;
+    k = ty_kind(id);
+    return k == CTY_REF || k == CTY_MUTREF || k == CTY_STRREF;
+}
+
+int ty_is_heap(int id) { return ty_kind(id) == CTY_HEAP; }
+
+int ty_is_array(int id) { return ty_kind(id) == CTY_ARRAY; }
+
+int ty_is_nominal(int id) {
+    int k;
+    k = ty_kind(id);
+    return k == CTY_STRUCT || k == CTY_ENUM;
+}
+
+int ty_is_ptr(int id) {
+    int k;
+    k = ty_kind(id);
+    return k == CTY_PTR || k == CTY_MUTPTR;
+}
+
+// The element/pointee of a composite (0 for primitives).
+int ty_elem(int id) {
+    struct TypeEntry* e;
+    k_unused: ;
+    e = ty_entry(id);
+    if (e == 0) { return 0; }
+    return e->a;
+}
+
+int ty_bit_width(int id) {
+    if (id == TY_I8 || id == TY_U8) { return 8; }
+    if (id == TY_I16 || id == TY_U16) { return 16; }
+    if (id == TY_I32 || id == TY_U32 || id == TY_CHAR || id == TY_F32) { return 32; }
+    if (id == TY_I64 || id == TY_U64 || id == TY_ISIZE || id == TY_USIZE || id == TY_F64) { return 64; }
+    if (id == TY_BOOL) { return 1; }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// §5.6: which types are `copy`.
+//
+// Primitives, shared references, raw pointers, arrays of copy, and user
+// structs/enums explicitly marked `copy` (whose fields must all be copy).
+// ---------------------------------------------------------------------------
+int ty_is_copy(int id) {
+    struct TypeEntry* e;
+    int i;
+    if (id == TY_NEVER || id == TY_UNIT) { return 1; }
+    if (ty_is_primitive(id) || ty_is_untyped_lit(id)) { return 1; }
+    if (id == CTY_UINT_LIT || id == CTY_FLOAT_LIT) { return 1; }
+    e = ty_entry(id);
+    if (e == 0) { return 0; }
+    if (e->nocopy) { return 0; }
+    if (e->kind == CTY_REF || e->kind == CTY_STRREF) { return 1; }
+    if (e->kind == CTY_MUTREF) { return 0; }   // §5.4: reborrowed, not copied
+    if (e->kind == CTY_PTR || e->kind == CTY_MUTPTR) { return 1; }
+    if (e->kind == CTY_HEAP) { return 0; }      // owns a resource
+    if (e->kind == CTY_ARRAY) { return ty_is_copy(e->a); }
+    if (e->kind == CTY_STRUCT || e->kind == CTY_ENUM) {
+        // Marked copy iff the decl says so AND every member is copy.
+        if (e->decl == 0) { return 0; }
+        if (e->decl->ival == 0) { return 0; }   // not `copy struct/enum`
+        i = 0;
+        while (i < e->nmembers) {
+            if (!ty_is_copy(e->members[i]->ty)) { return 0; }
+            i = i + 1;
+        }
+        return 1;
+    }
+    return 0;
+}
+
+void ty_set_nocopy(int id) {
+    struct TypeEntry* e;
+    e = ty_entry(id);
+    if (e != 0) { e->nocopy = 1; }
+}
+
+// ---------------------------------------------------------------------------
+// Structural equality. // Nominal types compare by id (the table dedups by
+// name); composites compare by constructor and parts.
+// ---------------------------------------------------------------------------
+int ty_eq(int a, int b) {
+    struct TypeEntry* ea;
+    struct TypeEntry* eb;
+    if (a == b) { return 1; }
+    // An untyped literal adapts to any numeric type of its class.
+    if (a == CTY_UINT_LIT) { return ty_is_integer(b) || ty_is_untyped_lit(b); }
+    if (b == CTY_UINT_LIT) { return ty_is_integer(a) || ty_is_untyped_lit(a); }
+    if (a == CTY_FLOAT_LIT) { return ty_is_float(b) || ty_is_untyped_lit(b); }
+    if (b == CTY_FLOAT_LIT) { return ty_is_float(a) || ty_is_untyped_lit(a); }
+    ea = ty_entry(a);
+    eb = ty_entry(b);
+    if (ea == 0 || eb == 0) { return 0; }
+    if (ea->kind != eb->kind) { return 0; }
+    if (ea->kind == CTY_ARRAY) {
+        return ty_eq(ea->a, eb->a) && ea->b == eb->b;
+    }
+    if (ea->kind == CTY_REF || ea->kind == CTY_MUTREF || ea->kind == CTY_HEAP
+        || ea->kind == CTY_PTR || ea->kind == CTY_MUTPTR || ea->kind == CTY_STRREF) {
+        return ty_eq(ea->a, eb->a);
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Layout: byte size and alignment (the harmony layout, not the seed's).
+//
+// A function of the type alone, so codegen and sizeof() agree byte for byte.
+// Composites are computed on first use and cached; a re-entrant computation
+// (a type containing itself by value) yields 0, which the checker rejects.
+// ---------------------------------------------------------------------------
+int ty_size(int id) {
+    struct TypeEntry* e;
+    int k;
+    if (id == TY_INVALID) { return 0; }
+    if (id == TY_UNIT || id == TY_NEVER) { return 0; }
+    if (ty_is_untyped_lit(id)) {
+        if (id == CTY_FLOAT_LIT) { return 8; }
+        return 4;   // an untyped integer literal defaults to i32
+    }
+    if (ty_is_primitive(id)) {
+        if (id == TY_I8 || id == TY_U8 || id == TY_BOOL) { return 1; }
+        if (id == TY_I16 || id == TY_U16) { return 2; }
+        if (id == TY_I32 || id == TY_U32 || id == TY_F32 || id == TY_CHAR) { return 4; }
+        return 8;   // i64/u64/isize/usize/f64
+    }
+    e = ty_entry(id);
+    if (e == 0) { return 0; }
+    if (e->size != 0) { return e->size; }
+    if (e->is_computing) { return 0; }   // recursive by value: unusable
+    e->is_computing = 1;
+    k = e->kind;
+    if (k == CTY_REF || k == CTY_MUTREF || k == CTY_PTR || k == CTY_MUTPTR
+        || k == CTY_HEAP) {
+        e->size = 8;
+    } else if (k == CTY_STRREF || k == CTY_SLICE) {
+        e->size = 16;   // fat pointer { ptr, len }
+    } else if (k == CTY_ARRAY) {
+        e->size = ty_size(e->a) * e->b;
+    } else if (k == CTY_STRUCT) {
+        // Natural alignment, tail padding to the struct alignment.
+        int off;
+        int i;
+        int amax;
+        off = 0;
+        amax = 1;
+        i = 0;
+        while (i < e->nmembers) {
+            int ft;
+            int fs;
+            int fa;
+            ft = e->members[i]->ty;
+            fs = ty_size(ft);
+            fa = ty_align(ft);
+            off = align_up(off, fa);
+            off = off + fs;
+            if (fa > amax) { amax = fa; }
+            i = i + 1;
+        }
+        e->size = align_up(off, amax);
+        e->align = amax;
+    } else if (k == CTY_ENUM) {
+        // { i32 tag; <payload of the largest variant> }
+        int maxpay;
+        int i;
+        maxpay = 0;
+        i = 0;
+        while (i < e->nmembers) {
+            int ps;
+            ps = ty_size(e->members[i]->ty);
+            if (ps > maxpay) { maxpay = ps; }
+            i = i + 1;
+        }
+        e->size = align_up(4, 8) + align_up(maxpay, 8);
+        e->align = 8;
+    } else {
+        e->size = 8;
+    }
+    e->is_computing = 0;
+    return e->size;
+}
+
+int ty_align(int id) {
+    struct TypeEntry* e;
+    int k;
+    if (ty_is_primitive(id) || ty_is_untyped_lit(id)) {
+        int s;
+        s = ty_size(id);
+        if (id == TY_BOOL || id == TY_I8 || id == TY_U8) { return 1; }
+        if (id == TY_I16 || id == TY_U16) { return 2; }
+        if (s == 4) { return 4; }
+        return 8;
+    }
+    e = ty_entry(id);
+    if (e == 0) { return 1; }
+    if (e->align != 0) { return e->align; }
+    k = e->kind;
+    if (k == CTY_ARRAY) { return ty_align(e->a); }
+    if (k == CTY_STRUCT) {
+        // Trigger the size pass, which fills `align`.
+        ty_size(id);
+        if (e->align != 0) { return e->align; }
+        return 1;
+    }
+    if (k == CTY_ENUM) { return 8; }
+    return 8;
+}
+
+// Byte offset of struct member `i` (fields are laid out in decl order).
+int ty_field_offset(int id, int i) {
+    struct TypeEntry* e;
+    int off;
+    int j;
+    e = ty_entry(id);
+    if (e == 0 || e->kind != CTY_STRUCT) { return 0; }
+    off = 0;
+    j = 0;
+    while (j < i) {
+        int ft;
+        ft = e->members[j]->ty;
+        off = align_up(off, ty_align(ft));
+        off = off + ty_size(ft);
+        j = j + 1;
+    }
+    if (i < e->nmembers) {
+        off = align_up(off, ty_align(e->members[i]->ty));
+    }
+    return off;
+}
+
+int ty_member_count(int id) {
+    struct TypeEntry* e;
+    e = ty_entry(id);
+    if (e == 0) { return 0; }
+    return e->nmembers;
+}
+
+// Finds a struct field / enum variant by name. Returns -1 when absent.
+int ty_find_member(int id, char* name) {
+    struct TypeEntry* e;
+    int i;
+    e = ty_entry(id);
+    if (e == 0) { return -1; }
+    i = 0;
+    while (i < e->nmembers) {
+        if (str_eq(e->members[i]->name, name)) { return i; }
+        i = i + 1;
+    }
+    return -1;
+}
+
+struct TyMember* ty_member(int id, int i) {
+    struct TypeEntry* e;
+    e = ty_entry(id);
+    if (e == 0 || i < 0 || i >= e->nmembers) { return 0; }
+    return e->members[i];
+}
+
+int ty_member_type(int id, int i) {
+    struct TyMember* m;
+    m = ty_member(id, i);
+    if (m == 0) { return TY_INVALID; }
+    return m->ty;
+}
+
+void ty_add_member(int id, char* name, int ty) {
+    struct TypeEntry* e;
+    struct TyMember** nm;
+    int i;
+    e = ty_entry(id);
+    if (e == 0) { return; }
+    if (e->nmembers >= ty_member_cap(e)) { /* grow below */ }
+    nm = arena_alloc((e->nmembers + 8) * 8);
+    i = 0;
+    while (i < e->nmembers) { nm[i] = e->members[i]; i = i + 1; }
+    e->members = nm;
+    {
+        struct TyMember* m;
+        m = arena_alloc(24);
+        m->name = name;
+        m->ty = ty;
+        m->ival = 0;
+        e->members[e->nmembers] = m;
+        e->nmembers = e->nmembers + 1;
+    }
+}
+
+// Small helper used above; the member array is reallocated on every add, so
+// the "cap" is effectively nmembers. Kept for clarity.
+int ty_member_cap(struct TypeEntry* e) {
+    return e->nmembers;
+}
+
+// ---------------------------------------------------------------------------
+// Align up (no libc).
+// ---------------------------------------------------------------------------
+int align_up(int n, int a) {
+    if (a <= 1) { return n; }
+    return (n + a - 1) & (0 - a);
+}

@@ -44,8 +44,8 @@ File Extension: .harmony (default), .hr (secondary)
 - proposed layout for the final `harmony` language (to feel more organized and clean):
 ```
 src/
-├── harmony/... <- the real core of the language here.
-├── core/... <- allowed to use with freestanding (e.g primitive types, slices, iterators... just like rust).
+├── harmony/*.hr <- the real core of the language here.
+├── core/*.hr <- allowed to use with freestanding (e.g primitive types, slices, iterators... just like rust).
 └── stdlib/
-    └── (HashMap/io/fs/net...) <- the full standard library, needs the OS/allocator...
+    └── (HashMap/io/fs/net...) <- the full standard library, needs the OS/allocator (*.hr extension)...
 ```

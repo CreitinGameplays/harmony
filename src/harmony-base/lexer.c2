@@ -343,6 +343,8 @@ int lexer_run(struct SourceFile* sf, struct Token** out_tokens) {
         struct Token* t;
         int line;
         int col;
+        line = 0;
+        col = 0;
 
         if (!lex_skip_trivia(sf, &pos)) {
             *out_tokens = toks;
@@ -496,6 +498,8 @@ int lexer_run(struct SourceFile* sf, struct Token** out_tokens) {
         struct Token* t;
         int line;
         int col;
+        line = 0;
+        col = 0;
         t = &toks[count];
         lex_pos(sf, pos, &line, &col);
         t->kind = TOK_EOF;

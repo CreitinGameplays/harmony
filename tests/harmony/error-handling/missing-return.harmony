@@ -1,0 +1,11 @@
+// WANT: RET-01
+// Simple: a non-unit function whose body can fall off the end.
+fn classify(n: i32) -> i32 {
+    if (n > 0) {
+        return 1;
+    }
+}
+
+fn main() -> i32 {
+    return classify(0);
+}

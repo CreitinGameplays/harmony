@@ -1,0 +1,31 @@
+// WANT: NAME-01 MUT-01 INIT-01 TYPE-02 CASE-01
+// Complex: one deliberately broken program that trips several analyses at
+// once. The checker must report its findings, not bail after the first, and
+// it must never crash. Each coded line below is a separate defect.
+struct Player {
+    name: i32;
+    score: i32;
+}
+
+enum State { Idle, Busy, Done, }
+
+fn update(p: Player) -> i32 {
+    // NAME-01: `missing` was never declared.
+    let t = missing + 1;
+    // MUT-01: `p` is not a `mut` binding (and is passed by value).
+    p.score = t;
+    // TYPE-02: `Player` has no field `hp`.
+    return p.hp;
+}
+
+fn main() -> i32 {
+    let mut s = State::Idle;
+    // INIT-01: `uninit` has no value on this path.
+    let uninit: i32;
+    let n = uninit + 1;
+    switch (s) {
+        // CASE-01: `Busy` and `Done` are uncovered, and there is no `default`.
+        case State::Idle: { return 0; }
+    }
+    return n;
+}

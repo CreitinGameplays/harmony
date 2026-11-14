@@ -1,0 +1,707 @@
+// harmony-base — the type checker, part 2: expressions
+// (docs/harmony.md §7, §5.9, §12).
+//
+// The parser already built a precedence-shaped tree, so this pass is a
+// bottom-up fold: infer each operand's type, check the operator against it,
+// and store the result type on the node (`n->ty`). Untyped integer/float
+// literals (§5.9) carry CTY_UINT_LIT / CTY_FLOAT_LIT and adapt to whatever
+// the context wants, so `let x: u8 = 200;` needs no suffix.
+//
+// M1 scope: literals, paths, calls (incl. methods), field access, indexing,
+// binary/unary operators with trapping semantics, casts, `heap`, `sizeof`,
+// struct/array literals, and references. Move/borrow analysis is M2–M3; this
+// pass records the types the later analyses will need.
+
+// ---------------------------------------------------------------------------
+// Forward declarations (c2x-seed resolves names from earlier text only).
+// ---------------------------------------------------------------------------
+int ck_coercible(int want, int got);
+int ck_expr(struct AstNode* n);
+int ck_expr_enum_path(struct AstNode* n);
+int ck_expr_path(struct AstNode* n);
+int ck_expr_variant_unqualified(struct AstNode* n);
+int ck_expr_binary(struct AstNode* n);
+int ck_expr_unary(struct AstNode* n);
+int ck_expr_field(struct AstNode* n);
+int ck_expr_index(struct AstNode* n);
+int ck_expr_call(struct AstNode* n);
+int ck_expr_method_call(struct AstNode* n, struct AstNode* callee, struct AstList* args);
+int ck_expr_assoc_call(struct AstNode* n, struct AstNode* callee, struct AstList* args);
+int ck_expr_as(struct AstNode* n);
+int ck_expr_struct_init(struct AstNode* n);
+int ck_expr_array_lit(struct AstNode* n);
+int ck_expr_borrow(struct AstNode* n);
+int ck_expr_deref(struct AstNode* n);
+int ck_expr_heap(struct AstNode* n);
+int ck_expr_sizeof(struct AstNode* n);
+
+// ---------------------------------------------------------------------------
+// Compatibility: does `got` fit where `want` is expected? Untyped literals
+// adapt within their class (§5.9); everything else is structural equality.
+// ---------------------------------------------------------------------------
+int ck_coercible(int want, int got) {
+    if (ty_eq(want, got)) { return 1; }
+    // Widening integer conversions are explicit-only (§5.8): no implicit
+    // widening, no implicit sign change. Only the untyped-literal rules above
+    // (in ty_eq) adapt.
+    return 0;
+}
+
+// Checks an expression and returns its type id (TY_INVALID after a stop).
+int ck_expr(struct AstNode* n) {
+    int t;
+    if (n == 0) { return TY_UNIT; }
+    if (n->ty != 0) { return n->ty; }   // already checked (idempotent)
+    t = TY_INVALID;
+    if (n->kind == AST_INT_LIT) { n->ty = TY_UINT_LIT; return n->ty; }
+    if (n->kind == AST_FLOAT_LIT) { n->ty = TY_FLOAT_LIT; return n->ty; }
+    if (n->kind == AST_STRING_LIT) { n->ty = ty_new(CTY_STRREF, "&str", TY_U8, 0); return n->ty; }
+    if (n->kind == AST_CHAR_LIT) { n->ty = TY_CHAR; return n->ty; }
+    if (n->kind == AST_BOOL_LIT) { n->ty = TY_BOOL; return n->ty; }
+    if (n->kind == AST_UNIT_LIT) { n->ty = TY_UNIT; return n->ty; }
+    if (n->kind == AST_PATH) { t = ck_expr_path(n); n->ty = t; return t; }
+    if (n->kind == AST_BINARY) { t = ck_expr_binary(n); n->ty = t; return t; }
+    if (n->kind == AST_UNARY) { t = ck_expr_unary(n); n->ty = t; return t; }
+    if (n->kind == AST_FIELD_ACC) { t = ck_expr_field(n); n->ty = t; return t; }
+    if (n->kind == AST_INDEX) { t = ck_expr_index(n); n->ty = t; return t; }
+    if (n->kind == AST_CALL) { t = ck_expr_call(n); n->ty = t; return t; }
+    if (n->kind == AST_AS) { t = ck_expr_as(n); n->ty = t; return t; }
+    if (n->kind == AST_STRUCT_INIT) { t = ck_expr_struct_init(n); n->ty = t; return t; }
+    if (n->kind == AST_ARRAY_LIT) { t = ck_expr_array_lit(n); n->ty = t; return t; }
+    if (n->kind == AST_BORROW) { t = ck_expr_borrow(n); n->ty = t; return t; }
+    if (n->kind == AST_DEREF) { t = ck_expr_deref(n); n->ty = t; return t; }
+    if (n->kind == AST_HEAP) { t = ck_expr_heap(n); n->ty = t; return t; }
+    if (n->kind == AST_SIZEOF) { t = ck_expr_sizeof(n); n->ty = t; return t; }
+    if (n->kind == AST_RAW_EXPR) { t = ck_expr(n->a); n->ty = t; return t; }
+    if (n->kind == AST_BLOCK) {
+        // A block used as an expression: its value is the last expression
+        // statement (§8.1). M1 keeps it simple: blocks in expression position
+        // yield unit.
+        ck_stmt_block(n);
+        n->ty = TY_UNIT;
+        return TY_UNIT;
+    }
+    diag_stop("TYPE-05", "unsupported expression",
+              "This expression form is not supported yet.",
+              diag_file(n->file), n->start, n->end);
+    n->ty = TY_INVALID;
+    return TY_INVALID;
+}
+
+// A path: a bare name, or `Enum::Variant` (the parser flattens `A::B` into
+// the single string "A::B", so split on the last `::` here).
+int ck_expr_path(struct AstNode* n) {
+    int sym;
+    if (n->a != 0) {
+        // Qualified path: resolve the base type, then the final segment.
+        int base;
+        int seg;
+        base = ck_expr(n->a);
+        if (base == TY_INVALID) { return TY_INVALID; }
+        if (n->kids != 0 && n->kids->len > 0) {
+            seg = n->kids->items[n->kids->len - 1];
+            if (ty_kind(base) == CTY_ENUM) {
+                int vi;
+                vi = ty_find_member(base, seg->sval);
+                if (vi < 0) {
+                    ck_err_no_field(n, base, seg->sval);
+                    return TY_INVALID;
+                }
+                // A variant with no payload is a value of the enum type.
+                if (ty_member_count(ty_member_type(base, vi)) == 0) {
+                    return base;
+                }
+                // A payload variant needs construction (M2: `Has(...)` sugar).
+                return ty_member_type(base, vi);
+            }
+            ck_err_no_field(n, base, seg->sval);
+            return TY_INVALID;
+        }
+        return base;
+    }
+    if (str_contains(n->sval, "::")) {
+        return ck_expr_enum_path(n);
+    }
+    sym = ck_lookup(n->sval);
+    if (sym < 0) {
+        // Could still be an enum variant of some enum (unqualified, §8.4).
+        if (ck_expr_variant_unqualified(n)) { return n->ty; }
+        ck_err_unknown_name(n->sval, n, 0);
+        return TY_INVALID;
+    }
+    if (g_sym_kind[sym] == SK_CONST || g_sym_kind[sym] == SK_LET
+        || g_sym_kind[sym] == SK_PARAM) {
+        if ((g_sym_kind[sym] == SK_LET || g_sym_kind[sym] == SK_PARAM)
+            && !g_sym_init[sym]) {
+            ck_err_uninit(n, n->sval);
+        }
+        return g_sym_ty[sym];
+    }
+    if (g_sym_kind[sym] == SK_FN) {
+        // A function named without calling it: function values arrive in v1
+        // (§20.3 item 7). For now the name only makes sense in a call.
+        return TY_UNIT;
+    }
+    if (g_sym_kind[sym] == SK_TYPE) {
+        diag_stop("TYPE-05", "a type is not a value",
+                  "Type names can only appear in type position.",
+                  diag_file(n->file), n->start, n->end);
+        return TY_INVALID;
+    }
+    return g_sym_ty[sym];
+}
+
+// `Enum::Variant` (the parser hands us the flattened "Enum::Variant" string).
+// Splits on the last `::`, resolves the enum, and returns the variant's type:
+// the enum type for a payload-less variant, its payload struct otherwise.
+int ck_expr_enum_path(struct AstNode* n) {
+    int cut;
+    char* ename;
+    char* vname;
+    int sym;
+    int ty;
+    int vi;
+    cut = str_rfind(n->sval, "::");
+    ename = str_prefix(n->sval, cut);
+    vname = n->sval + cut + 2;
+    sym = ck_lookup(ename);
+    if (sym < 0 || g_sym_kind[sym] != SK_TYPE) {
+        ck_err_unknown_name(ename, n, "the name before `::` must be an enum or module");
+        return TY_INVALID;
+    }
+    ty = g_sym_ty[sym];
+    if (ty_kind(ty) != CTY_ENUM) {
+        ck_err_no_field(n, ty, vname);
+        return TY_INVALID;
+    }
+    vi = ty_find_member(ty, vname);
+    if (vi < 0) {
+        ck_err_no_field(n, ty, vname);
+        return TY_INVALID;
+    }
+    if (ty_member_count(ty_member_type(ty, vi)) == 0) {
+        return ty;   // payload-less variant: a value of the enum type
+    }
+    return ty_member_type(ty, vi);
+}
+
+// An unqualified name that matches exactly one enum variant in scope.
+// Sets n->ty and returns 1 on success.
+int ck_expr_variant_unqualified(struct AstNode* n) {
+    int i;
+    int found;
+    int fty;
+    found = 0;
+    fty = TY_INVALID;
+    i = 0;
+    while (i < g_nsyms) {
+        if (g_sym_kind[i] == SK_TYPE && ty_kind(g_sym_ty[i]) == CTY_ENUM) {
+            if (ty_find_member(g_sym_ty[i], n->sval) >= 0) {
+                if (found) {
+                    // Ambiguous: two enums define this variant name.
+                    return 0;
+                }
+                found = 1;
+                fty = g_sym_ty[i];
+            }
+        }
+        i = i + 1;
+    }
+    if (!found) { return 0; }
+    if (ty_member_count(ty_member_type(fty, ty_find_member(fty, n->sval))) != 0) {
+        return 0;   // payload variant: needs construction
+    }
+    n->ty = fty;
+    return 1;
+}
+
+// Binary operators. Comparison/logical ops yield bool; arithmetic keeps the
+// operand type (traps on overflow per §3.2 — the backend emits the checks).
+int ck_expr_binary(struct AstNode* n) {
+    int lt;
+    int rt;
+    char* op;
+    op = n->sval;
+    lt = ck_expr(n->a);
+    rt = ck_expr(n->b);
+    if (lt == TY_INVALID || rt == TY_INVALID) { return TY_INVALID; }
+    if (str_eq(op, "==") || str_eq(op, "!=") || str_eq(op, "<")
+        || str_eq(op, "<=") || str_eq(op, ">") || str_eq(op, ">=")
+        || str_eq(op, "&&") || str_eq(op, "||")) {
+        if (!ty_eq(lt, rt)) {
+            ck_err_type_mismatch(n, lt, rt, "comparison");
+            return TY_INVALID;
+        }
+        if ((str_eq(op, "&&") || str_eq(op, "||")) && !ty_eq(lt, TY_BOOL)) {
+            ck_err_type_mismatch(n->a, TY_BOOL, lt, "logical operand");
+            return TY_INVALID;
+        }
+        return TY_BOOL;
+    }
+    // Arithmetic / bitwise: integers and floats only, same type both sides.
+    if (str_eq(op, "+") || str_eq(op, "-") || str_eq(op, "*") || str_eq(op, "/")
+        || str_eq(op, "%") || str_eq(op, "&") || str_eq(op, "|")
+        || str_eq(op, "^") || str_eq(op, "<<") || str_eq(op, ">>")) {
+        int lt2;
+        int rt2;
+        lt2 = lt;
+        rt2 = rt;
+        if (ty_is_untyped_lit(lt2)) { lt2 = rt2; }
+        if (ty_is_untyped_lit(rt2)) { rt2 = lt2; }
+        if (!ty_eq(lt2, rt2)) {
+            ck_err_type_mismatch(n, lt2, rt2, "arithmetic operands");
+            return TY_INVALID;
+        }
+        if (str_eq(op, "<<") || str_eq(op, ">>")) {
+            // The shift amount may be any integer type; the shifted value
+            // keeps its own type (§7.3).
+            if (!ty_is_integer(lt2) && !ty_is_untyped_lit(lt)) {
+                diag_stop("TYPE-01", "cannot shift a non-integer",
+                          "Only integer types can be shifted.",
+                          diag_file(n->a->file), n->a->start, n->a->end);
+                return TY_INVALID;
+            }
+            return lt;
+        }
+        if (!ty_is_integer(lt2) && !ty_is_float(lt2)) {
+            diag_stop("TYPE-01", "arithmetic needs numbers",
+                      "These operands are not numeric.",
+                      diag_file(n->file), n->start, n->end);
+            return TY_INVALID;
+        }
+        if (str_eq(op, "%") || str_eq(op, "&") || str_eq(op, "|") || str_eq(op, "^")) {
+            if (!ty_is_integer(lt2)) {
+                diag_stop("TYPE-01", "integer-only operator",
+                          "This operator needs integer operands.",
+                          diag_file(n->file), n->start, n->end);
+                return TY_INVALID;
+            }
+        }
+        return lt2;
+    }
+    // Range and assignment-shaped operators never appear in a value position.
+    diag_stop("TYPE-05", "unsupported operator",
+              "This operator cannot be used here.",
+              diag_file(n->file), n->start, n->end);
+    return TY_INVALID;
+}
+
+int ck_expr_unary(struct AstNode* n) {
+    char* op;
+    int t;
+    op = n->sval;
+    t = ck_expr(n->a);
+    if (t == TY_INVALID) { return TY_INVALID; }
+    if (str_eq(op, "-") || str_eq(op, "~")) {
+        if (ty_is_untyped_lit(t)) { return t; }
+        if (!ty_is_integer(t) && !ty_is_float(t)) {
+            diag_stop("TYPE-01", "cannot negate this type",
+                      "Unary `-` needs a number; `~` needs an integer.",
+                      diag_file(n->a->file), n->a->start, n->a->end);
+            return TY_INVALID;
+        }
+        if (str_eq(op, "~") && !ty_is_integer(t)) {
+            diag_stop("TYPE-01", "`~` needs an integer",
+                      "Bitwise not is integer-only.",
+                      diag_file(n->a->file), n->a->start, n->a->end);
+            return TY_INVALID;
+        }
+        return t;
+    }
+    if (str_eq(op, "!")) {
+        if (!ty_eq(t, TY_BOOL)) {
+            ck_err_type_mismatch(n->a, TY_BOOL, t, "`!` operand");
+            return TY_INVALID;
+        }
+        return TY_BOOL;
+    }
+    diag_stop("TYPE-05", "unsupported unary operator",
+              "This operator cannot be used here.",
+              diag_file(n->file), n->start, n->end);
+    return TY_INVALID;
+}
+
+// Field access: `base.field`, with one auto-deref level for references and
+// heap boxes (§12.4). Returns the field's type.
+int ck_expr_field(struct AstNode* n) {
+    int base;
+    int bt;
+    int fi;
+    base = ck_expr(n->a);
+    if (base == TY_INVALID) { return TY_INVALID; }
+    bt = base;
+    // Auto-deref: &T / &mut T / heap T expose T's members.
+    while (ty_is_ref(bt) || ty_is_heap(bt)) {
+        bt = ty_elem(bt);
+    }
+    if (ty_kind(bt) != CTY_STRUCT && ty_kind(bt) != CTY_ENUM) {
+        diag_stop("TYPE-02", "no fields on this type",
+                  "Only structs and enums have named members.",
+                  diag_file(n->a->file), n->a->start, n->a->end);
+        return TY_INVALID;
+    }
+    fi = ty_find_member(bt, n->sval);
+    if (fi < 0) {
+        ck_err_no_field(n, bt, n->sval);
+        return TY_INVALID;
+    }
+    return ty_member_type(bt, fi);
+}
+
+// Indexing: arrays, slices, and &str. Bounds checks are the backend's job
+// (§3.2); here we only check that the index is an integer.
+int ck_expr_index(struct AstNode* n) {
+    int base;
+    int it;
+    base = ck_expr(n->a);
+    it = ck_expr(n->b);
+    if (base == TY_INVALID || it == TY_INVALID) { return TY_INVALID; }
+    // Check the base type first: "you cannot index this" is more useful than
+    // "the index is not an integer" when both are wrong.
+    if (ty_is_array(base) || ty_kind(base) == CTY_SLICE) {
+        if (!ty_is_integer(it) && !ty_is_untyped_lit(it)) {
+            ck_err_type_mismatch(n->b, TY_USIZE, it, "index");
+            return TY_INVALID;
+        }
+        return ty_elem(base);
+    }
+    if (ty_kind(base) == CTY_STRREF) { return TY_CHAR; }
+    if (ty_is_ref(base) || ty_is_heap(base)) {
+        // Indexing through a reference/box indexes the pointee.
+        int inner;
+        inner = ty_elem(base);
+        if (ty_is_array(inner) || ty_kind(inner) == CTY_SLICE) {
+            return ty_elem(inner);
+        }
+    }
+    diag_stop("TYPE-02", "cannot index this type",
+              "Only arrays, slices, and &str can be indexed.",
+              diag_file(n->a->file), n->a->start, n->a->end);
+    return TY_INVALID;
+}
+
+// Calls: free functions, methods, and (later) function values.
+int ck_expr_call(struct AstNode* n) {
+    struct AstNode* callee;
+    struct AstList* args;
+    int i;
+    int ret;
+    callee = n->a;
+    args = n->kids;   // AST_CALL: a = callee, kids = argument list
+    // Method call: callee is a field-access-shaped path `recv.name`.
+    if (callee->kind == AST_FIELD_ACC) {
+        return ck_expr_method_call(n, callee, args);
+    }
+    if (callee->kind != AST_PATH) {
+        int ct;
+        ct = ck_expr(callee);
+        if (ct == TY_INVALID) { ct = TY_UNIT; }
+        ck_err_not_callable(callee, ct);
+        return TY_INVALID;
+    }
+    {
+        int sym;
+        if (str_contains(callee->sval, "::")) {
+            return ck_expr_assoc_call(n, callee, args);
+        }
+        sym = ck_lookup(callee->sval);
+        if (sym < 0 || g_sym_kind[sym] != SK_FN) {
+            ck_err_unknown_name(callee->sval, callee, "did you mean to call a function?");
+            return TY_INVALID;
+        }
+        ret = g_sym_ty[sym];
+    }
+    // Check arguments against the callee's parameters.
+    {
+        struct AstNode* fndecl;
+        struct AstList* params;
+        int sym;
+        sym = ck_lookup(callee->sval);
+        fndecl = g_sym_decl[sym];
+        params = fndecl->kids2;
+        {
+            int np;
+            int na;
+            np = 0;
+            na = 0;
+            if (params != 0) { np = params->len; }
+            if (args != 0) { na = args->len; }
+            if (np != na) {
+                ck_err_arity(n, callee->sval, np, na);
+                return ret;
+            }
+            i = 0;
+            while (i < na) {
+                int at;
+                at = ck_expr(args->items[i]);
+                if (at != TY_INVALID && params->items[i]->ty != TY_INVALID
+                    && !ck_coercible(params->items[i]->ty, at)) {
+                    ck_err_type_mismatch(args->items[i], params->items[i]->ty, at,
+                                         "argument");
+                }
+                i = i + 1;
+            }
+        }
+    }
+    return ret;
+}
+
+// `recv.name(args)`: find the method on the receiver's type and check args.
+int ck_expr_method_call(struct AstNode* n, struct AstNode* callee, struct AstList* args) {
+    int recv;
+    int rt;
+    int i;
+    int found;
+    int fidx;
+    recv = ck_expr(callee->a);
+    if (recv == TY_INVALID) { return TY_INVALID; }
+    rt = recv;
+    while (ty_is_ref(rt) || ty_is_heap(rt)) { rt = ty_elem(rt); }
+    found = 0;
+    fidx = -1;
+    i = 0;
+    while (i < g_nmeth) {
+        if (str_eq(g_meth_name[i], callee->sval) && g_meth_ty[i] == rt) {
+            found = 1;
+            fidx = g_meth_fn[i];
+        }
+        i = i + 1;
+    }
+    if (!found) {
+        ck_err_no_field(callee, rt, callee->sval);
+        return TY_INVALID;
+    }
+    {
+        struct AstNode* fndecl;
+        struct AstList* params;
+        int np;
+        int na;
+        fndecl = g_fn_decl[fidx];
+        params = fndecl->kids2;
+        np = 0;
+        na = 0;
+        if (params != 0) { np = params->len; }
+        if (args != 0) { na = args->len; }
+        // `self` is implicit: the receiver supplies it.
+        if (np > 0) { np = np - 1; }
+        if (np != na) {
+            ck_err_arity(n, callee->sval, np, na);
+            return fndecl->ty;
+        }
+        i = 0;
+        while (i < na) {
+            int at;
+            at = ck_expr(args->items[i]);
+            if (at != TY_INVALID && params->items[i + 1]->ty != TY_INVALID
+                && !ck_coercible(params->items[i + 1]->ty, at)) {
+                ck_err_type_mismatch(args->items[i], params->items[i + 1]->ty, at,
+                                     "argument");
+            }
+            i = i + 1;
+        }
+    }
+    return g_fn_decl[fidx]->ty;
+}
+
+// `Type::method(args)`: an associated function (a method with no `self`).
+// The parser flattens the path to "Type::method", so split on the last `::`.
+int ck_expr_assoc_call(struct AstNode* n, struct AstNode* callee, struct AstList* args) {
+    int cut;
+    char* tname;
+    char* mname;
+    int sym;
+    int ty;
+    int i;
+    cut = str_rfind(callee->sval, "::");
+    tname = str_prefix(callee->sval, cut);
+    mname = callee->sval + cut + 2;
+    sym = ck_lookup(tname);
+    if (sym < 0 || g_sym_kind[sym] != SK_TYPE) {
+        ck_err_unknown_name(tname, callee, "the name before `::` must be a type");
+        return TY_INVALID;
+    }
+    ty = g_sym_ty[sym];
+    i = 0;
+    while (i < g_nmeth) {
+        if (g_meth_ty[i] == ty && str_eq(g_meth_name[i], mname)) {
+            struct AstNode* fn;
+            struct AstList* params;
+            int np;
+            int na;
+            fn = g_fn_decl[g_meth_fn[i]];
+            params = fn->kids2;
+            np = 0;
+            na = 0;
+            if (params != 0) { np = params->len; }
+            if (args != 0) { na = args->len; }
+            // An associated function has no receiver.
+            if (np != na) {
+                ck_err_arity(n, mname, np, na);
+                return fn->ty;
+            }
+            {
+                int k;
+                k = 0;
+                while (k < na) {
+                    int at;
+                    at = ck_expr(args->items[k]);
+                    if (at != TY_INVALID && params->items[k]->ty != TY_INVALID
+                        && !ck_coercible(params->items[k]->ty, at)) {
+                        ck_err_type_mismatch(args->items[k], params->items[k]->ty, at,
+                                             "argument");
+                    }
+                    k = k + 1;
+                }
+            }
+            return fn->ty;
+        }
+        i = i + 1;
+    }
+    ck_err_no_field(callee, ty, mname);
+    return TY_INVALID;
+}
+
+// `expr as Type` (§5.8): explicit-only conversions.
+int ck_expr_as(struct AstNode* n) {
+    int from;
+    int to;
+    from = ck_expr(n->a);
+    to = ck_resolve_type(n->b);
+    if (from == TY_INVALID || to == TY_INVALID) { return TY_INVALID; }
+    if (ty_is_untyped_lit(from)) { return to; }
+    if (ty_is_integer(from) && ty_is_integer(to)) { return to; }
+    if (ty_is_float(from) && ty_is_float(to)) { return to; }
+    if (ty_is_integer(from) && ty_is_float(to)) { return to; }
+    if (ty_is_float(from) && ty_is_integer(to)) { return to; }
+    if (ty_is_ref(from) && ty_is_ptr(to)) { return to; }   // unchecked-gated in M6
+    diag_stop("TYPE-05", "unsupported cast",
+              "These types have no `as` conversion.",
+              diag_file(n->file), n->start, n->end);
+    return TY_INVALID;
+}
+
+// `Name { field: value, ... }`.
+int ck_expr_struct_init(struct AstNode* n) {
+    int sym;
+    int ty;
+    int i;
+    struct AstList* inits;
+    sym = ck_lookup(n->sval);
+    if (sym < 0 || g_sym_kind[sym] != SK_TYPE) {
+        ck_err_unknown_type(n->sval, n);
+        return TY_INVALID;
+    }
+    ty = g_sym_ty[sym];
+    inits = n->kids;
+    if (inits != 0) {
+        i = 0;
+        while (i < inits->len) {
+            struct AstNode* fi;
+            int vt;
+            fi = inits->items[i];
+            vt = ck_expr(fi->a);
+            {
+                int want;
+                want = ty_member_type(ty, ty_find_member(ty, fi->sval));
+                if (vt != TY_INVALID && want != TY_INVALID && !ck_coercible(want, vt)) {
+                    ck_err_type_mismatch(fi, want, vt, "field value");
+                }
+            }
+            i = i + 1;
+        }
+    }
+    return ty;
+}
+
+// `[a, b, c]` or `[v; n]`.
+int ck_expr_array_lit(struct AstNode* n) {
+    int et;
+    int i;
+    struct AstList* els;
+    els = n->kids;
+    et = TY_INVALID;
+    if (els != 0 && els->len > 0) {
+        et = ck_expr(els->items[0]);
+        i = 1;
+        while (i < els->len) {
+            int t2;
+            t2 = ck_expr(els->items[i]);
+            if (et != TY_INVALID && t2 != TY_INVALID && !ty_eq(et, t2)) {
+                ck_err_type_mismatch(els->items[i], et, t2, "array element");
+            }
+            i = i + 1;
+        }
+        if (et == TY_UINT_LIT) { et = TY_I32; }
+        if (et == TY_FLOAT_LIT) { et = TY_F64; }
+        lexbuf_reset();
+        lexbuf_push_str("[");
+        lexbuf_push_str(ty_display(et));
+        lexbuf_push_str("; ");
+        lexbuf_push_int(els->len);
+        lexbuf_push_str("]");
+        return ty_new(CTY_ARRAY, lexbuf_finish(), et, els->len);
+    }
+    // `[v; n]` form: a = value, b = count expr.
+    if (n->a != 0) {
+        et = ck_expr(n->a);
+        if (et == TY_UINT_LIT) { et = TY_I32; }
+        if (et == TY_FLOAT_LIT) { et = TY_F64; }
+        {
+            int len;
+            len = ceval_const_int(n->b);
+            if (len < 0) { len = 0; }
+            lexbuf_reset();
+            lexbuf_push_str("[");
+            lexbuf_push_str(ty_display(et));
+            lexbuf_push_str("; ");
+            lexbuf_push_int(len);
+            lexbuf_push_str("]");
+            return ty_new(CTY_ARRAY, lexbuf_finish(), et, len);
+        }
+    }
+    diag_stop("TYPE-05", "empty array literal",
+              "An array needs at least one element (or use `[v; n]`).",
+              diag_file(n->file), n->start, n->end);
+    return TY_INVALID;
+}
+
+int ck_expr_borrow(struct AstNode* n) {
+    int t;
+    t = ck_expr(n->a);
+    if (t == TY_INVALID) { return TY_INVALID; }
+    if (n->ival & 1) {
+        return ty_new(CTY_MUTREF, ck_ref_name("&mut", t), t, 0);
+    }
+    return ty_new(CTY_REF, ck_ref_name("&", t), t, 0);
+}
+
+int ck_expr_deref(struct AstNode* n) {
+    int t;
+    t = ck_expr(n->a);
+    if (t == TY_INVALID) { return TY_INVALID; }
+    if (!ty_is_ref(t) && !ty_is_heap(t) && !ty_is_ptr(t)) {
+        diag_stop("TYPE-02", "cannot dereference this type",
+                  "Only references, raw pointers, and `heap` boxes can be dereferenced.",
+                  diag_file(n->a->file), n->a->start, n->a->end);
+        return TY_INVALID;
+    }
+    return ty_elem(t);
+}
+
+// `heap(expr)` (§12): a heap box over the operand's type.
+int ck_expr_heap(struct AstNode* n) {
+    int t;
+    t = ck_expr(n->a);
+    if (t == TY_INVALID) { return TY_INVALID; }
+    if (t == TY_UINT_LIT) { t = TY_I32; }
+    if (t == TY_FLOAT_LIT) { t = TY_F64; }
+    return ty_new(CTY_HEAP, ck_ref_name("heap", t), t, 0);
+}
+
+int ck_expr_sizeof(struct AstNode* n) {
+    int t;
+    t = ck_resolve_type(n->a);
+    if (t == TY_INVALID) { return TY_INVALID; }
+    n->ival = ty_size(t);
+    return TY_USIZE;
+}

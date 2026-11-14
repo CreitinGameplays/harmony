@@ -1,0 +1,14 @@
+// WANT: no field named 'nope'
+// Reading and writing a field the struct does not declare.
+//
+// Regression: c2x-seed used to compile `s.nope` to a zero/garbage load and
+// silently drop `s.nope = v`, because find_field failures skipped the
+// access instead of reporting. A member access on a name the type does not
+// have is a hard compile error.
+struct S { int a; int b; };
+int main() {
+    struct S s;
+    s.a = 1;
+    s.nope = 2;
+    return s.a;
+}

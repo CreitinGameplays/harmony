@@ -35,6 +35,13 @@ int diag_stop_count(void) { return g_nstops; }
 int diag_warn_count(void) { return g_nwarns; }
 int diag_hint_count(void) { return g_nhints; }
 
+// The registered SourceFile for an AST `file` index (0 = the main module).
+// Returns 0 when the index is out of range, which diag_step tolerates.
+struct SourceFile* diag_file(int idx) {
+    if (idx < 0 || idx >= g_nfiles) { return 0; }
+    return g_files[idx];
+}
+
 void diag_reset(void) {
     g_ndiags = 0;
     g_nstops = 0;

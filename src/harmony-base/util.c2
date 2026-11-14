@@ -73,6 +73,42 @@ int str_has_prefix(char* s, char* prefix) {
     return 1;
 }
 
+// True when `needle` occurs anywhere in `haystack`.
+int str_contains(char* haystack, char* needle) {
+    int i;
+    i = 0;
+    while (haystack[i] != 0) {
+        if (str_has_prefix(haystack + i, needle)) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// Index of the *last* occurrence of `needle`, or -1. `needle` must be
+// one or two characters; the checker only uses it for `::`.
+int str_rfind(char* haystack, char* needle) {
+    int i;
+    int hit;
+    hit = -1;
+    i = 0;
+    while (haystack[i] != 0) {
+        if (str_has_prefix(haystack + i, needle)) { hit = i; }
+        i = i + 1;
+    }
+    return hit;
+}
+
+// Arena copy of the first `n` bytes of `s` (NUL-terminated).
+char* str_prefix(char* s, int n) {
+    char* p;
+    int i;
+    p = arena_alloc(n + 1);
+    i = 0;
+    while (i < n) { p[i] = s[i]; i = i + 1; }
+    p[n] = 0;
+    return p;
+}
+
 char* str_copy(char* s) {
     return arena_alloc_str(s);
 }

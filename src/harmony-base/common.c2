@@ -54,6 +54,9 @@ int arena_used(void);
 int str_len(char* s);
 int str_eq(char* a, char* b);
 int str_has_prefix(char* s, char* prefix);
+int str_contains(char* haystack, char* needle);
+int str_rfind(char* haystack, char* needle);
+char* str_prefix(char* s, int n);
 char* str_copy(char* s);
 char* str_concat(char* a, char* b);
 
@@ -189,6 +192,9 @@ void diag_flush(int format, int all);
 
 // A flat message used for driver/usage errors and I/O failures.
 void diag_plain(char* id, char* msg);
+
+// The registered SourceFile for an AST `file` index (0 = the main module).
+struct SourceFile* diag_file(int idx);
 
 // ---------------------------------------------------------------------------
 // Pipeline (docs/harmony.md §19.1, §19.5).
@@ -460,6 +466,7 @@ struct AstNode* parse_literal_node(void);     // literal token -> node
 int          p_at_assign_op(void);            // = += -= ... on cursor?
 char*        p_cur_op_word(void);             // operator spelling
 void         lexbuf_push_str(char* s);        // scratch-buffer append
+void         lexbuf_push_int(int v);          // scratch-buffer append (decimal)
 int          p_peek_is_kw(char* kw, int n);
 
 // Byte sizes as fixed literals (c2x-seed needs literal array dimensions and
@@ -490,23 +497,29 @@ const int TY_BOOL = 13;
 const int TY_CHAR = 14;
 const int TY_NEVER = 15;
 const int TY_UNIT = 16;     // ()
+const int TY_UINT_LIT = 17; // untyped integer literal (adapts, §5.9)
+const int TY_FLOAT_LIT = 18;// untyped float literal (adapts)
 const int TY_DYNAMIC = 100; // composite type ids start here
 
-// Composite type kinds (kind stored on ids >= TY_DYNAMIC).
-const int CTY_STRUCT = 1;   // a = 0; decl on cty_decl
-const int CTY_ENUM = 2;
-const int CTY_ARRAY = 3;    // a = elem ty, b = length
-const int CTY_REF = 4;      // a = pointee (shared)
-const int CTY_MUTREF = 5;   // a = pointee (exclusive)
-const int CTY_STRREF = 6;   // &str (fat pointer { ptr, len })
-const int CTY_HEAP = 7;     // heap box over a = elem ty (§12)
-const int CTY_UINT_LIT = 8; // untyped integer literal (adapts, §5.9)
-const int CTY_FLOAT_LIT = 9;// untyped float literal (adapts)
-const int CTY_PTR = 10;     // raw T (unchecked; M6)
-const int CTY_MUTPTR = 11;  // raw mut T
+// Composite type kinds. These must NOT collide with the fixed primitive ids
+// (1..TY_UNIT), because ty_kind returns the id itself for a primitive; they
+// start at TY_DYNAMIC.
+const int CTY_STRUCT = 200;  // a = 0; members are the fields
+const int CTY_ENUM = 201;
+const int CTY_ARRAY = 202;   // a = elem ty, b = length
+const int CTY_REF = 203;     // a = pointee (shared)
+const int CTY_MUTREF = 204;  // a = pointee (exclusive)
+const int CTY_STRREF = 205;  // &str (fat pointer { ptr, len })
+const int CTY_HEAP = 206;    // heap box over a = elem ty (§12)
+const int CTY_UINT_LIT = 207;// untyped integer literal (adapts, §5.9)
+const int CTY_FLOAT_LIT = 208;// untyped float literal (adapts)
+const int CTY_PTR = 209;     // raw T (unchecked; M6)
+const int CTY_MUTPTR = 210;  // raw mut T
+const int CTY_SLICE = 211;   // [T] fat pointer { ptr, len }
 
 // Registers the user types of a program (structs/enums) from their AST decls.
-// Called once before checking bodies.
+// Called once before checking bodies. Implemented in check.c2 (it needs the
+// const evaluator for array lengths and the resolver for member types).
 void types_init(void);
 
 // Composite constructor. Returns the new type id.
@@ -515,6 +528,9 @@ int ty_new(int kind, char* name, int a, int b);
 // Composite constructor keyed on an existing decl node (dedup by name).
 int ty_new_typed(int kind, char* name, struct AstNode* decl);
 
+// Appends a struct field / enum variant payload to a composite type.
+void ty_add_member(int id, char* name, int ty);
+
 // Kind of a type id: 1..16 = primitive marker (returns the id itself for
 // prims), otherwise CTY_*.
 int ty_kind(int id);
@@ -522,16 +538,30 @@ int ty_kind(int id);
 char* ty_display(int id);        // stable name for diagnostics ("i32", "Point")
 int ty_is_primitive(int id);     // true for the fixed primitive ids
 int ty_is_integer(int id);       // i*/u*/isize/usize (not untyped literals)
+int ty_is_signed(int id);
+int ty_is_unsigned(int id);
 int ty_is_float(int id);         // f32/f64
 int ty_is_bool(int id);
 int ty_is_char(int id);
 int ty_is_never(int id);
 int ty_is_untyped_lit(int id);   // CTY_UINT_LIT / CTY_FLOAT_LIT
+int ty_is_ref(int id);           // &T / &mut T / &str
+int ty_is_heap(int id);          // heap box
+int ty_is_array(int id);
+int ty_is_nominal(int id);       // struct / enum
+int ty_is_ptr(int id);           // raw T / raw mut T (M6)
+int ty_bit_width(int id);        // 8/16/32/64/1, 0 for non-scalars
 int ty_is_copy(int id);          // §5.6 (requires the copy flags below)
 int ty_eq(int a, int b);         // structural equality (names for nominal)
 int ty_size(int id);             // byte size (0 = unknown/not computed)
 int ty_align(int id);
 int ty_elem(int id);             // elem/pointee for composites, 0 otherwise
+int ty_field_offset(int id, int i);
+int ty_member_count(int id);
+int ty_find_member(int id, char* name);
+char* ty_member_name(int id, int i);
+int ty_member_type(int id, int i);
+struct AstNode* ty_decl(int id);
 
 // A `copy` type needs no drop glue (M2 prepares the flag; v0 prims are copy).
 void ty_set_nocopy(int id);
@@ -540,6 +570,25 @@ void ty_set_nocopy(int id);
 // use the const evaluator. Returns 0 when the type node cannot be resolved.
 int sizeof_type_node(struct AstNode* t);
 
+
+// ---------------------------------------------------------------------------
+// Checker API (check.c2 + cexpr.c2). Declared here because the two halves
+// call each other and c2x-seed resolves names from earlier text only.
+// ---------------------------------------------------------------------------
+int ck_expr(struct AstNode* n);            // infer + record an expression's type
+int ck_place(struct AstNode* n);           // lvalue check (assignment target)
+void ck_stmt(struct AstNode* n);           // check one statement
+void ck_stmt_block(struct AstNode* n);     // check a block (opens a scope)
+int ck_resolve_type(struct AstNode* t);    // type AST node -> type id
+int ceval_const_int(struct AstNode* n);    // const-fold an expression (-1 = no)
+char* ck_ref_name(char* pre, int inner);   // "&T"-style display name
+int ck_lookup(char* name);                 // innermost binding of a name
+int ck_coercible(int want, int got);       // assignment/arg compatibility
+void ck_err_type_mismatch(struct AstNode* at, int want, int got, char* what);
+void ck_err_unknown_name(char* name, struct AstNode* at, char* what);
+void ck_err_no_field(struct AstNode* at, int ty, char* field);
+void ck_err_arity(struct AstNode* at, char* name, int want, int got);
+void check_program(struct AstNode* prog);  // driver: register + check
 
 struct AstNode* ast_node_new(int kind);
 void ast_span(struct AstNode* n, int file, int start, int end);

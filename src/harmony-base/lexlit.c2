@@ -69,6 +69,37 @@ void lexbuf_push_str(char* s) {
     }
 }
 
+// Appends a signed decimal integer to the scratch buffer (no libc).
+void lexbuf_push_int(int v) {
+    int neg;
+    int div;
+    int rem;
+    char tmp[12];
+    int n;
+    neg = 0;
+    if (v < 0) {
+        neg = 1;
+        v = -v;
+    }
+    n = 0;
+    if (v == 0) {
+        lexbuf_push('0');
+        return;
+    }
+    while (v > 0) {
+        div = v / 10;
+        rem = v - div * 10;
+        tmp[n] = (char)('0' + rem);
+        n = n + 1;
+        v = div;
+    }
+    if (neg) { lexbuf_push('-'); }
+    while (n > 0) {
+        n = n - 1;
+        lexbuf_push(tmp[n]);
+    }
+}
+
 void lexbuf_push(char c) {
     if (g_lexbuf_len < 510) {
         g_lexbuf[g_lexbuf_len] = c;

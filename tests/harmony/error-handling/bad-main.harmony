@@ -1,0 +1,5 @@
+// WANT: TYPE-06
+// Simple: `main` with a signature the runtime cannot call.
+fn main(x: i32) -> bool {
+    return x > 0;
+}

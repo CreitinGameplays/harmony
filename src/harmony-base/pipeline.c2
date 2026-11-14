@@ -61,6 +61,19 @@ int pipeline_run(struct Options* opts) {
         ast_print(root);
     }
 
+    // Stage 4: the type checker (§19.1). Runs for every command that needs
+    // to understand the program; `--dump-ast` skips it so the parse tree can
+    // be inspected even when the program does not type-check yet.
+    if (!opts->dump_ast) {
+        check_program(root);
+        if (opts->verbose) {
+            err_str("harmony-base: checked ");
+            err_int(diag_stop_count());
+            err_str(" stop(s)");
+            err_nl();
+        }
+    }
+
     // Emission stages of the pipeline (§19.1 stage 9) are not implemented yet.
     // Requesting one is an honest stop with a fix, not a silent exit: the
     // driver only advertises what it can run. `build`/`run` imply codegen too.

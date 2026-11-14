@@ -16,7 +16,9 @@ fail=0
 
 ok_case() {
     local name="$1"
-    "$HB" check "$TMP/c.harmony" >/dev/null 2>&1
+    # Parser-only check: --dump-ast skips the type checker, so these cases
+    # test the grammar rather than semantic validity.
+    "$HB" --dump-ast check "$TMP/c.harmony" >/dev/null 2>&1
     if [ $? -eq 0 ]; then
         pass=$((pass + 1)); printf 'ok   %s\n' "$name"
     else
@@ -40,7 +42,7 @@ ast_case() {
 
 reject_case() {
     local name="$1" want="$2"
-    out="$("$HB" check "$TMP/c.harmony" 2>&1)"
+    out="$("$HB" --dump-ast check "$TMP/c.harmony" 2>&1)"
     if echo "$out" | grep -q "$want"; then
         pass=$((pass + 1)); printf 'ok   %s (rejected with %s)\n' "$name" "$want"
     else

@@ -316,9 +316,16 @@ struct AstNode* parse_for_stmt(void) {
         return 0;
     }
     g_ploop_depth = g_ploop_depth + 1;
-    n->b = parse_block();
+    {
+        // The body lives in `kids` (a = init, b = cond, c = step, list = body).
+        // Using `b` here would clobber the C-style condition parsed above.
+        struct AstNode* body;
+        body = parse_block();
+        if (body == 0) { return 0; }
+        n->kids = ast_list_new();
+        ast_list_push(n->kids, body);
+    }
     g_ploop_depth = g_ploop_depth - 1;
-    if (n->b == 0) { return 0; }
     p_end_at(n, p_prev());
     return n;
 }

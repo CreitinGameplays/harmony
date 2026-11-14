@@ -1,6 +1,5 @@
 # Harmony language
 File Extension: .harmony
-Check
 
 # Rules
 - Read the project layout first.
@@ -9,7 +8,6 @@ Check
   harmony-base: basic implementation with few features, written in c2x-seed.
   harmony: full rewrite in harmony-base itself.
   Milestone: harmony is byte deterministic.
-
 - Fix any c2x-seed bug if you find any there (don't suppress).
 - Keep source code files and subdirs well organized.
 - Also fix any other bug before reporting success.
@@ -31,9 +29,12 @@ Check
 - `harmony-base` is freestanding (it doesn't assume standard library presence or standard `main`).
 - It's good to also add purposely bad code (simple and complex codes)
   in error-handling directory in `tests` to verify if compiler is handling it well.
-- Use `make` with `-j` arg to use all cores when compiling.
+- Use `make` with `-j$(nproc)` arg to use all cores when compiling.
+- Also keep compilation warning-free.
+- Do not hardcode harmony.md docs sections in source code (only comments are allowed).
 - All risks are accepted.
 - Always add helpful comments in the code.
 - Always use `-s` arg when using `git commit`
 - If a bug happens on c2x-seed during harmony implementation, pause it and only focus on fixing c2x-seed.
   When fixed just report final completion.
+- You can write .harmony files in tests dir to test more complex code.

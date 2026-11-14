@@ -595,13 +595,18 @@ assemble_and_link:
     test rax, rax
     jnz .ld_fail
 
-    ; Print success
+    ; Print success — but not when codegen reported errors (e.g. a member
+    ; access on a field the struct does not have): the binary exists, yet
+    ; claiming success would hide the problem.
+    cmp qword [error_count], 0
+    jne .skip_build_ok
     mov rsi, msg_build_ok
     call print_string
     mov rsi, [output_path]
     call print_string
     mov dil, 10
     call out_write_char
+.skip_build_ok:
 
     ; Print warning summary
     call print_warning_summary

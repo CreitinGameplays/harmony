@@ -1,0 +1,21 @@
+// WANT: TYPE-01 TYPE-02 CASE-01
+// Complex: a small "interpreter" with a laundry list of defects - a switch
+// that handles no inputs, arithmetic mixing types, and a call through a name
+// that is not a function. Exercises several checkers in one pass.
+enum Op { Add, Sub, Mul, }
+
+fn apply(op: Op, a: i32, b: i32) -> i32 {
+    switch (op) {
+        case Op::Add: { return a + b; }
+        // Add, Sub, Mul: the `Sub` and `Mul` arms are missing, and there is
+        // no `default`, so this is CASE-01.
+    }
+    // TYPE-02: indexing with a string.
+    let wrong = a["index"];
+    return wrong;
+}
+
+fn main() -> i32 {
+    // TYPE-01: passing a float where an `i32` is required.
+    return apply(Op::Add, 1.5, 2);
+}

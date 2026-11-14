@@ -18,6 +18,7 @@ extern msg_warn_dead_code, msg_warn_implicit_cast
 extern msg_warn_empty_body, msg_warn_constant_cond
 extern msg_assign_const
 extern msg_undeclared
+extern msg_no_field
 extern WARN_UNINIT_VAR, WARN_UNINIT_PTR
 extern WARN_MISSING_RETURN, WARN_UNUSED_VAR
 extern WARN_DEAD_CODE, WARN_IMPLICIT_CAST
@@ -2353,6 +2354,49 @@ report_undeclared:
     call out_set_fd
 
     mov rsi, msg_undeclared
+    call out_write_string
+
+    mov dil, 32                      ; space
+    call out_write_char
+    mov dil, 39                      ; single quote
+    call out_write_char
+    mov rsi, r12                     ; name_ptr
+    call out_write_string
+    mov dil, 39                      ; single quote
+    call out_write_char
+    mov dil, 10                      ; newline
+    call out_write_char
+    call out_flush
+
+    ; Restore out_fd
+    pop rdi                          ; rdi = saved out_fd
+    call out_set_fd
+    pop r12
+    pop rbx
+    ret
+
+; ================================================================
+; report_no_field(name_ptr)
+; Print "error: no field named 'NAME'\n" to stderr and count the error, so
+; a member access on a struct that has no such field is a hard compile
+; error instead of silent zero-value codegen. rdi = name_ptr.
+; ================================================================
+report_no_field:
+    push rbx
+    push r12
+
+    mov r12, rdi                    ; r12 = name_ptr (save across calls)
+
+    inc qword [error_count]
+
+    ; Save current out_fd, flush, switch to stderr
+    mov rbx, [out_fd]
+    push rbx
+    call out_flush
+    mov rdi, STDERR
+    call out_set_fd
+
+    mov rsi, msg_no_field
     call out_write_string
 
     mov dil, 32                      ; space
@@ -6400,7 +6444,7 @@ gen_assign:
     ; rax = field_offset, rbx = field_type (both 0 if not found)
     ; find_field_is_const = 1 if the field was declared const
     test rbx, rbx
-    jz .am_done                          ; not found
+    jz .am_no_such_field                 ; not found: hard error, not silence
     ; Check if the field was declared const
     cmp qword [find_field_is_const], 0
     je .am_field_ok
@@ -6549,6 +6593,11 @@ gen_assign:
     mov rsi, asm_call_struct_copy
     call emit_string
 .am_gen_struct_done:
+    jmp .am_done
+
+.am_no_such_field:
+    mov rdi, [r15 + ast_node_t.data2]    ; field name
+    call report_no_field
     jmp .am_done
 
 .am_done:
@@ -9075,7 +9124,7 @@ gen_expr:
     call find_field
     ; rax = field_offset, rbx = field_type, rcx = sub_array_ptr
     test rbx, rbx
-    jz .mem_bad
+    jz .mem_no_such_field
     mov r15, rax                         ; r15 = field_offset
     mov r14, rbx                         ; r14 = field_type
     mov r9, rcx                          ; r9 = element count / sub_array_ptr
@@ -9195,7 +9244,7 @@ gen_expr:
     mov rsi, [r12 + ast_node_t.data2]   ; field name
     call find_field
     test rbx, rbx
-    jz .mc_pop_fail
+    jz .mc_no_such_field
     ; rax = field_offset, rbx = field type, rcx = sub_array_ptr
     mov r13, rbx                        ; r13 = field type
     mov r9, rcx                         ; r9 = element count / sub_array_ptr
@@ -9244,8 +9293,10 @@ gen_expr:
     mov [gen_expr_type], r13
     mov [gen_expr_struct_fields], r9
     jmp .done
-.mc_pop_fail:
+.mc_no_such_field:
     pop rax
+    mov rdi, [r12 + ast_node_t.data2]    ; field name
+    call report_no_field
     jmp .mem_bad
 .mc_load_char:
     mov rsi, asm_movsx_byte_rax
@@ -9302,7 +9353,7 @@ gen_expr:
     call find_field
     ; rax = field_offset, rbx = field_type, rcx = sub_array_ptr
     test rbx, rbx
-    jz .mem_bad                          ; field not found? skip
+    jz .mem_no_such_field                ; field not found: hard error
     mov r15, rax                         ; r15 = field_offset
     mov r14, rbx                         ; r14 = field_type
     mov r9, rcx                          ; r9 = element count / sub_array_ptr
@@ -9399,6 +9450,9 @@ gen_expr:
     pop rax                              ; restore address (result)
     jmp .done
 
+.mem_no_such_field:
+    mov rdi, [r12 + ast_node_t.data2]    ; field name
+    call report_no_field
 .mem_bad:
     xor rax, rax
     jmp .done
@@ -9462,7 +9516,7 @@ gen_expr:
     call find_field
     ; rax = field_offset, rbx = field_type, rcx = sub_array_ptr
     test rbx, rbx
-    jz .member_expr_pop_done
+    jz .member_expr_no_such_field
     mov r15, rax                         ; r15 = field_offset
     mov r14, rbx                         ; r14 = field_type
     mov r9, rcx                          ; r9 = element count / sub_array_ptr
@@ -9544,8 +9598,10 @@ gen_expr:
     pop rax                              ; restore address (result)
     jmp .done
 
-.member_expr_pop_done:
+.member_expr_no_such_field:
     pop rax                              ; discard struct address
+    mov rdi, [r12 + ast_node_t.data2]    ; field name
+    call report_no_field
     jmp .done
 
 .index_no_base:

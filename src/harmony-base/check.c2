@@ -1,0 +1,1089 @@
+// harmony-base — the type checker, part 1: items, symbols, types, statements
+// (docs/harmony.md §5, §6, §8, §19.1 stage 4).
+//
+// Two passes over the program:
+//   1. register items — structs/enums (with their members), consts, function
+//      signatures, and methods — so a body can reference anything declared
+//      anywhere in the module (c2x-seed itself requires use-before-decl, but
+//      the *language* does not);
+//   2. check bodies — walk statements and expressions, fill `n->ty`, and
+//      report the §16 diagnostics.
+//
+// Layout:
+//   check.c2 — symbol table, item registration, type resolution, statements
+//   cexpr.c2 — expressions (precedence-free: the parser already built the tree)
+//
+// M1 scope: scalars, functions, structs, enums, `switch`, arrays/slices,
+// references, `heap`, `sizeof`, casts. Loans (`life`), drop elaboration and
+// the borrow checker arrive in M2–M4 (§19.7); this pass already rejects the
+// cases it can see (unknown names, arity, type mismatches, non-exhaustive
+// switches, missing returns) so the diagnostics pipeline is exercised.
+
+// ---------------------------------------------------------------------------
+// Forward declarations. c2x-seed resolves names from earlier text only, so
+// every function in this file is declared up front; the expression half of
+// the checker (cexpr.c2) is declared in common.c2.
+// ---------------------------------------------------------------------------
+void ck_register_primitives(void);
+void ck_check_main(void);
+void ck_scope_push(void);
+void ck_scope_pop(void);
+int ck_declare(char* name, int kind, int ty, struct AstNode* decl, int mut);
+int ck_lookup(char* name);
+void ck_err_name_taken(char* name, struct AstNode* at);
+void ck_err_unknown_name(char* name, struct AstNode* at, char* what);
+void ck_err_unknown_type(char* name, struct AstNode* at);
+void ck_err_type_mismatch(struct AstNode* at, int want, int got, char* what);
+void ck_err_arity(struct AstNode* at, char* name, int want, int got);
+void ck_err_not_callable(struct AstNode* at, int ty);
+void ck_err_no_field(struct AstNode* at, int ty, char* field);
+void ck_err_not_mut(struct AstNode* at, char* name);
+void ck_err_uninit(struct AstNode* at, char* name);
+void ck_err_nonexhaustive(struct AstNode* at, int ty);
+void ck_err_missing_return(struct AstNode* fn);
+int ck_cur_fn(void);
+int ck_is_self_param(struct AstNode* p);
+int ck_resolve_type(struct AstNode* t);
+char* ck_ref_name(char* pre, int inner);
+void ck_register_program(struct AstNode* prog);
+void ck_register_item(struct AstNode* n);
+void ck_register_struct(struct AstNode* n);
+void ck_register_enum(struct AstNode* n);
+void ck_register_const(struct AstNode* n);
+void ck_register_fn(struct AstNode* n);
+void ck_register_extern(struct AstNode* n);
+void ck_register_methods(struct AstNode* n);
+void ck_check_bodies(void);
+void ck_check_fn(struct AstNode* fn, int idx);
+int ck_block_ends_in_return(struct AstNode* blk);
+void ck_stmt_block(struct AstNode* blk);
+void ck_stmt(struct AstNode* n);
+void ck_stmt_let(struct AstNode* n);
+void ck_stmt_assign(struct AstNode* n);
+int ck_place(struct AstNode* n);
+void ck_check_place_mut(struct AstNode* n);
+void ck_stmt_if(struct AstNode* n);
+void ck_stmt_while(struct AstNode* n);
+void ck_stmt_for(struct AstNode* n);
+void ck_stmt_switch(struct AstNode* n);
+void ck_check_pattern(struct AstNode* p, int st, int* seen, int* nseen);
+void ck_note_variant(struct AstNode* p, int st, int vi, int* seen, int* nseen);
+void ck_stmt_return(struct AstNode* n);
+int ceval_const_int(struct AstNode* n);
+void check_program(struct AstNode* prog);
+
+// ---------------------------------------------------------------------------
+// Symbol table. Flat, resizable; scopes are marks into the array.
+// ---------------------------------------------------------------------------
+const int SK_FN     = 1;   // function: ty = return type, decl = AST_FN
+const int SK_CONST  = 2;   // constant: ty = declared type
+const int SK_LET    = 3;   // local binding: ty = inferred/declared type
+const int SK_PARAM  = 4;   // parameter
+const int SK_TYPE   = 5;   // nominal type: ty = type id
+const int SK_SELF   = 6;   // `self` inside a methods block
+const int SK_GEN    = 7;   // generic parameter (T): ty = its placeholder id
+
+char* g_sym_name[4096];
+int g_sym_kind[4096];
+int g_sym_ty[4096];
+struct AstNode* g_sym_decl[4096];
+int g_sym_mut[4096];
+int g_sym_init[4096];  // definite-initialization tracking (INIT-01)
+int g_nsyms;
+int g_scope[256];      // scope start marks
+int g_nscope;
+
+void ck_scope_push(void) {
+    g_scope[g_nscope] = g_nsyms;
+    g_nscope = g_nscope + 1;
+}
+
+void ck_scope_pop(void) {
+    if (g_nscope > 0) {
+        g_nscope = g_nscope - 1;
+        g_nsyms = g_scope[g_nscope];
+    }
+}
+
+// Adds a symbol. Returns its index, or -1 when the name is already taken in
+// the *current* scope (NAME-03).
+int ck_declare(char* name, int kind, int ty, struct AstNode* decl, int mut) {
+    int i;
+    int lo;
+    lo = 0;
+    if (g_nscope > 0) { lo = g_scope[g_nscope - 1]; }
+    i = g_nsyms - 1;
+    while (i >= lo) {
+        if (str_eq(g_sym_name[i], name)) {
+            ck_err_name_taken(name, decl);
+            return -1;
+        }
+        i = i - 1;
+    }
+    if (g_nsyms >= 4096) { return -1; }
+    g_sym_name[g_nsyms] = name;
+    g_sym_kind[g_nsyms] = kind;
+    g_sym_ty[g_nsyms] = ty;
+    g_sym_decl[g_nsyms] = decl;
+    g_sym_mut[g_nsyms] = mut;
+    // Parameters and constants hold a value from the moment they exist;
+    // locals start uninitialized and are marked by `ck_stmt_let`.
+    if (kind == SK_PARAM || kind == SK_CONST || kind == SK_SELF) {
+        g_sym_init[g_nsyms] = 1;
+    } else {
+        g_sym_init[g_nsyms] = 0;
+    }
+    g_nsyms = g_nsyms + 1;
+    return g_nsyms - 1;
+}
+
+// Innermost binding of a name (shadowing: later entries win).
+int ck_lookup(char* name) {
+    int i;
+    i = g_nsyms - 1;
+    while (i >= 0) {
+        if (str_eq(g_sym_name[i], name)) { return i; }
+        i = i - 1;
+    }
+    return -1;
+}
+
+// ---------------------------------------------------------------------------
+// Item registries.
+// ---------------------------------------------------------------------------
+struct AstNode* g_fn_decl[1024];   // AST_FN nodes, in declaration order
+int g_nfn;
+
+int g_meth_ty[1024];               // receiver type id per method
+char* g_meth_name[1024];
+int g_meth_fn[1024];               // index into g_fn_decl
+int g_nmeth;
+
+struct AstNode* g_prog;            // program root (for --dump-ast and later)
+
+// ---------------------------------------------------------------------------
+// Diagnostics helpers (§16). Every stop carries a `try:` fix where one is
+// obvious; the wording lives in reports.c2 (`lc explain`).
+// ---------------------------------------------------------------------------
+void ck_err_name_taken(char* name, struct AstNode* at) {
+    lexbuf_reset();
+    lexbuf_push_str("the name `");
+    lexbuf_push_str(name);
+    lexbuf_push_str("` is already used in this scope");
+    diag_stop("NAME-03", "name already in use", lexbuf_finish(),
+              diag_file(at->file), at->start, at->end);
+}
+
+void ck_err_unknown_name(char* name, struct AstNode* at, char* what) {
+    lexbuf_reset();
+    lexbuf_push_str("no `");
+    lexbuf_push_str(name);
+    lexbuf_push_str("` in scope");
+    diag_stop("NAME-01", "unknown name", lexbuf_finish(),
+              diag_file(at->file), at->start, at->end);
+    if (what != 0) {
+        // A short "did you mean…" note travels with the diagnostic; the
+        // long-form lesson lives in reports.c2 (`lc explain NAME-01`).
+        diag_fix(diag_get(diag_stop_count() - 1), "hint", what);
+    }
+}
+
+void ck_err_unknown_type(char* name, struct AstNode* at) {
+    lexbuf_reset();
+    lexbuf_push_str("no type named `");
+    lexbuf_push_str(name);
+    lexbuf_push_str("`");
+    diag_stop("NAME-01", "unknown type", lexbuf_finish(),
+              diag_file(at->file), at->start, at->end);
+}
+
+void ck_err_type_mismatch(struct AstNode* at, int want, int got, char* what) {
+    lexbuf_reset();
+    lexbuf_push_str(what);
+    lexbuf_push_str(": expected `");
+    lexbuf_push_str(ty_display(want));
+    lexbuf_push_str("`, found `");
+    lexbuf_push_str(ty_display(got));
+    lexbuf_push_str("`");
+    diag_stop("TYPE-01", "type mismatch", lexbuf_finish(),
+              diag_file(at->file), at->start, at->end);
+}
+
+void ck_err_arity(struct AstNode* at, char* name, int want, int got) {
+    lexbuf_reset();
+    lexbuf_push_str("`");
+    lexbuf_push_str(name);
+    lexbuf_push_str("` takes ");
+    lexbuf_push_int(want);
+    lexbuf_push_str(" argument(s), got ");
+    lexbuf_push_int(got);
+    diag_stop("TYPE-03", "wrong number of arguments", lexbuf_finish(),
+              diag_file(at->file), at->start, at->end);
+}
+
+void ck_err_not_callable(struct AstNode* at, int ty) {
+    lexbuf_reset();
+    lexbuf_push_str("`");
+    lexbuf_push_str(ty_display(ty));
+    lexbuf_push_str("` is not callable");
+    diag_stop("TYPE-04", "not callable", lexbuf_finish(),
+              diag_file(at->file), at->start, at->end);
+}
+
+void ck_err_no_field(struct AstNode* at, int ty, char* field) {
+    lexbuf_reset();
+    lexbuf_push_str("`");
+    lexbuf_push_str(ty_display(ty));
+    lexbuf_push_str("` has no field `");
+    lexbuf_push_str(field);
+    lexbuf_push_str("`");
+    diag_stop("TYPE-02", "no such field", lexbuf_finish(),
+              diag_file(at->file), at->start, at->end);
+}
+
+void ck_err_not_mut(struct AstNode* at, char* name) {
+    lexbuf_reset();
+    lexbuf_push_str("cannot assign to `");
+    lexbuf_push_str(name);
+    lexbuf_push_str("`: it is not declared `mut`");
+    diag_stop("MUT-01", "assignment to immutable binding", lexbuf_finish(),
+              diag_file(at->file), at->start, at->end);
+}
+
+void ck_err_uninit(struct AstNode* at, char* name) {
+    lexbuf_reset();
+    lexbuf_push_str("`");
+    lexbuf_push_str(name);
+    lexbuf_push_str("` is used before it is initialized");
+    diag_stop("INIT-01", "use of uninitialized value", lexbuf_finish(),
+              diag_file(at->file), at->start, at->end);
+}
+
+void ck_err_nonexhaustive(struct AstNode* at, int ty) {
+    lexbuf_reset();
+    lexbuf_push_str("`switch` on `");
+    lexbuf_push_str(ty_display(ty));
+    lexbuf_push_str("` needs a `default` arm (or every variant)");
+    diag_stop("CASE-01", "non-exhaustive switch", lexbuf_finish(),
+              diag_file(at->file), at->start, at->end);
+}
+
+void ck_err_missing_return(struct AstNode* fn) {
+    lexbuf_reset();
+    lexbuf_push_str("`");
+    lexbuf_push_str(fn->sval);
+    lexbuf_push_str("` must return `");
+    lexbuf_push_str(ty_display(g_fn_ret_ty[ck_cur_fn()]));
+    lexbuf_push_str("`, but control can reach the end of the body");
+    diag_stop("RET-01", "missing return value", lexbuf_finish(),
+              diag_file(fn->file), fn->start, fn->end);
+}
+
+// ---------------------------------------------------------------------------
+// Function context (the body currently being checked).
+// ---------------------------------------------------------------------------
+int g_fn_ret_ty[64];   // return type id per nesting level
+int g_fn_idx[64];      // index into g_fn_decl
+int g_fn_depth;
+int g_loop_depth;
+
+// Per-function receiver type (0 for a free function): the type of `self`
+// inside a method body.
+int g_fn_self_ty[1024];
+
+int ck_cur_fn(void) {
+    if (g_fn_depth <= 0) { return 0; }
+    return g_fn_depth - 1;
+}
+
+// The four `self` parameter spellings (§6.6).
+int ck_is_self_param(struct AstNode* p) {
+    if (p == 0 || p->sval == 0) { return 0; }
+    if (str_eq(p->sval, "self") || str_eq(p->sval, "mut self")) { return 1; }
+    if (str_eq(p->sval, "&self") || str_eq(p->sval, "&mut self")) { return 1; }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Type resolution: a type AST node -> type id.
+//
+// Nominal types dedup by name so `Point` used twice is one id. Generic
+// parameters resolve to their placeholder ids (registered as SK_GEN).
+// ---------------------------------------------------------------------------
+int ck_resolve_type(struct AstNode* t) {
+    int k;
+    if (t == 0) { return TY_UNIT; }
+    k = t->kind;
+    if (k == AST_TYPE_NAME) {
+        int sym;
+        sym = ck_lookup(t->sval);
+        if (sym < 0) {
+            ck_err_unknown_type(t->sval, t);
+            return TY_INVALID;
+        }
+        if (g_sym_kind[sym] != SK_TYPE && g_sym_kind[sym] != SK_GEN) {
+            ck_err_unknown_type(t->sval, t);
+            return TY_INVALID;
+        }
+        return g_sym_ty[sym];
+    }
+    if (k == AST_TYPE_REF) {
+        int inner;
+        inner = ck_resolve_type(t->a);
+        if (inner == TY_INVALID) { return TY_INVALID; }
+        if (t->ival & 1) {
+            return ty_new(CTY_MUTREF, ck_ref_name("&mut", inner), inner, 0);
+        }
+        return ty_new(CTY_REF, ck_ref_name("&", inner), inner, 0);
+    }
+    if (k == AST_TYPE_RAW) {
+        int inner;
+        inner = ck_resolve_type(t->a);
+        if (inner == TY_INVALID) { return TY_INVALID; }
+        if (t->ival & 1) {
+            return ty_new(CTY_MUTPTR, ck_ref_name("raw mut", inner), inner, 0);
+        }
+        return ty_new(CTY_PTR, ck_ref_name("raw", inner), inner, 0);
+    }
+    if (k == AST_TYPE_ARRAY) {
+        int inner;
+        int len;
+        inner = ck_resolve_type(t->a);
+        if (inner == TY_INVALID) { return TY_INVALID; }
+        len = ceval_const_int(t->b);
+        if (len < 0) {
+            diag_stop("TYPE-05", "array length must be a constant",
+                      "The length of `[T; N]` must be a constant expression.",
+                      t->file, t->start, t->end);
+            return TY_INVALID;
+        }
+        lexbuf_reset();
+        lexbuf_push_str("[");
+        lexbuf_push_str(ty_display(inner));
+        lexbuf_push_str("; ");
+        lexbuf_push_int(len);
+        lexbuf_push_str("]");
+        return ty_new(CTY_ARRAY, lexbuf_finish(), inner, len);
+    }
+    if (k == AST_TYPE_SLICE) {
+        int inner;
+        inner = ck_resolve_type(t->a);
+        if (inner == TY_INVALID) { return TY_INVALID; }
+        lexbuf_reset();
+        lexbuf_push_str("[");
+        lexbuf_push_str(ty_display(inner));
+        lexbuf_push_str("]");
+        return ty_new(CTY_SLICE, lexbuf_finish(), inner, 0);
+    }
+    if (k == AST_TYPE_UNIT) { return TY_UNIT; }
+    diag_stop("TYPE-05", "unsupported type",
+              "This type form is not supported yet.", t->file, t->start, t->end);
+    return TY_INVALID;
+}
+
+// Builds "&T"-style display names for reference types.
+char* ck_ref_name(char* pre, int inner) {
+    lexbuf_reset();
+    lexbuf_push_str(pre);
+    lexbuf_push_str(ty_display(inner));
+    return lexbuf_finish();
+}
+
+// ---------------------------------------------------------------------------
+// Pass 1: register items.
+// ---------------------------------------------------------------------------
+void ck_register_program(struct AstNode* prog) {
+    int i;
+    struct AstList* items;
+    items = prog->kids;
+    if (items == 0) { return; }
+    i = 0;
+    while (i < items->len) {
+        ck_register_item(items->items[i]);
+        i = i + 1;
+    }
+}
+
+void ck_register_item(struct AstNode* n) {
+    if (n == 0) { return; }
+    if (n->kind == AST_STRUCT) { ck_register_struct(n); return; }
+    if (n->kind == AST_ENUM) { ck_register_enum(n); return; }
+    if (n->kind == AST_CONST) { ck_register_const(n); return; }
+    if (n->kind == AST_FN) { ck_register_fn(n); return; }
+    if (n->kind == AST_EXTERN_FN) { ck_register_extern(n); return; }
+    if (n->kind == AST_METHODS) { ck_register_methods(n); return; }
+}
+
+// Registers a struct: a CTY_STRUCT type whose members are its fields.
+// Field types are resolved immediately (the struct's own name is already
+// registered, so a field may reference the struct through a pointer).
+void ck_register_struct(struct AstNode* n) {
+    int id;
+    int i;
+    struct AstList* fields;
+    id = ty_new_typed(CTY_STRUCT, n->sval, n);
+    if (ck_declare(n->sval, SK_TYPE, id, n, 0) < 0) { return; }
+    fields = n->kids2;
+    if (fields == 0) { return; }
+    i = 0;
+    while (i < fields->len) {
+        struct AstNode* f;
+        int ft;
+        f = fields->items[i];
+        ft = ck_resolve_type(f->a);
+        if (ft == TY_INVALID) { ft = TY_I32; }   // keep going; the stop is reported
+        ty_add_member(id, f->sval, ft);
+        f->ty = ft;
+        i = i + 1;
+    }
+}
+
+// Registers an enum: a CTY_ENUM type; each variant's payload becomes an
+// anonymous struct type so layout/codegen treat payloads uniformly.
+//
+// Two phases: build every payload struct first, then append the variant
+// members. `ty_add_member` keeps each type's members contiguous, so mixing
+// payload construction with variant appends would interleave the arrays.
+void ck_register_enum(struct AstNode* n) {
+    int id;
+    int i;
+    struct AstList* variants;
+    id = ty_new_typed(CTY_ENUM, n->sval, n);
+    if (ck_declare(n->sval, SK_TYPE, id, n, 0) < 0) { return; }
+    variants = n->kids2;
+    if (variants == 0) { return; }
+    // Phase A: the payload struct of every variant.
+    i = 0;
+    while (i < variants->len) {
+        struct AstNode* v;
+        int pid;
+        int j;
+        v = variants->items[i];
+        lexbuf_reset();
+        lexbuf_push_str(n->sval);
+        lexbuf_push_str("::");
+        lexbuf_push_str(v->sval);
+        pid = ty_new_typed(CTY_STRUCT, lexbuf_finish(), v);
+        j = 0;
+        if (v->kids != 0) {
+            while (j < v->kids->len) {
+                int pt;
+                pt = ck_resolve_type(v->kids->items[j]);
+                if (pt == TY_INVALID) { pt = TY_I32; }
+                lexbuf_reset();
+                lexbuf_push_str("_");
+                lexbuf_push_int(j);
+                ty_add_member(pid, lexbuf_finish(), pt);
+                j = j + 1;
+            }
+        }
+        v->ty = pid;
+        i = i + 1;
+    }
+    // Phase B: the enum's own member list (contiguous).
+    i = 0;
+    while (i < variants->len) {
+        struct AstNode* v;
+        v = variants->items[i];
+        ty_add_member(id, v->sval, v->ty);
+        i = i + 1;
+    }
+}
+
+void ck_register_const(struct AstNode* n) {
+    int ty;
+    ty = ck_resolve_type(n->a);
+    if (ty == TY_INVALID) { ty = TY_I32; }
+    n->ty = ty;
+    ck_declare(n->sval, SK_CONST, ty, n, 0);
+}
+
+// Registers a function: its signature (params + return type) so calls from
+// any body resolve. The body is checked in pass 2.
+void ck_register_fn(struct AstNode* n) {
+    int ret;
+    int i;
+    struct AstList* params;
+    if (g_nfn >= 1024) { return; }
+    g_fn_decl[g_nfn] = n;
+    n->b->ival = g_nfn;          // stash the fn index on the body block
+    g_nfn = g_nfn + 1;
+    ret = TY_UNIT;
+    if (n->a != 0) {
+        ret = ck_resolve_type(n->a);
+        if (ret == TY_INVALID) { ret = TY_UNIT; }
+    }
+    n->ty = ret;
+    params = n->kids2;
+    if (params != 0) {
+        i = 0;
+        while (i < params->len) {
+            struct AstNode* p;
+            p = params->items[i];
+            p->ty = ck_resolve_type(p->a);
+            if (p->ty == TY_INVALID) { p->ty = TY_I32; }
+            i = i + 1;
+        }
+    }
+    ck_declare(n->sval, SK_FN, ret, n, 0);
+}
+
+void ck_register_extern(struct AstNode* n) {
+    // Extern declarations are checked like functions but have no body.
+    ck_register_fn(n);
+}
+
+// Registers the methods of a `methods Type { ... }` block. The receiver is
+// the first parameter named `self` (§6.6): `self` takes the type by value,
+// `&self` a shared reference, `&mut self` an exclusive one.
+void ck_register_methods(struct AstNode* n) {
+    int i;
+    int base;
+    int recv;
+    struct AstList* fns;
+    base = ck_lookup(n->sval);
+    if (base < 0 || g_sym_kind[base] != SK_TYPE) {
+        ck_err_unknown_type(n->sval, n);
+        return;
+    }
+    recv = g_sym_ty[base];
+    fns = n->kids2;
+    if (fns == 0) { return; }
+    i = 0;
+    while (i < fns->len) {
+        struct AstNode* f;
+        f = fns->items[i];
+        if (g_nmeth < 1024) {
+            g_meth_ty[g_nmeth] = recv;
+            g_meth_name[g_nmeth] = f->sval;
+            g_meth_fn[g_nmeth] = g_nfn;
+            g_nmeth = g_nmeth + 1;
+        }
+        ck_register_fn(f);
+        // Record the receiver type on the (just-registered) function, and
+        // give its `self` parameter the right reference shape.
+        if (g_nfn > 0) { g_fn_self_ty[g_nfn - 1] = recv; }
+        {
+            struct AstList* ps;
+            ps = f->kids2;
+            if (ps != 0 && ps->len > 0 && ps->items[0]->sval != 0) {
+                struct AstNode* sp;
+                sp = ps->items[0];
+                if (str_eq(sp->sval, "self")) { sp->ty = recv; }
+                else if (str_eq(sp->sval, "mut self")) { sp->ty = recv; }
+                else if (str_eq(sp->sval, "&self")) { sp->ty = ty_new(CTY_REF, ck_ref_name("&", recv), recv, 0); }
+                else if (str_eq(sp->sval, "&mut self")) { sp->ty = ty_new(CTY_MUTREF, ck_ref_name("&mut", recv), recv, 0); }
+            }
+        }
+        i = i + 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pass 2: check bodies.
+// ---------------------------------------------------------------------------
+void ck_check_bodies(void) {
+    int i;
+    i = 0;
+    while (i < g_nfn) {
+        ck_check_fn(g_fn_decl[i], i);
+        i = i + 1;
+    }
+}
+
+void ck_check_fn(struct AstNode* fn, int idx) {
+    int ret;
+    struct AstList* params;
+    int i;
+    if (fn->b == 0) { return; }   // extern declaration: no body
+    ret = fn->ty;
+    g_fn_ret_ty[g_fn_depth] = ret;
+    g_fn_idx[g_fn_depth] = idx;
+    g_fn_depth = g_fn_depth + 1;
+    ck_scope_push();
+    // A method's `self` is a binding like any other parameter (§6.6).
+    if (g_fn_self_ty[idx] != 0) {
+        int smut;
+        smut = 0;
+        params = fn->kids2;
+        if (params != 0 && params->len > 0
+            && (str_eq(params->items[0]->sval, "mut self")
+                || str_eq(params->items[0]->sval, "&mut self"))) {
+            smut = 1;
+        }
+        ck_declare("self", SK_SELF, g_fn_self_ty[idx], fn, smut);
+    }
+    params = fn->kids2;
+    if (params != 0) {
+        i = 0;
+        while (i < params->len) {
+            struct AstNode* p;
+            p = params->items[i];
+            // A `self` parameter is handled by the receiver binding above.
+            if (!ck_is_self_param(p)) {
+                ck_declare(p->sval, SK_PARAM, p->ty, p, p->ival & 1);
+            }
+            i = i + 1;
+        }
+    }
+    ck_stmt_block(fn->b);
+    // §8.2: a function with a non-unit return type must return on every path.
+    // M1 uses the simple form: the body's last statement must be a `return`
+    // (or the type is unit/never).
+    if (ret != TY_UNIT && ret != TY_NEVER) {
+        if (!ck_block_ends_in_return(fn->b)) {
+            ck_err_missing_return(fn);
+        }
+    }
+    ck_scope_pop();
+    g_fn_depth = g_fn_depth - 1;
+}
+
+// True when the block's last statement is a `return` (M1 approximation of
+// "all paths return"; the CFG-based analysis arrives with lowering).
+int ck_block_ends_in_return(struct AstNode* blk) {
+    struct AstList* stmts;
+    if (blk == 0 || blk->kids == 0) { return 0; }
+    stmts = blk->kids;
+    if (stmts->len == 0) { return 0; }
+    return stmts->items[stmts->len - 1]->kind == AST_RETURN;
+}
+
+// ---------------------------------------------------------------------------
+// Statements.
+// ---------------------------------------------------------------------------
+void ck_stmt_block(struct AstNode* blk) {
+    struct AstList* stmts;
+    int i;
+    if (blk == 0) { return; }
+    if (blk->ty == 0) { blk->ty = TY_UNIT; }
+    ck_scope_push();
+    stmts = blk->kids;
+    if (stmts != 0) {
+        i = 0;
+        while (i < stmts->len) {
+            ck_stmt(stmts->items[i]);
+            i = i + 1;
+        }
+    }
+    ck_scope_pop();
+}
+
+void ck_stmt(struct AstNode* n) {
+    if (n == 0) { return; }
+    if (n->kind == AST_LET) { ck_stmt_let(n); return; }
+    if (n->kind == AST_ASSIGN) { ck_stmt_assign(n); return; }
+    if (n->kind == AST_EXPR_STMT) { ck_expr(n->a); n->ty = n->a->ty; return; }
+    if (n->kind == AST_IF) { ck_stmt_if(n); return; }
+    if (n->kind == AST_WHILE) { ck_stmt_while(n); return; }
+    if (n->kind == AST_FOR) { ck_stmt_for(n); return; }
+    if (n->kind == AST_SWITCH) { ck_stmt_switch(n); return; }
+    if (n->kind == AST_RETURN) { ck_stmt_return(n); return; }
+    if (n->kind == AST_BREAK || n->kind == AST_CONTINUE) {
+        if (g_loop_depth <= 0) {
+            diag_stop("SYN-06", "`break` outside a loop",
+                      "`break` and `continue` only make sense inside `while` or `for`.",
+                      n->file, n->start, n->end);
+        }
+        n->ty = TY_NEVER;
+        return;
+    }
+    if (n->kind == AST_BLOCK) { ck_stmt_block(n); n->ty = TY_UNIT; return; }
+    if (n->kind == AST_UNCHECKED) { ck_stmt_block(n->a); n->ty = TY_UNIT; return; }
+    // Unknown statement kind: evaluate as an expression statement if it can be.
+    ck_expr(n);
+    n->ty = TY_UNIT;
+}
+
+void ck_stmt_let(struct AstNode* n) {
+    int ty;
+    int init;
+    init = 0;
+    if (n->a != 0) {
+        ty = ck_resolve_type(n->a);
+        if (ty == TY_INVALID) { ty = TY_I32; }
+    } else {
+        ty = 0;   // infer from the initializer
+    }
+    if (n->b != 0) {
+        init = 1;
+        ck_expr(n->b);
+        if (ty == 0) {
+            // No type given: infer from the initializer. An untyped literal
+            // defaults to i32 / f64 (§5.9).
+            ty = n->b->ty;
+            if (ty == TY_UINT_LIT) { ty = TY_I32; }
+            if (ty == TY_FLOAT_LIT) { ty = TY_F64; }
+        } else if (!ty_eq(ty, n->b->ty)) {
+            ck_err_type_mismatch(n, ty, n->b->ty, "`let` initializer");
+        }
+    }
+    if (ty == 0) {
+        // No type and no initializer: unusable (INIT-01 will fire on use).
+        ty = TY_I32;
+        diag_stop("TYPE-05", "cannot infer the type of this binding",
+                  "Annotate it: `let name: Type = ...;`",
+                  n->file, n->start, n->end);
+    }
+    n->ty = ty;
+    {
+        int idx;
+        idx = ck_declare(n->sval, SK_LET, ty, n, n->ival & 1);
+        if (idx >= 0 && init) { g_sym_init[idx] = 1; }
+    }
+}
+
+void ck_stmt_assign(struct AstNode* n) {
+    int lt;
+    int rt;
+    lt = ck_place(n->a);
+    ck_expr(n->b);
+    rt = n->b->ty;
+    n->ty = TY_UNIT;
+    if (lt == TY_INVALID || rt == TY_INVALID) { return; }
+    if (!ty_eq(lt, rt)) {
+        ck_err_type_mismatch(n, lt, rt, "assignment");
+    }
+}
+
+// Checks an lvalue (assignment target): returns its type, or TY_INVALID.
+// Rejects assignment to non-`mut` bindings (MUT-01) and to immutable places.
+int ck_place(struct AstNode* n) {
+    int ty;
+    ty = ck_expr(n);
+    if (ty == TY_INVALID) { return TY_INVALID; }
+    ck_check_place_mut(n);
+    return ty;
+}
+
+// Walks a place to its root binding and checks it is writable (§8.1).
+// M1 rules: a `let mut` binding, a `mut` parameter, or anything reached
+// through a `&mut`/raw-mut place is writable; a field or index inherits the
+// root's mutability. Full loan tracking is M2–M3.
+void ck_check_place_mut(struct AstNode* n) {
+    if (n == 0) { return; }
+    if (n->kind == AST_FIELD_ACC || n->kind == AST_INDEX) {
+        ck_check_place_mut(n->a);
+        return;
+    }
+    if (n->kind == AST_DEREF) {
+        // `*r` is writable iff `r` is an exclusive reference or a raw mut
+        // pointer; that is the subject of the borrow checker in M3, so M1
+        // accepts it here.
+        return;
+    }
+    if (n->kind == AST_PATH && n->a == 0) {
+        int sym;
+        sym = ck_lookup(n->sval);
+        if (sym >= 0 && !g_sym_mut[sym]) {
+            if (g_sym_kind[sym] == SK_LET || g_sym_kind[sym] == SK_PARAM) {
+                ck_err_not_mut(n, n->sval);
+            }
+        }
+        return;
+    }
+}
+
+void ck_stmt_if(struct AstNode* n) {
+    int ct;
+    ct = ck_expr(n->a);
+    if (ct != TY_INVALID && !ty_eq(ct, TY_BOOL)) {
+        ck_err_type_mismatch(n->a, TY_BOOL, ct, "`if` condition");
+    }
+    ck_stmt_block(n->b);
+    if (n->c != 0) {
+        if (n->c->kind == AST_BLOCK) {
+            ck_stmt_block(n->c);
+        } else {
+            ck_stmt_if(n->c);   // `else if`
+        }
+    }
+    n->ty = TY_UNIT;
+}
+
+void ck_stmt_while(struct AstNode* n) {
+    int ct;
+    ct = ck_expr(n->a);
+    if (ct != TY_INVALID && !ty_eq(ct, TY_BOOL)) {
+        ck_err_type_mismatch(n->a, TY_BOOL, ct, "`while` condition");
+    }
+    g_loop_depth = g_loop_depth + 1;
+    ck_stmt_block(n->b);
+    g_loop_depth = g_loop_depth - 1;
+    n->ty = TY_UNIT;
+}
+
+void ck_stmt_for(struct AstNode* n) {
+    g_loop_depth = g_loop_depth + 1;
+    ck_scope_push();
+    if (n->a != 0) { ck_stmt(n->a); }
+    if (n->b != 0) {
+        int ct;
+        ct = ck_expr(n->b);
+        if (ct != TY_INVALID && !ty_eq(ct, TY_BOOL)) {
+            ck_err_type_mismatch(n->b, TY_BOOL, ct, "`for` condition");
+        }
+    }
+    if (n->c != 0) { ck_stmt(n->c); }
+    if (n->kids != 0) {
+        int i;
+        i = 0;
+        while (i < n->kids->len) {
+            ck_stmt(n->kids->items[i]);
+            i = i + 1;
+        }
+    }
+    ck_scope_pop();
+    g_loop_depth = g_loop_depth - 1;
+    n->ty = TY_UNIT;
+}
+
+void ck_stmt_switch(struct AstNode* n) {
+    int st;
+    struct AstList* arms;
+    int i;
+    int saw_default;
+    int seen[64];      // variant indices already covered
+    int nseen;
+    st = ck_expr(n->a);
+    n->ty = TY_UNIT;
+    arms = n->kids;
+    if (arms == 0) { return; }
+    saw_default = 0;
+    nseen = 0;
+    i = 0;
+    while (i < arms->len) {
+        struct AstNode* arm;
+        arm = arms->items[i];
+        // An arm's patterns live in `kids` (several for or-patterns); an arm
+        // with no patterns is the `default` arm.
+        if (arm->kids == 0 || arm->kids->len == 0) {
+            saw_default = 1;
+        } else {
+            int k;
+            k = 0;
+            while (k < arm->kids->len) {
+                ck_check_pattern(arm->kids->items[k], st, seen, &nseen);
+                k = k + 1;
+            }
+        }
+        ck_stmt_block(arm->b);
+        i = i + 1;
+    }
+    // Exhaustiveness (§8.4): a switch on an enum must cover every variant or
+    // provide `default`. Switches on scalars must have a `default` too.
+    if (!saw_default) {
+        if (ty_is_nominal(st) && ty_kind(st) == CTY_ENUM) {
+            int total;
+            total = ty_member_count(st);
+            if (nseen < total) {
+                ck_err_nonexhaustive(n, st);
+            }
+        } else {
+            ck_err_nonexhaustive(n, st);
+        }
+    }
+}
+
+// Checks one switch pattern against the subject type, recording which enum
+// variants it covers (for exhaustiveness).
+void ck_check_pattern(struct AstNode* p, int st, int* seen, int* nseen) {
+    if (p == 0) { return; }
+    if (p->kind == AST_PAT_WILD) { return; }
+    if (p->kind == AST_PAT_LIT) {
+        ck_expr(p->a);
+        if (st != TY_INVALID && !ty_eq(st, p->a->ty)) {
+            ck_err_type_mismatch(p, st, p->a->ty, "switch pattern");
+        }
+        return;
+    }
+    if (p->kind == AST_PAT_BIND) {
+        // The parser makes a bare identifier a binding; when switching on an
+        // enum and the name is a variant of it (or `Enum::Variant`), it is a
+        // variant pattern instead (§8.6).
+        if (ty_is_nominal(st) && ty_kind(st) == CTY_ENUM) {
+            char* vname;
+            vname = p->sval;
+            if (str_contains(vname, "::")) {
+                vname = p->sval + str_rfind(p->sval, "::") + 2;
+            }
+            {
+                int vi;
+                vi = ty_find_member(st, vname);
+                if (vi >= 0) {
+                    ck_note_variant(p, st, vi, seen, nseen);
+                    return;
+                }
+            }
+        }
+        ck_declare(p->sval, SK_LET, st, p, 1);
+        return;
+    }
+    if (p->kind == AST_PAT_VARIANT) {
+        char* vname;
+        vname = p->sval;
+        if (str_contains(vname, "::")) {
+            vname = p->sval + str_rfind(p->sval, "::") + 2;
+        }
+        if (ty_is_nominal(st) && ty_kind(st) == CTY_ENUM) {
+            int vi;
+            vi = ty_find_member(st, vname);
+            if (vi < 0) {
+                ck_err_no_field(p, st, vname);
+            } else {
+                ck_note_variant(p, st, vi, seen, nseen);
+            }
+        } else {
+            ck_err_unknown_name(p->sval, p, "switch patterns name an enum variant");
+        }
+        return;
+    }
+    if (p->kind == AST_PAT_RANGE) {
+        ck_expr(p->a);
+        ck_expr(p->b);
+        return;
+    }
+}
+
+// Records that variant `vi` of the subject enum is covered, warning when an
+// earlier arm already covered it (CASE-02).
+void ck_note_variant(struct AstNode* p, int st, int vi, int* seen, int* nseen) {
+    int j;
+    j = 0;
+    while (j < *nseen) {
+        if (seen[j] == vi) {
+            diag_warn("CASE-02", "unreachable pattern",
+                      "This variant is already covered by an earlier arm.",
+                      diag_file(p->file), p->start, p->end);
+            return;
+        }
+        j = j + 1;
+    }
+    if (*nseen < 64) { seen[*nseen] = vi; *nseen = *nseen + 1; }
+}
+
+void ck_stmt_return(struct AstNode* n) {
+    int want;
+    int got;
+    want = g_fn_ret_ty[ck_cur_fn()];
+    if (n->a == 0) {
+        got = TY_UNIT;
+    } else {
+        got = ck_expr(n->a);
+    }
+    n->ty = TY_NEVER;
+    if (want == TY_INVALID || got == TY_INVALID) { return; }
+    if (!ty_eq(want, got)) {
+        ck_err_type_mismatch(n, want, got, "`return` value");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Const evaluation (array lengths, const initializers). M1 supports integer
+// literals, unary minus, and references to integer consts.
+// ---------------------------------------------------------------------------
+int ceval_const_int(struct AstNode* n) {
+    int sym;
+    if (n == 0) { return -1; }
+    if (n->kind == AST_INT_LIT) { return n->ival; }
+    if (n->kind == AST_UNARY) {
+        int v;
+        if (!str_eq(n->sval, "-")) { return -1; }
+        v = ceval_const_int(n->a);
+        if (v < 0) { return -1; }
+        return -v;
+    }
+    if (n->kind == AST_BINARY) {
+        int l;
+        int r;
+        l = ceval_const_int(n->a);
+        r = ceval_const_int(n->b);
+        if (l < 0 || r < 0) { return -1; }
+        if (str_eq(n->sval, "+")) { return l + r; }
+        if (str_eq(n->sval, "-")) { return l - r; }
+        if (str_eq(n->sval, "*")) { return l * r; }
+        if (str_eq(n->sval, "/")) { if (r == 0) { return -1; } return l / r; }
+        return -1;
+    }
+    if (n->kind == AST_PATH && n->a == 0) {
+        sym = ck_lookup(n->sval);
+        if (sym >= 0 && g_sym_kind[sym] == SK_CONST) {
+            return ceval_const_int(g_sym_decl[sym]->b);
+        }
+    }
+    return -1;
+}
+
+// ---------------------------------------------------------------------------
+// Driver: check a whole program. Called from pipeline.c2 after parsing.
+// ---------------------------------------------------------------------------
+void check_program(struct AstNode* prog) {
+    g_prog = prog;
+    g_nsyms = 0;
+    g_nscope = 0;
+    g_nfn = 0;
+    g_nmeth = 0;
+    g_fn_depth = 0;
+    g_loop_depth = 0;
+    {
+        int i;
+        i = 0;
+        while (i < 4096) { g_sym_init[i] = 0; i = i + 1; }
+    }
+    types_reset();
+    ck_register_primitives();
+    ck_register_program(prog);
+    ck_check_main();
+    ck_check_bodies();
+}
+
+// §6.3: the entry point is `fn main()` or `fn main() -> i32`; the returned
+// i32 becomes the process exit code. A main with another return type, or
+// with parameters, is rejected here (the runtime calls it with no args).
+void ck_check_main(void) {
+    int sym;
+    struct AstNode* fn;
+    struct AstList* params;
+    sym = ck_lookup("main");
+    if (sym < 0) {
+        // No main is only a problem for `build`/`run`; `check` on a library
+        // file is fine, so this is a warning, not a stop.
+        return;
+    }
+    if (g_sym_kind[sym] != SK_FN) {
+        diag_stop("TYPE-06", "`main` is not a function",
+                  "The entry point must be `fn main() -> i32` or `fn main()`.",
+                  diag_file(0), 0, 0);
+        return;
+    }
+    fn = g_sym_decl[sym];
+    params = fn->kids2;
+    if (params != 0 && params->len > 0) {
+        diag_stop("TYPE-06", "`main` takes no parameters",
+                  "The runtime calls `main` with no arguments; read them from the arguments module instead.",
+                  diag_file(fn->file), fn->start, fn->end);
+    }
+    if (fn->ty != TY_UNIT && fn->ty != TY_I32 && fn->ty != TY_NEVER) {
+        diag_stop("TYPE-06", "`main` must return `i32` or nothing",
+                  "The returned `i32` becomes the process exit code (§6.3).",
+                  diag_file(fn->file), fn->start, fn->end);
+    }
+}
+
+// The primitive type names (§5.2) are always in scope.
+void ck_register_primitives(void) {
+    ck_declare("i8", SK_TYPE, TY_I8, 0, 0);
+    ck_declare("i16", SK_TYPE, TY_I16, 0, 0);
+    ck_declare("i32", SK_TYPE, TY_I32, 0, 0);
+    ck_declare("i64", SK_TYPE, TY_I64, 0, 0);
+    ck_declare("isize", SK_TYPE, TY_ISIZE, 0, 0);
+    ck_declare("u8", SK_TYPE, TY_U8, 0, 0);
+    ck_declare("u16", SK_TYPE, TY_U16, 0, 0);
+    ck_declare("u32", SK_TYPE, TY_U32, 0, 0);
+    ck_declare("u64", SK_TYPE, TY_U64, 0, 0);
+    ck_declare("usize", SK_TYPE, TY_USIZE, 0, 0);
+    ck_declare("f32", SK_TYPE, TY_F32, 0, 0);
+    ck_declare("f64", SK_TYPE, TY_F64, 0, 0);
+    ck_declare("bool", SK_TYPE, TY_BOOL, 0, 0);
+    ck_declare("char", SK_TYPE, TY_CHAR, 0, 0);
+}

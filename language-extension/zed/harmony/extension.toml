@@ -7,5 +7,4 @@ description = "harmony language support"
 
 [grammars.harmony]
 repository = "https://github.com/CreitinGameplays/tree-sitter-harmony"
-rev = "REPLACE_WITH_40_CHARACTER_COMMIT_SHA"
-
+rev = "a45a429c472b064dd4124adfe58d19f40600f272"

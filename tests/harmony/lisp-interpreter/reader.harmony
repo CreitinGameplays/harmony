@@ -1,0 +1,123 @@
+// The reader: S-expressions from a `&str`, in the classic LISP surface syntax.
+//
+//   atom    -> integer | symbol
+//   list    -> "(" form* ")"
+//   form    -> atom | list | "'" form      ('x is sugar for (quote x))
+//
+// It is a recursive-descent parser over a `Reader` cursor. Byte access is via
+// `src.as_bytes()[i]`; atoms are sliced out of `src` with a byte range (so
+// symbols borrow the source, which the caller keeps alive for the run).
+//
+// `read_form` is a single self-recursive function: harmony-base resolves
+// names from earlier text only, so there is no forward declaration to let two
+// functions call each other.
+
+struct Reader { src: &str; pos: usize; }
+
+fn r_new(s: &str) -> Reader {
+    return Reader { .src = s, .pos = 0 };
+}
+
+fn at_end(r: &Reader) -> bool {
+    return r.pos >= r.src.len();
+}
+
+fn peek(r: &Reader) -> u8 {
+    if (at_end(r)) { return 0; }
+    return r.src.as_bytes()[r.pos];
+}
+
+fn is_space(b: u8) -> bool {
+    return b == 32u8 || b == 10u8 || b == 9u8 || b == 13u8;
+}
+
+fn is_digit(b: u8) -> bool {
+    return b >= 48u8 && b <= 57u8;
+}
+
+// A delimiter ends an atom: whitespace, parens, or a quote.
+fn is_delim(b: u8) -> bool {
+    return is_space(b) || b == 40u8 || b == 41u8 || b == 39u8;
+}
+
+fn skip_ws(r: &mut Reader) {
+    while (!at_end(&*r) && is_space(peek(&*r))) {
+        r.pos += 1;
+    }
+}
+
+// Reads an atom (integer or symbol) and advances past it.
+fn read_atom(r: &mut Reader) -> Val {
+    let start = r.pos;
+    let first = peek(&*r);
+    if (is_digit(first) || first == 45u8) {   // digits, or a leading '-'
+        // Try an integer; fall back to a symbol if anything non-digit appears
+        // after the optional sign.
+        let mut p = r.pos;
+        let mut neg = false;
+        if (peek(&*r) == 45u8) { neg = true; p += 1; }
+        let digits_start = p;
+        let mut value: i32 = 0;
+        while (p < r.src.len() && is_digit(r.src.as_bytes()[p])) {
+            value = value * 10 + (r.src.as_bytes()[p] as i32 - 48);
+            p += 1;
+        }
+        if (p > digits_start && (p >= r.src.len() || is_delim(r.src.as_bytes()[p]))) {
+            r.pos = p;
+            if (neg) { return Val::Int(0 - value); }
+            return Val::Int(value);
+        }
+    }
+    // Symbol: run until a delimiter.
+    while (!at_end(&*r) && !is_delim(peek(&*r))) {
+        r.pos += 1;
+    }
+    return Val::Sym(&r.src[start..r.pos]);
+}
+
+// Reads one form. Self-recursive: a list is read by recursing here for each
+// element. The scratch array is reused per call (fixed cap keeps the reader
+// allocation-free; the probe programs stay well under it).
+fn read_form(r: &mut Reader) -> Val {
+    skip_ws(r);
+    if (at_end(&*r)) { return Val::Nil; }
+    let b = peek(&*r);
+    if (b == 39u8) {                                   // 'x => (quote x)
+        r.pos += 1;
+        let quoted = read_form(r);
+        return cons(Val::Sym("quote"), cons(quoted, Val::Nil));
+    }
+    if (b == 40u8) {                                   // "(" ... ")"
+        r.pos += 1;
+        let cap = 64;
+        let mut items: [Val; 64] = [Val::Nil; 64];
+        let mut n: i32 = 0;
+        while (true) {
+            skip_ws(r);
+            if (at_end(&*r)) { break; }
+            if (peek(&*r) == 41u8) { r.pos += 1; break; }
+            if (n >= cap) { break; }
+            items[n as usize] = read_form(r);
+            n += 1;
+        }
+        return list_of(&items[..], n, Val::Nil);
+    }
+    if (b == 41u8) { r.pos += 1; return Val::Nil; }    // stray ")"
+    return read_atom(r);
+}
+
+// Reads every top-level form in `src` into one list.
+fn read_all(src: &str) -> Val {
+    let mut r = r_new(src);
+    let cap = 64;
+    let mut items: [Val; 64] = [Val::Nil; 64];
+    let mut n: i32 = 0;
+    while (true) {
+        skip_ws(&mut r);
+        if (at_end(&r)) { break; }
+        if (n >= cap) { break; }
+        items[n as usize] = read_form(&mut r);
+        n += 1;
+    }
+    return list_of(&items[..], n, Val::Nil);
+}

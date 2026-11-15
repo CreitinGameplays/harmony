@@ -1,0 +1,94 @@
+// A small LISP interpreter written in Harmony (harmony-base).
+//
+// This is a robustness probe for the bootstrap compiler: it uses the parts of
+// the language that are already there — recursive `Heap<T>` enums, pattern
+// `switch`, `&str` byte access and byte-range slicing, `&mut` receivers,
+// generic-free functions, and integer ops — and nothing that is not (no
+// `String`, no `Vec`, no traits). The interpreter is deliberately tiny:
+//
+//   values   -> Nil, Int, Sym, Cons, Closure
+//   reader   -> S-expressions from a `&str` (quote sugar, nested lists)
+//   eval     -> the classic env/closure loop, with a small builtin prelude
+//
+// Everything is threaded explicitly: harmony-base has no top-level mutable
+// globals, which is exactly how a small interpreter should be written anyway.
+
+// ---------------------------------------------------------------------------
+// Values and the heap cons cell.
+// ---------------------------------------------------------------------------
+enum Val {
+    Nil,
+    Int(i32),
+    Sym(&str),
+    Cons(Heap<Val>, Heap<Val>),
+    Closure(Heap<Val>, Heap<Val>, Heap<Val>),  // params, body, captured env
+}
+
+// The environment is an association list of (name . value) frames, each a
+// cons list, chained through its tail. It is a `Val` so closures can capture
+// it by value (the spine is shared through `Heap`).
+struct Env { frame: Val; }
+
+fn empty_env() -> Env {
+    return Env { .frame = Val::Nil };
+}
+
+fn cons(a: Val, b: Val) -> Val {
+    return Val::Cons(heap(a), heap(b));
+}
+
+fn car(v: &Val) -> Val {
+    switch (v) {
+        case Cons(h, t): { return *h; }
+        case Nil:        { return Val::Nil; }
+        case Int(n):     { return Val::Nil; }
+        case Sym(s):     { return Val::Nil; }
+        case Closure(p, b, e): { return Val::Nil; }
+    }
+    return Val::Nil;
+}
+
+fn cdr(v: &Val) -> Val {
+    switch (v) {
+        case Cons(h, t): { return *t; }
+        case Nil:        { return Val::Nil; }
+        case Int(n):     { return Val::Nil; }
+        case Sym(s):     { return Val::Nil; }
+        case Closure(p, b, e): { return Val::Nil; }
+    }
+    return Val::Nil;
+}
+
+fn is_nil(v: &Val) -> bool {
+    switch (v) {
+        case Nil: { return true; }
+        case Int(n): { return false; }
+        case Sym(s): { return false; }
+        case Cons(h, t): { return false; }
+        case Closure(p, b, e): { return false; }
+    }
+    return false;
+}
+
+fn as_int(v: &Val) -> i32 {
+    switch (v) {
+        case Int(n): { return n; }
+        case Nil:    { return 0; }
+        case Sym(s): { return 0; }
+        case Cons(h, t): { return 0; }
+        case Closure(p, b, e): { return 0; }
+    }
+    return 0;
+}
+
+// A list of values built from a slice of `Val` (used by the reader and by the
+// argument evaluator); `n` elements from `items`, ending in `tail`.
+fn list_of(items: &[Val], n: i32, tail: Val) -> Val {
+    let mut i: i32 = n - 1;
+    let mut acc = tail;
+    while (i >= 0) {
+        acc = cons(items[i as usize], acc);
+        i -= 1;
+    }
+    return acc;
+}

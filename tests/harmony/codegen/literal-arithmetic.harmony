@@ -1,0 +1,12 @@
+// EXPECT: 42
+// Arithmetic on two untyped integer literals (`1 + 2`) must type-check: both
+// operands are `TY_UINT_LIT`, which the "arithmetic needs numbers" check must
+// accept and then default to i32. Before the fix a bare `1 + 2` was rejected
+// with TYPE-01, which also broke any literal-only arithmetic inside the LISP
+// interpreter's reader.
+fn main() -> i32 {
+    let a: i32 = 1 + 2;          // 3
+    let b = 6 * 7;               // 42
+    let c = (1 + 2) * (3 + 4);   // 21
+    return a + b - c + 18;       // 3 + 42 - 21 + 18 = 42
+}

@@ -1,0 +1,33 @@
+// EXPECT: 42
+// A large zero-initialized aggregate forces clang's optimizer to lower the
+// stores to a `memset` libcall. Under `-ffreestanding -nostdlib` the runtime
+// must provide `memset`/`memcpy`/`memmove`/`memcmp`, or the link fails with
+// "undefined reference to `memset'". This allocates a big array of an enum
+// with a `&str` payload (which clang widens further) and initializes it with
+// the repeat form.
+enum Val {
+    Nil,
+    Int(i32),
+    Sym(&str),
+    Cons(Heap<Val>, Heap<Val>),
+}
+
+fn main() -> i32 {
+    let mut items: [Val; 64] = [Val::Nil; 64];
+    items[0] = Val::Int(40);
+    items[63] = Val::Int(2);
+    let mut sum: i32 = 0;
+    switch (&items[0]) {
+        case Int(n): { sum += n; }
+        case Nil: { return 1; }
+        case Sym(s): { return 1; }
+        case Cons(h, t): { return 1; }
+    }
+    switch (&items[63]) {
+        case Int(n): { sum += n; }
+        case Nil: { return 2; }
+        case Sym(s): { return 2; }
+        case Cons(h, t): { return 2; }
+    }
+    return sum;   // 42
+}

@@ -313,7 +313,7 @@ int ck_expr_binary(struct AstNode* n) {
             }
             return lt;
         }
-        if (!ty_is_integer(lt2) && !ty_is_float(lt2)) {
+        if (!ty_is_integer(lt2) && !ty_is_float(lt2) && !ty_is_untyped_lit(lt2)) {
             diag_stop("TYPE-01", "arithmetic needs numbers",
                       "These operands are not numeric.",
                       diag_file(n->file), n->start, n->end);

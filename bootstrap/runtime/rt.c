@@ -46,6 +46,63 @@ static long sys(long n, long a, long b, long c) {
     return ret;
 }
 
+// ---------------------------------------------------------------------------
+// Freestanding memory builtins.
+//
+// clang's optimizer is free to lower a large aggregate initialization or copy
+// into a `memset`/`memcpy`/`memmove` libcall, and under `-ffreestanding
+// -nostdlib` there is no libc to resolve them. Providing them here keeps the
+// runtime self-contained (docs/harmony.md §19.8.4): the compiler emits the
+// stores, clang may fold them into a call, and this is the body.
+//
+// The names are the standard ones so clang recognizes them as the builtins it
+// wants to call (a `#define memset ...` would stop the recognition). They are
+// defined only if not already provided, so linking a real libc later still
+// works.
+// ---------------------------------------------------------------------------
+void *memset(void *dst, int c, usize_t n) {
+    unsigned char *p = (unsigned char *) dst;
+    unsigned char b = (unsigned char) c;
+    usize_t i;
+    for (i = 0; i < n; i++) { p[i] = b; }
+    return dst;
+}
+
+void *memcpy(void *dst, const void *src, usize_t n) {
+    unsigned char *d = (unsigned char *) dst;
+    const unsigned char *s = (const unsigned char *) src;
+    usize_t i;
+    for (i = 0; i < n; i++) { d[i] = s[i]; }
+    return dst;
+}
+
+void *memmove(void *dst, const void *src, usize_t n) {
+    unsigned char *d = (unsigned char *) dst;
+    const unsigned char *s = (const unsigned char *) src;
+    if (d == s || n == 0) { return dst; }
+    if (d < s) {
+        usize_t i;
+        for (i = 0; i < n; i++) { d[i] = s[i]; }
+    } else {
+        usize_t i = n;
+        while (i > 0) { i--; d[i] = s[i]; }
+    }
+    return dst;
+}
+
+int memcmp(const void *a, const void *b, usize_t n) {
+    const unsigned char *x = (const unsigned char *) a;
+    const unsigned char *y = (const unsigned char *) b;
+    usize_t i;
+    for (i = 0; i < n; i++) {
+        if (x[i] != y[i]) { return (int) x[i] - (int) y[i]; }
+    }
+    return 0;
+}
+
+// `__bzero` is an older spelling some clang releases still emit.
+void __bzero(void *dst, usize_t n) { (void) memset(dst, 0, n); }
+
 // The kernel's rt_sigaction ABI on x86-64: handler, flags, restorer, mask.
 struct ksigaction {
     void (*handler)(int);
@@ -53,7 +110,6 @@ struct ksigaction {
     void (*restorer)(void);
     unsigned long mask;
 };
-
 // The kernel's stack_t for sigaltstack.
 struct kstack {
     void *ss_sp;

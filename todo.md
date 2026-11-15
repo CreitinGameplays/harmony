@@ -388,6 +388,147 @@ binary is `harmony-base` (the spec's `lc`).
       as a `string_literal` in a new `abi` field, so `extern fn ...` is now an
       ERROR there too.
 
+### Feasibility probe: can the rewrite be written in harmony-base today?
+
+The question "is harmony-base enough to write the full `harmony` compiler in
+it?" was answered by compiling probe programs that exercise each construct a
+compiler needs. **Verdict: not yet, but close.** The blocking items below are
+grouped by whether they block the rewrite outright. Every claim is backed by a
+probe run against the built compiler (kind: `check` = rejected/trap, `run` =
+wrong exit code, or ICE) with a repro.
+
+#### Blocking — must fix before the rewrite can start
+
+- [ ] **`const` is a silent miscompile (§6.2).** A constant used in *value*
+      position lowers to a zero, not its value: `const A: i32 = 10; fn main()
+      -> i32 { return A; }` returns `0`, and the emitted IR is literally
+      `ret i32 0` — no diagnostic, `check` exits 0. `A` in a call argument,
+      an `if` condition, or a `let` initializer all read 0 where the constant's
+      value belongs; `A + B` adds `0 + 0`. Consts are only correct in *type*
+      position (array length: `let a: [i32; N]` works, because that path is
+      `ceval_const_int`). Worse, a const **array** indexed (`const T: [i32; 3]
+      = [10,20,30]; ... T[0]`) emits `getelementptr ... ptr null` — a load
+      through null, `run` traps (`T-STACK`), and `T[1]` reads address 4. Root
+      cause: the constant is registered as a symbol (`SK_CONST`, `ck_register_const`)
+      but never lowered — `ll_expr_path` has no path for it and falls through to
+      `ll_zero_of(ty)`. Fix requires either folding the initializer into the
+      expression or emitting an LLVM `global` for the constant. There is **no
+      test coverage for constants in value position** at all (an implied gap:
+      the M1.5 suite left it out). Repros are 3 lines each. This is the single
+      most dangerous gap: a rewrite is full of `const`, and every use is silently
+      wrong.
+- [ ] **The compiler arena caps the program size (ICE-01).** `harmony-base`
+      keeps a single fixed **16 MiB** arena (`g_arena[16777216]`,
+      `bootstrap/harmony-base/util.c2`) that is never freed between functions,
+      and the SSA-name/label helpers each `arena_alloc` (16/64 bytes) *per
+      instruction* (`ll_new_reg`, `ll_new_label`), so memory grows with the
+      generated code, not with the input size. The practical limit is therefore
+      **~1 MB of emitted IR** (about 16× the IR size in arena bytes): a
+      branch-heavy program of **145 functions / ~1600 lines** (IR 1.05 MB)
+      compiles, **150 functions** (IR just over 1 MB) fails with
+      `harmony-base: internal: arena exhausted (ICE-01)`. Straight-line code
+      goes much further (1400 trivial functions = 1400 lines still compile),
+      so the trigger is IR volume, not source volume — meaning the ceiling moves
+      with code shape, which is exactly what makes it a trap. A 15k-line
+      compiler with realistic bodies sits well past it.
+      - *Raising the arena helps linearly*: 32 MiB compiles a 453-function
+        program; 176 MiB compiles **~15.4k lines** (the size of `harmony-base`
+        itself). But FASM caps the build at `-m 262144` (256 MiB) and a
+        **188 MiB** BSS arena already fails to assemble ("error: out of
+        memory"), so **~184 MiB is the hard ceiling** — enough for a 15k-line
+        rewrite, not for it to grow.
+      - *The real fix is to stop leaking*: reset `g_arena_used` to a mark
+        between `ll_emit_fn` calls (bump/free per function) or reuse a scratch
+        string pool for SSA names, so memory tracks the largest function instead
+        of the whole program. Because the rewrite must be compilable by
+        harmony-base and will exceed 1 MB of IR, this blocks it today.
+      (Note: c2x-seed correctly exits non-zero on "out of memory" during the
+      build, so raising the arena past the FASM cap fails loudly, not silently.)
+- [ ] **Function count silently capped at 1024 (`g_fn_decl[1024]`).** A
+      program with more than 1024 functions registers only the first 1024
+      (`ck_fn_register_node` returns -1 past the cap with **no diagnostic**);
+      every later function is still emitted, but the checker never resolved its
+      return type, so its signature comes out `void` — `define void
+      @harmony__extra(i32)` for a function that returns `i32`, and `define void
+      @harmony_main()` for `main` — while the body still `ret i32`. clang then
+      rejects the IR (`value doesn't match function result type 'void'`), so the
+      failure is **loud but confusing** (a clang error instead of a `NAME`/ICE
+      stop), and whether a file compiles depends on the *order* functions
+      appear in. `harmony-base` itself has 491 functions so it is not hit yet,
+      but the rewrite will pass 1024. Fix: make the table resizable (project
+      rule) and report a clean stop instead of silently truncating.
+
+#### Blocking for the standard library, not for the compiler driver
+
+- [ ] **No generic user-defined types (§5.7, §6.4).** Only generic
+      *functions* monomorphize; a generic `struct`/`enum` (`struct Box<T> {...}`,
+      `enum Opt<T> {...}`) rejects `T` with `NAME-01` ("no type named `T`").
+      The rewrite's front end can hand-roll its `Vec`/`HashMap` over a fixed
+      `Heap<[T; N]>` arena (see the working probe below), but `library/core`
+      and `library/std` cannot be written without this. The path is already
+      half there: function monomorphization exists (`ck_instantiate`), so
+      extending it to nominal types is the natural next step.
+- [ ] **No iteration protocol / ranges in `for` (§8.5, §6.6).** `for (x : expr)`
+      parses but does not lower: a range (`for (i : 0..3)`), an array
+      (`for (x : a)`), and a custom iterator all fail at check time
+      (`TYPE-05`/`NAME-01`). Only the C-style `for (let mut i = 0; ...)` works.
+      Ranges are not even a first-class value (`let r = 0..3` is `TYPE-05`).
+      The compiler's own code can use C-style loops (harmony-base does), so
+      this blocks library ergonomics, not the compiler driver itself.
+
+#### Blocking for a self-hosted allocator (M6, workaround-able)
+
+- [ ] **No runtime-sized allocation.** `alloc<T>(n)`/`dealloc` are unimplemented
+      (`SYN-05`), and only `heap(x)` exists — `lc_alloc(sizeof(T))`, a fixed
+      size, no `realloc`, no `free` (`bootstrap/runtime/rt.c` `lc_alloc` is a
+      bump allocator with a 1 MiB min mmap chunk). A growable buffer must be
+      hand-rolled as "allocate a bigger fixed `Heap<[T; N]>`, copy, keep the
+      new one" (verified working), or reached through an extern. Workaround-
+      able, so not a hard blocker, but the rewrite will want a real allocator
+      early.
+- [ ] **Raw pointer toolbox (§13.5) — only `raw(&x)` exists.** `p[i]`,
+      `p.read()`, `p.write(v)`, `p.plus(n)`/`p.minus(n)`, `p.is_null()`,
+      `Raw::null<T>()`, and `raw`↔integer casts are all unimplemented
+      (`TYPE-02`/`SYN-05`/`TYPE-01`). `*p` (deref, read and write) **does**
+      work, and a `raw T` may cross an `extern` boundary, so a compiler can
+      reach OS memory through `extern "C" fn lc_alloc(n: i64) -> raw u8;`
+      (verified: allocate, write through `*p`, read it back = 42). Pointer
+      arithmetic is the real gap: without `p.plus(n)`/`p[i]`, walking a buffer
+      needs a hand-written wrapper extern. Left for M6 as before; now with a
+      recorded workaround (allocate, deref, call an extern for arithmetic).
+
+#### Not a gap (verified working — the rewrite's core can be written today)
+
+These were probed specifically to find the boundary, and they work:
+- Itself in miniature: a **context-threading** design (one `Ctx` struct
+  holding a symbol table + arena, passed as `&mut Ctx` to every function)
+  compiles and runs. This is how the rewrite must be written because —
+- **There are no top-level mutable globals (§6.1, by design).** `let mut g`
+  at item level is `SYN-05`. The spec is explicit ("Global state would break
+  the exclusivity rule"), so this is a feature, not a bug: the rewrite threads
+  state through one context (as `harmony-base` does via `g_*` in C). No action.
+- Aggregates and methods: structs/enums by value, payload enums, nested
+  enums-in-structs, `Heap<T>` recursive trees, `&mut self`/`self` methods,
+  `methods` on any type, `switch` with payload binding, generic *functions*
+  with `eq`/`ord` bounds and inference, `import` (including subdirs and `.hr`
+  and qualified `mod::name`), `&str` (byte access, slicing, `==`, `.len()`),
+  slices (`&[T]`/`&mut [T]`, `.len()`), `for (let ...)` C-style loops, and
+  the freestanding prelude (`trap`/`assert`/`unreachable`/`exit`) all pass.
+
+#### Repro commands (for whoever fixes these)
+
+```sh
+HB=./build/harmony-base
+# 1. const silent-zero + const-array null read
+printf 'const A: i32 = 10; fn main() -> i32 { return A; }\n' > /tmp/c.harmony
+$HB run /tmp/c.harmony; echo "rc=$? (bug: 0, want 10)"   # IR shows `ret i32 0`
+printf 'const T: [i32; 3] = [10,20,30]; fn main() -> i32 { return T[0]; }\n' > /tmp/ca.harmony
+$HB run /tmp/ca.harmony; echo "rc=$? (bug: traps; IR has `getelementptr ... ptr null`)"
+# 2. arena cap: ~150 branch-heavy fns (IR > 1 MB) -> ICE-01 at the default 16 MiB
+#    (a generator printing 150 structs + 150 fns with 8 `if`s each)
+# 3. 1024-fn cap: main past the cap -> 'define void @harmony_main()' + clang reject
+# 4/5/6: generic struct / `for (x : ...)` / `alloc<T>(n)` -> STOP (see probes)
+
 ### Cross-cutting
 
 - [x] **c2x-seed migrated from NASM to flat assembler (FASM).** NASM spends

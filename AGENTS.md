@@ -51,16 +51,20 @@ File Extension: .harmony (default), .hr (secondary)
 - You can write .harmony files in tests dir to test more complex code.
 - proposed layout for the final `harmony` language (to feel more organized and clean):
 ```
-harmony/... <- (*.hr) the real core of the language here. No std library features here.
+harmony/... <- (*.hr) the real core of the language. No std library features here.
 ├── lexer/...
 ├── parser/...
 ├── ast/...
 ├── codegen/... <- Backend (LLVM IR, C11...)
-├── sema/... <- Type checking & semantic analysis
+├── ir/... <- CFG IR
+├── sema/... <- Semantic analysis
+├── borrowck/... <- Borrow checker
+├── driver/... <- CLI
 └── main.hr
 library/
-├── core/... <- (*.hr) allowed to use with freestanding (e.g primitive types, slices, iterators... just like rust).
-├── std/... (HashMap/io/fs/net...) <- (*.hr) the full standard library, needs the OS/allocators...
+├── core/... <- (*.hr) allowed to use with freestanding (e.g primitive types, slices, iterators... no allocator).
+├── alloc/... <- (*.hr) allocator hook.
+├── std/... (HashMap/io/fs/net...) <- (*.hr) the full standard library, needs the OS.
 └── (others...)
 bootstrap/ <- the stage 0 compilers.
 ├── c2x-seed/...

@@ -111,6 +111,10 @@ check "not of false"         "(if (not (> 1 2)) 42 0)"                         4
 check "define then use"      "(define x 41) (+ x 1)"                           42
 check "define shadow"        "(define x 1) (define x 42) x"                    42
 check "closure captures"     "(define mk (lambda (n) (lambda (m) (+ n m)))) ((mk 40) 2)"  42
+# The reader must not turn a lone `-` or a digit-leading token into a number.
+check "lone dash is a symbol" "(define - 42) -"                                42
+check "digit-leading symbol" "(define 1a 42) 1a"                               42
+check "punctuated symbol"    "(define x? 42) x?"                               42
 
 # Lists and quoting.
 check "quote list"           "(define p (quote (40 2))) (+ (car p) (car (cdr p)))"  42

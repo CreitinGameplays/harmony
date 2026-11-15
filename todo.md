@@ -276,7 +276,7 @@ binary is `harmony-base` (the spec's `lc`).
       forward declarations, so `eval`/`apply` cannot be mutually recursive —
       plus the variadic primitive procedures), and `main.harmony` (a driver).
       `make lisp` concatenates them in dependency order (names resolve from
-      earlier text only) and runs it; `make test-lisp` runs the 50-case suite
+      earlier text only) and runs it; `make test-lisp` runs the 53-case suite
       in `tests/harmony/lisp.sh` (arith, closures, capture, `set!`, mutual
       recursion, ackermann, list processing, and malformed-input robustness),
       wired into `make test`. Four real compiler bugs fell out while building

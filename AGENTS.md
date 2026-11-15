@@ -20,7 +20,7 @@ File Extension: .harmony (default), .hr (secondary)
 - **What the final `harmony` language should have/support early:**
   **1. LLVM IR integrated directly into the compiler binary.**
   **2. Support to multi-core compilation by default.**
-  **3. Be freestanding capable (defines custom _start entry and only core lib support).**
+  **3. Be freestanding capable (defines custom _start entry with extern and only core lib support).**
 - If the information in the documentation contradicts the actual implementation, reconsider and **choose the safer long-term option** (updating either the code or the documentation).
 - Split big source files into smaller, organized files (they can be inside subdirs in the source 
   code for better organization) instead of huge single files (only exception is c2x-seed src).
@@ -32,7 +32,7 @@ File Extension: .harmony (default), .hr (secondary)
 - Never guess at bugs (harmony/c2x-seed), always reproduce:
   use any available debugger in the system (such as gdb, valgrind, strace, etc) to find the bug and fix them.
 - NEVER workaround a fix on harmony-base source code to hide a genuine bug in c2x-seed.
-- Always run final `make test` before completion, but only if you modify source code.
+- Always run final `make test` before commiting/completion, but only if you modify source code.
   Docs-only changes don't need to run `make test`.
 - `harmony-base` is freestanding, it's the core. It should not include any stdlib 
   (see harmony.md §19.8). The full-featured compiler (with stdlib and all other features)
@@ -49,6 +49,7 @@ File Extension: .harmony (default), .hr (secondary)
 - If a bug happens on c2x-seed during harmony implementation, pause it and only focus on fixing c2x-seed.
   When fixed just report final completion.
 - You can write .harmony files in tests dir to test more complex code.
+- You'll use `import`s for final harmony language.
 - proposed layout for the final `harmony` language (to feel more organized and clean):
 ```
 harmony/... <- (*.hr) the real core of the language. No std library features here.

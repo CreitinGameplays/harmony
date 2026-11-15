@@ -17,8 +17,10 @@ File Extension: .harmony (default), .hr (secondary)
 - *PREFER things to be auto resizable when possible instead of a fixed value!*
 - **Both `harmony-base` and final `harmony` language should do in-memory**
   **LLVM IR compilation instead of writing .ll temp files to disk by default.**
-- **The final `harmony` language should have LLVM IR integrated directly into the compiler binary.**
-- **The final `harmony` language should also have support to multi-core compilation by default.**
+- **What the final `harmony` language should have/support early:**
+  **1. LLVM IR integrated directly into the compiler binary.**
+  **2. Support to multi-core compilation by default.**
+  **3. Be freestanding capable (defines custom _start entry and only core lib support).**
 - Split big source files into smaller, organized files (they can be inside subdirs in the source 
   code for better organization) instead of huge single files (only exception is c2x-seed src).
 - Always add new or update todo.md and docs/*.md if some info got stale, this includes updating harmony language reference/keywords.

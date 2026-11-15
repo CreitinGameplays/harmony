@@ -196,6 +196,8 @@ TOK_BUF       equ 32
 TOK_LEN       equ 288
 TOK_LINE      equ 296
 TOK_COL       equ 304
+TOK_PTR       equ 312           ; active token buffer (inline or heap)
+TOK_CAP       equ 320           ; capacity of the active buffer
 
 ; ------------------------------------------------------------
 ; Uninitialized Data
@@ -459,7 +461,7 @@ parser_reset:
 ; Save current token info from lexer state
 ; ================================================================
 save_token_info:
-    mov rax, lexer_state + TOK_BUF
+    mov rax, [lexer_state + TOK_PTR]
     mov [parser_state.token_value], rax
     mov rax, [lexer_state + TOK_LEN]
     mov [parser_state.token_len], rax
@@ -568,10 +570,9 @@ copy_token_string:
 
     mov rsi, [parser_state.token_value]
     mov rcx, [parser_state.token_len]
-    cmp rcx, 255
-    jbe .len_ok
-    mov rcx, 255
-.len_ok:
+    ; The token buffer grows on demand, so copy the full token: truncating at
+    ; a fixed size would silently shorten long string literals (the very bug
+    ; the growable buffer fixes).
     lea rdi, [rcx + 1]         ; +1 for null terminator
     call heap_alloc
     test rax, rax

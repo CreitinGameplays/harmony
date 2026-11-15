@@ -1,0 +1,11 @@
+// EXPECT: 9
+// Comparing a raw pointer against `0` (§5.2, §13): before the fix the backend
+// emitted `icmp eq ptr %x, 0`, which LLVM rejects ("integer constant must have
+// integer type"); a pointer compares against `null` instead. The pointer is
+// also reused after a ref→raw cast, exercising the cast lowering.
+fn main() -> i32 {
+    let mut x: i32 = 42;
+    let p: raw i32 = &mut x as raw i32;
+    if (p == 0) { return 1; }     // must lower to `icmp eq ptr %p, null`
+    return 9;
+}

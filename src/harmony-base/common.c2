@@ -235,6 +235,12 @@ struct Options {
     int   ascii;        // --ascii: (1)/(2)/> <-- here glyph fallbacks (§16.3)
     int   no_color;     // --no-color / NO_COLOR (§16.3)
     int   verbose;      // -v
+    // Optimization level for the toolchain (docs/harmony.md §19.5). The exact
+    // clang flag is kept as a string so every LLVM level passes straight
+    // through: -O0 .. -O3, -Os (size), -Oz (min size), -Og (debug),
+    // -Ofast. Default -O2 applies when the user passes no flag.
+    char* opt_flag;     // e.g. "-O2" (default), "-O0", "-Os"
+    int   opt_given;    // 1 when the user passed an optimization flag
 };
 
 // Prints the long-form lesson for a diagnostic code (§16.8). Returns 0 when
@@ -645,6 +651,7 @@ char* ll_new_reg(void);
 char* ll_new_label(char* hint);
 char* ll_type_name(int id);
 char* ll_zero_of(int id);
+int   ll_is_predeclared(char* name);          // a prelude runtime hook name?
 int   ll_is_float_ty(int id);
 char* ll_checked_bin(char* op, int ty, struct AstNode* n, char* l, char* r);
 int   ll_node_ty(struct AstNode* n);

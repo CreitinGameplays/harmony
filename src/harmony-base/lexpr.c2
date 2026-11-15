@@ -376,12 +376,22 @@ char* ll_int_cmp(char* op, int ty, char* l, char* r) {
     int sgnd;
     sgnd = 1;
     if (ty_is_unsigned(ty) || ty == TY_BOOL) { sgnd = 0; }
+    // Pointers are ordered unsigned (addresses are not signed integers).
+    if (ty_is_ptr(ty)) { sgnd = 0; }
     if (str_eq(op, "==")) { ir = "icmp eq"; }
     else if (str_eq(op, "!=")) { ir = "icmp ne"; }
     else if (str_eq(op, "<")) { if (sgnd) { ir = "icmp slt"; } else { ir = "icmp ult"; } }
     else if (str_eq(op, "<=")) { if (sgnd) { ir = "icmp sle"; } else { ir = "icmp ule"; } }
     else if (str_eq(op, ">")) { if (sgnd) { ir = "icmp sgt"; } else { ir = "icmp ugt"; } }
     else { if (sgnd) { ir = "icmp sge"; } else { ir = "icmp uge"; } }
+    // A raw pointer compares against `null`, not the integer `0` (LLVM
+    // rejects `icmp eq ptr %x, 0`). The literal is lowered to "null" by
+    // ll_zero_of for pointer kinds; a pointer-vs-pointer compare is already
+    // "null"-free. Only the pointer-vs-zero case needs the swap.
+    if (ty_is_ptr(ty)) {
+        if (str_eq(r, "0")) { r = "null"; }
+        if (str_eq(l, "0")) { l = "null"; }
+    }
     g_expr_ty = TY_BOOL;
     return ll_cmp(ir, ty, l, r);
 }

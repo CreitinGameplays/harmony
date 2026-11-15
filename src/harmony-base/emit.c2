@@ -271,11 +271,42 @@ void argv_reset(void) {
 // ---------------------------------------------------------------------------
 // The command. `emit-llvm` prints IR to stdout; `build`/`run` compile + link.
 // ---------------------------------------------------------------------------
+
+// `emit-llvm -O<level>`: run the LLVM optimizer over the generated IR and
+// print the optimized IR. clang compiles IR on stdin and re-emits IR on
+// stdout (`-S -emit-llvm -o -`), so every level clang accepts works here
+// (including the clang-only `-Og`/`-Ofast`, which the standalone `opt`
+// binary rejects) with no extra toolchain dependency. clang's diagnostics go
+// to the log and are reported as an ICE if it rejects our IR.
+int emit_optimize_ir(struct Options* opts) {
+    int rc;
+    argv_reset();
+    sp_argv[0] = "/usr/bin/clang";
+    sp_argv[1] = "-x";
+    sp_argv[2] = "ir";
+    sp_argv[3] = "-";
+    sp_argv[4] = "-S";
+    sp_argv[5] = "-emit-llvm";
+    sp_argv[6] = "-o";
+    sp_argv[7] = "-";
+    sp_argv[8] = opts->opt_flag;
+    sp_argv[9] = "-Wno-override-module";
+    rc = sys_spawn_stdin(sp_argv, g_out, g_out_len, g_tmp_cc_log);
+    if (rc != 0) {
+        emit_report_cc_log(g_tmp_cc_log, opts->verbose);
+        return EXIT_STOP;
+    }
+    return EXIT_OK;
+}
+
 int emit_command(struct Options* opts, struct AstNode* prog) {
     ll_emit_module(prog);
 
     if (opts->cmd == CMD_EMIT_LLVM) {
-        // Print the IR (stdout) — deterministic bytes.
+        // No flag: print our own IR, which is byte-deterministic (the property
+        // tests, goldens, and the self-host byte-identity milestone rely on).
+        // An explicit `-O` asks for the optimizer, so print its output instead.
+        if (opts->opt_given) { return emit_optimize_ir(opts); }
         out_str(g_out);
         return EXIT_OK;
     }
@@ -289,9 +320,10 @@ int emit_command(struct Options* opts, struct AstNode* prog) {
         binpath = g_tmp_bin;
         if (opts->output != 0) { binpath = opts->output; }
 
-        // clang -x ir - -x c <rt.c> -o <bin> -O1 -ffreestanding ...
+        // clang -x ir - -x c <rt.c> -o <bin> <opt> -ffreestanding ...
         // The `-x ir` applies to `-`; `-x c` resets for the runtime file
-        // (otherwise clang would parse rt.c as IR and hang).
+        // (otherwise clang would parse rt.c as IR and hang). The optimization
+        // flag is passed straight through (default -O2, §19.5).
         argv_reset();
         sp_argv[0] = "/usr/bin/clang";
         sp_argv[1] = "-x";
@@ -302,7 +334,7 @@ int emit_command(struct Options* opts, struct AstNode* prog) {
         sp_argv[6] = g_rt_c;
         sp_argv[7] = "-o";
         sp_argv[8] = binpath;
-        sp_argv[9] = "-O1";
+        sp_argv[9] = opts->opt_flag;
         sp_argv[10] = "-ffreestanding";
         sp_argv[11] = "-fno-stack-protector";
         sp_argv[12] = "-fstack-clash-protection";

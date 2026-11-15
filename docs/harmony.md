@@ -2650,7 +2650,18 @@ lc fmt     <file.harmony>   canonical formatter (one style, no options)
 
 flags:  --format=pretty|line|json   --all   --strict   --deny-unchecked
         --no-color   --ascii   -o <out>
+        -O0 -O1 -O2 -O3 -Os -Oz -Og -Ofast   optimization level (-O2 default)
 ```
+
+`-O<level>` selects the LLVM optimization level for code generation and is
+passed straight through to the LLVM pipeline, so `-O3` runs the full
+aggressive pipeline, `-Os`/`-Oz` optimize for size, `-Og` keeps debug-friendly
+output, and `-Ofast` enables fast-math-style assumptions. **`-O2` is the
+default** when no level is given (a plain `-O` also means `-O2`). Every level
+is honored by `build`, `run`, and `emit-llvm`; `emit-llvm` prints the
+*unoptimized* IR (byte-deterministic, what the determinism tests and the
+self-host byte-identity milestone compare) unless a level is given explicitly,
+in which case it prints the optimized IR.
 
 ### 19.6 Test strategy
 

@@ -93,5 +93,36 @@ if [ -f "$CASES/arithmetic.harmony" ]; then
     fi
 fi
 
+# Optimization levels (§19.5): every `-O<level>` compiles and the program's
+# behavior is unchanged (a pure speed knob, §14.3). `-O2` is the default.
+if [ -f "$CASES/arithmetic.harmony" ]; then
+    for lvl in -O0 -O1 -O2 -O3 -Os -Oz -Og -Ofast -O; do
+        "$HB" run "$lvl" "$CASES/arithmetic.harmony" >/dev/null 2>&1
+        rc=$?
+        if [ "$rc" = "20" ]; then
+            pass=$((pass + 1)); printf 'ok   run %s (%s)\n' "$lvl" "$CASES/arithmetic.harmony"
+        else
+            fail=$((fail + 1)); printf 'FAIL run %s (want exit 20, got %s)\n' "$lvl" "$rc"
+        fi
+    done
+
+    # emit-llvm with no flag: our own IR, byte-deterministic (the milestone
+    # property). With an explicit level: the optimizer's output, which differs
+    # from ours (folded constants, simplified control flow).
+    "$HB" emit-llvm "$CASES/arithmetic.harmony" >"$TMP/plain.ll" 2>/dev/null
+    "$HB" emit-llvm -O2 "$CASES/arithmetic.harmony" >"$TMP/opt.ll" 2>/dev/null
+    if [ -s "$TMP/opt.ll" ] && ! diff -q "$TMP/plain.ll" "$TMP/opt.ll" >/dev/null; then
+        pass=$((pass + 1)); printf 'ok   emit-llvm -O2 differs from the unoptimized IR\n'
+    else
+        fail=$((fail + 1)); printf 'FAIL emit-llvm -O2 (optimized IR missing or identical)\n'
+    fi
+    "$HB" emit-llvm -O0 "$CASES/arithmetic.harmony" >/dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        pass=$((pass + 1)); printf 'ok   emit-llvm -O0 exits 0\n'
+    else
+        fail=$((fail + 1)); printf 'FAIL emit-llvm -O0\n'
+    fi
+fi
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

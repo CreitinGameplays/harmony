@@ -1,0 +1,16 @@
+// EXPECT: 9
+// IR: call void @lc_put_str
+// An `extern fn` whose name the module prelude ALREADY declares (a runtime
+// hook) must not emit a second `declare`: LLVM rejects the duplicate even when
+// the signatures match ("invalid redefinition of function"). The prelude's
+// declaration wins, and the call links against the runtime body.
+extern fn lc_put_str(p: raw u8, n: i64);
+
+fn main() -> i32 {
+    let mut a: u8 = 79;    // 'O'
+    let p: raw u8 = &mut a as raw u8;
+    unchecked("write one byte from a raw pointer through the runtime hook") {
+        lc_put_str(p, 1);
+    }
+    return 9;
+}

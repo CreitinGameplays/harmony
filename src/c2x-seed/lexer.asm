@@ -17,6 +17,9 @@ extern out_write_string_len
 extern error_count
 extern error_at
 extern error_at_code
+extern heap_alloc, mem_copy
+extern sys_write, sys_exit
+extern STDERR, EXIT_FAILURE
 
 ; ------------------------------------------------------------
 ; Exported Symbols
@@ -122,6 +125,8 @@ section .data
     kw_continue db "continue", 0
     kw_const    db "const", 0
     ; Error messages
+    msg_tok_oom     db "c2x-seed: out of memory while reading a token", 10
+    msg_tok_oom_len equ $ - msg_tok_oom
 
 ; ------------------------------------------------------------
 ; Uninitialized Data
@@ -135,10 +140,18 @@ section .bss
         .line           resq 1          ; Current line number (1-based)
         .column         resq 1          ; Current column number (0-based)
         .tok_type       resq 1          ; Type of the most recently recognized token
-        .tok_buf        resb 256        ; Buffer holding the token text
-        .tok_len        resq 1          ; Length of token text in tok_buf
+        .tok_buf        resb 256        ; Inline token text (initial storage)
+        .tok_len        resq 1          ; Length of token text in the buffer
         .tok_line       resq 1          ; Line where the token started
         .tok_col        resq 1          ; Column where the token started
+        ; The token buffer starts as the 256-byte inline `.tok_buf` above and
+        ; grows onto the heap when a token is longer (lex_grow). `tok_ptr`
+        ; always points at the live storage, so scans write through it and
+        ; never spill into neighbouring state. Kept AFTER tok_col so the
+        ; numeric offsets 296/304 used by errors.asm and warnings.asm stay
+        ; valid.
+        .tok_ptr        resq 1          ; Active token buffer (inline or heap)
+        .tok_cap        resq 1          ; Capacity of the active buffer
 
     ; Previous token position (saved before advancing to next token)
     global prev_tok_line, prev_tok_col
@@ -161,10 +174,99 @@ lexer_init:
     mov [lexer_state.tok_type], rax
     mov [lexer_state.tok_len], rax
 
+    ; The token buffer starts inline; a token longer than the inline capacity
+    ; is grown onto the heap by lex_grow. `tok_ptr` points at the live buffer
+    ; and `tok_cap` at its capacity, so the scan loops never write past it.
+    lea rax, [lexer_state.tok_buf]
+    mov [lexer_state.tok_ptr], rax
+    mov qword [lexer_state.tok_cap], 256
+
     ; Read first character into lookahead
     call in_get_char
     mov [lexer_state.current_char], al
     ret
+
+; ------------------------------------------------------------
+; lex_grow()
+; Make room at the token cursor for one more byte plus a trailing NUL,
+; growing the token buffer onto the heap (doubling) when it would overflow.
+;
+; The four scan loops keep their write cursor in rbx (starting at
+; `lexer_state.tok_ptr`) and a running length in r12. lex_grow is called just
+; before each append; on growth the first `rbx - tok_ptr` bytes move with the
+; buffer and rbx is shifted to match, so the loops continue unmodified.
+;
+; Every register except rbx (the cursor) is preserved, so the byte about to be
+; written — left in al by the caller — survives the call. A failed allocation
+; is fatal: the token cannot be represented, so the seed has nothing to do but
+; report and exit.
+;
+; In:  rbx = write cursor, `tok_ptr` = buffer base.
+; Out: `tok_ptr`/`tok_cap`/rbx updated. Preserves rax, rcx, rdx, rsi, rdi,
+; r8-r12 (callee-saved r12 included).
+; ------------------------------------------------------------
+lex_grow:
+    push rax
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+
+    mov rax, rbx
+    sub rax, [lexer_state.tok_ptr]     ; rax = bytes written so far
+    add rax, 2                         ; + the byte to write + trailing NUL
+    cmp rax, [lexer_state.tok_cap]
+    jbe .grow_done                     ; still fits
+
+    ; New capacity: double until it exceeds the needed size.
+    mov rdx, [lexer_state.tok_cap]
+.grow_double:
+    shl rdx, 1
+    cmp rdx, rax
+    jb .grow_double
+
+    mov r8, rdx                        ; r8 = new capacity
+    mov r9, rbx
+    sub r9, [lexer_state.tok_ptr]      ; r9 = live byte count
+    mov rdi, r8
+    call heap_alloc
+    test rax, rax
+    jz .grow_oom
+    mov r10, rax                       ; r10 = new buffer
+    mov rdi, r10
+    mov rsi, [lexer_state.tok_ptr]
+    mov rdx, r9
+    call mem_copy                      ; move the live bytes
+    mov [lexer_state.tok_ptr], r10
+    mov [lexer_state.tok_cap], r8
+    lea rbx, [r10 + r9]                ; cursor follows the buffer
+
+.grow_done:
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rax
+    ret
+
+.grow_oom:
+    ; Out of memory while reading a token: report and exit. There is no way
+    ; to continue (the token cannot be represented), so this is fatal.
+    mov rax, 1                 ; SYS_WRITE
+    mov rdi, STDERR
+    lea rsi, [msg_tok_oom]
+    mov rdx, msg_tok_oom_len
+    call sys_write
+    mov rdi, EXIT_FAILURE
+    call sys_exit
 
 ; ------------------------------------------------------------
 ; lexer_cleanup()
@@ -942,11 +1044,12 @@ lexer_next_token:
 ;  TOKEN: Identifier or Keyword
 ; ================================================================
 .scan_ident:
-    lea rbx, [lexer_state.tok_buf]
+    mov rbx, [lexer_state.tok_ptr]
     xor r12d, r12d            ; length counter
 
 .id_loop:
     mov al, [lexer_state.current_char]
+    call lex_grow             ; ensure room for this byte + NUL
     mov [rbx], al
     inc rbx
     inc r12
@@ -980,7 +1083,7 @@ lexer_next_token:
     mov [lexer_state.tok_len], r12
 
     ; ---- Keyword matching ----
-    lea rsi, [lexer_state.tok_buf]
+    mov rsi, [lexer_state.tok_ptr]
     mov rdx, r12
 
     lea rdi, [kw_int]
@@ -1150,7 +1253,7 @@ lexer_next_token:
 ;  TOKEN: Integer Number
 ; ================================================================
 .scan_number:
-    lea rbx, [lexer_state.tok_buf]
+    mov rbx, [lexer_state.tok_ptr]
     xor r12d, r12d
 
     ; Check for hex literal: '0x' or '0X'
@@ -1166,6 +1269,7 @@ lexer_next_token:
 
 .num_loop:
     mov al, [lexer_state.current_char]
+    call lex_grow
     mov [rbx], al
     inc rbx
     inc r12
@@ -1191,6 +1295,7 @@ lexer_next_token:
 
 .scan_hex:
     ; Consume '0' and 'x'
+    call lex_grow
     mov byte [rbx], '0'
     inc rbx
     inc r12
@@ -1198,6 +1303,7 @@ lexer_next_token:
     mov [lexer_state.current_char], al
     inc qword [lexer_state.column]
 
+    call lex_grow
     mov byte [rbx], 'x'
     inc rbx
     inc r12
@@ -1207,6 +1313,7 @@ lexer_next_token:
 
 .hex_loop:
     mov al, [lexer_state.current_char]
+    call lex_grow
     mov [rbx], al
     inc rbx
     inc r12
@@ -1249,7 +1356,7 @@ lexer_next_token:
     mov [lexer_state.current_char], al
     inc qword [lexer_state.column]
 
-    lea rbx, [lexer_state.tok_buf]
+    mov rbx, [lexer_state.tok_ptr]
     xor r12d, r12d
 
 .str_loop:
@@ -1264,6 +1371,7 @@ lexer_next_token:
     je .str_escape
 
     ; Regular character
+    call lex_grow
     mov [rbx], al
     inc rbx
     inc r12
@@ -1297,6 +1405,7 @@ lexer_next_token:
     jmp .str_esc_copy
 
 .str_esc_newline:
+    call lex_grow
     mov byte [rbx], 10
     inc rbx
     inc r12
@@ -1306,6 +1415,7 @@ lexer_next_token:
     jmp .str_loop
 
 .str_esc_cr:
+    call lex_grow
     mov byte [rbx], 13
     inc rbx
     inc r12
@@ -1315,6 +1425,7 @@ lexer_next_token:
     jmp .str_loop
 
 .str_esc_tab:
+    call lex_grow
     mov byte [rbx], 9
     inc rbx
     inc r12
@@ -1324,6 +1435,7 @@ lexer_next_token:
     jmp .str_loop
 
 .str_esc_null:
+    call lex_grow
     mov byte [rbx], 0
     inc rbx
     inc r12
@@ -1333,6 +1445,7 @@ lexer_next_token:
     jmp .str_loop
 
 .str_esc_copy:
+    call lex_grow
     mov [rbx], al
     inc rbx
     inc r12
@@ -1365,7 +1478,7 @@ lexer_next_token:
     mov [lexer_state.current_char], al
     inc qword [lexer_state.column]
 
-    lea rbx, [lexer_state.tok_buf]
+    mov rbx, [lexer_state.tok_ptr]
     xor r12d, r12d
 
     ; Read first character
@@ -1380,6 +1493,7 @@ lexer_next_token:
     je .char_escape
 
     ; Regular character
+    call lex_grow
     mov [rbx], al
     inc rbx
     inc r12
@@ -1411,6 +1525,7 @@ lexer_next_token:
     jmp .char_esc_copy
 
 .char_esc_newline:
+    call lex_grow
     mov byte [rbx], 10
     inc rbx
     inc r12
@@ -1420,6 +1535,7 @@ lexer_next_token:
     jmp .char_expect_close
 
 .char_esc_cr:
+    call lex_grow
     mov byte [rbx], 13
     inc rbx
     inc r12
@@ -1429,6 +1545,7 @@ lexer_next_token:
     jmp .char_expect_close
 
 .char_esc_tab:
+    call lex_grow
     mov byte [rbx], 9
     inc rbx
     inc r12
@@ -1438,6 +1555,7 @@ lexer_next_token:
     jmp .char_expect_close
 
 .char_esc_null:
+    call lex_grow
     mov byte [rbx], 0
     inc rbx
     inc r12
@@ -1447,6 +1565,7 @@ lexer_next_token:
     jmp .char_expect_close
 
 .char_esc_copy:
+    call lex_grow
     mov [rbx], al
     inc rbx
     inc r12

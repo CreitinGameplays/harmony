@@ -66,6 +66,12 @@ binary is `harmony-base` (the spec's `lc`).
   - Pointer-array elements lost their pointee type, so `char* g[N]` double
     indexing scaled by the pointer stride (regression
     `char_ptr_array_double_index.c2`).
+  - Token buffer was a fixed 256 bytes with no bounds check: a 256+-byte
+    string literal / identifier silently overflowed into adjacent BSS and
+    segfaulted the compiler. Now growable (heap, doubling via `lex_grow`),
+    with keyword matching and token copies reading the live `tok_ptr`
+    (regression `long_token_buffer.c2`). `EXIT_SUCCESS`/`EXIT_FAILURE` were
+    `global` but never defined; now real symbols.
 
 - [x] **M1 — Type checker + LLVM backend: "LLVM with types and traps" (§19.7).**
   - Checker for scalars, functions, structs, enums, `switch`, arrays,
@@ -118,8 +124,9 @@ binary is `harmony-base` (the spec's `lc`).
   - Quiet toolchain: clang stderr captured to a log; one-line summary + first
     error by default, `-v` replays the whole log.
   - Untyped literals adapt at every coercion site (§5.9), stamped on the node.
-  - Tests: codegen.sh 53, error-handling.sh 31, checker.sh 28, parser.sh 55,
-    lexer.sh 21, golden.sh 11, run.sh 30, fuzz.sh 24, determinism.sh 4.
+  - Tests: codegen.sh 67, error-handling.sh 31, checker.sh 28, parser.sh 55,
+    lexer.sh 21, golden.sh 11, run.sh 41, fuzz.sh 24, determinism.sh 4,
+    c2x-seed 26 + 3.
 
 - [x] **M5 (driver part) — diagnostic model + renderers.**
   `code`/`severity`/`title`/`summary`/`story`/`fixes`; pretty (§16.2),
@@ -188,6 +195,29 @@ binary is `harmony-base` (the spec's `lc`).
       and multi-file imports (codegen 53 incl. `imports-main` with a
       transitive import; error-handling 31 incl. missing/cyclic imports).
       (The runtime `T-ASSERT` trap test: `tests/harmony/codegen/trap-assert`.)
+- [x] Optimization levels (§19.5): `-O0/-O1/-O2/-O3/-Os/-Oz/-Og/-Ofast` (and a
+      bare `-O` = `-O2`), passed straight through to clang's LLVM pipeline;
+      **`-O2` is the default** when no flag is given. `build`/`run` use the
+      level directly; `emit-llvm -O<level>` prints the *optimized* IR via a
+      clang IR→IR round-trip (no new `opt` dependency, and the clang-only
+      `-Og`/`-Ofast` work), while plain `emit-llvm` keeps printing our own
+      byte-deterministic IR for the milestone check. An unrecognized `-O…`
+      (e.g. `-O4`) is `usage.bad-opt`, not a generic unknown flag.
+- [x] `extern fn` FFI fixes found while assessing the rewrite's needs: a raw
+      pointer compared against `0` now lowers to `icmp … ptr …, null` (LLVM
+      rejected `… , 0`); an `extern fn` naming a prelude runtime hook (e.g.
+      `lc_put_str`) no longer emits a duplicate `declare`, which LLVM rejects
+      even with a matching signature. Regression tests `raw-null-cmp`,
+      `extern-predeclared`.
+- [x] **`extern "C"` feasibility (answer: leave as is).** The external-function
+      mechanism (declaration, call, UNCK gating, unmangled C-ABI symbol) is
+      complete and sufficient for the next compiler: it already reaches the OS
+      through the runtime's `lc_syscall3(n, a, b, c)` hook (open/read/write/
+      close/getpid all work), and `&T as raw T` gives a C-ABI pointer that
+      passes to a raw-pointer parameter. The only real gap is linking actual
+      **libc** symbols, because the build is `-nostdlib -static` (freestanding)
+      — and the rewrite does not need libc: it must stay freestanding like
+      harmony-base. No change made.
 
 ### Cross-cutting
 

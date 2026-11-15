@@ -510,6 +510,32 @@ void ll_collect_strings(struct AstNode* n) {
 // ---------------------------------------------------------------------------
 // Module driver.
 // ---------------------------------------------------------------------------
+
+// True when `name` is one of the runtime hooks the module prelude already
+// declares (ll_emit_module's fixed list). An `extern fn` with such a name must
+// not re-declare it: LLVM rejects a duplicate `declare` even with a matching
+// signature, so the prelude's declaration is authoritative.
+int ll_is_predeclared(char* name) {
+    return str_eq(name, "lc_trap")
+        || str_eq(name, "lc_check_index")
+        || str_eq(name, "lc_check_slice")
+        || str_eq(name, "lc_alloc")
+        || str_eq(name, "lc_set_fd")
+        || str_eq(name, "lc_flush")
+        || str_eq(name, "lc_put_str")
+        || str_eq(name, "lc_put_i64")
+        || str_eq(name, "lc_put_u64")
+        || str_eq(name, "lc_put_hex")
+        || str_eq(name, "lc_put_bool")
+        || str_eq(name, "lc_put_char")
+        || str_eq(name, "lc_put_f64")
+        || str_eq(name, "lc_trap_msg")
+        || str_eq(name, "lc_assert")
+        || str_eq(name, "lc_unreachable")
+        || str_eq(name, "lc_exit")
+        || str_eq(name, "lc_args");
+}
+
 void ll_emit_module(struct AstNode* prog) {
     int i;
     struct AstList* items;
@@ -669,7 +695,11 @@ void ll_emit_fn(struct AstNode* fn) {
     ll_set_sret(sret, retty);
 
     if (fn->b == 0) {
-        // extern fn: a plain C-ABI declaration.
+        // extern fn: a plain C-ABI declaration. A name the prelude already
+        // declares (a runtime hook like `lc_put_str`) must NOT be re-declared:
+        // LLVM rejects the duplicate (`invalid redefinition of function`) even
+        // when the signatures match. The prelude's signature wins.
+        if (ll_is_predeclared(name)) { return; }
         ll_out_str("declare ");
         if (sret) { ll_out_str("void "); } else { ll_out_str(ll_type_name(retty)); }
         ll_out_str(" @");

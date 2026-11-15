@@ -11,9 +11,10 @@
 //
 //   flags: --format=pretty|line|json   --all   --strict   --deny-unchecked
 //          --dump-ast   --no-color   --ascii   -o <out>
+//          -O0|-O1|-O2|-O3|-Os|-Oz|-Og|-Ofast  (optimization; -O2 default)
 
 char* usage_text() {
-    return "usage: harmony-base build <file.harmony> [-o out]\n       harmony-base run   <file.harmony>\n       harmony-base check <file.harmony>\n       harmony-base emit-llvm <file.harmony>\n       harmony-base emit-c <file.harmony>\n       harmony-base explain <CODE>\n       harmony-base audit [file.harmony]\n";
+    return "usage: harmony-base build <file.harmony> [-o out] [-O<level>]\n       harmony-base run   <file.harmony> [-O<level>]\n       harmony-base check <file.harmony>\n       harmony-base emit-llvm <file.harmony> [-O<level>]\n       harmony-base emit-c <file.harmony>\n       harmony-base explain <CODE>\n       harmony-base audit [file.harmony]\n       -O<level>: -O0 -O1 -O2 -O3 -Os -Oz -Og -Ofast (default -O2)\n";
 }
 
 void print_usage(void) {
@@ -47,6 +48,8 @@ int parse_options(int argc, char** argv, struct Options* opts) {
     opts->ascii = 0;
     opts->no_color = 0;
     opts->verbose = 0;
+    opts->opt_flag = "-O2";   // default level (docs/harmony.md §19.5)
+    opts->opt_given = 0;
 
     if (argc < 2) {
         return 0;
@@ -76,6 +79,17 @@ int parse_options(int argc, char** argv, struct Options* opts) {
         if (str_eq(a, "-o") && i + 1 < argc) {
             opts->output = argv[i + 1]; i = i + 2; continue;
         }
+        // Optimization level (§19.5): every LLVM level passes straight to
+        // clang. `-O` alone means -O2 (clang's own convention).
+        if (str_eq(a, "-O0") || str_eq(a, "-O1") || str_eq(a, "-O2")
+            || str_eq(a, "-O3") || str_eq(a, "-Os") || str_eq(a, "-Oz")
+            || str_eq(a, "-Og") || str_eq(a, "-Ofast") || str_eq(a, "-O")) {
+            opts->opt_flag = a;
+            if (str_eq(a, "-O")) { opts->opt_flag = "-O2"; }
+            opts->opt_given = 1;
+            i = i + 1;
+            continue;
+        }
         if (str_eq(a, "--all"))            { opts->all = 1;            i = i + 1; continue; }
         if (str_eq(a, "--strict"))         { opts->strict = 1;         i = i + 1; continue; }
         if (str_eq(a, "--deny-unchecked")) { opts->deny_unchecked = 1; i = i + 1; continue; }
@@ -95,6 +109,12 @@ int parse_options(int argc, char** argv, struct Options* opts) {
             continue;
         }
         if (str_has_prefix(a, "-")) {
+            // A `-O…` we do not recognize is worth its own message: `-O4` or
+            // a typo like `-O2x` should not read as a generic unknown flag.
+            if (str_has_prefix(a, "-O")) {
+                diag_plain("usage.bad-opt", a);
+                return -1;
+            }
             diag_plain("usage.unknown-flag", a);
             return -1;
         }

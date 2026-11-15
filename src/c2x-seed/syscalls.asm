@@ -41,6 +41,11 @@ STDIN       equ 0
 STDOUT      equ 1
 STDERR      equ 2
 
+; Process exit codes. `equ` constants are absolute symbols; `global` makes
+; them linkable, so `extern EXIT_SUCCESS/FAILURE` resolves across objects.
+EXIT_SUCCESS equ 0
+EXIT_FAILURE equ 1
+
 ; ------------------------------------------------------------
 ; File Open Flags
 ; ------------------------------------------------------------

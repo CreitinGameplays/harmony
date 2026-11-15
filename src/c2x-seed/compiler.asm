@@ -60,6 +60,8 @@ struc lexer_state_t
     .tok_len        resq 1
     .tok_line       resq 1
     .tok_col        resq 1
+    .tok_ptr        resq 1
+    .tok_cap        resq 1
 endstruc
 
 ; ------------------------------------------------------------

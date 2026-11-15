@@ -120,6 +120,22 @@ fi
 "$HB" --nope check "$TMP/hello.harmony" >/dev/null 2>&1
 check "unknown flag exits 2" 2 $?
 
+# Bad -O level -> its own usage error (§19.5), not "unknown flag".
+"$HB" check -O4 "$TMP/hello.harmony" >/dev/null 2>&1
+check "bad -O level exits 2" 2 $?
+"$HB" check -O4 "$TMP/hello.harmony" 2>&1 | grep -q "usage.bad-opt"
+if [ $? -eq 0 ]; then
+    pass=$((pass + 1)); printf 'ok   bad -O level names usage.bad-opt\n'
+else
+    fail=$((fail + 1)); printf 'FAIL bad -O level names usage.bad-opt\n'
+fi
+
+# Every optimization level is accepted on check (§19.5); -O2 is the default.
+for lvl in -O0 -O1 -O2 -O3 -Os -Oz -Og -Ofast -O; do
+    "$HB" check "$lvl" "$TMP/hello.harmony" >/dev/null 2>&1
+    check "$lvl check exits 0" 0 $?
+done
+
 # Bad --format value -> usage error.
 "$HB" --format=bogus check "$TMP/hello.harmony" >/dev/null 2>&1
 check "bad --format exits 2" 2 $?

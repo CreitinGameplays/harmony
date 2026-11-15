@@ -566,15 +566,20 @@ int ck_is_self_param(struct AstNode* p) {
 // parameters resolve to their placeholder ids (registered as SK_GEN).
 // ---------------------------------------------------------------------------
 // The one slice-reference type for an element type (§5.2). A slice is
-// represented as the (pointer, length) pair itself, so `&[T]`, `&mut [T]`,
-// and `&a[lo..hi]` all produce this same type id shape. Mutability of a
-// slice is a borrow-check property (M2/M3), not part of the value layout.
-int ck_slice_ty(int elem) {
+// represented as the (pointer, length) pair itself, so `&[T]` and `&mut [T]`
+// differ only by the exclusivity bit stored in the type entry (`b`):
+// mutability of a slice is part of its type, since writing through it must be
+// allowed (and holding a shared alias forbidden) exactly when it is exclusive.
+int ck_slice_ty_mut(int elem, int is_mut) {
     lexbuf_reset();
-    lexbuf_push_str("&[");
+    if (is_mut) { lexbuf_push_str("&mut ["); } else { lexbuf_push_str("&["); }
     lexbuf_push_str(ty_display(elem));
     lexbuf_push_str("]");
-    return ty_new(CTY_SLICE, lexbuf_finish(), elem, 0);
+    return ty_new(CTY_SLICE, lexbuf_finish(), elem, is_mut);
+}
+
+int ck_slice_ty(int elem) {
+    return ck_slice_ty_mut(elem, 0);
 }
 
 // True when a type is an aggregate *value* (addressed, not a scalar/pointer):
@@ -623,10 +628,14 @@ int ck_resolve_type(struct AstNode* t) {
         if (t->a != 0 && t->a->kind == AST_TYPE_NAME && str_eq(t->a->sval, "str")) {
             return ty_new(CTY_STRREF, "&str", TY_U8, 0);
         }
-        // `&[T]` is a slice reference: the fat (pointer, length) pair is the
-        // value itself (§5.2), so no extra reference layer is added.
+        // `&[T]` / `&mut [T]` is a slice reference: the fat (pointer, length)
+        // pair is the value itself (§5.2), so no extra reference layer is
+        // added — but the `mut` keyword selects the exclusive slice type.
         if (t->a != 0 && t->a->kind == AST_TYPE_SLICE) {
-            return ck_resolve_type(t->a);
+            int elem;
+            elem = ck_resolve_type(t->a->a);
+            if (elem == TY_INVALID) { return TY_INVALID; }
+            return ck_slice_ty_mut(elem, t->ival & 1);
         }
         inner = ck_resolve_type(t->a);
         if (inner == TY_INVALID) { return TY_INVALID; }
@@ -758,6 +767,11 @@ int ck_builtin_exit(struct AstNode* n, struct AstList* args) {
 char* ck_ref_name(char* pre, int inner) {
     lexbuf_reset();
     lexbuf_push_str(pre);
+    // Word-like prefixes (`&mut`, `heap`, `raw`, `raw mut`) need a space so
+    // the display reads `&mut i32` / `heap Node` / `raw mut u8` rather than
+    // `&muti32` / `heapNode` / `raw mutu8` (§16.2). The bare `&` glues on:
+    // `&i32`, not `& i32`.
+    if (!str_eq(pre, "&")) { lexbuf_push_str(" "); }
     lexbuf_push_str(ty_display(inner));
     return lexbuf_finish();
 }
@@ -1439,7 +1453,16 @@ int ck_place(struct AstNode* n) {
 // root's mutability. Full loan tracking is M2–M3.
 void ck_check_place_mut(struct AstNode* n) {
     if (n == 0) { return; }
-    if (n->kind == AST_FIELD_ACC || n->kind == AST_INDEX) {
+    if (n->kind == AST_INDEX) {
+        // Writing through an exclusive slice (`xs[i]` where `xs: &mut [T]`,
+        // possibly a struct field) is the capability the slice type grants,
+        // so it is allowed regardless of the binding's own mutability — the
+        // same rule that makes `*r` writable for `r: &mut T` (§5.2, §10).
+        if (ty_slice_is_mut(n->a->ty)) { return; }
+        ck_check_place_mut(n->a);
+        return;
+    }
+    if (n->kind == AST_FIELD_ACC) {
         ck_check_place_mut(n->a);
         return;
     }
@@ -1453,9 +1476,12 @@ void ck_check_place_mut(struct AstNode* n) {
         int sym;
         sym = ck_lookup(n->sval);
         if (sym < 0) { return; }
-        // Writing through a `&mut T` place is always allowed: the reference
-        // is the capability (§10). The binding itself may still be read-only.
-        if (ty_kind(g_sym_ty[sym]) == CTY_MUTREF) { return; }
+        // Writing through a `&mut T` or `&mut [T]` place is always allowed:
+        // the reference is the capability (§10). The binding itself may still
+        // be read-only.
+        if (ty_kind(g_sym_ty[sym]) == CTY_MUTREF || ty_slice_is_mut(g_sym_ty[sym])) {
+            return;
+        }
         if (!g_sym_mut[sym]) {
             if (g_sym_kind[sym] == SK_LET || g_sym_kind[sym] == SK_PARAM
                 || g_sym_kind[sym] == SK_SELF) {

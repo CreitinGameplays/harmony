@@ -746,9 +746,12 @@ void ll_emit_param_types(struct AstList* params) {
         // is a pointer already.
         if (ll_is_aggregate(p->ty) || ty_is_ref(p->ty) || ck_is_self_param(p)) {
             ll_out_str("ptr ");
-            // §5.4: a `&mut T` is exclusive, so it can carry `noalias` (the
-            // borrow rules guarantee nothing else reaches the same place).
-            if (ty_kind(p->ty) == CTY_MUTREF) { ll_out_str("noalias "); }
+            // §5.4: a `&mut T` or `&mut [T]` is exclusive, so it can carry
+            // `noalias` (the borrow rules guarantee nothing else reaches the
+            // same place).
+            if (ty_kind(p->ty) == CTY_MUTREF || ty_slice_is_mut(p->ty)) {
+                ll_out_str("noalias ");
+            }
             ll_out_str("%arg");
         } else {
             ll_out_str(ll_type_name(p->ty));

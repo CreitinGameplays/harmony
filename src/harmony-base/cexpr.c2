@@ -438,7 +438,11 @@ int ck_expr_index(struct AstNode* n) {
             }
             ck_stamp_lits(n->b->b, TY_ISIZE);
         }
-        return ck_slice_ty(ty_elem(st));
+        // The range keeps the base's exclusivity: reslicing a `&mut [T]`
+        // stays `&mut [T]` (else `&mut s[1..3]` would silently downgrade and
+        // writes through it would be rejected). A plain array base is shared
+        // until a `&mut` borrow upgrades it (ck_expr_borrow).
+        return ck_slice_ty_mut(ty_elem(st), ty_slice_is_mut(st));
     }
 
     it = ck_expr(n->b);
@@ -997,12 +1001,26 @@ int ck_expr_array_lit(struct AstNode* n) {
 
 int ck_expr_borrow(struct AstNode* n) {
     int t;
+    int is_mut;
+    is_mut = n->ival & 1;
     t = ck_expr(n->a);
     if (t == TY_INVALID) { return TY_INVALID; }
     // A slice is already a reference (a fat pointer): `&a[1..3]` borrows the
-    // range and yields the pair itself, not another layer (§5.2).
-    if (ty_kind(t) == CTY_SLICE) { return t; }
-    if (n->ival & 1) {
+    // range and yields the pair itself, not another layer (§5.2). `&mut a[..]`
+    // upgrades it to the exclusive slice type so writes through it are sound.
+    if (ty_kind(t) == CTY_SLICE) {
+        if (is_mut && !ty_slice_is_mut(t)) {
+            return ck_slice_ty_mut(ty_elem(t), 1);
+        }
+        // A shared reborrow of an exclusive slice (`&s[..]`) is shared: the
+        // resulting type reflects the borrow that was written, not the
+        // capability of the source.
+        if (!is_mut && ty_slice_is_mut(t)) {
+            return ck_slice_ty_mut(ty_elem(t), 0);
+        }
+        return t;
+    }
+    if (is_mut) {
         return ty_new(CTY_MUTREF, ck_ref_name("&mut", t), t, 0);
     }
     return ty_new(CTY_REF, ck_ref_name("&", t), t, 0);

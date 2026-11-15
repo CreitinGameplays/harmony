@@ -556,6 +556,7 @@ int ty_is_untyped_lit(int id);   // CTY_UINT_LIT / CTY_FLOAT_LIT
 int ty_is_ref(int id);           // &T / &mut T / &str
 int ty_is_thin_ref(int id);      // &T / &mut T (one machine word)
 int ty_is_fatref(int id);        // &str / &[T] (pointer + length pair)
+int ty_slice_is_mut(int id);     // exclusive slice `&mut [T]` (not `&[T]`)
 int ty_is_heap(int id);          // heap box
 int ty_is_array(int id);
 int ty_is_nominal(int id);       // struct / enum
@@ -591,7 +592,8 @@ int ck_place(struct AstNode* n);           // lvalue check (assignment target)
 void ck_stmt(struct AstNode* n);           // check one statement
 void ck_stmt_block(struct AstNode* n);     // check a block (opens a scope)
 int ck_resolve_type(struct AstNode* t);    // type AST node -> type id
-int ck_slice_ty(int elem);                 // slice reference type `&[T]`
+int ck_slice_ty(int elem);                 // shared slice reference type `&[T]`
+int ck_slice_ty_mut(int elem, int is_mut); // slice type; is_mut selects `&mut [T]`
 int ck_is_aggregate(int ty);               // struct/enum/array/slice/&str value
 int ceval_const_int(struct AstNode* n);    // const-fold an expression (-1 = no)
 char* ck_ref_name(char* pre, int inner);   // "&T"-style display name

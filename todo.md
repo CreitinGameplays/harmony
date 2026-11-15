@@ -82,9 +82,12 @@ binary is `harmony-base` (the spec's `lc`).
     `&T`/`&mut T` (`noalias` on `&mut`); `switch` on scalars and enums;
     payload enums (`Enum::Variant(args)` construction and `case V(w, h)`
     payload binding, §6.4/§6.5; payload at byte offset 8, tag region 8 bytes).
-  - **Slices** (`&[T]`): a fat `{ ptr, i64 }` pair; `&a[lo..hi]`/`&a[..]`/
-    `&a[..hi]`/`&a[lo..]`/`&a[lo..=hi]`, `lc_check_slice` (T-SLICE), runtime
-    length indexing, `.len()`, re-slicing, by-value store/return.
+  - **Slices** (`&[T]`, `&mut [T]`): a fat `{ ptr, i64 }` pair; `&a[lo..hi]`/
+    `&a[..]`/`&a[..hi]`/`&a[lo..]`/`&a[lo..=hi]`, `lc_check_slice` (T-SLICE),
+    runtime length indexing, `.len()`, re-slicing, by-value store/return.
+    Exclusivity is part of the slice type: `&mut [T]` is distinct from `&[T]`,
+    writable through, keeps its exclusivity when resliced, is not
+    interchangeable with the shared form, and lowers with `noalias`.
   - **Recursive `Heap<T>` trees** (§12): `Heap<T>` resolves in type position;
     `heap(x)` memcpy's aggregate values into the allocation; switching through
     `&`/`Heap` unwraps to the pointee; `Heap<T>` coerces to `&T` at call
@@ -106,7 +109,7 @@ binary is `harmony-base` (the spec's `lc`).
   - Quiet toolchain: clang stderr captured to a log; one-line summary + first
     error by default, `-v` replays the whole log.
   - Untyped literals adapt at every coercion site (§5.9), stamped on the node.
-  - Tests: codegen.sh 48, error-handling.sh 24, checker.sh 24, parser.sh 53,
+  - Tests: codegen.sh 50, error-handling.sh 26, checker.sh 24, parser.sh 53,
     lexer.sh 21, golden.sh 9, run.sh 28, fuzz.sh 24, determinism.sh 4.
 
 - [x] **M5 (driver part) — diagnostic model + renderers.**
@@ -119,8 +122,14 @@ binary is `harmony-base` (the spec's `lc`).
 - [ ] Inferred generic calls: `id(x)` without explicit `<T>` (type inference).
       Needed for ergonomic self-hosting; until then every generic call spells
       its type arguments.
-- [ ] `noalias` on `&mut [T]` slices (the mutability of the fat pair is not
-      tracked yet).
+- [x] Mutable-slice tracking (`&mut [T]`): the exclusivity of a slice is now
+      part of its type (the `b` slot of the `CTY_SLICE` entry), so `&mut [T]`
+      and `&[T]` are distinct and compare unequal. Writing through a `&mut
+      [T]` parameter or field is allowed (MUT-01 no longer fires); reslicing a
+      `&mut [T]` keeps it exclusive; a shared slice cannot stand in for an
+      exclusive one or vice versa (both directions are `TYPE-01`); and the
+      fat pair carries `noalias` like `&mut T`. This closes a real soundness
+      gap (the two directions used to be silently accepted).
 - [x] Minimal freestanding prelude the rewrite needs to compile `src/core/`:
       `trap(msg)`, `assert(cond[, msg])`, `unreachable()`, `exit(code)`
       (§15.1) lower to runtime hooks; the stopping ones are `never`-typed, so
@@ -136,8 +145,8 @@ binary is `harmony-base` (the spec's `lc`).
       temp file by default. New `sys_spawn_stdin` (c2x-seed gains a `pipe2`
       stub) writes the IR buffer to the child; `-v` keeps a `/tmp` copy for
       debugging a rejected IR. (`emit-llvm` still prints the IR to stdout.)
-- [ ] Continue growing accept/reject suites per feature; add a runtime
-      `T-ASSERT` trap test once `assert` exists.
+- [ ] Continue growing accept/reject suites per feature. (The runtime
+      `T-ASSERT` trap test already exists: `tests/harmony/codegen/trap-assert`.)
 
 ### Cross-cutting
 

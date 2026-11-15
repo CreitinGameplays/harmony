@@ -1,0 +1,10 @@
+// WANT: TYPE-01
+// An exclusive `&mut [T]` does not implicitly downgrade to a shared `&[T]`
+// (§5.2, §10.5): mutability is part of the slice type, so the call is a type
+// error until the borrow is reborrowed as shared.
+fn first(xs: &[i32]) -> i32 { return xs[0]; }
+
+fn main() -> i32 {
+    let mut a: [i32; 3] = [10, 20, 30];
+    return first(&mut a[..]);
+}

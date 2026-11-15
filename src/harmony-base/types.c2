@@ -255,6 +255,15 @@ int ty_is_fatref(int id) {
     return k == CTY_STRREF || k == CTY_SLICE;
 }
 
+// A `&mut [T]` slice is exclusive (writable through); `&[T]` is shared. The
+// exclusivity lives in the `b` slot of the slice type entry (§5.2), since a
+// slice has no length there (its length is a runtime value in the fat pair).
+int ty_slice_is_mut(int id) {
+    if (id <= 0 || id >= g_ntypes) { return 0; }
+    if (g_types[id].kind != CTY_SLICE) { return 0; }
+    return g_types[id].b;
+}
+
 int ty_is_heap(int id) { return ty_kind(id) == CTY_HEAP; }
 
 int ty_is_array(int id) { return ty_kind(id) == CTY_ARRAY; }
@@ -343,9 +352,15 @@ int ty_eq(int a, int b) {
     }
     if (g_types[a].kind == CTY_REF || g_types[a].kind == CTY_MUTREF
         || g_types[a].kind == CTY_HEAP || g_types[a].kind == CTY_PTR
-        || g_types[a].kind == CTY_MUTPTR || g_types[a].kind == CTY_STRREF
-        || g_types[a].kind == CTY_SLICE) {
+        || g_types[a].kind == CTY_MUTPTR || g_types[a].kind == CTY_STRREF) {
         return ty_eq(g_types[a].a, g_types[b].a);
+    }
+    // Slices compare by element *and* exclusivity: `&[T]` and `&mut [T]` are
+    // different types (§5.2), so a shared slice cannot stand in for an
+    // exclusive one or vice versa.
+    if (g_types[a].kind == CTY_SLICE) {
+        return ty_eq(g_types[a].a, g_types[b].a)
+            && g_types[a].b == g_types[b].b;
     }
     return 0;
 }

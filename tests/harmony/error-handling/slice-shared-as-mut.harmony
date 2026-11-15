@@ -1,0 +1,11 @@
+// WANT: TYPE-01
+// A shared `&[T]` cannot stand in for an exclusive `&mut [T]` (§5.2): passing
+// a shared slice where mutation is expected would let a caller mutate through
+// an alias the callee may still be reading.
+fn clobber(xs: &mut [i32]) { xs[0] = 99; }
+
+fn main() -> i32 {
+    let a: [i32; 3] = [10, 20, 30];
+    clobber(&a[..]);
+    return a[0];
+}

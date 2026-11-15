@@ -5,7 +5,7 @@ Legend: [ ] - Not implemented; [/] - Partially implemented; [x] - Fully implemen
 `harmony-base` is the first, incomplete implementation of the Harmony language
 (extension `.harmony`), written **in c2x-seed** (`.c2`). It is not the full
 language: it is the smallest compiler that can lex, parse, check, and emit
-working code for the v0 core feature set. The full rewrite (`src/harmony`, self
+working code for the v0 core feature set. The full rewrite (`harmony/`, self
 hosted) comes after. Milestone: `harmony` output is **byte deterministic**.
 
 Priority note (from AGENTS.md): **write the LLVM backend first.** The C11

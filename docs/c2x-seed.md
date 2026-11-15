@@ -41,7 +41,7 @@ The seed compiler is the bootstrap stage of the C2X compiler chain. Written in x
 - **Braces required on control flow** — all `if`/`else`, `while`, and `for` bodies must use `{ }`. Single-statement bodies without braces produce a compile error.
 - **`else if` chains** — `if (a) {} else if (b) {} else if (c) {}` parses correctly. Implemented via recursive `parse_if_stmt` call after `else` when the next token is `if`. The nested `if` is wrapped in an `AST_BLOCK` so the outer `AST_IF` node has a uniform shape (`else_block` is always `AST_BLOCK*`).
 - **`break` and `continue`** — `break;` exits the innermost loop; `continue;` skips to the next iteration. Supported in `while` and `for` loops.
-- **Centralized error system** — all error messages live in `src/c2x-seed/errors.asm` with numeric error codes; `error_code()`/`error_at_code()` provide lookup from code to message string
+- **Centralized error system** — all error messages live in `bootstrap/c2x-seed/errors.asm` with numeric error codes; `error_code()`/`error_at_code()` provide lookup from code to message string
 
 See [Limitations](#limitations) for what is not yet implemented.
 
@@ -68,7 +68,7 @@ The toolchain: `nasm` (assembler) → `ld` (linker). No libc or external tools.
 
 ## Source Organization
 
-Each module in `src/c2x-seed/` compiles to a separate `.o` file; all are linked together.
+Each module in `bootstrap/c2x-seed/` compiles to a separate `.o` file; all are linked together.
 
 | File | Responsibility |
 |------|---------------|
@@ -1129,7 +1129,7 @@ N warning(s) generated
 
 ### Implementation
 
-- **Module:** `src/c2x-seed/warnings.asm` — categories, messages, emit functions
+- **Module:** `bootstrap/c2x-seed/warnings.asm` — categories, messages, emit functions
 - **Hooks:** inline calls in `codegen.asm` at the points where each condition is detected
 - **Output:** all warnings route through `warn_at(category, line, col, msg)` which saves/restores `out_fd` so the assembly output buffer is never corrupted
 - **Multi-file behavior:** top-level functions and globals retain their originating source paths during codegen, so warnings in multi-file builds point at the correct input file instead of whichever file was parsed last

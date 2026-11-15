@@ -4,7 +4,7 @@ Legend: `[ ]` not started · `[/]` partial · `[x]` done.
 
 This file tracks **two separate things**, and they must not be conflated:
 
-1. **harmony-base** — the c2x-seed bootstrap compiler (`src/harmony-base/*.c2`).
+1. **harmony-base** — the c2x-seed bootstrap compiler (`bootstrap/harmony-base/*.c2`).
    Freestanding and stdlib-free (AGENTS.md, docs/harmony.md §19.8): the bare
    minimum needed to express the `harmony` rewrite. This is what the section
    below is about.
@@ -118,7 +118,7 @@ binary is `harmony-base` (the spec's `lc`).
     (UNCK-04), and the contract is an `audit` site.
   - **`harmony-base audit [file]`** (§13.6, §13.8): lists every `unchecked`
     block / fn with file, line, kind, reason, and span stats,
-    `--format=json` included (`src/harmony-base/audit.c2`).
+    `--format=json` included (`bootstrap/harmony-base/audit.c2`).
   - **Stack guard** (§14.2): SIGSEGV handler on an alternate stack → `T-STACK`
     (exit 70); `run`/`build` report signal deaths as `128 + signo`.
   - Quiet toolchain: clang stderr captured to a log; one-line summary + first
@@ -166,14 +166,14 @@ binary is `harmony-base` (the spec's `lc`).
       `unchecked("contract") fn` item form (§13.1, §18) never parsed — the
       item parser only accepted `unchecked fn`. It now parses, stores the
       contract on the fn node, and still enforces UNCK-04 at call sites.
-      (`src/harmony-base/audit.c2`, new; reports.c2 stub removed.)
+      (`bootstrap/harmony-base/audit.c2`, new; reports.c2 stub removed.)
 - [x] In-memory LLVM IR (AGENTS.md): `build`/`run` feed the generated IR to
       clang on stdin (`clang -x ir - -x c rt.c ...`) through a pipe — no `.ll`
       temp file by default. New `sys_spawn_stdin` (c2x-seed gains a `pipe2`
       stub) writes the IR buffer to the child; `-v` keeps a `/tmp` copy for
       debugging a rejected IR. (`emit-llvm` still prints the IR to stdout.)
 - [x] Multi-file compilation (`import`, §6.7): a new module loader
-      (`src/harmony-base/module.c2`) eagerly loads the root file plus
+      (`bootstrap/harmony-base/module.c2`) eagerly loads the root file plus
       everything it imports (relative paths, dedupe by path, NAME-04 on a
       missing file or a cycle), merges the items into one flat program with
       imported items renamed `modname::name`, and the existing checker and
@@ -221,6 +221,16 @@ binary is `harmony-base` (the spec's `lc`).
 
 ### Cross-cutting
 
+- [x] **Repository layout reorganized to the AGENTS.md target.** The stage-0
+      compilers moved under `bootstrap/`: `bootstrap/c2x-seed/` (NASM),
+      `bootstrap/harmony-base/` (c2x-seed), and `bootstrap/runtime/rt.c` (the
+      freestanding runtime, was `src/stdlib/runtime/`). `src/` is gone; the
+      self-hosted rewrite will live in the top-level `harmony/` (`lexer/`,
+      `parser/`, `ast/`, `codegen/`, `sema/`, `main.hr`), with the standard
+      library in `library/core/` and `library/std/`. `Makefile`, `build.sh`,
+      `emit.c2`'s runtime path, `README.md`, `todo.md`, `roadmap/harmony-base`,
+      and `docs/c2x-seed.md` all updated; empty target dirs are tracked with
+      `.gitkeep`. `git mv` preserved history; `make test` green afterward.
 - [x] `docs/harmony.md` realigned to the v0.3 rewrite; `docs/keywords.md`
       filled (keywords + builtins + code catalogue).
 - [ ] Keep this checklist in sync as items complete.
@@ -231,15 +241,18 @@ binary is `harmony-base` (the spec's `lc`).
 
 Deferred features. These are **not** harmony-base deliverables: they are
 implemented in the `harmony` compiler (written in harmony-base) under
-`src/harmony/`. Per AGENTS.md (updated), the standard library now lives in a
-top-level `library/` tree, not `src/`:
+`harmony/` — the layout AGENTS.md now specifies:
 
+- `harmony/lexer/`, `harmony/parser/`, `harmony/ast/`, `harmony/sema/`
+  (type checking & semantic analysis), `harmony/codegen/` (LLVM IR, C11), and
+  `harmony/main.hr`. The core is `*.hr`.
 - `library/core/` (`*.hr`, freestanding-allowed): primitive types, slices,
   iterators — usable without an OS, like Rust's `core`.
 - `library/std/` (`*.hr`): the full standard library (HashMap, io, fs, net)
   that needs the OS/allocators.
-- `src/stdlib/` is now **only for harmony-base** (the freestanding bootstrap's
-  small runtime glue).
+- `bootstrap/` holds the stage-0 compilers: `bootstrap/c2x-seed/` (NASM),
+  `bootstrap/harmony-base/` (c2x-seed), and `bootstrap/runtime/` (the
+  freestanding runtime only harmony-base links).
 
 Also per AGENTS.md: the final `harmony` compiler must (a) integrate LLVM IR
 directly into its binary and (b) support **multi-core compilation by default**.
@@ -293,7 +306,7 @@ directly into its binary and (b) support **multi-core compilation by default**.
 
 ### Self-hosting
 
-- [ ] Rewrite the compiler in harmony-base (`src/harmony/`).
+- [ ] Rewrite the compiler in harmony-base (`harmony/`).
 - [ ] Integrate LLVM IR emission directly into the compiler binary (AGENTS.md).
 - [ ] Multi-core compilation by default (AGENTS.md).
 - [ ] Byte-deterministic self-hosting milestone.

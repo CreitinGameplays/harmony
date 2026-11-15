@@ -21,7 +21,7 @@ File Extension: .harmony (default), .hr (secondary)
 - **The final `harmony` language should also have support to multi-core compilation by default.**
 - Split big source files into smaller, organized files (they can be inside subdirs in the source 
   code for better organization) instead of huge single files (only exception is c2x-seed src).
-- Always add new or update todo.md and docs/* if some info got stale, this includes updating harmony language reference/keywords.
+- Always add new or update todo.md and docs/*.md if some info got stale, this includes updating harmony language reference/keywords.
 - Use makefile to build harmony lang. build.sh builds the c2x-seed, which is written in assembly.
 - Always make or update tests for any new implementation/feature,
   as well as fuzzing/aggressive tests, and add them to makefile rules.
@@ -34,25 +34,37 @@ File Extension: .harmony (default), .hr (secondary)
 - `harmony-base` is freestanding, it's the core. It should not include any stdlib 
   (see harmony.md §19.8). The full-featured compiler (with stdlib and all other features)
   will be the `harmony`, written in `harmony-base` itself. `harmony-base` should only include the bare minimum needed for a `harmony` rewrite.
-- Harmony standard lib code for final language should be written in src/stdlib/<subdir>.
-- It's good to also add purposely bad code (simple and complex codes)
+- Harmony standard lib code for final language should be written in `library/`.
+- It's good to also add purposely bad code (simple and complex codes).
   in error-handling directory in `tests` to verify if compiler is handling it well.
 - Use `make` with `-j$(nproc)` arg to use all cores when compiling.
 - Also keep compilation warning-free.
 - Do not hardcode harmony.md docs sections in source code (only comments are allowed).
 - All risks are accepted.
 - Always add helpful comments in the code.
-- Always use `-s` arg when using `git commit`
+- Always use `-s` arg when using `git commit`.
 - If a bug happens on c2x-seed during harmony implementation, pause it and only focus on fixing c2x-seed.
   When fixed just report final completion.
 - You can write .harmony files in tests dir to test more complex code.
 - proposed layout for the final `harmony` language (to feel more organized and clean):
 ```
+harmony/... <- (*.hr) the real core of the language here.
+├── lexer/...
+├── parser/...
+├── ast/...
+├── codegen/... <- Backend (LLVM IR, C11...)
+├── sema/... <- Type checking & semantic analysis
+└── main.hr
 library/
 ├── core/... <- (*.hr) allowed to use with freestanding (e.g primitive types, slices, iterators... just like rust).
-├── std/...<- (*.hr) the full standard library (HashMap/io/fs/net...). Needs the OS/allocators...
+├── std/... (HashMap/io/fs/net...) <- (*.hr) the full standard library, needs the OS/allocators...
 └── (others...)
-src/
-├── harmony/... <- the real core of the language here.
-└── stdlib/ <- only for harmony base
+bootstrap/ <- the stage 0 compilers.
+├── c2x-seed/...
+├── harmony-base/...
+└── runtime/... <- only for harmony-base
+tests/... <- the current tests
+roadmap/... <- the language roadmap
+docs/... <- language documentations
+(others remain the same)
 ```

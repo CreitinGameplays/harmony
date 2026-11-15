@@ -11,7 +11,7 @@ working compiler for it.
 ## Toolchain (debian)
 ```bash
 sudo apt update
-sudo apt install make gcc clang file python3 python-is-python3 linux-perf xxd nano gdb valgrind strace nasm git ripgrep llvm -y 
+sudo apt install make gcc clang file python3 python-is-python3 linux-perf xxd nano gdb valgrind strace nasm fasm git ripgrep llvm -y 
 ```
 
 ## Layout
@@ -21,9 +21,11 @@ sudo apt install make gcc clang file python3 python-is-python3 linux-perf xxd na
 | `docs/harmony.md` | The language design / reference. |
 | `docs/c2x-seed.md` | The bootstrap compiler (stage 0), written in x86_64 assembly. |
 | `docs/keywords.md` | Keyword / builtin reference. |
-| `src/c2x-seed/` | Stage-0 compiler in NASM assembly (`build.sh` builds it). |
-| `src/harmony-base/` | First Harmony compiler, written in c2x-seed. |
-| `src/harmony/` | Self-hosted rewrite (later). |
+| `bootstrap/c2x-seed/` | Stage-0 compiler in NASM assembly (`build.sh` builds it). |
+| `bootstrap/harmony-base/` | First Harmony compiler, written in c2x-seed. |
+| `bootstrap/runtime/` | The freestanding runtime `harmony-base` links in. |
+| `harmony/` | Self-hosted rewrite (later, `*.hr`). |
+| `library/core/`, `library/std/` | Standard library for the final language. |
 | `tests/` | Test suites and fuzzing. |
 | `roadmap/` | Milestone checklists. |
 | `todo.md` | Detailed implementation checklist. |

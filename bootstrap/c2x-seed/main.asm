@@ -2,7 +2,7 @@
 ; Written in x86_64 NASM Assembly for Linux
 ; No external dependencies - only Linux syscalls
 ;
-; Build: nasm -f elf64 -o build/main.o src/c2x-seed/main.asm
+; Build: nasm -f elf64 -o build/main.o bootstrap/c2x-seed/main.asm
 ;        ld -o build/c2x-seed build/main.o build/syscalls.o build/memory.o build/types.o build/io.o build/compiler.o
 
 ; External function declarations

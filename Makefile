@@ -4,32 +4,34 @@ SEED      := build/c2x-seed
 HB_OUT    := build/harmony-base
 # Explicit order: c2x-seed resolves cross-file names from *earlier* files only,
 # so foundation modules must be listed first.
+# Bootstrap stage-0 compiler (c2x-seed, NASM) and the stage-1 compiler
+# (harmony-base, written in c2x-seed) live under bootstrap/ (AGENTS.md).
 HB_SRC    := \
-	src/harmony-base/common.c2 \
-	src/harmony-base/util.c2 \
-	src/harmony-base/ast.c2 \
-	src/harmony-base/source.c2 \
-	src/harmony-base/diag.c2 \
-	src/harmony-base/reports.c2 \
-	src/harmony-base/module.c2 \
-	src/harmony-base/lexlit.c2 \
-	src/harmony-base/lexer.c2 \
-	src/harmony-base/types.c2 \
-	src/harmony-base/fmt.c2 \
-	src/harmony-base/check.c2 \
-	src/harmony-base/cexpr.c2 \
-	src/harmony-base/llvm.c2 \
-	src/harmony-base/lexpr.c2 \
-	src/harmony-base/lstmt.c2 \
-	src/harmony-base/emit.c2 \
-	src/harmony-base/parser.c2 \
-	src/harmony-base/pstmts.c2 \
-	src/harmony-base/pexpr.c2 \
-	src/harmony-base/pastout.c2 \
-	src/harmony-base/audit.c2 \
-	src/harmony-base/pipeline.c2 \
-	src/harmony-base/main.c2
-SEED_SRC  := $(wildcard src/c2x-seed/*.asm)
+	bootstrap/harmony-base/common.c2 \
+	bootstrap/harmony-base/util.c2 \
+	bootstrap/harmony-base/ast.c2 \
+	bootstrap/harmony-base/source.c2 \
+	bootstrap/harmony-base/diag.c2 \
+	bootstrap/harmony-base/reports.c2 \
+	bootstrap/harmony-base/module.c2 \
+	bootstrap/harmony-base/lexlit.c2 \
+	bootstrap/harmony-base/lexer.c2 \
+	bootstrap/harmony-base/types.c2 \
+	bootstrap/harmony-base/fmt.c2 \
+	bootstrap/harmony-base/check.c2 \
+	bootstrap/harmony-base/cexpr.c2 \
+	bootstrap/harmony-base/llvm.c2 \
+	bootstrap/harmony-base/lexpr.c2 \
+	bootstrap/harmony-base/lstmt.c2 \
+	bootstrap/harmony-base/emit.c2 \
+	bootstrap/harmony-base/parser.c2 \
+	bootstrap/harmony-base/pstmts.c2 \
+	bootstrap/harmony-base/pexpr.c2 \
+	bootstrap/harmony-base/pastout.c2 \
+	bootstrap/harmony-base/audit.c2 \
+	bootstrap/harmony-base/pipeline.c2 \
+	bootstrap/harmony-base/main.c2
+SEED_SRC  := $(wildcard bootstrap/c2x-seed/*.asm)
 
 .PHONY: all clean test test-fuzz test-seed seed harmony-base
 

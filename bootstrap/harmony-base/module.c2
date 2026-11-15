@@ -66,7 +66,7 @@ int mod_ident_char(char c) {
 }
 
 // The namespace name of a module: the file name without directories and
-// extension. "src/lib/geometry.harmony" -> "geometry". Non-identifier
+// extension. "library/std/geometry.harmony" -> "geometry". Non-identifier
 // characters are folded to `_` (a kebab-case file `my-lib.harmony` becomes
 // the namespace `my_lib`), so the merged symbol names stay identifier-safe.
 // Returns 0 only for an empty name.

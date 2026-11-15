@@ -6,10 +6,11 @@
 // freestanding; there is no libc). Everything is written to temp files under
 // /tmp so nothing depends on the current directory.
 
-// The runtime source, relative to the compiler's build tree. M1 links the
-// runtime by compiling it with clang on demand; a prebuilt rt.o arrives with
-// the stdlib build step.
-char* g_rt_c = "src/stdlib/runtime/rt.c";
+// The runtime source, relative to the repo root (the compiler is run from
+// there). M1 links the runtime by compiling it with clang on demand; a
+// prebuilt rt.o arrives with the stdlib build step. The bootstrap runtime
+// lives under bootstrap/runtime/ (AGENTS.md layout).
+char* g_rt_c = "bootstrap/runtime/rt.c";
 
 // Temp paths for the generated IR and the linked binary. They live under the
 // TMPDIR the environment provides (defaulting to /tmp), never inside the

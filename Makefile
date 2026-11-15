@@ -65,17 +65,10 @@ test-seed: seed
 	bash tests/c2x-seed/determinism.sh
 
 # A small LISP written in harmony-base (tests/harmony/lisp-interpreter/).
-# The interpreter is split into modules; they are concatenated in dependency
-# order (names resolve from earlier text only) into one translation unit.
-LISP_SRC := \
-	tests/harmony/lisp-interpreter/value.harmony \
-	tests/harmony/lisp-interpreter/reader.harmony \
-	tests/harmony/lisp-interpreter/eval.harmony \
-	tests/harmony/lisp-interpreter/main.harmony
-
+# The interpreter is split across modules and wired together with `import`
+# (docs/harmony.md §6.7); `main.harmony` imports the other three.
 lisp: harmony-base
-	cat $(LISP_SRC) > build/lisp.harmony
-	$(HB_OUT) run build/lisp.harmony
+	$(HB_OUT) run tests/harmony/lisp-interpreter/main.harmony
 
 test-lisp: harmony-base
 	bash tests/harmony/lisp.sh

@@ -10,15 +10,24 @@
 //   reader   -> S-expressions from a `&str` (quote sugar, nested lists)
 //   eval     -> the classic env/closure loop, with a small builtin prelude
 //
+// It is split across modules using `import` (docs/harmony.md §6.7):
+//
+//   value.harmony   values, the frame-chain environment, list helpers
+//   reader.harmony  S-expressions from a `&str`            (imports value)
+//   eval.harmony    the fused eval/apply and the builtins  (imports value)
+//   main.harmony    the standalone driver                  (imports all three)
+//
 // The environment is a chain of *mutable* frames (`Env`/`Frame`), each a small
 // association list. A frame is held behind a `Heap`, so a closure that
 // captures the frame sees later `define`s in it — that is what makes recursive
 // `define` work without any top-level mutable state (harmony-base has none).
+//
+// This first module has no imports, so its items are used bare (`value::`).
 
 // ---------------------------------------------------------------------------
 // Values.
 // ---------------------------------------------------------------------------
-enum Val {
+export enum Val {
     Nil,
     Int(i32),
     Sym(&str),
@@ -31,12 +40,12 @@ enum Val {
 // a small association list; lookup walks the chain from the innermost frame.
 // `Env::Empty` ends the chain.
 // ---------------------------------------------------------------------------
-enum Env {
+export enum Env {
     Empty,
     Frame(Heap<Frame>),
 }
 
-struct Frame {
+export struct Frame {
     binds: Val;    // an alist of (name . value) pairs, most recent first
     parent: Env;
 }
@@ -44,11 +53,11 @@ struct Frame {
 // ---------------------------------------------------------------------------
 // Core list and value helpers.
 // ---------------------------------------------------------------------------
-fn cons(a: Val, b: Val) -> Val {
+export fn cons(a: Val, b: Val) -> Val {
     return Val::Cons(heap(a), heap(b));
 }
 
-fn car(v: &Val) -> Val {
+export fn car(v: &Val) -> Val {
     switch (v) {
         case Cons(h, t): { return *h; }
         case Nil:        { return Val::Nil; }
@@ -59,7 +68,7 @@ fn car(v: &Val) -> Val {
     return Val::Nil;
 }
 
-fn cdr(v: &Val) -> Val {
+export fn cdr(v: &Val) -> Val {
     switch (v) {
         case Cons(h, t): { return *t; }
         case Nil:        { return Val::Nil; }
@@ -70,7 +79,7 @@ fn cdr(v: &Val) -> Val {
     return Val::Nil;
 }
 
-fn is_nil(v: &Val) -> bool {
+export fn is_nil(v: &Val) -> bool {
     switch (v) {
         case Nil: { return true; }
         case Int(n): { return false; }
@@ -81,7 +90,7 @@ fn is_nil(v: &Val) -> bool {
     return false;
 }
 
-fn as_int(v: &Val) -> i32 {
+export fn as_int(v: &Val) -> i32 {
     switch (v) {
         case Int(n): { return n; }
         case Nil:    { return 0; }
@@ -93,7 +102,7 @@ fn as_int(v: &Val) -> i32 {
 }
 
 // True when `v` is the symbol `name`.
-fn is_sym(v: &Val, name: &str) -> bool {
+export fn is_sym(v: &Val, name: &str) -> bool {
     switch (v) {
         case Sym(s): { return s == name; }
         case Nil:    { return false; }
@@ -106,7 +115,7 @@ fn is_sym(v: &Val, name: &str) -> bool {
 
 // A list of values built from a slice of `Val` (used by the argument
 // evaluator); `n` elements from `items`, ending in `tail`.
-fn list_of(items: &[Val], n: i32, tail: Val) -> Val {
+export fn list_of(items: &[Val], n: i32, tail: Val) -> Val {
     let mut i: i32 = n - 1;
     let mut acc = tail;
     while (i >= 0) {
@@ -117,7 +126,7 @@ fn list_of(items: &[Val], n: i32, tail: Val) -> Val {
 }
 
 // Reverse a proper list, building a fresh spine.
-fn reverse(v: Val) -> Val {
+export fn reverse(v: Val) -> Val {
     let mut out = Val::Nil;
     let mut cur = v;
     while (!is_nil(&cur)) {
@@ -132,12 +141,12 @@ fn reverse(v: Val) -> Val {
 // ---------------------------------------------------------------------------
 
 // A fresh empty top-level frame (its parent is `Empty`).
-fn env_new() -> Env {
+export fn env_new() -> Env {
     return Env::Frame(heap(Frame { .binds = Val::Nil, .parent = Env::Empty }));
 }
 
 // A fresh child frame that closes over `parent`.
-fn env_child(parent: Env) -> Env {
+export fn env_child(parent: Env) -> Env {
     return Env::Frame(heap(Frame { .binds = Val::Nil, .parent = parent }));
 }
 
@@ -149,7 +158,7 @@ fn frame_define(cell: Heap<Frame>, key: Val, value: Val) {
 }
 
 // Bind `name` to `value` in the innermost frame of `env`.
-fn env_define(env: &Env, name: &str, value: Val) {
+export fn env_define(env: &Env, name: &str, value: Val) {
     switch (env) {
         case Frame(c): { frame_define(c, Val::Sym(name), value); }
         case Empty:    { }
@@ -187,7 +196,7 @@ fn alist_set(binds: Val, name: &str, value: Val) -> bool {
 // Assign `name` in the nearest frame that already binds it (so a closure can
 // mutate a captured variable); if it is unbound anywhere, define it in the
 // innermost frame, as `define` would.
-fn env_set(env: &Env, name: &str, value: Val) {
+export fn env_set(env: &Env, name: &str, value: Val) {
     let mut e = *env;
     while (true) {
         switch (&e) {
@@ -204,7 +213,7 @@ fn env_set(env: &Env, name: &str, value: Val) {
 }
 
 // Look up `name`, walking the frame chain; `Nil` when unbound.
-fn env_lookup(env: &Env, name: &str) -> Val {
+export fn env_lookup(env: &Env, name: &str) -> Val {
     let mut e = *env;
     while (true) {
         switch (&e) {

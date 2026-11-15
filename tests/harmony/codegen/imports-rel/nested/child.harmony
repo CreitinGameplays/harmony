@@ -1,0 +1,6 @@
+// A module that reaches its sibling through a "../" path.
+import "../shared.harmony";
+
+export fn via_parent() -> i32 {
+    return shared::shared() + 2;
+}

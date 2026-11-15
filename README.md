@@ -41,7 +41,7 @@ make test          # seed corpus + driver + golden fixtures + determinism + lisp
 make test-seed     # c2x-seed regression corpus + determinism only
 make test-fuzz     # aggressive/fuzz tests for the harmony-base driver
 make test-lisp     # the harmony-base LISP interpreter suite
-make lisp          # build and run the LISP interpreter demo
+make lisp          # run the LISP interpreter demo (a multi-module program)
 make clean
 ```
 

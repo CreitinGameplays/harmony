@@ -13,10 +13,15 @@
 // functions call each other. Lists are accumulated with a reverse-cons loop
 // and then reversed, so the reader grows with the input instead of capping at
 // a fixed length.
+//
+// The `Val` type and its list helpers come from `value.harmony` (§6.7), so
+// they are spelled `value::Val`, `value::cons`, and so on.
 
-struct Reader { src: &str; pos: usize; }
+import "value.harmony";
 
-fn r_new(s: &str) -> Reader {
+export struct Reader { src: &str; pos: usize; }
+
+export fn r_new(s: &str) -> Reader {
     return Reader { .src = s, .pos = 0 };
 }
 
@@ -49,7 +54,7 @@ fn skip_ws(r: &mut Reader) {
 }
 
 // Reads an atom (integer or symbol) and advances past it.
-fn read_atom(r: &mut Reader) -> Val {
+fn read_atom(r: &mut Reader) -> value::Val {
     let start = r.pos;
     let first = peek(&*r);
     if (is_digit(first) || first == 45u8) {   // digits, or a leading '-'
@@ -66,52 +71,52 @@ fn read_atom(r: &mut Reader) -> Val {
         }
         if (p > digits_start && (p >= r.src.len() || is_delim(r.src.as_bytes()[p]))) {
             r.pos = p;
-            if (neg) { return Val::Int(0 - value); }
-            return Val::Int(value);
+            if (neg) { return value::Val::Int(0 - value); }
+            return value::Val::Int(value);
         }
     }
     // Symbol: run until a delimiter.
     while (!at_end(&*r) && !is_delim(peek(&*r))) {
         r.pos += 1;
     }
-    return Val::Sym(&r.src[start..r.pos]);
+    return value::Val::Sym(&r.src[start..r.pos]);
 }
 
 // Reads one form. Self-recursive: a list is read by recursing here for each
 // element. Elements are consed in reverse and flipped at the end, so the list
 // grows with the input (no fixed cap).
-fn read_form(r: &mut Reader) -> Val {
+export fn read_form(r: &mut Reader) -> value::Val {
     skip_ws(r);
-    if (at_end(&*r)) { return Val::Nil; }
+    if (at_end(&*r)) { return value::Val::Nil; }
     let b = peek(&*r);
     if (b == 39u8) {                                   // 'x => (quote x)
         r.pos += 1;
         let quoted = read_form(r);
-        return cons(Val::Sym("quote"), cons(quoted, Val::Nil));
+        return value::cons(value::Val::Sym("quote"), value::cons(quoted, value::Val::Nil));
     }
     if (b == 40u8) {                                   // "(" ... ")"
         r.pos += 1;
-        let mut rev = Val::Nil;
+        let mut rev = value::Val::Nil;
         while (true) {
             skip_ws(r);
             if (at_end(&*r)) { break; }
             if (peek(&*r) == 41u8) { r.pos += 1; break; }
-            rev = cons(read_form(r), rev);
+            rev = value::cons(read_form(r), rev);
         }
-        return reverse(rev);
+        return value::reverse(rev);
     }
-    if (b == 41u8) { r.pos += 1; return Val::Nil; }    // stray ")"
+    if (b == 41u8) { r.pos += 1; return value::Val::Nil; }   // stray ")"
     return read_atom(r);
 }
 
 // Reads every top-level form in `src` into one list.
-fn read_all(src: &str) -> Val {
+export fn read_all(src: &str) -> value::Val {
     let mut r = r_new(src);
-    let mut rev = Val::Nil;
+    let mut rev = value::Val::Nil;
     while (true) {
         skip_ws(&mut r);
         if (at_end(&r)) { break; }
-        rev = cons(read_form(&mut r), rev);
+        rev = value::cons(read_form(&mut r), rev);
     }
-    return reverse(rev);
+    return value::reverse(rev);
 }

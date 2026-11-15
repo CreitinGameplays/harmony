@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # LISP interpreter tests (tests/harmony/lisp-interpreter/).
 #
-# A small LISP written in harmony-base. It is split into value.harmony (values
-# and the environment), reader.harmony (S-expressions), and eval.harmony (the
-# evaluator); this script concatenates them with a generated driver and runs a
-# suite of programs, checking each result as the process exit code.
+# A small LISP written in harmony-base. The interpreter is split into
+# value.harmony (values and the environment), reader.harmony (S-expressions),
+# and eval.harmony (the evaluator), wired together with `import`
+# (docs/harmony.md §6.7); each case generates a driver that imports them and
+# runs a program, checking the result as the process exit code.
 #
 # The interpreter borrows the source string for symbols and reads from a
 # compile-time literal (harmony-base has no read_line/String), so the tests are
@@ -25,25 +26,33 @@ if [ ! -x "$HB" ]; then
     exit 1
 fi
 
-# core = values + reader + evaluator (no driver).
-cat "$D/value.harmony" "$D/reader.harmony" "$D/eval.harmony" > "$TMP/core.harmony"
+# core = values + reader + evaluator, wired together with `import`
+# (docs/harmony.md §6.7). The modules are copied into the temp dir so each
+# generated driver imports them from its own directory.
+cp "$D/value.harmony" "$D/reader.harmony" "$D/eval.harmony" "$TMP/"
 
-check() {
-    local name="$1" prog="$2" want="$3"
-    {
-        cat "$TMP/core.harmony"
-        cat <<EOF
+# Emit a driver for `prog` and run it; the program is a compile-time literal.
+gen_case() {
+    local prog="$1"
+    cat > "$TMP/case.harmony" <<EOF
+import "value.harmony";
+import "reader.harmony";
+import "eval.harmony";
 
 fn lisp_main(src: &str) -> i32 {
-    let env = env_new();
-    return as_int(&eval_program(read_all(src), &env));
+    let env = value::env_new();
+    return value::as_int(&eval::eval_program(reader::read_all(src), &env));
 }
 
 fn main() -> i32 {
     return lisp_main("$prog");
 }
 EOF
-    } > "$TMP/case.harmony"
+}
+
+check() {
+    local name="$1" prog="$2" want="$3"
+    gen_case "$prog"
     "$HB" run "$TMP/case.harmony" >/dev/null 2>&1
     local got=$?
     if [ "$got" = "$want" ]; then
@@ -59,20 +68,7 @@ EOF
 # These feed malformed or hostile S-expressions through the reader+evaluator.
 survive() {
     local name="$1" prog="$2"
-    {
-        cat "$TMP/core.harmony"
-        cat <<EOF
-
-fn lisp_main(src: &str) -> i32 {
-    let env = env_new();
-    return as_int(&eval_program(read_all(src), &env));
-}
-
-fn main() -> i32 {
-    return lisp_main("$prog");
-}
-EOF
-    } > "$TMP/case.harmony"
+    gen_case "$prog"
     "$HB" run "$TMP/case.harmony" >/dev/null 2>&1
     local got=$?
     if [ "$got" -ge 128 ]; then

@@ -227,7 +227,7 @@ binary is `harmony-base` (the spec's `lc`).
       `lc_put_str`) no longer emits a duplicate `declare`, which LLVM rejects
       even with a matching signature. Regression tests `raw-null-cmp`,
       `extern-predeclared`.
-- [x] **Four compiler/runtime bugs found building the LISP interpreter.**
+- [x] **Five compiler/runtime bugs found building the LISP interpreter.**
       (1) *Literal-literal arithmetic.* A binary arithmetic expression whose
       operands are both untyped integer literals (`1 + 2`, `6 * 7`) was
       rejected with `TYPE-01` "arithmetic needs numbers": `ck_expr_binary`'s
@@ -255,6 +255,15 @@ binary is `harmony-base` (the spec's `lc`).
       "integer-only operator" for the same reason as (1): the guard tested
       `ty_is_integer` but not `ty_is_untyped_lit`. Fixed; covered by
       `comparison-in-binding.harmony`.
+      (5) *Import paths were not normalized.* A module's identity was the
+      literal joined path, so the same file reached by two spellings
+      (`"imports-rel/shared.harmony"` and
+      `"imports-rel/nested/../shared.harmony"`) was two modules: loaded twice
+      and merged twice, so the second merge collided with the first (`NAME-03`,
+      "the name `shared::shared` is already used in this scope"). The loader
+      now normalizes the path (collapsing `.` and resolving `..`) before using
+      it as the identity, so one file is one module. Regression
+      `tests/harmony/codegen/import-relative-paths.harmony`.
 - [x] **`extern "C"` feasibility (answer: leave as is).** The external-function
       mechanism (declaration, call, UNCK gating, unmangled C-ABI symbol) is
       complete and sufficient for the next compiler: it already reaches the OS
@@ -275,16 +284,22 @@ binary is `harmony-base` (the spec's `lc`).
       `eval`/`apply` — one self-recursive function, since harmony-base has no
       forward declarations, so `eval`/`apply` cannot be mutually recursive —
       plus the variadic primitive procedures), and `main.harmony` (a driver).
-      `make lisp` concatenates them in dependency order (names resolve from
-      earlier text only) and runs it; `make test-lisp` runs the 53-case suite
-      in `tests/harmony/lisp.sh` (arith, closures, capture, `set!`, mutual
-      recursion, ackermann, list processing, and malformed-input robustness),
-      wired into `make test`. Four real compiler bugs fell out while building
-      it (all fixed with regressions): literal-literal arithmetic (`1 + 2`),
-      the missing freestanding memory builtins (`memset`/`memcpy`/…) that
-      clang's optimizer emits under `-ffreestanding -nostdlib`, a comparison
-      stored in a binding that typed its operands as `i1`, and the integer-only
-      `% & | ^` operators rejecting untyped literals.
+      The modules are wired together with **`import`** (§6.7), not
+      concatenation: `reader` and `eval` import `value`, `main` imports all
+      three, and the cross-module names are spelled `value::Val`,
+      `value::cons`, and so on. `make lisp` runs the driver directly;
+      `make test-lisp` runs the 53-case suite in `tests/harmony/lisp.sh`
+      (arith, closures, capture, `set!`, mutual recursion, ackermann, list
+      processing, and malformed-input robustness), wired into `make test`. Each
+      case generates its own driver that imports the modules, so the import
+      path is exercised by every test. Five real compiler bugs fell out while
+      building it (all fixed with regressions): literal-literal arithmetic
+      (`1 + 2`), the missing freestanding memory builtins (`memset`/`memcpy`/…)
+      that clang's optimizer emits under `-ffreestanding -nostdlib`, a
+      comparison stored in a binding that typed its operands as `i1`, the
+      integer-only `% & | ^` operators rejecting untyped literals, and import
+      paths that were not normalized (the same file reached by two spellings
+      was merged twice).
 
 ### Cross-cutting
 

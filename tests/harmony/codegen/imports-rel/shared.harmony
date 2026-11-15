@@ -1,0 +1,5 @@
+// Shared module: reached by two different import spellings in the importing
+// program, so the loader must recognize it as ONE module.
+export fn shared() -> i32 {
+    return 40;
+}

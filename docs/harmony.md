@@ -530,6 +530,10 @@ fn main() {
 
 - Items are private unless marked `export`.
 - `import "path";` makes the file's exported items available under the file's base name as a namespace.
+- The path resolves relative to the importing file. `.` and `..` segments are
+  normalized, so the same file always has one identity: two importers that
+  spell the path differently (`"lib/shared.harmony"` and
+  `"lib/nested/../shared.harmony"`) share **one** module, merged once.
 - Import cycles are an error. The standard library is in the implicit prelude plus a handful of importable modules (`import "std/io.src";`).
 
 *harmony-base (bootstrap) implements this as an eager merge:* every module is
@@ -540,7 +544,8 @@ whole program is checked and emitted as one flat module — deterministic, so
 private helpers merge under its namespace too (bootstrap simplification: the
 final compiler's loader enforces `export` visibility properly); a library
 `main` merges as `modname::main` and the root file's `main` remains the entry
-point. Missing imports and cycles are `NAME-04`.
+point. Missing imports and cycles are `NAME-04`. The module's identity is its
+*normalized* path, so one file reached by two spellings is merged once.
 
 ### 6.8 Foreign functions (FFI to C)
 

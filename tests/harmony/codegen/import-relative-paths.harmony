@@ -1,0 +1,18 @@
+// EXPECT: 42
+// Import paths (§6.7): a path resolves relative to the importing file, and
+// "." / ".." segments are normalized, so the SAME file reached by different
+// spellings is ONE module (merged once) instead of two.
+//
+// Before the fix, "imports-rel/shared.harmony" and "imports-rel/nested/
+// ../shared.harmony" were different keys for the same file: it was loaded and
+// merged twice, and the second merge collided with the first (NAME-03, "the
+// name `shared::shared` is already used in this scope").
+import "imports-rel/shared.harmony";
+import "imports-rel/nested/child.harmony";
+
+fn main() -> i32 {
+    let a = shared::shared();      // 40
+    let b = child::via_parent();    // 42
+    if (a != 40) { return 1; }
+    return a + b - 40;             // 42
+}

@@ -1,15 +1,16 @@
-// Driver: read a LISP program from a source literal, evaluate it, and return
-// the result as the process exit code (mod 256).
+// Driver: read a LISP program from a source literal, evaluate it, and print
+// the result.
 //
-// This is the standalone entry point for the interpreter, split as
+// This is the standalone entry point for the interpreter, split across modules
+// with `import` (docs/harmony.md §6.7):
 //
 //     value.harmony   values, the frame-chain environment, list helpers
-//     reader.harmony  S-expressions from a `&str`
-//     eval.harmony    the fused eval/apply and the primitive procedures
-//     main.harmony    this driver
+//     reader.harmony  S-expressions from a `&str`          (imports value)
+//     eval.harmony    the fused eval/apply and the builtins (imports value)
+//     main.harmony    this driver                           (imports all three)
 //
-// and compiled by concatenating them in that order (`make lisp` does it), or
-// through `tests/harmony/lisp.sh`, which appends its own `main` per case.
+// `make lisp` runs it directly; `tests/harmony/lisp.sh` compiles each case
+// against the same imported modules with its own `main`.
 //
 // The program is a compile-time string literal rather than stdin: harmony-base
 // has no `read_line`/`String`, and the raw syscall FFI cannot yet pass a stack
@@ -17,9 +18,14 @@
 // deterministic; the reader, evaluator, and environment are exactly the code a
 // REPL would use.
 
+import "value.harmony";
+import "reader.harmony";
+import "eval.harmony";
+
 fn run_lisp(src: &str) -> i32 {
-    let env = env_new();
-    return as_int(&eval_program(read_all(src), &env));
+    let env = value::env_new();
+    let forms = reader::read_all(src);
+    return value::as_int(&eval::eval_program(forms, &env));
 }
 
 fn main() -> i32 {

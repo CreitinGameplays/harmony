@@ -99,12 +99,81 @@ char* mod_base_name(char* path) {
     return s;
 }
 
-// Joins `dir` ("" or 0 = none) and `path` into one arena string.
+// Normalizes a path: collapses "." segments and resolves ".." against the
+// preceding segment, so the same file always has ONE spelling.
+//
+// This matters because the normalized path is a module's identity (§6.7: a
+// module with several importers is merged once). Without it, "shared.harmony"
+// and "../shared.harmony" are two different keys for the same file, so the
+// file is loaded and merged twice and its names collide (NAME-03).
+//
+// A leading "/" is preserved (absolute paths stay absolute); a ".." that has
+// nothing to pop (a relative path climbing above its root) is kept as-is,
+// because there is nothing sensible to resolve it to.
+char* mod_normalize(char* path) {
+    int n;
+    int i;
+    int start;
+    int outlen;
+    int seg;
+    int seglen;
+    int absolute;
+    int nsegs;
+    int starts[64];
+    int lens[64];
+    char* out;
+    n = str_len(path);
+    absolute = 0;
+    if (n > 0 && path[0] == '/') { absolute = 1; }
+    // Split into segments, dropping "" and "." and resolving "..".
+    nsegs = 0;
+    i = 0;
+    while (i < n) {
+        while (i < n && path[i] == '/') { i = i + 1; }
+        if (i >= n) { break; }
+        start = i;
+        while (i < n && path[i] != '/') { i = i + 1; }
+        seglen = i - start;
+        if (seglen == 1 && path[start] == '.') { continue; }
+        if (seglen == 2 && path[start] == '.' && path[start + 1] == '.') {
+            if (nsegs > 0) {
+                nsegs = nsegs - 1;
+                continue;
+            }
+            if (absolute) { continue; }   // "/.." is "/"
+            // A relative ".." with nothing to pop: keep it.
+        }
+        if (nsegs >= 64) { continue; }   // absurdly long path: drop the rest
+        starts[nsegs] = start;
+        lens[nsegs] = seglen;
+        nsegs = nsegs + 1;
+    }
+    // Rebuild.
+    outlen = 0;
+    if (absolute) { outlen = 1; }
+    out = arena_alloc(n + 2);
+    if (absolute) { out[0] = '/'; }
+    seg = 0;
+    while (seg < nsegs) {
+        if (outlen > 0 && out[outlen - 1] != '/') { out[outlen] = '/'; outlen = outlen + 1; }
+        i = 0;
+        while (i < lens[seg]) { out[outlen] = path[starts[seg] + i]; outlen = outlen + 1; i = i + 1; }
+        seg = seg + 1;
+    }
+    out[outlen] = 0;
+    return out;
+}
+
+// Joins `dir` ("" or 0 = none) and `path` into one normalized arena string.
+//
+// The result is the module's identity, so it must be canonical: the same file
+// reached by different spellings has to produce the same string, or the loader
+// merges it twice (see mod_normalize).
 char* mod_join(char* dir, char* path) {
     int n;
     int i;
     char* s;
-    if (dir == 0 || dir[0] == 0) { return path; }
+    if (dir == 0 || dir[0] == 0) { return mod_normalize(path); }
     n = str_len(dir) + 1 + str_len(path);
     s = arena_alloc(n + 1);
     i = 0;
@@ -114,7 +183,7 @@ char* mod_join(char* dir, char* path) {
     i = 0;
     while (path[i] != 0) { s[n + i] = path[i]; i = i + 1; }
     s[n + i] = 0;
-    return s;
+    return mod_normalize(s);
 }
 
 // The directory part of `path` ("" for a bare name); arena-copied.

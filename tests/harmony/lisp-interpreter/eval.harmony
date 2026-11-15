@@ -3,49 +3,55 @@
 //
 // harmony-base resolves names from earlier text only (no forward declarations),
 // so `eval` and `apply` cannot be two mutually recursive functions. They are
-// fused here: `mode` selects "evaluate a form" (0) or "apply a callable to an
-// already-evaluated argument list" (1). Every walk that needs to re-enter the
-// evaluator (argument lists, function bodies, parameter binding) is a loop
-// inside this function calling it recursively.
+// fused here: `mode` selects "evaluate a form" (0), "apply a callable to an
+// already-evaluated argument list" (1), or "evaluate a list of argument forms"
+// (2). Every walk that needs to re-enter the evaluator (argument lists,
+// function bodies, parameter binding) is a loop inside this function calling
+// it recursively.
 //
 // `define` and `set!` mutate the innermost frame in place (the frame lives
 // behind a `Heap`, so closures that captured it observe the change). That is
 // what lets a `define`d lambda call itself.
+//
+// The values and the environment come from `value.harmony` (§6.7), so they are
+// spelled `value::Val`, `value::is_nil`, and so on.
+
+import "value.harmony";
 
 // --- primitives ------------------------------------------------------------
 
 // The LISP truth value: the symbol `t` for true, `Nil` for false.
-fn bool_val(b: bool) -> Val {
-    if (b) { return Val::Sym("t"); }
-    return Val::Nil;
+fn bool_val(b: bool) -> value::Val {
+    if (b) { return value::Val::Sym("t"); }
+    return value::Val::Nil;
 }
 
 // Fold the numeric `args` into `acc` left to right. `op` is 0 plus, 1 times,
 // 2 subtract, 3 divide. `-` and `/` pass the first argument as `acc` and fold
 // the rest; `+` seeds at 0 and `*` at 1.
-fn fold_arith(op: i32, args: Val, acc: i32) -> Val {
+fn fold_arith(op: i32, args: value::Val, acc: i32) -> value::Val {
     let mut total = acc;
     let mut cur = args;
-    while (!is_nil(&cur)) {
-        let n = as_int(&car(&cur));
+    while (!value::is_nil(&cur)) {
+        let n = value::as_int(&value::car(&cur));
         if (op == 0) { total = total + n; }
         else if (op == 1) { total = total * n; }
         else if (op == 2) { total = total - n; }
         else {
-            if (n == 0) { return Val::Int(0); }   // tiny LISP: n/0 yields 0
+            if (n == 0) { return value::Val::Int(0); }   // tiny LISP: n/0 yields 0
             total = total / n;
         }
-        cur = cdr(&cur);
+        cur = value::cdr(&cur);
     }
-    return Val::Int(total);
+    return value::Val::Int(total);
 }
 
 // The primitive procedures, dispatched by name. None of them re-enters the
 // evaluator, so they can be a plain function.
-fn builtin(name: &str, args: Val) -> Val {
-    let a0 = car(&args);
-    let rest = cdr(&args);
-    let a1 = car(&rest);
+fn builtin(name: &str, args: value::Val) -> value::Val {
+    let a0 = value::car(&args);
+    let rest = value::cdr(&args);
+    let a1 = value::car(&rest);
     // Variadic arithmetic: `(+ a b c ...)`, `(* ...)`, `(- a b c ...)` and
     // `(/ a b c ...)` fold over the argument list (LISP convention).
     //   +  : 0 + a + b + c ...
@@ -55,36 +61,36 @@ fn builtin(name: &str, args: Val) -> Val {
     if (name == "+") { return fold_arith(0, args, 0); }
     if (name == "*") { return fold_arith(1, args, 1); }
     if (name == "-") {
-        if (is_nil(&rest)) { return Val::Int(0 - as_int(&a0)); }
-        return fold_arith(2, rest, as_int(&a0));
+        if (value::is_nil(&rest)) { return value::Val::Int(0 - value::as_int(&a0)); }
+        return fold_arith(2, rest, value::as_int(&a0));
     }
     if (name == "/") {
-        if (is_nil(&rest)) {
-            if (as_int(&a0) == 0) { return Val::Int(0); }
-            return Val::Int(1 / as_int(&a0));
+        if (value::is_nil(&rest)) {
+            if (value::as_int(&a0) == 0) { return value::Val::Int(0); }
+            return value::Val::Int(1 / value::as_int(&a0));
         }
-        return fold_arith(3, rest, as_int(&a0));
+        return fold_arith(3, rest, value::as_int(&a0));
     }
-    if (name == "=") { return bool_val(as_int(&a0) == as_int(&a1)); }
-    if (name == "<") { return bool_val(as_int(&a0) < as_int(&a1)); }
-    if (name == ">") { return bool_val(as_int(&a0) > as_int(&a1)); }
-    if (name == "<=") { return bool_val(as_int(&a0) <= as_int(&a1)); }
-    if (name == ">=") { return bool_val(as_int(&a0) >= as_int(&a1)); }
+    if (name == "=") { return bool_val(value::as_int(&a0) == value::as_int(&a1)); }
+    if (name == "<") { return bool_val(value::as_int(&a0) < value::as_int(&a1)); }
+    if (name == ">") { return bool_val(value::as_int(&a0) > value::as_int(&a1)); }
+    if (name == "<=") { return bool_val(value::as_int(&a0) <= value::as_int(&a1)); }
+    if (name == ">=") { return bool_val(value::as_int(&a0) >= value::as_int(&a1)); }
     if (name == "%") {
-        let d = as_int(&a1);
-        if (d == 0) { return Val::Int(0); }
-        return Val::Int(as_int(&a0) % d);
+        let d = value::as_int(&a1);
+        if (d == 0) { return value::Val::Int(0); }
+        return value::Val::Int(value::as_int(&a0) % d);
     }
-    if (name == "&") { return Val::Int(as_int(&a0) & as_int(&a1)); }
-    if (name == "|") { return Val::Int(as_int(&a0) | as_int(&a1)); }
-    if (name == "^") { return Val::Int(as_int(&a0) ^ as_int(&a1)); }
-    if (name == "cons") { return cons(a0, a1); }
-    if (name == "car") { return car(&a0); }
-    if (name == "cdr") { return cdr(&a0); }
+    if (name == "&") { return value::Val::Int(value::as_int(&a0) & value::as_int(&a1)); }
+    if (name == "|") { return value::Val::Int(value::as_int(&a0) | value::as_int(&a1)); }
+    if (name == "^") { return value::Val::Int(value::as_int(&a0) ^ value::as_int(&a1)); }
+    if (name == "cons") { return value::cons(a0, a1); }
+    if (name == "car") { return value::car(&a0); }
+    if (name == "cdr") { return value::cdr(&a0); }
     if (name == "list") { return args; }
-    if (name == "nil?") { return bool_val(is_nil(&a0)); }
-    if (name == "not") { return bool_val(is_nil(&a0)); }
-    return Val::Nil;
+    if (name == "nil?") { return bool_val(value::is_nil(&a0)); }
+    if (name == "not") { return bool_val(value::is_nil(&a0)); }
+    return value::Val::Nil;
 }
 
 // True when `name` is one of the primitive procedures (so a call whose head is
@@ -104,15 +110,15 @@ fn is_builtin(name: &str) -> bool {
 //         ( `env` is ignored, pass any environment ).
 // mode 2: evaluate each form in the list `form` in `env`, returning the values
 //         as a list (used for call arguments).
-fn eval(form: Val, env: &Env, args: Val, mode: i32) -> Val {
+export fn eval(form: value::Val, env: &value::Env, args: value::Val, mode: i32) -> value::Val {
     if (mode == 2) {
-        let mut rev = Val::Nil;
+        let mut rev = value::Val::Nil;
         let mut cur = form;
-        while (!is_nil(&cur)) {
-            rev = cons(eval(car(&cur), env, Val::Nil, 0), rev);
-            cur = cdr(&cur);
+        while (!value::is_nil(&cur)) {
+            rev = value::cons(eval(value::car(&cur), env, value::Val::Nil, 0), rev);
+            cur = value::cdr(&cur);
         }
-        return reverse(rev);
+        return value::reverse(rev);
     }
     if (mode == 1) {
         switch (&form) {
@@ -120,125 +126,125 @@ fn eval(form: Val, env: &Env, args: Val, mode: i32) -> Val {
             case Closure(params, body, cenv): {
                 // A child frame of the closure's captured environment, with
                 // the parameters bound to the evaluated arguments.
-                let mut frame = env_child(cenv);
+                let mut frame = value::env_child(cenv);
                 let mut p = *params;
                 let mut a = args;
-                while (!is_nil(&p) && !is_nil(&a)) {
-                    let pv = car(&p);
-                    let av = car(&a);
+                while (!value::is_nil(&p) && !value::is_nil(&a)) {
+                    let pv = value::car(&p);
+                    let av = value::car(&a);
                     switch (&pv) {
-                        case Sym(pname): { env_define(&frame, pname, av); }
+                        case Sym(pname): { value::env_define(&frame, pname, av); }
                         case Nil: { }
                         case Int(n): { }
                         case Cons(h, t): { }
                         case Closure(x, y, z): { }
                     }
-                    p = cdr(&p);
-                    a = cdr(&a);
+                    p = value::cdr(&p);
+                    a = value::cdr(&a);
                 }
                 // Evaluate the body forms in sequence; the last wins. (This
                 // inlines `eval_program`, which cannot be called here because
                 // harmony-base has no forward declarations.)
-                let mut last = Val::Nil;
+                let mut last = value::Val::Nil;
                 let mut body_cur = *body;
-                while (!is_nil(&body_cur)) {
-                    last = eval(car(&body_cur), &frame, Val::Nil, 0);
-                    body_cur = cdr(&body_cur);
+                while (!value::is_nil(&body_cur)) {
+                    last = eval(value::car(&body_cur), &frame, value::Val::Nil, 0);
+                    body_cur = value::cdr(&body_cur);
                 }
                 return last;
             }
-            case Nil: { return Val::Nil; }
-            case Int(n): { return Val::Nil; }
-            case Cons(h, t): { return Val::Nil; }
+            case Nil: { return value::Val::Nil; }
+            case Int(n): { return value::Val::Nil; }
+            case Cons(h, t): { return value::Val::Nil; }
         }
-        return Val::Nil;
+        return value::Val::Nil;
     }
 
     switch (&form) {
         case Int(n): { return form; }
-        case Nil: { return Val::Nil; }
-        case Sym(s): { return env_lookup(env, s); }
+        case Nil: { return value::Val::Nil; }
+        case Sym(s): { return value::env_lookup(env, s); }
         case Closure(p, b, e): { return form; }
         case Cons(h, t): {
-            let head = car(&form);
-            let rest = cdr(&form);
+            let head = value::car(&form);
+            let rest = value::cdr(&form);
             // Special forms are dispatched on the head symbol.
             switch (&head) {
                 case Sym(name): {
-                    if (name == "quote") { return car(&rest); }
+                    if (name == "quote") { return value::car(&rest); }
                     if (name == "if") {
-                        let cond = eval(car(&rest), env, Val::Nil, 0);
-                        if (!is_nil(&cond)) {
-                            return eval(car(&cdr(&rest)), env, Val::Nil, 0);
+                        let cond = eval(value::car(&rest), env, value::Val::Nil, 0);
+                        if (!value::is_nil(&cond)) {
+                            return eval(value::car(&value::cdr(&rest)), env, value::Val::Nil, 0);
                         }
-                        return eval(car(&cdr(&cdr(&rest))), env, Val::Nil, 0);
+                        return eval(value::car(&value::cdr(&value::cdr(&rest))), env, value::Val::Nil, 0);
                     }
                     if (name == "define") {
-                        let var = car(&rest);
-                        let value = eval(car(&cdr(&rest)), env, Val::Nil, 0);
+                        let var = value::car(&rest);
+                        let inner = eval(value::car(&value::cdr(&rest)), env, value::Val::Nil, 0);
                         switch (&var) {
-                            case Sym(vname): { env_define(env, vname, value); }
+                            case Sym(vname): { value::env_define(env, vname, inner); }
                             case Nil: { }
                             case Int(n): { }
                             case Cons(a, b): { }
                             case Closure(p, b2, e2): { }
                         }
-                        return value;
+                        return inner;
                     }
                     if (name == "set!") {
-                        let var = car(&rest);
-                        let value = eval(car(&cdr(&rest)), env, Val::Nil, 0);
+                        let var = value::car(&rest);
+                        let inner = eval(value::car(&value::cdr(&rest)), env, value::Val::Nil, 0);
                         switch (&var) {
-                            case Sym(vname): { env_set(env, vname, value); }
+                            case Sym(vname): { value::env_set(env, vname, inner); }
                             case Nil: { }
                             case Int(n): { }
                             case Cons(a, b): { }
                             case Closure(p, b2, e2): { }
                         }
-                        return value;
+                        return inner;
                     }
                     if (name == "lambda") {
                         // Store the parameter list and the *whole* body (all
                         // forms after the parameters); the body is evaluated
                         // in sequence and the last value is the result.
-                        return Val::Closure(heap(car(&rest)),
-                                            heap(cdr(&rest)),
-                                            *env);
+                        return value::Val::Closure(heap(value::car(&rest)),
+                                                   heap(value::cdr(&rest)),
+                                                   *env);
                     }
                     if (is_builtin(name)) {
-                        return builtin(name, eval(rest, env, Val::Nil, 2));
+                        return builtin(name, eval(rest, env, value::Val::Nil, 2));
                     }
                     // A user call: look the name up, evaluate the arguments,
                     // and apply the resulting callable.
-                    let callee = env_lookup(env, name);
-                    return eval(callee, env, eval(rest, env, Val::Nil, 2), 1);
+                    let callee = value::env_lookup(env, name);
+                    return eval(callee, env, eval(rest, env, value::Val::Nil, 2), 1);
                 }
-                case Nil: { return Val::Nil; }
-                case Int(n): { return Val::Nil; }
+                case Nil: { return value::Val::Nil; }
+                case Int(n): { return value::Val::Nil; }
                 case Closure(p, b, e): {
                     // ((lambda ...) args ...) — the head is already a value.
-                    return eval(head, env, eval(rest, env, Val::Nil, 2), 1);
+                    return eval(head, env, eval(rest, env, value::Val::Nil, 2), 1);
                 }
                 case Cons(a, b): {
                     // The head is itself a form; evaluate it, then the args.
-                    let callee = eval(head, env, Val::Nil, 0);
-                    return eval(callee, env, eval(rest, env, Val::Nil, 2), 1);
+                    let callee = eval(head, env, value::Val::Nil, 0);
+                    return eval(callee, env, eval(rest, env, value::Val::Nil, 2), 1);
                 }
             }
-            return Val::Nil;
+            return value::Val::Nil;
         }
     }
-    return Val::Nil;
+    return value::Val::Nil;
 }
 
 // Evaluate each top-level form in order, returning the last value. `define`s
 // accumulate in the shared top-level frame.
-fn eval_program(forms: Val, env: &Env) -> Val {
-    let mut last = Val::Nil;
+export fn eval_program(forms: value::Val, env: &value::Env) -> value::Val {
+    let mut last = value::Val::Nil;
     let mut cur = forms;
-    while (!is_nil(&cur)) {
-        last = eval(car(&cur), env, Val::Nil, 0);
-        cur = cdr(&cur);
+    while (!value::is_nil(&cur)) {
+        last = eval(value::car(&cur), env, value::Val::Nil, 0);
+        cur = value::cdr(&cur);
     }
     return last;
 }

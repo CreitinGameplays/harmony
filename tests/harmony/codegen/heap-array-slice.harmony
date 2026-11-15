@@ -1,0 +1,48 @@
+// EXPECT: 42
+// Slicing a heap array auto-dereferences (§5, §12.2): `&h[a..b]` on a
+// `Heap<[T; N]>` slices the *pointee*. Before the fix the base fell through to
+// the box's own storage and the length came out 0, so `lc_check_slice` always
+// trapped T-SLICE — the range could never be taken. `&(*h)[a..b]` worked; both
+// spellings now agree.
+fn main() -> i32 {
+    let h = heap([10u8, 20, 30, 40, 50]);
+
+    let s = &h[1..3];
+    if (s.len() != 2) { return 1; }
+    if (s[0] as i32 != 20) { return 2; }
+    if (s[1] as i32 != 30) { return 3; }
+
+    // The explicit-deref spelling gives the same bytes and length.
+    let t = &(*h)[1..3];
+    if (t.len() != s.len()) { return 4; }
+    if (t[0] as i32 != s[0] as i32) { return 5; }
+
+    // Bounds are still enforced: an end past the array traps T-SLICE.
+    // (Exercised here as a valid full slice; the trap case lives in the
+    // slice-trap tests.)
+    let all = &h[0..5];
+    if (all.len() != 5) { return 6; }
+
+    // Or an open-ended range: `&h[2..]` reaches the end.
+    let tail = &h[2..];
+    if (tail.len() != 3) { return 7; }
+    if (tail[2] as i32 != 50) { return 8; }
+
+    // A mutable heap slice is writable through the auto-deref form.
+    let mut m = heap([0u8; 8]);
+    let mut w = &mut m[0..8];
+    w[3] = 7;
+    let r = &m[0..8];
+    if (r[3] as i32 != 7) { return 9; }
+
+    // A `Heap<[T]>` (the pointee is itself a slice, not a fixed array) takes
+    // the other branch: the length is a runtime value read from the pair, not
+    // a constant. `heap(&a[..])` gives exactly that shape.
+    let backing = [10u8, 20, 30, 40];
+    let hs = heap(&backing[..]);
+    let sq = &hs[1..3];
+    if (sq.len() != 2) { return 10; }
+    if (sq[0] as i32 != 20) { return 11; }
+
+    return 42;
+}

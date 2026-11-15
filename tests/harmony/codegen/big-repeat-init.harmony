@@ -1,0 +1,35 @@
+// EXPECT: 42
+// A large `[v; N]` repeat init must not be unrolled element-by-element
+// (§7.1). Unrolling emitted one store per element, so a source-sized buffer
+// (`heap([0u8; 65536])`) produced ~65k stores, blew the IR up to megabytes,
+// and exhausted the compiler arena (ICE-01) around N ≈ 58k. A large count is
+// now a runtime fill loop (clang folds it to `memset` at -O2); a small count
+// still unrolls. This case builds a buffer twice the old fail threshold.
+fn main() -> i32 {
+    // 131072 elements (128 KiB): well past the ~58k ICE threshold.
+    let mut buf = heap([0u8; 131072]);
+    if (buf.len() != 131072) { return 1; }
+
+    // Every element is initialized (the last one is the interesting slot).
+    if (buf[0] as i32 != 0) { return 2; }
+    if (buf[131071] as i32 != 0) { return 3; }
+
+    // A non-zero fill value reaches the whole buffer, not just the head.
+    let nines = heap([9u8; 100000]);
+    if (nines[0] as i32 != 9) { return 4; }
+    if (nines[65432] as i32 != 9) { return 5; }
+    if (nines[99999] as i32 != 9) { return 6; }
+
+    // Bounds are still checked on the loop-filled buffer.
+    // (`buf[131072]` is out of range and traps; exercised in slice-trap tests.)
+
+    // A small repeat still works (the unrolled path).
+    let small = [7u8; 8];
+    if (small[7] as i32 != 7) { return 7; }
+
+    // A larger-but-unrolled element copy reaches the tail too.
+    let words = [0i32; 100];
+    if (words[99] != 0) { return 8; }
+
+    return 42;
+}

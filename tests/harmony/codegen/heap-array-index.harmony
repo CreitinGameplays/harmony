@@ -1,0 +1,40 @@
+// EXPECT: 42
+// Heap-array indexing auto-dereferences (§5, §12.2): `h[i]` on a
+// `Heap<[T; N]>` indexes the *pointee*, exactly like `h.field` auto-derefs
+// through `.`. Before the fix, `h[i]` lowered to a GEP of the heap box (the
+// box's own storage) instead of the array it points at, so every read returned
+// garbage (in practice 0) and every write landed in the wrong place — a silent
+// wrong-value bug, not a trap.
+fn main() -> i32 {
+    // The scalar and field forms already auto-dereferenced; keep them honest
+    // alongside the index form so a regression in any one is caught.
+    let s = heap(7);
+    if (*s != 7) { return 1; }
+
+    let h = heap([10, 20, 30]);
+    if (h[0] != 10) { return 2; }
+    if (h[1] != 20) { return 3; }
+    if (h[2] != 30) { return 4; }
+
+    // The explicit-deref spelling must agree with the auto-deref one.
+    if ((*h)[1] != h[1]) { return 5; }
+
+    // Writes through the auto-deref form land in the array, not the box.
+    let mut m = heap([1, 2, 3]);
+    m[1] = 99;
+    if (m[1] != 99) { return 6; }
+    if (m[0] != 1) { return 7; }
+    if (m[2] != 3) { return 8; }
+
+    // The two spellings share storage.
+    (*m)[2] = 5;
+    if (m[2] != 5) { return 9; }
+
+    // A runtime index (not just a literal) is bounds-checked and correct.
+    let mut i = 0;
+    let mut sum = 0;
+    while (i < 3) { sum += m[i as usize]; i = i + 1; }
+    if (sum != 105) { return 10; }
+
+    return 42;
+}

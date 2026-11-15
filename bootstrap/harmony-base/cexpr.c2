@@ -907,7 +907,9 @@ int ck_expr_method_call(struct AstNode* n, struct AstNode* callee, struct AstLis
             n->ival = 1;
             return TY_USIZE;
         }
-        while (ty_is_ref(lt)) { lt = ty_elem(lt); }
+        // Unwrap references and `Heap` boxes: `.len()` auto-derefs through
+        // both, so `heap([0u8; N]).len()` is N, like `.field` and `[]` do.
+        while (ty_is_ref(lt) || ty_is_heap(lt)) { lt = ty_elem(lt); }
         if (ty_is_array(lt)) {
             n->ival = 1;
             return TY_USIZE;

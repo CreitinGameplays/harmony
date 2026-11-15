@@ -648,6 +648,7 @@ char* ll_expr(struct AstNode* n);             // lower an expression -> SSA name
 char* ll_addr(struct AstNode* n);             // lower an lvalue -> an address
 void  ll_block(struct AstNode* blk);          // lower a block
 void  ll_stmt(struct AstNode* n);             // lower one statement
+void  ll_label(char* label);                  // emit a basic-block label
 void  ll_emit_trap(int code, struct AstNode* at, char* detail);
 char* ll_new_reg(void);
 char* ll_new_label(char* hint);

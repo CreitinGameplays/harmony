@@ -778,7 +778,12 @@ char* ll_index_addr(struct AstNode* n) {
         if (elem == 0) { elem = TY_I32; }
         return ll_array_gep_i64(data, elem, wide);
     }
-    if (ty_is_ref(bt) || ty_is_ptr(bt)) {
+    if (ty_is_ref(bt) || ty_is_ptr(bt) || ty_is_heap(bt)) {
+        // A reference, raw pointer, or `Heap` box evaluates to a pointer to the
+        // element data already, so it *is* the base address: `h[i]` auto-derefs
+        // through `Heap` exactly like `h.field` does (§5, §12.2). Taking
+        // `ll_addr` here would index off the box's own storage instead of the
+        // pointee — a silent wrong-value read/write.
         baseaddr = ll_expr(n->a);
         bt = ty_elem(bt);
     } else {
@@ -964,6 +969,26 @@ char* ll_slice_pair(struct AstNode* n) {
         elem = ty_elem(at);
         data = ll_expr(n->a);
         len = ll_const_int(ty_array_len(at), TY_ISIZE);
+    } else if (ty_is_heap(bt) && ty_is_array(ty_elem(bt))) {
+        // `&h[a..b]` on a `Heap<[T; N]>` (§5, §12.2): the box evaluates to a
+        // pointer to the pointee array, and the length is the array's. Without
+        // this, the base fell through to `ll_addr` (the box's own storage) and
+        // the length came out 0, so the slice always trapped T-SLICE.
+        int at;
+        at = ty_elem(bt);
+        elem = ty_elem(at);
+        data = ll_expr(n->a);
+        len = ll_const_int(ty_array_len(at), TY_ISIZE);
+    } else if (ty_is_heap(bt) && ty_kind(ty_elem(bt)) == CTY_SLICE) {
+        // `&h[a..b]` on a `Heap<[T]>`: the box points at a slice value (a
+        // pair); load both halves and re-slice.
+        int at;
+        char* pair;
+        at = ty_elem(bt);
+        pair = ll_expr(n->a);
+        elem = ty_elem(at);
+        data = ll_slice_data(pair);
+        len = ll_slice_len(pair);
     } else {
         elem = ty_elem(bt);
         data = ll_addr(n->a);
@@ -1073,7 +1098,12 @@ char* ll_len_value(struct AstNode* n) {
     recv = n->a->a;
     rt = recv->ty;
     lt = rt;
-    while (ty_is_ref(lt) && ty_kind(lt) != CTY_SLICE) { lt = ty_elem(lt); }
+    // Unwrap references and `Heap` boxes to reach the array underneath; a
+    // slice/`&str` is the fat pair itself and stops here.
+    while ((ty_is_ref(lt) || ty_is_heap(lt))
+           && ty_kind(lt) != CTY_SLICE && ty_kind(lt) != CTY_STRREF) {
+        lt = ty_elem(lt);
+    }
     if (ty_is_array(lt)) {
         g_expr_ty = TY_USIZE;
         return ll_const_int(ty_array_len(lt), TY_USIZE);
@@ -1564,18 +1594,80 @@ char* ll_expr_array_lit(struct AstNode* n) {
             i = i + 1;
         }
     } else if (n->a != 0) {
-        // `[v; n]`: store the value at every index.
+        // `[v; n]` (§7.1): fill every element with `v`.
+        //
+        // A small count is unrolled (one store per element). A large count is
+        // emitted as a runtime loop instead: unrolling a source-sized buffer
+        // (`heap([0u8; 65536])`) would emit ~65k stores, blow the IR up to
+        // megabytes, and exhaust the compiler arena (ICE-01) around N ≈ 58k.
+        // The loop keeps the emitted IR a constant size and lets clang fold it
+        // to `memset` at -O2. `v` is evaluated once and reused (it must be a
+        // copy type to be repeated).
         int count;
-        int i;
         char* v;
         count = ty_array_len(ty);
         v = ll_expr(n->a);
-        i = 0;
-        while (i < count) {
-            char* addr;
-            addr = ll_array_gep(slot, et, ll_const_int(i, TY_USIZE));
-            ll_store_value(addr, et, v);
-            i = i + 1;
+        if (count <= 64) {
+            int i;
+            i = 0;
+            while (i < count) {
+                char* addr;
+                addr = ll_array_gep(slot, et, ll_const_int(i, TY_USIZE));
+                ll_store_value(addr, et, v);
+                i = i + 1;
+            }
+        } else {
+            // c = 0; while (c < count) { slot[c] = v; c += 1; }
+            char* cslot;
+            char* condlbl;
+            char* bodylbl;
+            char* endlbl;
+            cslot = ll_new_reg();
+            ll_out_str("  ");
+            ll_out_str(cslot);
+            ll_out_str(" = alloca i64\n  store i64 0, ptr ");
+            ll_out_str(cslot);
+            ll_out_nl();
+            condlbl = ll_new_label("fill.cond");
+            bodylbl = ll_new_label("fill.body");
+            endlbl = ll_new_label("fill.end");
+            ll_out_str("  br label %");
+            ll_out_str(condlbl);
+            ll_out_nl();
+            ll_label(condlbl);
+            {
+                char* c;
+                char* cmp;
+                c = ll_load(TY_ISIZE, cslot);
+                cmp = ll_int_cmp("<", TY_ISIZE, c,
+                                 ll_const_int(count, TY_ISIZE));
+                ll_out_str("  br i1 ");
+                ll_out_str(cmp);
+                ll_out_str(", label %");
+                ll_out_str(bodylbl);
+                ll_out_str(", label %");
+                ll_out_str(endlbl);
+                ll_out_nl();
+            }
+            ll_label(bodylbl);
+            {
+                char* c;
+                char* addr;
+                char* c2;
+                c = ll_load(TY_ISIZE, cslot);
+                addr = ll_array_gep_i64(slot, et, c);
+                ll_store_value(addr, et, v);
+                c2 = ll_bin("add", TY_ISIZE, c, "1");
+                ll_out_str("  store i64 ");
+                ll_out_str(c2);
+                ll_out_str(", ptr ");
+                ll_out_str(cslot);
+                ll_out_nl();
+                ll_out_str("  br label %");
+                ll_out_str(condlbl);
+                ll_out_nl();
+            }
+            ll_label(endlbl);
         }
     }
     g_expr_ty = ty;

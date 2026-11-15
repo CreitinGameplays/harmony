@@ -258,7 +258,7 @@ A function with no `->` returns nothing. There are no tuples; return a small `st
 
 ### 5.2 Compound and unsized types
 
-- **Arrays:** `[T; N]` with `N` a constant expression. Literal `[1, 2, 3]`, repeat form `[0; 16]`. Arrays live inline (on the stack or inside their owner) and are bounds-checked on every index.
+- **Arrays:** `[T; N]` with `N` a constant expression. Literal `[1, 2, 3]`, repeat form `[0; 16]`. Arrays live inline (on the stack or inside their owner) and are bounds-checked on every index. A large repeat init (`[0u8; 1 << 20]`) lowers to a runtime fill loop, not one store per element, so a big buffer stays a constant amount of emitted code.
 - **Slices:** `[T]` is unsized and only appears behind a reference: `&[T]`, `&mut [T]`. A slice reference is a (pointer, length) pair. Make one with `&a[1..3]` or `&v[..]`.
 - **`str`:** UTF-8 text, unsized, only behind a reference: `&str`. You cannot index a `str` by integer (`s[3]` is a type error, because "the 3rd what?"). Use `s.as_bytes()`, `s.chars()`, or slice by byte range, `&s[lo..hi]`, which **traps** if either end is not on a character boundary.
 - **Structs and enums:** user-defined (see §6). No unions.
@@ -1172,7 +1172,7 @@ an owned `Heap<T>` whose pointee is a moved copy of `x`'s value — so the
 optimization is never visible, only faster.
 
 - `Heap<T>` is **not** `copy`; moving it moves ownership of the allocation (just a pointer copy at runtime).
-- `*h` dereferences. `.` auto-dereferences through `Heap`, `&`, and `&mut`, so there is no `->` anywhere.
+- `*h` dereferences. `.` auto-dereferences through `Heap`, `&`, and `&mut`, so there is no `->` anywhere. The same auto-deref applies to indexing (`h[i]`), slicing (`&h[a..b]`), and `.len()`, so a `Heap<[T; N]>` is used exactly like the array it points at; write `*h` only when you want the array value itself.
 - `Maybe<Heap<T>>` compiles to a single nullable pointer in the backends, so a linked-list link costs one word.
 - A failed allocation is `T-OOM`, a trap, never undefined behavior.
 

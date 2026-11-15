@@ -300,6 +300,37 @@ binary is `harmony-base` (the spec's `lc`).
       integer-only `% & | ^` operators rejecting untyped literals, and import
       paths that were not normalized (the same file reached by two spellings
       was merged twice).
+- [x] **Genuine blocking bugs found planning the `harmony` rewrite.** The
+      rewrite's core loop is "read a byte buffer, index it, slice it", so these
+      were fixed first, with regressions (each verified to fail before the fix):
+      - **Heap-array indexing did not auto-dereference.** `h[i]` on a
+        `Heap<[T; N]>` lowered to a GEP of the *heap box* instead of the
+        pointee, so it read/wrote the wrong bytes and silently returned 0
+        (§12.2/§5: `[]` auto-derefs through `Heap` exactly like `.`).
+        `(*h)[i]` worked; now both do. Regression
+        `tests/harmony/codegen/heap-array-index.harmony`.
+      - **Slicing a heap array trapped.** `&h[a..b]` on a `Heap<[T; N]>` passed
+        length 0 to `lc_check_slice` (it read the box, not the pointee), so it
+        always trapped `T-SLICE`. `&(*h)[a..b]` worked; now both do.
+        `.len()` on a heap array was rejected for the same reason (`TYPE-02`)
+        and now folds to the constant length. Regression
+        `tests/harmony/codegen/heap-array-slice.harmony`.
+      - **`[v; N]` was lowered element-by-element.** The repeat array form
+        emitted one store per element, so a `heap([0u8; 65536])` source buffer
+        produced ~65k `store` instructions and exhausted the compiler arena
+        (ICE-01) around N ≈ 58k; even N = 16384 emitted ~1.3 MB of IR. A
+        repeat init with more than 64 elements is now a runtime fill loop (the
+        old unroll is kept for small counts), so files that would not compile
+        now do, the emitted IR is a constant size, and clang folds the loop to
+        `memset` at -O2 (the runtime already provides it). Regression
+        `tests/harmony/codegen/big-repeat-init.harmony`.
+      - **Not blocking, deliberately left for M6** (workaround-able, so not
+        fixed here): the §13.5 raw toolbox (`p.plus`/`p.minus`/`p.read`/
+        `p.write`, `p.is_null`, `Raw::null<T>`, `alloc`/`dealloc`/
+        `reinterpret`, `raw`-to-integer casts, `p[i]`) is unimplemented, and
+        `&mut T` does not coerce to `&T` (write `&*r`). The rewrite can reach
+        memory through an extern whose signature puts `raw u8`/`raw mut u8` in
+        the pointer slot.
 
 ### Cross-cutting
 

@@ -455,6 +455,36 @@ void lc_check_slice(long lo, long hi, long len, long line, long col) {
     }
 }
 
+// lc_check_boundary(ptr, len, idx, line, col) — trap unless `idx` sits on a
+// UTF-8 character boundary of the `&str` at (ptr, len) (§5.2: a `&s[lo..hi]`
+// slice must not split a code point). `idx == len` is the end and is valid;
+// otherwise the byte at `idx` must not be a continuation byte (`10xxxxxx`).
+void lc_check_boundary(const char *ptr, long len, long idx, long line, long col) {
+    if (idx < 0 || idx > len) {
+        lc_trap(T_SLICE, line, col, idx);
+    }
+    if (idx == len) { return; }
+    if ((((unsigned char) ptr[idx]) & 0xC0) == 0x80) {
+        lc_trap(T_SLICE, line, col, idx);
+    }
+}
+
+// lc_slice_eq(a_ptr, a_len, b_ptr, b_len) — element-wise byte equality of two
+// (pointer, length) pairs (§7.4: `==` on slices/`&str` compares the contents,
+// not the pair addresses). Returns 1 when equal, 0 otherwise.
+long lc_slice_eq(const void *a_ptr, long a_len, const void *b_ptr, long b_len) {
+    long i;
+    const unsigned char *a;
+    const unsigned char *b;
+    if (a_len != b_len) { return 0; }
+    a = (const unsigned char *) a_ptr;
+    b = (const unsigned char *) b_ptr;
+    for (i = 0; i < a_len; i++) {
+        if (a[i] != b[i]) { return 0; }
+    }
+    return 1;
+}
+
 // ---------------------------------------------------------------------------
 // Allocation (§12, §19.8.4). A bump allocator over mmap'd pages: fast, and
 // enough for M1. A real `dealloc` arrives with the std module (v1 frees

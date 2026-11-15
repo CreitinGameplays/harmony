@@ -1,0 +1,27 @@
+// EXPECT: 0
+// Integer literal suffixes (§4.3, §5.9): a suffix names the literal's type
+// outright, so `5u8` is a `u8` and flows where a `u8` is expected without an
+// `as`. An array literal also adapts its *elements* to the declared element
+// type: `let a: [i64; 3] = [1, 2, 3]` stamps the elements as `i64`. `char`
+// participates in integer casts (`char as u32`, `u8 as char`, §5.10).
+fn main() -> i32 {
+    let a = 5u8;
+    let n: u8 = a;                  // suffix wins: no adaptation needed
+    if (n != 5) { return 1; }
+
+    let big: [i64; 3] = [1, 2, 3];
+    if (big[0] != 1i64) { return 2; }
+
+    let small: [u8; 3] = [65u8, 66u8, 67u8];
+    if (small[0] != 65u8) { return 3; }
+
+    let c = 'A';
+    let code: u32 = c as u32;       // char -> u32
+    if (code != 65) { return 4; }
+
+    let b: u8 = 66u8;
+    let d: char = b as char;        // u8 -> char
+    if (d != 'B') { return 5; }
+
+    return 0;
+}

@@ -1,0 +1,21 @@
+// EXPECT: 42
+// `raw(&x)` / `raw(&mut x)` (§5.5, §13.5): a safe raw-pointer *creation* that
+// yields `raw T` / `raw mut T` over the referent. Before the fix the checker
+// passed the operand type through unchanged (`raw(&x)` typed as `&T`), so a
+// `raw T` binding or parameter rejected it. Creating a raw pointer is safe;
+// only *using* one needs `unchecked`.
+extern fn lc_put_str(p: raw u8, n: i64);
+
+fn main() -> i32 {
+    let mut b: u8 = 66;              // 'B'
+    let shared: raw u8 = raw(&b);    // shared borrow -> raw T
+    let uniq: raw mut u8 = raw(&mut b);  // exclusive borrow -> raw mut T
+
+    if (shared == 0) { return 1; }
+    if (uniq == 0) { return 2; }
+
+    unchecked("the runtime hook writes exactly n bytes from a valid pointer") {
+        lc_put_str(shared, 1);        // prints 'B'
+    }
+    return 42;
+}

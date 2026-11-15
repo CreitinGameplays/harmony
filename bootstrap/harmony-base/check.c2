@@ -278,6 +278,11 @@ int g_nmeth;
 
 struct AstNode* g_prog;            // program root (for --dump-ast and later)
 
+// Element-type hint for the next array literal (§5.9). Set while a `let` with
+// a declared array type checks its initializer, so `let a: [i64; 3] = [1, 2, 3]`
+// stamps the elements as i64 instead of the i32 default. 0 = no hint.
+int g_array_elem_hint;
+
 // ---------------------------------------------------------------------------
 // Diagnostics helpers (§16). Every stop carries a `try:` fix where one is
 // obvious; the wording lives in reports.c2 (`lc explain`).
@@ -1477,7 +1482,16 @@ void ck_stmt_let(struct AstNode* n) {
     }
     if (n->b != 0) {
         init = 1;
+        // An array literal with a declared array type adapts its *elements* to
+        // the declared element type (§5.9): `let a: [i64; 3] = [1, 2, 3];` must
+        // not leave the elements as the i32 default. The hint is read by
+        // ck_expr_array_lit (elements live in `kids`, which ck_stamp_lits does
+        // not walk).
+        if (ty != 0 && ty_is_array(ty) && n->b->kind == AST_ARRAY_LIT) {
+            g_array_elem_hint = ty_elem(ty);
+        }
         ck_expr(n->b);
+        g_array_elem_hint = 0;
         if (ty == 0) {
             // No type given: infer from the initializer. An untyped literal
             // defaults to i32 / f64 (§5.9).

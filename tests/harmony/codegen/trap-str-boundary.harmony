@@ -1,0 +1,9 @@
+// EXPECT-TRAP: T-SLICE
+// A `&str` byte-range slice must not split a code point (§5.2): slicing at a
+// byte that is a UTF-8 continuation byte traps with T-SLICE. Here é is two
+// bytes, so index 2 is inside it.
+fn main() -> i32 {
+    let s = "h\u{e9}llo";
+    let bad = &s[2..4];
+    return bad.len() as i32;
+}

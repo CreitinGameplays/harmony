@@ -214,6 +214,14 @@ int ty_is_integer(int id) {
     return 0;
 }
 
+// `char` is a 32-bit scalar value: it participates in integer casts
+// (`char as u32`, `u8 as char`, §5.10) though it is not an arithmetic
+// integer for `+ - *` (those want numbers, §7.3).
+int ty_is_integer_or_char(int id) {
+    if (ty_is_integer(id)) { return 1; }
+    return id == TY_CHAR;
+}
+
 int ty_is_signed(int id) {
     return id >= TY_I8 && id <= TY_ISIZE;
 }

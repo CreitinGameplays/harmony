@@ -25,6 +25,9 @@ char* ll_expr_call(struct AstNode* n);
 char* ll_expr_cast(struct AstNode* n);
 char* ll_expr_struct_init(struct AstNode* n);
 char* ll_expr_borrow(struct AstNode* n);
+char* ll_expr_raw(struct AstNode* n);
+int   ll_is_place(struct AstNode* n);
+char* ll_local_temp(int t, char* v);
 char* ll_expr_deref(struct AstNode* n);
 char* ll_expr_heap(struct AstNode* n);
 char* ll_expr_array_lit(struct AstNode* n);
@@ -41,6 +44,7 @@ void  ll_bounds_check_n(char* idx, char* len, struct AstNode* at);
 char* ll_index_to_i64(char* idx);
 char* ll_slice_data(char* pair);
 char* ll_slice_len(char* pair);
+char* ll_slice_eq(char* a, char* b);
 char* ll_slice_pair(struct AstNode* n);
 char* ll_len_value(struct AstNode* n);
 void  ll_store_value(char* addr, int ty, char* v);
@@ -241,6 +245,7 @@ char* ll_expr(struct AstNode* n) {
     if (n->kind == AST_AS) { return ll_expr_cast(n); }
     if (n->kind == AST_STRUCT_INIT) { return ll_expr_struct_init(n); }
     if (n->kind == AST_BORROW) { return ll_expr_borrow(n); }
+    if (n->kind == AST_RAW_EXPR) { return ll_expr_raw(n); }
     if (n->kind == AST_DEREF) { return ll_expr_deref(n); }
     if (n->kind == AST_HEAP) { return ll_expr_heap(n); }
     if (n->kind == AST_ARRAY_LIT) { return ll_expr_array_lit(n); }
@@ -353,6 +358,26 @@ char* ll_expr_binary(struct AstNode* n) {
 // expressions and compound assignments (`x += y`).
 char* ll_checked_bin(char* op, int ty, struct AstNode* n, char* l, char* r) {
     if (ll_is_float_ty(ty)) { return ll_float_bin(op, n, l, r); }
+    // `==`/`!=` on a slice or `&str` compares contents (§7.4), not the pair
+    // addresses: lower to the runtime's element-wise `lc_slice_eq`. `l` and
+    // `r` are the addresses of the two (pointer, length) pairs.
+    if ((str_eq(op, "==") || str_eq(op, "!="))
+        && (ty_kind(ty) == CTY_SLICE || ty_kind(ty) == CTY_STRREF)) {
+        char* eq;
+        eq = ll_slice_eq(l, r);
+        if (str_eq(op, "==")) { g_expr_ty = TY_BOOL; return eq; }
+        {
+            char* rv;
+            rv = ll_new_reg();
+            ll_out_str("  ");
+            ll_out_str(rv);
+            ll_out_str(" = xor i1 ");
+            ll_out_str(eq);
+            ll_out_str(", true\n");
+            g_expr_ty = TY_BOOL;
+            return rv;
+        }
+    }
     if (str_eq(op, "==") || str_eq(op, "!=") || str_eq(op, "<") || str_eq(op, "<=")
         || str_eq(op, ">") || str_eq(op, ">=")) {
         return ll_int_cmp(op, ty, l, r);
@@ -685,8 +710,10 @@ char* ll_addr(struct AstNode* n) {
     }
     if (n->kind == AST_FIELD_ACC) { return ll_field_addr(n); }
     if (n->kind == AST_INDEX) {
-        // A range index is a slice value: its address is a fresh pair.
-        if (ty_kind(n->ty) == CTY_SLICE) { return ll_slice_pair(n); }
+        // A range index is a slice/`&str` value: its address is a fresh pair.
+        if (ty_kind(n->ty) == CTY_SLICE || ty_kind(n->ty) == CTY_STRREF) {
+            return ll_slice_pair(n);
+        }
         return ll_index_addr(n);
     }
     return "null";
@@ -865,12 +892,49 @@ char* ll_slice_len(char* pair) {
     return r;
 }
 
+// `lc_slice_eq(a_ptr, a_len, b_ptr, b_len)` — contents equality of two slice
+// (pointer, length) pairs (§7.4). `a`/`b` are the addresses of the pairs.
+char* ll_slice_eq(char* a, char* b) {
+    char* ad;
+    char* al;
+    char* bd;
+    char* bl;
+    char* r;
+    ad = ll_slice_data(a);
+    al = ll_slice_len(a);
+    bd = ll_slice_data(b);
+    bl = ll_slice_len(b);
+    r = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(r);
+    ll_out_str(" = call i64 @lc_slice_eq(ptr ");
+    ll_out_str(ad);
+    ll_out_str(", i64 ");
+    ll_out_str(al);
+    ll_out_str(", ptr ");
+    ll_out_str(bd);
+    ll_out_str(", i64 ");
+    ll_out_str(bl);
+    ll_out_str(")\n");
+    {
+        char* bv;
+        bv = ll_new_reg();
+        ll_out_str("  ");
+        ll_out_str(bv);
+        ll_out_str(" = icmp ne i64 ");
+        ll_out_str(r);
+        ll_out_str(", 0\n");
+        return bv;
+    }
+}
+
 // Builds the slice pair for `base[lo..hi]` / `base[..]` (§5.2). `n` is the
 // range index node. The bounds run through `lc_check_slice`, so a bad range
 // is a T-SLICE trap, never a wild pointer.
 char* ll_slice_pair(struct AstNode* n) {
     int bt;
     int elem;
+    int is_str;
     char* data;
     char* len;
     char* lo;
@@ -880,10 +944,18 @@ char* ll_slice_pair(struct AstNode* n) {
 
     r = n->b;
     bt = n->a->ty;
-    if (ty_kind(bt) == CTY_SLICE) {
+    is_str = 0;
+    if (ty_kind(bt) == CTY_SLICE || ty_kind(bt) == CTY_STRREF) {
+        // Slice / `&str`: the base is already a (pointer, length) pair; take
+        // both halves and re-slice. A `&str` byte range slices bytes.
         char* pair;
         pair = ll_expr(n->a);
-        elem = ty_elem(bt);
+        if (ty_kind(bt) == CTY_STRREF) {
+            elem = TY_U8;
+            is_str = 1;
+        } else {
+            elem = ty_elem(bt);
+        }
         data = ll_slice_data(pair);
         len = ll_slice_len(pair);
     } else if (ty_is_ref(bt) && ty_is_array(ty_elem(bt))) {
@@ -926,6 +998,34 @@ char* ll_slice_pair(struct AstNode* n) {
     ll_out_str(", i64 ");
     ll_out_int(n->start);
     ll_out_str(")\n");
+
+    // A `&str` slice must land on character boundaries (§5.2): check both ends
+    // so the result is always a valid `&str` (T-SLICE otherwise). Plain slices
+    // skip this — their elements have no boundary structure.
+    if (is_str) {
+        ll_out_str("  call void @lc_check_boundary(ptr ");
+        ll_out_str(data);
+        ll_out_str(", i64 ");
+        ll_out_str(len);
+        ll_out_str(", i64 ");
+        ll_out_str(lo);
+        ll_out_str(", i64 ");
+        ll_out_int(n->file);
+        ll_out_str(", i64 ");
+        ll_out_int(n->start);
+        ll_out_str(")\n");
+        ll_out_str("  call void @lc_check_boundary(ptr ");
+        ll_out_str(data);
+        ll_out_str(", i64 ");
+        ll_out_str(len);
+        ll_out_str(", i64 ");
+        ll_out_str(hi);
+        ll_out_str(", i64 ");
+        ll_out_int(n->file);
+        ll_out_str(", i64 ");
+        ll_out_int(n->start);
+        ll_out_str(")\n");
+    }
 
     slot = ll_new_reg();
     ll_out_str("  ");
@@ -1527,13 +1627,79 @@ char* ll_expr_borrow(struct AstNode* n) {
         return ll_slice_pair(n->a);
     }
     // Borrowing a slice value (`&s`) yields the same pair (already a ref).
-    if (ty_kind(ll_node_ty(n)) == CTY_SLICE) {
+    if (ty_kind(ll_node_ty(n)) == CTY_SLICE || ty_kind(ll_node_ty(n)) == CTY_STRREF) {
         g_expr_ty = ll_node_ty(n);
         return ll_expr(n->a);
     }
-    // `&x` / `&mut x` is the address of the place.
+    // `&x` / `&mut x` is the address of the place. When the operand is not a
+    // place (a constructor or other rvalue, e.g. `&Val::A`), lower the value to
+    // a temporary and borrow that: an aggregate is already address-represented
+    // (its SSA value *is* its address), and a scalar gets a fresh alloca.
+    if (!ll_is_place(n->a)) {
+        int t;
+        char* v;
+        t = ll_node_ty(n->a);
+        if (ll_is_aggregate(t)) {
+            g_expr_ty = ll_node_ty(n);
+            return ll_expr(n->a);
+        }
+        v = ll_expr(n->a);
+        {
+            char* slot;
+            slot = ll_local_temp(t, v);
+            g_expr_ty = ll_node_ty(n);
+            return slot;
+        }
+    }
     g_expr_ty = ll_node_ty(n);
     return ll_addr(n->a);
+}
+
+// `raw(&x)` / `raw(&mut x)` (§13.5): the address of the borrowed place as an
+// opaque pointer. A raw pointer is one machine word, so this is exactly the
+// borrow's address with a pointer type attached. `raw(p)` on an existing raw
+// pointer is the identity (`n->a` is the borrow, or another raw pointer).
+char* ll_expr_raw(struct AstNode* n) {
+    char* v;
+    g_expr_ty = ll_node_ty(n);
+    v = ll_expr(n->a);
+    g_expr_ty = ll_node_ty(n);
+    return v;
+}
+
+// True when `n` denotes a place (an lvalue with a stable address): a local
+// binding, a dereference, a field access, or an index. A bare variant path
+// (`Val::A`, or an unqualified `Empty`), a constructor call, a function call,
+// a literal, or a binary expression is an rvalue and must be materialized
+// before it can be borrowed.
+int ll_is_place(struct AstNode* n) {
+    if (n == 0) { return 0; }
+    if (n->kind == AST_PATH) {
+        // Only a path that names a local binding has an address; a qualified
+        // path is an enum variant / associated item with no storage.
+        if (str_contains(n->sval, "::")) { return 0; }
+        if (ll_local_slot(n->sval) == 0) { return 0; }
+        return 1;
+    }
+    if (n->kind == AST_DEREF || n->kind == AST_FIELD_ACC
+        || n->kind == AST_INDEX) {
+        return 1;
+    }
+    return 0;
+}
+
+// Stores an rvalue `v` of type `t` into a fresh stack slot and returns the
+// slot's address. Used to materialize a temporary so an rvalue can be borrowed.
+char* ll_local_temp(int t, char* v) {
+    char* slot;
+    slot = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(slot);
+    ll_out_str(" = alloca ");
+    ll_out_str(ll_type_name(t));
+    ll_out_nl();
+    ll_store_value(slot, t, v);
+    return slot;
 }
 
 char* ll_expr_deref(struct AstNode* n) {
@@ -1805,6 +1971,15 @@ char* ll_method_call(struct AstNode* n, struct AstNode* callee, struct AstList* 
     if (n->ival == 1) {
         return ll_len_value(n);
     }
+    // Builtin `.as_bytes()` on `&str` (§15.2): the same (pointer, length) pair,
+    // viewed as `&[u8]`. The pair is already the representation, so this is a
+    // type-only change.
+    if (n->ival == 2) {
+        char* pair;
+        pair = ll_expr(callee->a);
+        g_expr_ty = retty;
+        return pair;
+    }
 
     rt = callee->a->ty;
     // Evaluate the receiver once; auto-deref through references/boxes to the
@@ -2009,7 +2184,12 @@ char* ll_expr_cast(struct AstNode* n) {
     g_expr_ty = to;
     if (ty_is_untyped_lit(from)) { from = to; }
     if (from == to) { return v; }
-    if (ty_is_integer(from) && ty_is_integer(to)) { return ll_int_convert(v, from, to); }
+    // `char` lowers as i32; its two documented casts (§5.10) are integer
+    // conversions: `char as u32` zero-extends the scalar (always in range),
+    // `u8 as char` widens the byte to i32.
+    if (ty_is_integer_or_char(from) && ty_is_integer_or_char(to)) {
+        return ll_int_convert(v, from, to);
+    }
     if (ty_is_integer(from) && ll_is_float_ty(to)) { return ll_fp_convert(v, from, to, 0); }
     if (ll_is_float_ty(from) && ll_is_float_ty(to)) { return ll_fp_convert(v, from, to, 1); }
     return v;

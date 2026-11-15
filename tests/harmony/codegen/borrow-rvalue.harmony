@@ -1,0 +1,22 @@
+// EXPECT: 42
+// Borrowing a constructor / rvalue (§5.4, §7.1): `&Val::A` has no place to
+// take the address of, so the value is materialized into a temporary and the
+// borrow points at that. Before the fix this lowered to `ptr null` and the
+// callee read garbage. The callee switches through the reference.
+enum Val { A, B, C, }
+
+fn f(v: &Val) -> i32 {
+    switch (v) {
+        case A: { return 1; }
+        case B: { return 2; }
+        case C: { return 3; }
+    }
+    return 0;
+}
+
+fn main() -> i32 {
+    if (f(&Val::A) != 1) { return 10; }
+    if (f(&Val::B) != 2) { return 11; }
+    if (f(&Val::C) != 3) { return 12; }
+    return 42;
+}

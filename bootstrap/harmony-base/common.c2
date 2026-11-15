@@ -560,6 +560,7 @@ int ty_kind(int id);
 char* ty_display(int id);        // stable name for diagnostics ("i32", "Point")
 int ty_is_primitive(int id);     // true for the fixed primitive ids
 int ty_is_integer(int id);       // i*/u*/isize/usize (not untyped literals)
+int ty_is_integer_or_char(int id); // integer types, plus `char` (casts, §5.10)
 int ty_is_signed(int id);
 int ty_is_unsigned(int id);
 int ty_is_float(int id);         // f32/f64
@@ -606,6 +607,7 @@ int ck_place(struct AstNode* n);           // lvalue check (assignment target)
 void ck_stmt(struct AstNode* n);           // check one statement
 void ck_stmt_block(struct AstNode* n);     // check a block (opens a scope)
 int ck_resolve_type(struct AstNode* t);    // type AST node -> type id
+int ck_suffix_ty(char* suffix);            // integer literal suffix -> type id
 int ck_slice_ty(int elem);                 // shared slice reference type `&[T]`
 int ck_slice_ty_mut(int elem, int is_mut); // slice type; is_mut selects `&mut [T]`
 int ck_is_aggregate(int ty);               // struct/enum/array/slice/&str value

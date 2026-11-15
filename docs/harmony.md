@@ -153,7 +153,7 @@ ordinary library code begins is spelled out in the **split rule** (§19.8).
 
 - No null. Absence is `Maybe<T>`.
 - No reads of uninitialized variables (definite-initialization analysis).
-- Array, slice, `Vec`, and `str` indexing are bounds-checked.
+- Array, slice, and `Vec` indexing are bounds-checked (`str` is reached through `s.as_bytes()[i]` or a `&s[lo..hi]` range, also checked).
 - Integer overflow, divide-by-zero, and over-wide shifts **trap** in every build mode.
 - No pointer arithmetic, no raw pointers, no unions, no implicit casts, **outside `unchecked`**.
 - Borrows are liveness-based (non-lexical): a borrow ends at its **last use**, not at the `}`.
@@ -1362,7 +1362,7 @@ A **trap** is a controlled, immediate stop with a message, used when a bug is de
 
 | Code | Trigger |
 |---|---|
-| `T-INDEX` | index out of range on array, slice, `Vec`, or `str` |
+| `T-INDEX` | index out of range on array, slice, `Vec`, or `s.as_bytes()[i]` |
 | `T-SLICE` | bad slice range, or `str` slice not on a character boundary |
 | `T-OVERFLOW` | integer overflow in `+ - * neg` |
 | `T-DIV0` | division or remainder by zero, or `MIN / -1` |

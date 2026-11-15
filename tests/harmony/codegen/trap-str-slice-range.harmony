@@ -1,0 +1,9 @@
+// EXPECT-TRAP: T-SLICE
+// A `&str` byte-range slice is bounds-checked against the byte length; a range
+// past the end traps (§5.2, §14.1). The runtime also traps when an end is not
+// on a character boundary; this case only exercises the out-of-range path.
+fn main() -> i32 {
+    let s = "hello";
+    let bad = &s[2..9];
+    return bad.len() as i32;
+}

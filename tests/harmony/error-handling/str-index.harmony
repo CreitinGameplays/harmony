@@ -1,0 +1,10 @@
+// WANT: TYPE-02
+// A `str` is not integer-indexable (§5.2): "the 3rd what?" — a byte, a scalar,
+// or a grapheme? Use `s.as_bytes()[i]`, `s.chars()`, or a byte-range slice.
+fn first(s: &str) -> u8 {
+    return s[0];
+}
+
+fn main() -> i32 {
+    return first("hi") as i32;
+}

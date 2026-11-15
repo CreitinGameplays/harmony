@@ -1,0 +1,45 @@
+// EXPECT: 42
+// `&str` operations (§5.2, §15.2): a `str` is not integer-indexable, so the
+// byte view comes from `.as_bytes()` (a `&[u8]`), and a piece of text comes
+// from a byte-range slice `&s[lo..hi]`. `==`/`!=` on two `&str` compare the
+// *contents* (runtime `lc_slice_eq`), not the pair addresses.
+fn count(s: &str, target: u8) -> i32 {
+    let bytes = s.as_bytes();
+    let mut i: usize = 0;
+    let mut n: i32 = 0;
+    while (i < bytes.len()) {
+        if (bytes[i] == target) { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+fn main() -> i32 {
+    let a = "banana";
+    let b = "banana";
+    let c = "bandana";
+    if (a != b) { return 1; }        // equal contents
+    if (a == c) { return 2; }        // different contents
+    if (count("banana", b'a') != 3) { return 3; }
+
+    let sub = &a[1..4];              // "ana"
+    if (sub.len() != 3) { return 4; }
+    if (sub != "ana") { return 5; }
+    if (&a[..2] != "ba") { return 6; }
+    if (&a[4..] != "na") { return 7; }
+
+    let bytes = a.as_bytes();
+    if (bytes.len() != 6) { return 8; }
+    if (bytes[0] != 98u8) { return 9; }   // 'b'
+    if (bytes[5] != 97u8) { return 10; }  // 'a'
+
+    // A multi-byte character slices only on its boundaries: é is two bytes.
+    let u = "h\u{e9}llo";
+    if (u.len() != 6) { return 11; }
+    if (&u[0..3] != "h\u{e9}") { return 12; }
+    if (&u[3..] != "llo") { return 13; }
+
+    // 42 via one final check on the sliced text.
+    if (sub == "ana") { return 42; }
+    return 14;
+}

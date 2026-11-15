@@ -39,6 +39,7 @@ int ck_expr_struct_init(struct AstNode* n);
 int ck_expr_array_lit(struct AstNode* n);
 int ck_expr_borrow(struct AstNode* n);
 int ck_expr_deref(struct AstNode* n);
+int ck_expr_raw(struct AstNode* n);
 int ck_expr_heap(struct AstNode* n);
 int ck_expr_sizeof(struct AstNode* n);
 
@@ -86,7 +87,13 @@ int ck_expr(struct AstNode* n) {
     if (n == 0) { return TY_UNIT; }
     if (n->ty != 0) { return n->ty; }   // already checked (idempotent)
     t = TY_INVALID;
-    if (n->kind == AST_INT_LIT) { n->ty = TY_UINT_LIT; return n->ty; }
+    if (n->kind == AST_INT_LIT) {
+        // A suffix names the literal's type outright (`5u8`, `7i64`); it is
+        // not an untyped literal, so it will not adapt to another context.
+        if (n->sval != 0) { n->ty = ck_suffix_ty(n->sval); return n->ty; }
+        n->ty = TY_UINT_LIT;
+        return n->ty;
+    }
     if (n->kind == AST_FLOAT_LIT) { n->ty = TY_FLOAT_LIT; return n->ty; }
     if (n->kind == AST_STRING_LIT) { n->ty = ty_new(CTY_STRREF, "&str", TY_U8, 0); return n->ty; }
     if (n->kind == AST_CHAR_LIT) { n->ty = TY_CHAR; return n->ty; }
@@ -105,7 +112,7 @@ int ck_expr(struct AstNode* n) {
     if (n->kind == AST_DEREF) { t = ck_expr_deref(n); n->ty = t; return t; }
     if (n->kind == AST_HEAP) { t = ck_expr_heap(n); n->ty = t; return t; }
     if (n->kind == AST_SIZEOF) { t = ck_expr_sizeof(n); n->ty = t; return t; }
-    if (n->kind == AST_RAW_EXPR) { t = ck_expr(n->a); n->ty = t; return t; }
+    if (n->kind == AST_RAW_EXPR) { t = ck_expr_raw(n); n->ty = t; return t; }
     if (n->kind == AST_BLOCK) {
         // A block used as an expression: its value is the last expression
         // statement (§8.1). M1 keeps it simple: blocks in expression position
@@ -408,10 +415,36 @@ int ck_expr_index(struct AstNode* n) {
     }
 
     if (rng) {
-        // Slice ranges work on arrays and slices (through one reference for
-        // arrays); `&str` byte ranges arrive with string support later.
+        // Slice ranges work on arrays, slices, and `&str` (through one
+        // reference for arrays). A `&str` byte range yields a `&str` (§5.2);
+        // the runtime traps if either end is off a character boundary.
         int st;
         st = base;
+        // Check `&str` before unwrapping: it *is* a reference (fat), so
+        // `ty_is_ref` would otherwise reduce it to its byte element.
+        if (ty_kind(st) == CTY_STRREF) {
+            if (n->b->a != 0) {
+                int lo;
+                lo = ck_expr(n->b->a);
+                if (lo == TY_INVALID) { return TY_INVALID; }
+                if (!ty_is_integer(lo) && !ty_is_untyped_lit(lo)) {
+                    ck_err_type_mismatch(n->b->a, TY_ISIZE, lo, "slice start");
+                    return TY_INVALID;
+                }
+                ck_stamp_lits(n->b->a, TY_ISIZE);
+            }
+            if (n->b->b != 0) {
+                int hi;
+                hi = ck_expr(n->b->b);
+                if (hi == TY_INVALID) { return TY_INVALID; }
+                if (!ty_is_integer(hi) && !ty_is_untyped_lit(hi)) {
+                    ck_err_type_mismatch(n->b->b, TY_ISIZE, hi, "slice end");
+                    return TY_INVALID;
+                }
+                ck_stamp_lits(n->b->b, TY_ISIZE);
+            }
+            return ty_new(CTY_STRREF, "&str", TY_U8, 0);
+        }
         if (ty_is_ref(st) || ty_is_heap(st)) { st = ty_elem(st); }
         if (!ty_is_array(st) && ty_kind(st) != CTY_SLICE) {
             diag_stop("TYPE-02", "cannot slice this type",
@@ -458,7 +491,15 @@ int ck_expr_index(struct AstNode* n) {
         }
         return ty_elem(base);
     }
-    if (ty_kind(base) == CTY_STRREF) { return TY_CHAR; }
+    // A `str` is not integer-indexable (§5.2): "the 3rd what?" — a byte, a
+    // scalar, or a grapheme? Use `s.as_bytes()[i]` for a byte, `s.chars()` for
+    // scalars, or a byte-range slice `&s[lo..hi]` for a piece of text.
+    if (ty_kind(base) == CTY_STRREF) {
+        diag_stop("TYPE-02", "cannot index a `str`",
+                  "A `str` is indexed by byte with `s.as_bytes()[i]`, by scalar with `s.chars()`, or sliced by byte range with `&s[lo..hi]`.",
+                  diag_file(n->a->file), n->a->start, n->a->end);
+        return TY_INVALID;
+    }
     if (ty_is_ref(base) || ty_is_heap(base)) {
         // Indexing through a reference/box indexes the pointee.
         int inner;
@@ -861,6 +902,13 @@ int ck_expr_method_call(struct AstNode* n, struct AstNode* callee, struct AstLis
             return TY_USIZE;
         }
     }
+    // `.as_bytes()` on `&str` (§15.2): the same (pointer, length) pair, viewed
+    // as `&[u8]`. `n->ival` marks the intrinsic for the backend.
+    if (str_eq(callee->sval, "as_bytes") && (args == 0 || args->len == 0)
+        && ty_kind(recv) == CTY_STRREF) {
+        n->ival = 2;
+        return ck_slice_ty(TY_U8);
+    }
     rt = recv;
     while (ty_is_ref(rt) || ty_is_heap(rt)) { rt = ty_elem(rt); }
     found = 0;
@@ -1054,7 +1102,10 @@ int ck_expr_assoc_call(struct AstNode* n, struct AstNode* callee, struct AstList
     return TY_INVALID;
 }
 
-// `expr as Type` (§5.8): explicit-only conversions.
+// `expr as Type` (§5.10): explicit-only, **lossless** conversions. `char` has
+// exactly two documented conversions — `char as u32` (a scalar always fits in
+// a u32) and `u8 as char` (every u8 is a valid scalar). Anything else that
+// would lose data or fabricate an invalid scalar is rejected.
 int ck_expr_as(struct AstNode* n) {
     int from;
     int to;
@@ -1062,6 +1113,8 @@ int ck_expr_as(struct AstNode* n) {
     to = ck_resolve_type(n->b);
     if (from == TY_INVALID || to == TY_INVALID) { return TY_INVALID; }
     if (ty_is_untyped_lit(from)) { return to; }
+    if (from == TY_CHAR && to == TY_U32) { return to; }
+    if (from == TY_U8 && to == TY_CHAR) { return to; }
     if (ty_is_integer(from) && ty_is_integer(to)) { return to; }
     if (ty_is_float(from) && ty_is_float(to)) { return to; }
     if (ty_is_integer(from) && ty_is_float(to)) { return to; }
@@ -1107,13 +1160,35 @@ int ck_expr_struct_init(struct AstNode* n) {
     return ty;
 }
 
+// The concrete type named by an integer literal suffix (`42u8`, `7i64`).
+// Mirrors the backend's `ll_suffix_ty`; the suffix set is the primitive types
+// (lexlit's `suffix_is_known`). Unknown suffixes never reach here.
+int ck_suffix_ty(char* suffix) {
+    if (str_eq(suffix, "u8")) { return TY_U8; }
+    if (str_eq(suffix, "u16")) { return TY_U16; }
+    if (str_eq(suffix, "u32")) { return TY_U32; }
+    if (str_eq(suffix, "u64")) { return TY_U64; }
+    if (str_eq(suffix, "usize")) { return TY_USIZE; }
+    if (str_eq(suffix, "i8")) { return TY_I8; }
+    if (str_eq(suffix, "i16")) { return TY_I16; }
+    if (str_eq(suffix, "i32")) { return TY_I32; }
+    if (str_eq(suffix, "i64")) { return TY_I64; }
+    if (str_eq(suffix, "isize")) { return TY_ISIZE; }
+    return TY_I32;
+}
+
 // `[a, b, c]` or `[v; n]`.
 int ck_expr_array_lit(struct AstNode* n) {
     int et;
     int i;
+    int hint;
     struct AstList* els;
     els = n->kids;
     et = TY_INVALID;
+    // Consume the declared-element-type hint (§5.9) exactly once: a *nested*
+    // array literal must not see the outer context's hint.
+    hint = g_array_elem_hint;
+    g_array_elem_hint = 0;
     if (els != 0 && els->len > 0) {
         et = ck_expr(els->items[0]);
         i = 1;
@@ -1125,8 +1200,14 @@ int ck_expr_array_lit(struct AstNode* n) {
             }
             i = i + 1;
         }
-        if (et == TY_UINT_LIT) { et = TY_I32; }
-        if (et == TY_FLOAT_LIT) { et = TY_F64; }
+        // The element type: a declared array context (§5.9) wins over the
+        // i32/f64 default; otherwise the first element's type, defaulted.
+        if (hint != 0) {
+            et = hint;
+        } else {
+            if (et == TY_UINT_LIT) { et = TY_I32; }
+            if (et == TY_FLOAT_LIT) { et = TY_F64; }
+        }
         if (els != 0) {
             i = 0;
             while (i < els->len) {
@@ -1145,8 +1226,12 @@ int ck_expr_array_lit(struct AstNode* n) {
     // `[v; n]` form: a = value, b = count expr.
     if (n->a != 0) {
         et = ck_expr(n->a);
-        if (et == TY_UINT_LIT) { et = TY_I32; }
-        if (et == TY_FLOAT_LIT) { et = TY_F64; }
+        if (hint != 0) {
+            et = hint;
+        } else {
+            if (et == TY_UINT_LIT) { et = TY_I32; }
+            if (et == TY_FLOAT_LIT) { et = TY_F64; }
+        }
         ck_stamp_lits(n->a, et);
         {
             int len;
@@ -1173,9 +1258,13 @@ int ck_expr_borrow(struct AstNode* n) {
     is_mut = n->ival & 1;
     t = ck_expr(n->a);
     if (t == TY_INVALID) { return TY_INVALID; }
-    // A slice is already a reference (a fat pointer): `&a[1..3]` borrows the
-    // range and yields the pair itself, not another layer (§5.2). `&mut a[..]`
-    // upgrades it to the exclusive slice type so writes through it are sound.
+    // A slice or `&str` is already a reference (a fat pointer): `&a[1..3]` /
+    // `&s[1..4]` borrows the range and yields the pair itself, not another
+    // layer (§5.2). `&mut a[..]` upgrades a slice to the exclusive type so
+    // writes through it are sound.
+    if (ty_kind(t) == CTY_STRREF) {
+        return t;
+    }
     if (ty_kind(t) == CTY_SLICE) {
         if (is_mut && !ty_slice_is_mut(t)) {
             return ck_slice_ty_mut(ty_elem(t), 1);
@@ -1205,6 +1294,32 @@ int ck_expr_deref(struct AstNode* n) {
         return TY_INVALID;
     }
     return ty_elem(t);
+}
+
+// `raw(&x)` / `raw(&mut x)` (§13.5): a safe raw-pointer *creation* that yields
+// `raw T` / `raw mut T` over the referent. Only a borrow is accepted, so the
+// operand's address is well-defined (no dangling temporary). Creating a raw
+// pointer from an existing `raw` value is a no-op (keeps its pointer-ness).
+int ck_expr_raw(struct AstNode* n) {
+    int t;
+    int elem;
+    int is_mut;
+    t = ck_expr(n->a);
+    if (t == TY_INVALID) { return TY_INVALID; }
+    // Already a raw pointer: `raw(p)` is the identity on the raw type.
+    if (ty_is_ptr(t)) { return t; }
+    if (!ty_is_ref(t)) {
+        diag_stop("TYPE-02", "cannot make a raw pointer from this",
+                  "`raw(...)` takes a borrow: write `raw(&x)` or `raw(&mut x)`.",
+                  diag_file(n->a->file), n->a->start, n->a->end);
+        return TY_INVALID;
+    }
+    elem = ty_elem(t);
+    is_mut = ty_kind(t) == CTY_MUTREF;
+    if (is_mut) {
+        return ty_new(CTY_MUTPTR, ck_ref_name("raw mut", elem), elem, 0);
+    }
+    return ty_new(CTY_PTR, ck_ref_name("raw", elem), elem, 0);
 }
 
 // `heap(expr)` (§12): a heap box over the operand's type.

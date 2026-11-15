@@ -124,7 +124,7 @@ binary is `harmony-base` (the spec's `lc`).
   - Quiet toolchain: clang stderr captured to a log; one-line summary + first
     error by default, `-v` replays the whole log.
   - Untyped literals adapt at every coercion site (§5.9), stamped on the node.
-  - Tests: codegen.sh 67, error-handling.sh 31, checker.sh 28, parser.sh 55,
+  - Tests: codegen.sh 73, error-handling.sh 33, checker.sh 28, parser.sh 55,
     lexer.sh 21, golden.sh 11, run.sh 41, fuzz.sh 24, determinism.sh 4,
     c2x-seed 26 + 3.
 
@@ -203,6 +203,23 @@ binary is `harmony-base` (the spec's `lc`).
       `-Og`/`-Ofast` work), while plain `emit-llvm` keeps printing our own
       byte-deterministic IR for the milestone check. An unrecognized `-O…`
       (e.g. `-O4`) is `usage.bad-opt`, not a generic unknown flag.
+- [x] **`&str` and raw-pointer feature/bug fixes found probing a LISP
+      interpreter.** (1) `&str` byte reads: `s[i]` is *not* integer-indexable
+      (§5.2 — "the 3rd what?"), so it is now a `TYPE-02` stop; the documented
+      byte view is `s.as_bytes() -> &[u8]` and text pieces come from
+      `&s[lo..hi]`. (2) `&str`/slice `==`/`!=` compares *contents*
+      (`lc_slice_eq`), not pair addresses. (3) Byte-range slicing `&s[lo..hi]`
+      on a `&str` now yields a `&str` and traps (T-SLICE) when an end splits a
+      UTF-8 code point (`lc_check_boundary`). (4) `.as_bytes()` is an intrinsic.
+      (5) `char` participates in integer casts per §5.10 (`char as u32`,
+      `u8 as char`). (6) An integer-literal suffix names its type
+      (`let a = 5u8` is `u8`), and an array literal adapts its elements to a
+      declared element type (`let a: [i64; 3] = [1, 2, 3]`). (7) `raw(&x)` /
+      `raw(&mut x)` yield `raw T` / `raw mut T` (§13.5); a non-borrow operand
+      is a `TYPE-02` stop. (8) Borrowing an rvalue (`&Val::A`) materializes a
+      temporary instead of lowering to `ptr null`. Regression tests
+      `str-bytes`, `literal-suffix-array-cast`, `borrow-rvalue`, `raw-create`,
+      `str-index`, `raw-non-borrow`, `trap-str-slice-range`, `trap-str-boundary`.
 - [x] `extern fn` FFI fixes found while assessing the rewrite's needs: a raw
       pointer compared against `0` now lowers to `icmp … ptr …, null` (LLVM
       rejected `… , 0`); an `extern fn` naming a prelude runtime hook (e.g.

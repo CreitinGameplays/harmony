@@ -1,0 +1,8 @@
+// WANT: TYPE-02
+// `raw(...)` makes a raw pointer from a borrow (§13.5): `raw(&x)` / `raw(&mut
+// x)`. A non-borrow operand has no well-defined address to borrow.
+fn main() -> i32 {
+    let p: raw i32 = raw(5);
+    if (p == 0) { return 1; }
+    return 0;
+}

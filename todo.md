@@ -118,7 +118,7 @@ binary is `harmony-base` (the spec's `lc`).
   - Quiet toolchain: clang stderr captured to a log; one-line summary + first
     error by default, `-v` replays the whole log.
   - Untyped literals adapt at every coercion site (§5.9), stamped on the node.
-  - Tests: codegen.sh 51, error-handling.sh 28, checker.sh 27, parser.sh 55,
+  - Tests: codegen.sh 53, error-handling.sh 31, checker.sh 28, parser.sh 55,
     lexer.sh 21, golden.sh 11, run.sh 30, fuzz.sh 24, determinism.sh 4.
 
 - [x] **M5 (driver part) — diagnostic model + renderers.**
@@ -165,11 +165,29 @@ binary is `harmony-base` (the spec's `lc`).
       temp file by default. New `sys_spawn_stdin` (c2x-seed gains a `pipe2`
       stub) writes the IR buffer to the child; `-v` keeps a `/tmp` copy for
       debugging a rejected IR. (`emit-llvm` still prints the IR to stdout.)
-- [x] Continue growing accept/reject suites per feature: added cases for
-      generic inference (codegen + checker + parser), mutable slices,
-      `unchecked fn` (accept + UNCK-04 reject + head-without-fn reject), and
-      `audit` (run.sh + two golden fixtures). (The runtime `T-ASSERT` trap test
-      already exists: `tests/harmony/codegen/trap-assert`.)
+- [x] Multi-file compilation (`import`, §6.7): a new module loader
+      (`src/harmony-base/module.c2`) eagerly loads the root file plus
+      everything it imports (relative paths, dedupe by path, NAME-04 on a
+      missing file or a cycle), merges the items into one flat program with
+      imported items renamed `modname::name`, and the existing checker and
+      LLVM path handle the rest. `export struct/enum` now parse (the marker
+      was silently dropped before); qualified calls resolve module functions
+      before enum/assoc forms, including *inferred* generic calls through a
+      namespace (`geometry::id(7)`); merged type names mangle `::`→`__` in the
+      IR. `--dump-ast` still skips resolution (parser round-trip tool).
+      Bootstrap simplification: non-`export` items of imported modules merge
+      too (private helpers stay callable); the final compiler's loader
+      enforces visibility. Root-module lex/parse stops exit 1; an unreadable
+      input exits 2, as before.
+- [x] Safe process arguments (§15.6): `args() -> &[&str]` is the safe view of
+      argv (no raw pointer). `_start` is a naked trampoline handing the
+      initial `%rsp` to `lc_start`; `lc_args()` builds the static
+      `&[&str]` view; the builtin lowers to a 16-byte copy from it.
+- [x] Continue growing accept/reject suites per feature: cases exist for
+      generic inference, mutable slices, `unchecked fn`, `audit`, `args()`,
+      and multi-file imports (codegen 53 incl. `imports-main` with a
+      transitive import; error-handling 31 incl. missing/cyclic imports).
+      (The runtime `T-ASSERT` trap test: `tests/harmony/codegen/trap-assert`.)
 
 ### Cross-cutting
 

@@ -168,6 +168,7 @@ const int MAX_FIXES = 3;       // §16.2: 1 to 3 fixes
 void diag_register_file(struct SourceFile* sf);
 
 int diag_stop_count(void);
+int diag_file_count(void);   // source files registered with diagnostics
 int diag_warn_count(void);
 int diag_hint_count(void);
 void diag_reset(void);
@@ -404,6 +405,12 @@ struct AstNode {
 //
 // Returns the program root node, or 0 after a fatal (uncoverable) stop.
 // Syntax stops are queryable via parser_stop_count().
+
+// Module loader (module.c2, docs/harmony.md 6.7): loads the root file plus
+// everything it imports, merged into one flat item list.
+struct AstNode* module_program(struct Options* opts);
+int mod_failed(void);               // a hard module-load error was reported
+int mod_io_failed(void);            // the root input itself was unreadable
 // ---------------------------------------------------------------------------
 struct AstNode* parser_run(struct SourceFile* sf, struct Token* tokens, int ntokens);
 int parser_stop_count(void);

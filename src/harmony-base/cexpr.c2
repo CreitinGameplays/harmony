@@ -656,18 +656,31 @@ int ck_expr_call(struct AstNode* n) {
     {
         int sym;
         if (str_contains(callee->sval, "::")) {
-            // `Enum::Variant(payload)` first; then `Type::assoc(...)`.
-            int ev;
-            ev = ck_enum_construct(n, callee, args);
-            if (ev != TY_INVALID) { return ev; }
-            return ck_expr_assoc_call(n, callee, args);
-        }
-        // An unqualified variant construction `Has(x)` (§6.5): resolve against
-        // every in-scope enum before treating it as an ordinary function.
-        {
+            int modsym;
+            // A module function first (`geometry::length`, 6.7): the merged
+            // symbol is exactly this flattened name. Then the enum forms.
+            modsym = ck_lookup(callee->sval);
+            if (modsym >= 0 && g_sym_kind[modsym] == SK_FN) {
+                sym = modsym;
+            } else {
+                // `Enum::Variant(payload)` next; then a generic template
+                // called through a namespace (`geometry::id(7)`, 6.7 + 18),
+                // inferred like a bare call; then `Type::assoc(...)`.
+                int ev;
+                ev = ck_enum_construct(n, callee, args);
+                if (ev != TY_INVALID) { return ev; }
+                if (ck_find_template(callee->sval) >= 0) {
+                    return ck_infer_generic_call(n, callee, args);
+                }
+                return ck_expr_assoc_call(n, callee, args);
+            }
+        } else {
+            // An unqualified variant construction `Has(x)` (6.5): resolve
+            // against every in-scope enum before treating it as a function.
             int ev;
             ev = ck_enum_construct_unqualified(n, args);
             if (ev != TY_INVALID) { return ev; }
+            sym = ck_lookup(callee->sval);
         }
         // The print family is recognized by the compiler only for its format
         // string (§15.1, §19.8.6): there are no variadics, so the placeholder
@@ -713,7 +726,6 @@ int ck_expr_call(struct AstNode* n) {
             n->ival = 7;
             return ck_builtin_exit(n, args);
         }
-        sym = ck_lookup(callee->sval);
         if (sym < 0 || g_sym_kind[sym] != SK_FN) {
             // A generic template is callable without explicit `<...>`: infer
             // its type arguments from the arguments (§18). The old fallback

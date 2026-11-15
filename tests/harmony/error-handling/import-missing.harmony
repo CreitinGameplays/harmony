@@ -1,0 +1,5 @@
+// WANT: NAME-04
+// An imported file that does not exist is a NAME-04 stop pointing at the
+// import line (§6.7).
+import "no-such-module-exists.harmony";
+fn main() -> i32 { return 0; }

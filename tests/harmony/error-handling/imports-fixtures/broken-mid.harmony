@@ -1,0 +1,3 @@
+// Exists, but imports a file that does not.
+import "no-such-leaf.harmony";
+export fn m() -> i32 { return 0; }

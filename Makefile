@@ -11,6 +11,7 @@ HB_SRC    := \
 	src/harmony-base/source.c2 \
 	src/harmony-base/diag.c2 \
 	src/harmony-base/reports.c2 \
+	src/harmony-base/module.c2 \
 	src/harmony-base/lexlit.c2 \
 	src/harmony-base/lexer.c2 \
 	src/harmony-base/types.c2 \

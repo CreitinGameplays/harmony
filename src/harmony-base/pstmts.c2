@@ -706,17 +706,40 @@ struct AstNode* parse_item(int is_export) {
         return parse_const_decl(is_export);
     }
 
-    // [copy] struct / [copy] enum
-    if (p_at_kw("copy")
-        && (tok_is_kw(p_peek(1), "struct") || tok_is_kw(p_peek(1), "enum"))) {
+    // [copy] struct / [copy] enum — and `[export] [copy] struct/enum`. `copy`
+    // and `export` both precede the item keyword and may appear together.
+    {
         int is_copy;
-        p_advance();      // copy
-        is_copy = 1;
-        if (p_at_kw("struct")) { return parse_struct_decl(is_copy); }
-        return parse_enum_decl(is_copy);
+        int is_export_seen;
+        is_copy = 0;
+        is_export_seen = is_export;
+        while (p_at_kw("copy") || p_at_kw("export")) {
+            if (p_at_kw("copy")) { is_copy = 1; } else { is_export_seen = 1; }
+            p_advance();
+            if (!(tok_is_kw(p_cur(), "struct") || tok_is_kw(p_cur(), "enum")
+                  || p_at_kw("copy") || p_at_kw("export"))) {
+                p_syn("SYN-05",
+                      "expected `struct` or `enum` after the markers",
+                      "Spell it `export copy struct Name { ... }` or `copy enum Name { ... }` (§6.1).",
+                      "write the item keyword",
+                      "export copy struct Point { x: i32; y: i32; }",
+                      p_cur());
+                return 0;
+            }
+        }
+        if (p_at_kw("struct")) {
+            n = parse_struct_decl(is_copy);
+            if (n == 0) { return 0; }
+            if (is_export_seen) { n->ival = n->ival | 2; }
+            return n;
+        }
+        if (p_at_kw("enum")) {
+            n = parse_enum_decl(is_copy);
+            if (n == 0) { return 0; }
+            if (is_export_seen) { n->ival = n->ival | 2; }
+            return n;
+        }
     }
-    if (p_at_kw("struct")) { return parse_struct_decl(0); }
-    if (p_at_kw("enum"))   { return parse_enum_decl(0); }
 
     // methods
     if (p_at_kw("methods")) { return parse_methods_block(); }

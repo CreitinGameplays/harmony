@@ -532,6 +532,16 @@ fn main() {
 - `import "path";` makes the file's exported items available under the file's base name as a namespace.
 - Import cycles are an error. The standard library is in the implicit prelude plus a handful of importable modules (`import "std/io.src";`).
 
+*harmony-base (bootstrap) implements this as an eager merge:* every module is
+loaded depth-first (each merged once, in source order), imported items are
+renamed `modname::name` (binding exactly like a flattened enum path), and the
+whole program is checked and emitted as one flat module — deterministic, so
+`import`ed and single-file programs compile to the same-shaped IR. A module's
+private helpers merge under its namespace too (bootstrap simplification: the
+final compiler's loader enforces `export` visibility properly); a library
+`main` merges as `modname::main` and the root file's `main` remains the entry
+point. Missing imports and cycles are `NAME-04`.
+
 ### 6.8 Foreign functions (FFI to C)
 
 ```c

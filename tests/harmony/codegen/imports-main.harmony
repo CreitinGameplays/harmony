@@ -1,0 +1,24 @@
+// EXPECT: 42
+// Multi-file compilation (6.7): `import "path";` resolves relative to the
+// importing file, merged into one flat program; imported items are bound
+// under the file's base name. Exercises a struct, a method-style call, a
+// private helper, a transitive import (libmid imports geometry), an inferred
+// generic call into another module, and float equality.
+import "imports/libmid.harmony";
+import "imports/geometry.harmony";
+
+fn main() -> i32 {
+    let v = geometry::Vec2 { .x = 3.0, .y = 4.0 };
+    let a = geometry::length2(&v);          // 25.0
+    let w = libmid::scale(v, 2.0);          // (6.0, 8.0)
+    let b = geometry::length2(&w);          // 100.0
+    let s = geometry::describe(&v);          // "vec"
+    let t = geometry::id(5);                 // 5 (inferred i32, 6.7 + 18)
+    if (a != 25.0) { return 1; }
+    if (b != 100.0) { return 2; }
+    if (s.len() != 3) { return 3; }
+    if (t != 5) { return 4; }
+    let z = libmid::zero();
+    if (geometry::length2(&z) != 0.0) { return 5; }
+    return 42;
+}

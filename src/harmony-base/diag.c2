@@ -35,6 +35,10 @@ int diag_stop_count(void) { return g_nstops; }
 int diag_warn_count(void) { return g_nwarns; }
 int diag_hint_count(void) { return g_nhints; }
 
+// The number of source files registered so far (the module loader gives each
+// imported file its diag index so parser stops render with the right name).
+int diag_file_count(void) { return g_nfiles; }
+
 // The registered SourceFile for an AST `file` index (0 = the main module).
 // Returns 0 when the index is out of range, which diag_step tolerates.
 struct SourceFile* diag_file(int idx) {

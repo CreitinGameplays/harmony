@@ -4,48 +4,55 @@
 // checker passes are stubbed and added in later milestones (§19.7).
 
 int pipeline_run(struct Options* opts) {
-    struct SourceFile sf;
-    struct Token* toks;
+    struct SourceFile* sf;
     struct AstNode* root;
-    int n;
-    int rc;
 
     arena_reset();
     diag_reset();
 
-    rc = source_load(opts->input, &sf);
-    if (rc != 0) {
-        diag_plain("source.not-found", opts->input);
-        return EXIT_USAGE;
-    }
-    diag_register_file(&sf);
-
-    if (opts->verbose) {
-        err_str("harmony-base: read ");
-        err_int(sf.len);
-        err_str(" bytes from ");
-        err_str(sf.path);
-        err_nl();
-    }
-
-    n = lexer_run(&sf, &toks);
-    if (n < 0) {
-        diag_flush(opts->format, opts->all);
-        return EXIT_STOP;
-    }
-
-    if (opts->verbose) {
-        err_str("harmony-base: lexed ");
-        err_int(n);
-        err_str(" tokens");
-        err_nl();
-    }
-
-    root = parser_run(&sf, toks, n);
-    if (root == 0 || parser_stop_count() > 0) {
-        // The parser already reported each syntax stop; flush and stop.
-        diag_flush(opts->format, opts->all);
-        return EXIT_STOP;
+    // Stage 1+2+3: load the root module plus everything it imports, merged
+    // into one flat item list (module.c2). A single-file program with no
+    // imports flows through the same path (zero extra modules).
+    // `--dump-ast` is a parser round-trip tool: it skips import resolution
+    // entirely (a fictional `import "std/io.src";` still parses — the check
+    // that the file exists belongs to the compilation commands, not the
+    // parse-tree dump).
+    if (opts->dump_ast) {
+        struct SourceFile* dsf;
+        struct Token* toks;
+        int ntoks;
+        dsf = (struct SourceFile*) arena_alloc(64);
+        if (source_load(opts->input, dsf) != 0) {
+            diag_plain("source.not-found", opts->input);
+            return EXIT_USAGE;
+        }
+        diag_register_file(dsf);
+        ntoks = lexer_run(dsf, &toks);
+        if (ntoks < 0) {
+            diag_flush(opts->format, opts->all);
+            return EXIT_STOP;
+        }
+        root = parser_run(dsf, toks, ntoks);
+        if (root == 0 || parser_stop_count() > 0) {
+            diag_flush(opts->format, opts->all);
+            return EXIT_STOP;
+        }
+        sf = dsf;
+    } else {
+        root = module_program(opts);
+        if (root == 0) {
+            // module_program reported the plain error. An unreadable root
+            // file is a usage error (exit 2); lex/parse stops inside it are
+            // not (they flow through the checks below and exit 1).
+            if (mod_io_failed()) { return EXIT_USAGE; }
+        }
+        if (mod_failed() || parser_stop_count() > 0) {
+            // Import or syntax stops were reported; flush and stop.
+            diag_flush(opts->format, opts->all);
+            return EXIT_STOP;
+        }
+        // The root module's registered source file (module 0).
+        sf = diag_file(0);
     }
 
     if (opts->verbose) {
@@ -89,7 +96,7 @@ int pipeline_run(struct Options* opts) {
         idx = diag_stop("ICE-01",
                         "the C backend is not implemented in this build yet",
                         "The C backend (`emit-c`) is the cross-check backend and lands with milestone M7 (§19.4b). The LLVM path (`emit-llvm`, `build`, `run`) works today.",
-                        &sf, 0, 1);
+                        sf, 0, 1);
         if (idx >= 0) {
             diag_fix(diag_get(idx), "use the LLVM backend", "harmony-base emit-llvm main.harmony");
         }

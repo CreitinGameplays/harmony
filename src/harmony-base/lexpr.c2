@@ -1923,10 +1923,32 @@ int ll_find_method(int rt, char* name) {
 }
 
 // `Type__method` — the §19.4 mangling for methods (no colons in IR names).
+// A merged module type (`geometry::Vec2`) collapses `::` to `__`.
 char* ll_method_symbol(int rt, char* name) {
+    char* tname;
+    char* s;
+    int i;
+    int j;
+    tname = ty_display(rt);
+    s = arena_alloc(str_len(tname) + str_len(name) + 16);
+    i = 0;
+    j = 0;
+    while (tname[i] != 0) {
+        if (tname[i] == ':' && tname[i + 1] == ':') {
+            s[j] = '_';
+            s[j + 1] = '_';
+            j = j + 2;
+            i = i + 2;
+            continue;
+        }
+        s[j] = tname[i];
+        j = j + 1;
+        i = i + 1;
+    }
+    s[j] = 0;
     lexbuf_reset();
     lexbuf_push_str("harmony__");
-    lexbuf_push_str(ty_display(rt));
+    lexbuf_push_str(s);
     lexbuf_push_str("__");
     lexbuf_push_str(name);
     return lexbuf_finish();

@@ -1,0 +1,5 @@
+// WANT: NAME-04
+// Import cycles are an error no matter where they close (§6.7): a imports
+// b, b imports a.
+import "imports-fixtures/cyc-a.harmony";
+fn main() -> i32 { return 0; }

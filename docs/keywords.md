@@ -41,6 +41,7 @@ a `NAME-02` translation hint): `unsafe` `impl` `match` `trait` `pub` `use`
 |---|---|
 | `print` `println` `eprintln` | output |
 | `trap` `assert` `exit` `leak` `drop` `swap` `replace` | control / ownership |
+| `args` | process arguments (`args() -> &[&str]`, §15.6) |
 | `alloc` `dealloc` `reinterpret` | `unchecked fn`s (§13.2) |
 | `Maybe` `Has` `Empty` `Outcome` `Good` `Bad` | prelude types |
 | `String` `Vec` `Heap` `str` | owning / borrowed types |

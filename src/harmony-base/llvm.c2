@@ -162,6 +162,24 @@ int ll_str_len(char* s) {
 // ---------------------------------------------------------------------------
 // Type names in LLVM IR.
 // ---------------------------------------------------------------------------
+
+// Appends `s` to the scratch buffer with `::` collapsed to `__` (a merged
+// module type `geometry::Vec2` renders as one LLVM-safe name).
+void ll_out_sanitized(char* s) {
+    int i;
+    i = 0;
+    while (s[i] != 0) {
+        if (s[i] == ':' && s[i + 1] == ':') {
+            lexbuf_push('_');
+            lexbuf_push('_');
+            i = i + 2;
+            continue;
+        }
+        lexbuf_push(s[i]);
+        i = i + 1;
+    }
+}
+
 char* ll_type_name(int id) {
     int k;
     if (id == TY_BOOL) { return "i1"; }
@@ -186,13 +204,13 @@ char* ll_type_name(int id) {
     if (k == CTY_STRUCT) {
         lexbuf_reset();
         lexbuf_push_str("%struct.");
-        lexbuf_push_str(ty_display(id));
+        ll_out_sanitized(ty_display(id));
         return lexbuf_finish();
     }
     if (k == CTY_ENUM) {
         lexbuf_reset();
         lexbuf_push_str("%enum.");
-        lexbuf_push_str(ty_display(id));
+        ll_out_sanitized(ty_display(id));
         return lexbuf_finish();
     }
     if (k == CTY_ARRAY) {
@@ -213,6 +231,22 @@ char* ll_type_name(int id) {
         return lexbuf_finish();
     }
     return "i32";
+}
+
+// Emits `s` into the IR output with `::` -> `__` collapsing, for emitted
+// type names (`%struct.…`, `%enum.…`) of merged module types.
+void ll_out_name(char* s) {
+    int i;
+    i = 0;
+    while (s[i] != 0) {
+        if (s[i] == ':' && s[i + 1] == ':') {
+            ll_out_str("__");
+            i = i + 2;
+            continue;
+        }
+        ll_out_char(s[i]);
+        i = i + 1;
+    }
 }
 
 // A struct-field type as a *sized* LLVM type: bool/unit store as i8, char as
@@ -586,7 +620,7 @@ void ll_emit_type_def(int id) {
     k = ty_kind(id);
     if (k == CTY_STRUCT) {
         ll_out_str("%struct.");
-        ll_out_str(ty_display(id));
+        ll_out_name(ty_display(id));
         ll_out_str(" = type { ");
         if (ty_member_count(id) == 0) { ll_out_str("i8"); }
         i = 0;
@@ -611,7 +645,7 @@ void ll_emit_type_def(int id) {
         // starts at byte offset 8, matching `ty_size` (align_up(4,8) +
         // align_up(maxpay,8)). The payload is rounded up to an 8-byte stride.
         ll_out_str("%enum.");
-        ll_out_str(ty_display(id));
+        ll_out_name(ty_display(id));
         ll_out_str(" = type { i32, [4 x i8], [");
         ll_out_int((maxpay + 7) & (0 - 8));
         ll_out_str(" x i8] }\n");

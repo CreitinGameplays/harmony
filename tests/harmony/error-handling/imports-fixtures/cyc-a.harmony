@@ -1,0 +1,3 @@
+// Cycle fixture A: imports B, which imports A back.
+import "cyc-b.harmony";
+export fn a() -> i32 { return 1; }

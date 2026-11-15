@@ -1,0 +1,19 @@
+// Imported by modules-main.harmony: a struct, a function with a private
+// helper, and a generic function the importer instantiates.
+export struct Vec2 { x: f64; y: f64; }
+
+export fn length2(v: &Vec2) -> f64 {
+    return v.x * v.x + v.y * v.y;
+}
+
+export fn describe(v: &Vec2) -> &str {
+    return describeImpl(v);
+}
+
+fn describeImpl(v: &Vec2) -> &str {
+    return "vec";
+}
+
+export fn id<T>(x: T) -> T {
+    return x;
+}

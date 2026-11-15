@@ -1,0 +1,5 @@
+// WANT: NAME-04
+// A transitive import counts too: this module exists, but its own import is
+// missing, and the stop still points into the root's import of it.
+import "imports-fixtures/broken-mid.harmony";
+fn main() -> i32 { return 0; }

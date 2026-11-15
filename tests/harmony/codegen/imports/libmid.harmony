@@ -1,0 +1,11 @@
+// A module that itself imports geometry (transitive import, 6.7): its
+// re-exported surface speaks of geometry's types through both namespaces.
+import "geometry.harmony";
+
+export fn scale(v: geometry::Vec2, k: f64) -> geometry::Vec2 {
+    return geometry::Vec2 { .x = v.x * k, .y = v.y * k };
+}
+
+export fn zero() -> geometry::Vec2 {
+    return geometry::Vec2 { .x = 0.0, .y = 0.0 };
+}

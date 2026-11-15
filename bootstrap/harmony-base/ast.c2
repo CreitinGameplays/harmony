@@ -98,6 +98,7 @@ struct AstNode* ast_node_new(int kind) {
     n->kids = 0;
     n->kids2 = 0;
     n->ty = 0;
+    n->sfx = 0;
     return n;
 }
 
@@ -174,6 +175,7 @@ struct AstNode* ast_clone(struct AstNode* n) {
     c->end = n->end;
     c->ival = n->ival;
     c->sval = n->sval;
+    c->sfx = n->sfx;
     c->a = ast_clone(n->a);
     c->b = ast_clone(n->b);
     c->c = ast_clone(n->c);

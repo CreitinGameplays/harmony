@@ -331,6 +331,28 @@ binary is `harmony-base` (the spec's `lc`).
         `&mut T` does not coerce to `&T` (write `&*r`). The rewrite can reach
         memory through an extern whose signature puts `raw u8`/`raw mut u8` in
         the pointer slot.
+- [x] **Three genuine `f32` bugs found probing the C FFI.** Assessing a real
+      `extern "C"` (all fixed; regression
+      `tests/harmony/codegen/float32-arith.harmony`):
+      - *`f32` arithmetic and comparison emitted `double`.* `ll_float_bin`
+        hardcoded `ty = TY_F64`, so every `f32` operator lowered to
+        `fadd`/`fcmp ... double` while its operands were `float`; LLVM rejected
+        the IR ("'%x' defined with type 'float' but expected 'double'"), so any
+        program that did `f32` math or compared two `f32`s failed to compile.
+        The operand type is now threaded through. `f64` and untyped float
+        literals (which default to `f64`) worked, which is why the bug hid.
+      - *Inexact `f32` literals were emitted verbatim.* LLVM accepts
+        `float 1.5` but rejects `float 1.66` ("floating point constant invalid
+        for type"), so any `f32` literal not exactly representable in binary
+        (`1.66`, `0.1`, `3.14`) failed to compile. The literal is now emitted
+        at double precision and truncated (`fptrunc double 1.66 to float`).
+      - *The float literal suffix was dropped at parse time.* A suffixed float
+        was treated as untyped and defaulted to `f64`, so `let x = 1.5f32` was
+        `f64` and `[1.0f32, 2.0f32]` (element type from the first element) was
+        `[f64; 2]`; assigning the result to an `f32` was a `TYPE-01` stop. A
+        suffixed float now names its type outright (§4.3), like an integer
+        suffix. The AST node gains an `sfx` field to carry the suffix (it fits
+        the existing 104-byte allocation and is copied by `ast_clone`).
 
 ### Cross-cutting
 

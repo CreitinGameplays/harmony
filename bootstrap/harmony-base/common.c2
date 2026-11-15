@@ -399,6 +399,7 @@ struct AstNode {
     struct AstList* kids;   // primary child list
     struct AstList* kids2;  // secondary child list
     int   ty;        // resolved type id (filled by the checker; 0 = unset)
+    char* sfx;       // float-literal suffix ("f32"/"f64"); 0 when unsuffixed
 };
 
 // ---------------------------------------------------------------------------

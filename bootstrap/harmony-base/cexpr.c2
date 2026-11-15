@@ -105,7 +105,20 @@ int ck_expr(struct AstNode* n) {
         n->ty = TY_UINT_LIT;
         return n->ty;
     }
-    if (n->kind == AST_FLOAT_LIT) { n->ty = TY_FLOAT_LIT; return n->ty; }
+    if (n->kind == AST_FLOAT_LIT) {
+        // A suffix names the literal's type outright (`2.5f32`, `1.0f64`); it
+        // is not an untyped literal, so it will not adapt to another context
+        // (§4.3, mirroring the integer suffix rule). Without this, `1.5f32`
+        // was treated as untyped and defaulted to `f64`, so `let x = 1.5f32`
+        // (and `[1.0f32, ...]`, which infers its element type from the first
+        // element) silently became `f64`.
+        if (n->sfx != 0) {
+            if (str_eq(n->sfx, "f32")) { n->ty = TY_F32; return n->ty; }
+            if (str_eq(n->sfx, "f64")) { n->ty = TY_F64; return n->ty; }
+        }
+        n->ty = TY_FLOAT_LIT;
+        return n->ty;
+    }
     if (n->kind == AST_STRING_LIT) { n->ty = ty_new(CTY_STRREF, "&str", TY_U8, 0); return n->ty; }
     if (n->kind == AST_CHAR_LIT) { n->ty = TY_CHAR; return n->ty; }
     if (n->kind == AST_BOOL_LIT) { n->ty = TY_BOOL; return n->ty; }

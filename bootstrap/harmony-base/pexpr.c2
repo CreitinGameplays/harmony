@@ -33,9 +33,9 @@ struct AstNode* parse_literal_node(void) {
     }
     if (t->kind == TOK_FLOAT) {
         n = ast_node_new(AST_FLOAT_LIT);
-        n->sval = t->text;      // spelling without suffix; suffix in kids? no:
-        n->ival = 0;            // suffix rides on a second string later if
-                                // the checker needs it; spelling suffices.
+        n->sval = t->text;      // spelling without the suffix (`2.5f32` -> `2.5`)
+        n->sfx = t->sval;       // suffix (`f32`/`f64`; 0 when unsuffixed)
+        n->ival = 0;
         p_advance();
         n->start = t->start;
         n->end = t->end;

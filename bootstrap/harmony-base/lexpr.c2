@@ -73,7 +73,7 @@ char* ll_logical_or(struct AstNode* n);
 char* ll_overflow_op(char* which, int ty, struct AstNode* n, char* l, char* r);
 char* ll_div_checked(int ty, struct AstNode* n, char* l, char* r, int is_rem);
 char* ll_shift(int ty, struct AstNode* n, char* l, char* r, int is_right);
-char* ll_float_bin(char* op, struct AstNode* n, char* l, char* r);
+char* ll_float_bin(char* op, int ty, struct AstNode* n, char* l, char* r);
 void  ll_str_append(char* buf, char* s);
 void  ll_str_copy(char* dst, char* src);
 int   ll_is_aggregate(int ty);
@@ -219,8 +219,26 @@ char* ll_expr(struct AstNode* n) {
         return r;
     }
     if (n->kind == AST_FLOAT_LIT) {
-        if (n->ty != 0 && !ty_is_untyped_lit(n->ty)) { g_expr_ty = n->ty; }
-        else { g_expr_ty = TY_F64; }
+        int ft;
+        if (n->ty != 0 && !ty_is_untyped_lit(n->ty)) { ft = n->ty; }
+        else { ft = TY_F64; }
+        g_expr_ty = ft;
+        // LLVM accepts an f32 decimal constant only when it is exactly
+        // representable (`float 1.5` is fine; `float 1.66` is rejected with
+        // "floating point constant invalid for type"). Emit the literal at
+        // double precision and truncate, so every f32 spelling round-trips:
+        // `%v = fptrunc double 1.66 to float`. An f64 literal is returned as
+        // the plain constant (unchanged, so its IR bytes stay identical).
+        if (ft == TY_F32) {
+            char* r;
+            r = ll_new_reg();
+            ll_out_str("  ");
+            ll_out_str(r);
+            ll_out_str(" = fptrunc double ");
+            ll_out_str(n->sval);
+            ll_out_str(" to float\n");
+            return r;
+        }
         return n->sval;
     }
     if (n->kind == AST_CHAR_LIT) {
@@ -357,7 +375,7 @@ char* ll_expr_binary(struct AstNode* n) {
 // Applies an operator to already-lowered operands. Shared by binary
 // expressions and compound assignments (`x += y`).
 char* ll_checked_bin(char* op, int ty, struct AstNode* n, char* l, char* r) {
-    if (ll_is_float_ty(ty)) { return ll_float_bin(op, n, l, r); }
+    if (ll_is_float_ty(ty)) { return ll_float_bin(op, ty, n, l, r); }
     // `==`/`!=` on a slice or `&str` compares contents (§7.4), not the pair
     // addresses: lower to the runtime's element-wise `lc_slice_eq`. `l` and
     // `r` are the addresses of the two (pointer, length) pairs.
@@ -626,9 +644,13 @@ char* ll_shift(int ty, struct AstNode* n, char* l, char* r, int is_right) {
 }
 
 // Float arithmetic / comparison (IEEE, no traps, §7.3).
-char* ll_float_bin(char* op, struct AstNode* n, char* l, char* r) {
-    int ty;
-    ty = TY_F64;
+//
+// `ty` is the operand type from the checker (either `f32` or `f64`): the
+// emitted `fadd`/`fcmp`/... must match the operands' width, or LLVM rejects
+// the IR ("defined with type 'float' but expected 'double'"). An untyped
+// float literal defaults to `f64` (§5.9).
+char* ll_float_bin(char* op, int ty, struct AstNode* n, char* l, char* r) {
+    if (ty_is_untyped_lit(ty)) { ty = TY_F64; }
     if (str_eq(op, "==") || str_eq(op, "!=") || str_eq(op, "<") || str_eq(op, "<=")
         || str_eq(op, ">") || str_eq(op, ">=")) {
         char* ir;

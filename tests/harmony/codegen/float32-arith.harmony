@@ -1,0 +1,82 @@
+// EXPECT: 42
+// `f32` support had two genuine bugs, both fixed together (a plain `f32`
+// program hit the first before it could hit the second):
+//
+//  (1) Arithmetic and comparison hardcoded `double`. `ll_float_bin` set
+//      `ty = TY_F64`, so every `f32` operator lowered to `fadd/fcmp ... double`
+//      while its operands were `float`; LLVM rejected the IR ("'%x' defined
+//      with type 'float' but expected 'double'"), so any program that did
+//      `f32` math or compared two `f32`s failed to compile. The operand type
+//      is now threaded through, so `f32` emits `float`-width instructions.
+//
+//  (2) Inexact `f32` literals were emitted verbatim. LLVM accepts `float 1.5`
+//      but rejects `float 1.66` ("floating point constant invalid for type"),
+//      so any `f32` literal not exactly representable in binary (`1.66`, `0.1`,
+//      `3.14`) failed to compile. The literal is now emitted at double
+//      precision and truncated (`fptrunc double 1.66 to float`).
+//
+//  (3) The `f32`/`f64` literal suffix was dropped at parse time, so a suffixed
+//      literal was treated as untyped and defaulted to `f64`: `let x = 1.5f32`
+//      was `f64`, and `[1.0f32, 2.0f32]` (element type from the first element)
+//      was `[f64; 2]`. A suffixed float now names its type outright (§4.3),
+//      like an integer suffix.
+//
+// `f64` and untyped float literals (which default to `f64`) worked, which is
+// why all three bugs hid.
+fn main() -> i32 {
+    // Arithmetic at f32 width.
+    let a: f32 = 1.5f32;
+    let b: f32 = 2.5f32;
+    let sum: f32 = a + b;
+    if (sum != 4.0f32) { return 1; }
+    let diff: f32 = b - a;
+    if (diff != 1.0f32) { return 2; }
+    let prod: f32 = a * b;
+    if (prod != 3.75f32) { return 3; }
+    // An inexact literal (1.66 and 1.67 are not representable in binary).
+    let quot: f32 = b / a;
+    if (quot < 1.66f32 || quot > 1.67f32) { return 4; }
+    // Every comparison operator at f32 width.
+    let lo: f32 = 1.0f32;
+    let hi: f32 = 2.0f32;
+    if (!(lo < hi)) { return 5; }
+    if (!(hi > lo)) { return 6; }
+    if (!(lo <= hi)) { return 7; }
+    if (!(hi >= lo)) { return 8; }
+    if (lo == hi) { return 9; }
+    if (!(lo != hi)) { return 10; }
+
+    // An untyped float literal adapts to the f32 operand (§5.9).
+    if (lo != 1.0) { return 11; }
+    if (!(lo < 2.0)) { return 12; }
+
+    // `f64` is unaffected (the fix must not regress the working width).
+    let x: f64 = 1.5;
+    let y: f64 = 2.5;
+    if (x + y != 4.0) { return 13; }
+    if (!(x < y)) { return 14; }
+
+    // Untyped literal arithmetic defaults to f64.
+    if (1.5 + 2.5 != 4.0) { return 15; }
+
+    // A loop-carried f32 accumulation with an inexact step exercises both the
+    // width and the literal path in a real flow.
+    let mut acc: f32 = 0.0f32;
+    let mut i = 0;
+    while (i < 10) { acc = acc + 0.1f32; i = i + 1; }
+    if (acc < 0.99f32 || acc > 1.01f32) { return 16; }
+
+    // A suffixed float literal names its type outright (§4.3): `1.5f32` is
+    // `f32`, not the untyped `f64` default, so it binds to an `f32` and an
+    // array of f32 literals is `[f32; N]` (its element type comes from the
+    // first element).
+    let stamped = 1.5f32;
+    let as_f32: f32 = stamped;
+    if (as_f32 != 1.5f32) { return 17; }
+    let arr = [1.0f32, 2.0f32, 3.0f32];
+    let first: f32 = arr[0];
+    if (first != 1.0f32) { return 18; }
+    if (arr[0] + arr[1] + arr[2] != 6.0f32) { return 19; }
+
+    return 42;
+}

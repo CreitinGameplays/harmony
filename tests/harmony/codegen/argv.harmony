@@ -1,0 +1,12 @@
+// EXPECT: 42
+// Process arguments (§15.6): `args() -> &[&str]` is the safe view of argv.
+// argv[0] is the program path; the caller inspects it without any raw pointer.
+// The harness runs this with no extra arguments, so the slice holds exactly
+// one entry (the program path, which is never empty).
+fn main() -> i32 {
+    let a = args();
+    if (a.len() != 1) { return 1; }
+    let path = a[0];
+    if (path.len() == 0) { return 2; }
+    return 42;
+}

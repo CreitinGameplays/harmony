@@ -549,21 +549,80 @@ static int install_stack_guard(void) {
 }
 
 // ---------------------------------------------------------------------------
+// Process arguments (§15.6). The kernel enters `_start` with
+// `[argc][argv0..argvN-1][NULL][envp...]` and `%rsp` pointing at `argc`.
+// `_start` captures the pair before it realigns the stack; `lc_args()` then
+// builds a safe `&[&str]` view (an array of (data pointer, length) pairs,
+// each element 16 bytes like every `&str`) and returns the address of the
+// slice value. Generated code only ever sees that safe view — never `argv`.
+// ---------------------------------------------------------------------------
+static long g_argc;
+static char **g_argv;
+
+#define LC_MAX_ARGS 4096
+static struct { const char *p; long n; } g_arg_pairs[LC_MAX_ARGS];
+static struct { const void *p; long n; } g_args_slice;
+static int g_args_built;
+
+// Returns a pointer to a static `&[&str]` describing the arguments (argv[0]
+// is the program path). Built once. The address of the slice value is returned
+// so a caller can copy the 16-byte pair out.
+void *lc_args(void) {
+    long i;
+    long n;
+    if (!g_args_built) {
+        n = g_argc;
+        if (n < 0) { n = 0; }
+        if (n > LC_MAX_ARGS) { n = LC_MAX_ARGS; }
+        i = 0;
+        while (i < n) {
+            const char *p = g_argv[i];
+            long l = 0;
+            if (p == 0) { break; }
+            while (p[l] != 0) { l = l + 1; }
+            g_arg_pairs[i].p = p;
+            g_arg_pairs[i].n = l;
+            i = i + 1;
+        }
+        g_args_slice.p = g_arg_pairs;
+        g_args_slice.n = i;
+        g_args_built = 1;
+    }
+    return &g_args_slice;
+}
+
+// ---------------------------------------------------------------------------
 // Entry point. The program's `main` is emitted by the compiler as
 // `harmony_main` (an i32 return); `_start` calls it and exits with the low
 // byte as the status, matching §6.3.
 // ---------------------------------------------------------------------------
 extern int harmony_main(void);
 
-__attribute__((noreturn)) void _start(void) {
+// Real entry, called by the naked `_start` with `%rdi` = the initial stack
+// pointer (pointing at `argc`). Doing the capture here — in a normal C
+// function that receives the pointer as an argument — avoids the prologue of
+// a C `_start` moving `%rsp` before we could read it.
+__attribute__((noreturn)) void lc_start(long *sp);
+__attribute__((noreturn)) void lc_start(long *sp) {
     int code;
-    // The kernel enters us 16-byte aligned; the SysV ABI expects a callee to
-    // see `%rsp % 16 == 8` (a return address was pushed). Round `%rsp` down to
-    // 16 before the call so a `movaps` in `harmony_main` never faults.
-    __asm__ volatile("and $-16, %rsp");
+    g_argc = sp[0];
+    g_argv = (char **) &sp[1];
     install_stack_guard();
     code = harmony_main();
     out_flush();
     sys(SYS_exit, code & 0xff, 0, 0);
     for (;;) { }
+}
+
+// The kernel enters `_start` 16-byte aligned with `%rsp` pointing at `argc`.
+// A naked prologue-free entry hands `%rsp` to `lc_start` (as the first
+// argument), then realigns `%rsp` for the SysV ABI and calls it. The argv
+// strings live above the initial `%rsp`, so realignment never disturbs them.
+__attribute__((naked, noreturn)) void _start(void) {
+    __asm__ volatile(
+        "xor %rbp, %rbp\n"
+        "mov %rsp, %rdi\n"
+        "and $-16, %rsp\n"
+        "call lc_start\n"
+        "hlt\n");
 }

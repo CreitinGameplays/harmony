@@ -612,6 +612,7 @@ int ck_check_format(struct AstNode* n, char* fname, struct AstList* args);
 int ck_builtin_trap(struct AstNode* n, struct AstList* args);
 int ck_builtin_assert(struct AstNode* n, struct AstList* args);
 int ck_builtin_unreachable(struct AstNode* n, struct AstList* args);
+int ck_builtin_args(struct AstNode* n, struct AstList* args);
 int ck_builtin_exit(struct AstNode* n, struct AstList* args);
 int ck_enum_construct(struct AstNode* n, struct AstNode* callee, struct AstList* args);
 int ck_argc(struct AstList* args);

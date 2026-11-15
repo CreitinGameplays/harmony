@@ -95,6 +95,9 @@ ok_case "nested inferred generic calls"
 write 'unchecked("n is a small literal chosen by the caller")\nfn f(n: i64) -> i64 { return n; }\nfn main() -> i32 {\n  let mut t: i64 = 0;\n  unchecked("n = 1 is a small literal") { t = f(1); }\n  return t as i32;\n}\n'
 ok_case "unchecked fn with a contract, called under a promise"
 
+write 'fn main() -> i32 {\n  let a = args();\n  let n = a.len();\n  let first = a[0];\n  return first.len() as i32 + n as i32;\n}\n'
+ok_case "args() yields a &[&str] slice"
+
 # ---------------------------------------------------------------------------
 # Negative: type errors.
 # ---------------------------------------------------------------------------

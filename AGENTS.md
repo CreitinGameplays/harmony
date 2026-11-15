@@ -5,6 +5,7 @@ File Extension: .harmony (default), .hr (secondary)
 - Read the project layout first.
 - **Read important parts of the harmony.md docs (but not everything at once)**.
 - **Never** hardcode "/opencode/" in any part of the source code.
+- DO proper tool calling.
 - Use c2x-seed to write the harmony language:
   harmony-base: basic implementation with few features, written in c2x-seed.
   harmony: full rewrite in harmony-base itself.
@@ -14,6 +15,10 @@ File Extension: .harmony (default), .hr (secondary)
 - Also fix any other bug before reporting success.
 - *PRIORITIZE writing LLVM backend!! C backend comes later*
 - *PREFER things to be auto resizable when possible instead of a fixed value!*
+- **Both `harmony-base` and final `harmony` language should do in-memory**
+  **LLVM IR compilation instead of writing .ll temp files to disk by default.**
+- **The final `harmony` language should have LLVM IR integrated directly into the compiler binary.**
+- **The final `harmony` language should also have support to multi-core compilation by default.**
 - Split big source files into smaller, organized files (they can be inside subdirs in the source 
   code for better organization) instead of huge single files (only exception is c2x-seed src).
 - Always add new or update todo.md and docs/* if some info got stale, this includes updating harmony language reference/keywords.
@@ -22,7 +27,7 @@ File Extension: .harmony (default), .hr (secondary)
   as well as fuzzing/aggressive tests, and add them to makefile rules.
 - **ALWAYS** use your edit tool to edit source files *instead of shell scripts (including python)*.
 - Never guess at bugs (harmony/c2x-seed), always reproduce:
-  use any available debugger in the system (such as gdb, valgrind, etc) to find the bug and fix them.
+  use any available debugger in the system (such as gdb, valgrind, strace, etc) to find the bug and fix them.
 - NEVER workaround a fix on harmony-base source code to hide a genuine bug in c2x-seed.
 - Always run final `make test` before completion, but only if you modify source code.
   Docs-only changes don't need to run `make test`.
@@ -43,9 +48,11 @@ File Extension: .harmony (default), .hr (secondary)
 - You can write .harmony files in tests dir to test more complex code.
 - proposed layout for the final `harmony` language (to feel more organized and clean):
 ```
+library/
+├── core/... <- (*.hr) allowed to use with freestanding (e.g primitive types, slices, iterators... just like rust).
+├── std/...<- (*.hr) the full standard library (HashMap/io/fs/net...). Needs the OS/allocators...
+└── (others...)
 src/
-├── harmony/*.hr <- the real core of the language here.
-├── core/*.hr <- allowed to use with freestanding (e.g primitive types, slices, iterators... just like rust).
-└── stdlib/
-    └── (HashMap/io/fs/net...) <- the full standard library, needs the OS/allocator (*.hr extension)...
+├── harmony/... <- the real core of the language here.
+└── stdlib/ <- only for harmony base
 ```

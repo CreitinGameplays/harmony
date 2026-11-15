@@ -704,6 +704,11 @@ int ck_expr_call(struct AstNode* n) {
             n->ival = 6;
             return ck_builtin_unreachable(n, args);
         }
+        if (str_eq(callee->sval, "args")) {
+            // `args() -> &[&str]` (§15.6): the safe process-argument view.
+            n->ival = 8;
+            return ck_builtin_args(n, args);
+        }
         if (str_eq(callee->sval, "exit")) {
             n->ival = 7;
             return ck_builtin_exit(n, args);

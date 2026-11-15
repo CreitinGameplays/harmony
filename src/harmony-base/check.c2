@@ -746,6 +746,23 @@ int ck_builtin_unreachable(struct AstNode* n, struct AstList* args) {
     return TY_NEVER;
 }
 
+// `args() -> &[&str]` (§15.6, bootstrap form). The program's command-line
+// arguments as a slice of string slices; argv[0] is the program path. The
+// full std library will wrap this in `env::args() -> Vec<String>`, but the
+// bootstrap has no `Vec`, so the safe raw view is the builtin the rewrite
+// needs. `&str` is a fat pair and a slice is a fat pair, so the element size
+// is 16 and indexing scales correctly.
+int ck_builtin_args(struct AstNode* n, struct AstList* args) {
+    if (ck_argc(args) != 0) {
+        ck_err_arity(n, "args", 0, ck_argc(args));
+    }
+    {
+        int elem;
+        elem = ty_new(CTY_STRREF, "&str", TY_U8, 0);
+        return ck_slice_ty(elem);
+    }
+}
+
 // `exit(code: i32) -> never`.
 int ck_builtin_exit(struct AstNode* n, struct AstList* args) {
     if (ck_argc(args) != 1) {

@@ -514,7 +514,9 @@ void ll_emit_module(struct AstNode* prog) {
     ll_out_str("declare void @lc_trap_msg(ptr, i64, i64, i64)\n");
     ll_out_str("declare void @lc_assert(i64, ptr, i64, i64, i64)\n");
     ll_out_str("declare void @lc_unreachable(i64, i64)\n");
-    ll_out_str("declare void @lc_exit(i64)\n\n");
+    ll_out_str("declare void @lc_exit(i64)\n");
+    // Process arguments (§15.6): `args()` copies the safe view from here.
+    ll_out_str("declare ptr @lc_args()\n\n");
 
     // String-literal globals (§5.3), in pool order.
     {

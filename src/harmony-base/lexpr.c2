@@ -50,6 +50,7 @@ char* ll_emit_call_args(struct AstNode* n, char* symbol, int retty, struct AstLi
 char* ll_builtin_trap(struct AstNode* n, struct AstList* args);
 char* ll_builtin_assert(struct AstNode* n, struct AstList* args);
 char* ll_builtin_unreachable(struct AstNode* n, struct AstList* args);
+char* ll_builtin_args(struct AstNode* n);
 char* ll_builtin_exit(struct AstNode* n, struct AstList* args);
 char* ll_enum_construct(struct AstNode* n, int ty, int vi, struct AstList* args);
 char* ll_offset_addr(char* base, int byteoff);
@@ -1143,6 +1144,34 @@ char* ll_builtin_exit(struct AstNode* n, struct AstList* args) {
     return "0";
 }
 
+// `args() -> &[&str]` (§15.6): the runtime keeps a static slice of argument
+// pairs and returns its address from `lc_args()`. Copy the 16 bytes into a
+// fresh alloca (the aggregate-represented value this expression produces) so
+// the result behaves like any other slice value.
+char* ll_builtin_args(struct AstNode* n) {
+    char* slot;
+    char* src;
+    int ty;
+    ty = ll_node_ty(n);
+    src = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(src);
+    ll_out_str(" = call ptr @lc_args()\n");
+    slot = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(slot);
+    ll_out_str(" = alloca ");
+    ll_out_str(ll_type_name(ty));
+    ll_out_nl();
+    ll_out_str("  call void @llvm.memcpy.p0.p0.i64(ptr align 8 ");
+    ll_out_str(slot);
+    ll_out_str(", ptr align 8 ");
+    ll_out_str(src);
+    ll_out_str(", i64 16, i1 false)\n");
+    g_expr_ty = ty;
+    return slot;
+}
+
 // `Enum::Variant(payload...)` (§6.5): allocate the `{ i32 tag, [N x i8] }`
 // aggregate, zero it, store the tag, then store each payload field at its
 // offset within the payload area (8 bytes in, since the enum is 8-aligned).
@@ -1666,6 +1695,7 @@ char* ll_expr_call(struct AstNode* n) {
     if (n->ival == 5) { return ll_builtin_assert(n, args); }
     if (n->ival == 6) { return ll_builtin_unreachable(n, args); }
     if (n->ival == 7) { return ll_builtin_exit(n, args); }
+    if (n->ival == 8) { return ll_builtin_args(n); }
 
     // Emit the arguments left to right (§7.5) into a register list.
     // An aggregate argument is passed as a pointer to its value.

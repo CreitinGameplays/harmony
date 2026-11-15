@@ -1,0 +1,12 @@
+// WANT: TYPE-02
+// `extern fn` signatures may use only primitives and `raw` pointers (§6.8).
+// A `Heap<T>` parameter is an owned box the C side cannot know about (and it
+// would be moved across the boundary), so the signature is rejected.
+extern fn takes_box(h: Heap<i32>) -> i32;
+
+fn main() -> i32 {
+    let b = heap(7);
+    let mut n: i32 = 0;
+    unchecked("call the C function") { n = takes_box(b); }
+    return n;
+}

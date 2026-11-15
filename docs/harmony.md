@@ -557,6 +557,21 @@ extern fn getenv(name: raw u8) -> raw u8;
 - Signatures may use only primitives and `raw` pointers (no structs by value in v0).
 - Every call to an `extern fn` requires `unchecked(...)`, because the compiler cannot see across the C boundary.
 
+Why the restriction matters (and why the checker enforces it, `TYPE-02`): the
+backend assumes one C ABI for the whole program, and several harmony types do
+not match it at the boundary.
+- A **struct or enum by value** uses a different ABI: harmony returns every
+  aggregate through an `sret` hidden pointer, while C returns small (≤ 16 byte)
+  values in registers. The mismatch links and then silently returns wrong data.
+- A **fat reference** (`&str`, `&[T]`) is a (pointer, length) pair in harmony,
+  but a C parameter is one word, so the length is lost.
+- A **`Heap<T>`** is an owned box the C side cannot know about (and passing it
+  would move ownership across an opaque boundary).
+
+The supported shapes cover the OS surface a freestanding program needs: scalars,
+`raw T` / `raw mut T` (including `raw mut Struct` as an out-parameter, which is
+how POSIX exposes `timeval`, `stat`, and friends), and a `()` (C `void`) return.
+
 ---
 
 ## 7. Expressions and operators

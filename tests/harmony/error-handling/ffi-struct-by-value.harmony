@@ -1,0 +1,15 @@
+// WANT: TYPE-02
+// `extern fn` signatures may use only primitives and `raw` pointers (§6.8).
+// A struct by value would use a different ABI than C: harmony emits an `sret`
+// hidden pointer for every aggregate, while C returns small (<= 16 byte)
+// structs in registers. The mismatch links fine and then silently returns the
+// wrong data, so the checker must reject the shape outright.
+struct Pair { x: i32; y: i32; }
+
+extern fn mkpair(a: i32, b: i32) -> Pair;
+
+fn main() -> i32 {
+    let mut p: Pair = Pair { .x = 0, .y = 0 };
+    unchecked("call the C function") { p = mkpair(40, 2); }
+    return p.x + p.y;
+}

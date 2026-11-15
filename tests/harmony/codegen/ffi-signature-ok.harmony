@@ -1,0 +1,25 @@
+// EXPECT: 9
+// IR: declare i64 @lc_syscall3
+// The in-spec `extern fn` surface (§6.8): primitives and `raw` pointers only.
+// This is the shape the checker now enforces — a scalar/pointer signature, a
+// `raw mut T` out-parameter, and a `unit` (C `void`) return all stay valid.
+extern fn lc_syscall3(n: i64, a: i64, b: i64, c: i64) -> i64;
+extern fn lc_put_str(p: raw u8, n: i64);
+
+fn main() -> i32 {
+    // Primitive signature.
+    let mut pid: i64 = 0;
+    unchecked("lc_syscall3(39) is getpid, which always succeeds") {
+        pid = lc_syscall3(39, 0, 0, 0);
+    }
+    if (pid <= 0) { return 1; }
+
+    // A `raw mut T` out-parameter and a `unit` return.
+    let mut bytes = [0u8; 3];
+    bytes[0] = 79u8;   // 'O'
+    bytes[1] = 75u8;   // 'K'
+    let p: raw u8 = raw(&bytes[0]);
+    unchecked("write two bytes through the runtime hook") { lc_put_str(p, 2); }
+
+    return 9;
+}

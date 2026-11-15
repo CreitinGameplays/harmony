@@ -1275,9 +1275,77 @@ int ck_instantiate(struct AstNode* n, char* name, struct AstList* targs) {
     return idx;
 }
 
+// True when `ty` may cross the C boundary in an `extern fn` signature (§6.8):
+// only primitives and raw pointers. A reference (`&T`, `&str`), a slice, a
+// `Heap`, or any aggregate by value is rejected — `&str`/`&[T]` are fat pairs
+// emitted as a single `ptr`, and a struct by value uses a different ABI than C
+// (harmony emits `sret`; C returns small structs in registers), so both
+// silently miscompile. `unit` is allowed only as a return (C `void`), which
+// the caller checks separately.
+int ck_ffi_ty_ok(int ty) {
+    if (ty_is_ptr(ty)) { return 1; }
+    if (ty_is_primitive(ty) && ty != TY_UNIT && ty != TY_NEVER) { return 1; }
+    return 0;
+}
+
+// Reports an out-of-spec `extern fn` signature type (§6.8). `where` names the
+// offending position ("parameter `p`", "return type").
+void ck_err_ffi_ty(struct AstNode* at, int ty, char* where) {
+    lexbuf_reset();
+    lexbuf_push_str(where);
+    lexbuf_push_str(": `");
+    lexbuf_push_str(ty_display(ty));
+    lexbuf_push_str("` cannot cross the C boundary");
+    {
+        int idx;
+        idx = diag_stop("TYPE-02", "not an FFI type", lexbuf_finish(),
+                        diag_file(at->file), at->start, at->end);
+        if (idx >= 0) {
+            diag_fix(diag_get(idx), "use a primitive or a raw pointer",
+                     "extern fn abs(x: i32) -> i32;   // or a raw pointer like `raw u8`");
+        }
+    }
+}
+
 void ck_register_extern(struct AstNode* n) {
-    // Extern declarations are checked like functions but have no body.
+    // Extern declarations are checked like functions but have no body. The
+    // signature is then restricted to what the C ABI the compiler assumes can
+    // actually carry (§6.8: primitives and `raw` pointers only).
     ck_register_fn(n);
+    {
+        struct AstList* params;
+        int i;
+        params = n->kids2;
+        if (params != 0) {
+            i = 0;
+            while (i < params->len) {
+                struct AstNode* p;
+                p = params->items[i];
+                // A `self` parameter (no type node) is always out of spec:
+                // there is no receiver across the C boundary.
+                if (p->a == 0) {
+                    int idx;
+                    idx = diag_stop("TYPE-02", "not an FFI type",
+                                    "a foreign function cannot have a `self` parameter",
+                                    diag_file(p->file), p->start, p->end);
+                    if (idx >= 0) {
+                        diag_fix(diag_get(idx), "name a value parameter",
+                                 "extern fn abs(x: i32) -> i32;");
+                    }
+                } else if (!ck_ffi_ty_ok(p->ty)) {
+                    char* where;
+                    where = str_concat("parameter `", p->sval);
+                    where = str_concat(where, "`");
+                    ck_err_ffi_ty(p, p->ty, where);
+                }
+                i = i + 1;
+            }
+        }
+        // Return type: a value must be an FFI type; `unit` (C `void`) is fine.
+        if (n->a != 0 && n->ty != TY_UNIT && !ck_ffi_ty_ok(n->ty)) {
+            ck_err_ffi_ty(n->a, n->ty, "return type");
+        }
+    }
 }
 
 // Registers the methods of a `methods Type { ... }` block. The receiver is

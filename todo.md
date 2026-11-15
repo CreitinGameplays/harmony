@@ -353,6 +353,22 @@ binary is `harmony-base` (the spec's `lc`).
         suffixed float now names its type outright (§4.3), like an integer
         suffix. The AST node gains an `sfx` field to carry the suffix (it fits
         the existing 104-byte allocation and is copied by `ast_clone`).
+- [x] **`extern fn` signature restriction enforced (§6.8).** The spec allows
+      only primitives and `raw` pointers in a foreign signature, but the
+      checker accepted anything and then emitted an ABI C does not use: a
+      struct/enum by value went out through `sret` while C returns small
+      (16 byte or less) values in registers (links, then silently returns wrong
+      data); a fat reference (`&str`, `&[T]`) lost its length; a `Heap<T>`
+      leaked an owned box across the boundary. `ck_register_extern` now
+      validates every parameter and the return type, emitting `TYPE-02`
+      ("not an FFI type") with the offending position and a fix. The supported
+      shapes cover the freestanding OS surface: scalars, `raw T`/`raw mut T`
+      (including `raw mut Struct` out-parameters, the POSIX `timeval`/`stat`
+      shape), and a `void` return. Regressions:
+      `tests/harmony/error-handling/ffi-struct-by-value.harmony`,
+      `ffi-fat-reference.harmony`, `ffi-heap-param.harmony` (all verified
+      wrongly accepted before the guard), and the positive
+      `tests/harmony/codegen/ffi-signature-ok.harmony`.
 
 ### Cross-cutting
 

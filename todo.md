@@ -9,9 +9,9 @@ This file tracks **two separate things**, and they must not be conflated:
    minimum needed to express the `harmony` rewrite. This is what the section
    below is about.
 2. **harmony — the final language** — the full-featured compiler written in
-   harmony-base itself, plus `src/core/` and the full `src/stdlib/`. Its
-   remaining feature work lives in its own section at the bottom and is **not**
-   a harmony-base deliverable.
+   harmony-base itself, plus `library/core/` and `library/std/` (AGENTS.md).
+   Its remaining feature work lives in its own section at the bottom and is
+   **not** a harmony-base deliverable.
 
 Current state: **harmony-base is at M1 complete** — lexer → parser → type
 checker → LLVM IR text → clang + freestanding runtime → runnable programs
@@ -143,7 +143,7 @@ binary is `harmony-base` (the spec's `lc`).
       exclusive one or vice versa (both directions are `TYPE-01`); and the
       fat pair carries `noalias` like `&mut T`. This closes a real soundness
       gap (the two directions used to be silently accepted).
-- [x] Minimal freestanding prelude the rewrite needs to compile `src/core/`:
+- [x] Minimal freestanding prelude the rewrite needs to compile `library/core/`:
       `trap(msg)`, `assert(cond[, msg])`, `unreachable()`, `exit(code)`
       (§15.1) lower to runtime hooks; the stopping ones are `never`-typed, so
       a function may end in them (`ck_block_ends_in_return` accepts a `never`
@@ -183,9 +183,18 @@ binary is `harmony-base` (the spec's `lc`).
 
 Deferred features. These are **not** harmony-base deliverables: they are
 implemented in the `harmony` compiler (written in harmony-base) under
-`src/harmony/`, with the core library in `src/core/` (freestanding-allowed
-primitives, slices, iterators) and the full standard library in `src/stdlib/`
-(needs the OS/allocator).
+`src/harmony/`. Per AGENTS.md (updated), the standard library now lives in a
+top-level `library/` tree, not `src/`:
+
+- `library/core/` (`*.hr`, freestanding-allowed): primitive types, slices,
+  iterators — usable without an OS, like Rust's `core`.
+- `library/std/` (`*.hr`): the full standard library (HashMap, io, fs, net)
+  that needs the OS/allocators.
+- `src/stdlib/` is now **only for harmony-base** (the freestanding bootstrap's
+  small runtime glue).
+
+Also per AGENTS.md: the final `harmony` compiler must (a) integrate LLVM IR
+directly into its binary and (b) support **multi-core compilation by default**.
 
 ### Language semantics
 
@@ -237,4 +246,6 @@ primitives, slices, iterators) and the full standard library in `src/stdlib/`
 ### Self-hosting
 
 - [ ] Rewrite the compiler in harmony-base (`src/harmony/`).
+- [ ] Integrate LLVM IR emission directly into the compiler binary (AGENTS.md).
+- [ ] Multi-core compilation by default (AGENTS.md).
 - [ ] Byte-deterministic self-hosting milestone.

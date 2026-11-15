@@ -1013,6 +1013,73 @@ char* ck_template_param(struct AstNode* tmpl, int i) {
     return s;
 }
 
+// Accessors shared with cexpr.c2 (which cannot see the tables directly).
+struct AstNode* ck_template_decl(int ti) {
+    if (ti < 0 || ti >= g_ngen) { return 0; }
+    return g_gen_decl[ti];
+}
+
+int ck_template_nparams(struct AstNode* tmpl) {
+    if (tmpl == 0 || tmpl->kids == 0) { return 0; }
+    return tmpl->kids->len;
+}
+
+// Builds a synthetic *type* AST node for a resolved type id. Used by call-site
+// generic inference (§18): once an argument pins a parameter to a concrete
+// type, that type is turned back into the type-node form the substitution pass
+// expects (`Vec<i32>` -> `AST_TYPE_NAME "Vec" <i32>`).
+struct AstNode* ck_ty_to_ast(int ty) {
+    struct AstNode* n;
+    int k;
+    if (ty <= 0) { return 0; }
+    k = ty_kind(ty);
+    n = ast_node_new(AST_TYPE_NAME);
+    if (k == CTY_REF || k == CTY_MUTREF) {
+        n->kind = AST_TYPE_REF;
+        n->ival = (k == CTY_MUTREF);
+        n->a = ck_ty_to_ast(ty_elem(ty));
+        return n;
+    }
+    if (k == CTY_SLICE) {
+        n->kind = AST_TYPE_REF;
+        n->ival = ty_slice_is_mut(ty);
+        n->a = ast_node_new(AST_TYPE_SLICE);
+        n->a->a = ck_ty_to_ast(ty_elem(ty));
+        return n;
+    }
+    if (k == CTY_STRREF) {
+        n->kind = AST_TYPE_REF;
+        n->a = ast_node_new(AST_TYPE_NAME);
+        n->a->sval = "str";
+        return n;
+    }
+    if (k == CTY_HEAP) {
+        n->sval = "Heap";
+        n->kids = ast_list_new();
+        ast_list_push(n->kids, ck_ty_to_ast(ty_elem(ty)));
+        return n;
+    }
+    if (k == CTY_PTR || k == CTY_MUTPTR) {
+        n->kind = AST_TYPE_RAW;
+        n->ival = (k == CTY_MUTPTR);
+        n->a = ck_ty_to_ast(ty_elem(ty));
+        return n;
+    }
+    if (k == CTY_ARRAY) {
+        struct AstNode* len;
+        n->kind = AST_TYPE_ARRAY;
+        n->a = ck_ty_to_ast(ty_elem(ty));
+        len = ast_node_new(AST_INT_LIT);
+        len->ival = ty_array_len(ty);
+        n->b = len;
+        return n;
+    }
+    // A named type (primitive, struct, enum): its display name is the source
+    // spelling, which is exactly what a type node carries.
+    n->sval = ty_display(ty);
+    return n;
+}
+
 // Substitutes generic parameter names in a type node with the concrete type
 // nodes for an instantiation. Walks `n` in place, replacing any
 // `AST_TYPE_NAME` whose name matches a template parameter with a clone of the

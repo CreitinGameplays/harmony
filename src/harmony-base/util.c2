@@ -179,6 +179,11 @@ void out_nl(void) {
     syscall_write(FD_STDOUT, "\n", 1);
 }
 
+// One raw byte to stdout (used by the audit/JSON writers for `:` etc.).
+void out_char(char c) {
+    syscall_write(FD_STDOUT, &c, 1);
+}
+
 void out_int(int n) {
     write_int(FD_STDOUT, n);
 }

@@ -26,6 +26,8 @@ int ck_expr_field(struct AstNode* n);
 int ck_expr_index(struct AstNode* n);
 int ck_expr_call(struct AstNode* n);
 int ck_expr_generic_call(struct AstNode* n);
+int ck_infer_generic_call(struct AstNode* n, struct AstNode* callee, struct AstList* args);
+int ck_unify(struct AstNode* tn, int ty);
 int ck_expr_method_call(struct AstNode* n, struct AstNode* callee, struct AstList* args);
 int ck_expr_assoc_call(struct AstNode* n, struct AstNode* callee, struct AstList* args);
 int ck_enum_construct(struct AstNode* n, struct AstNode* callee, struct AstList* args);
@@ -471,6 +473,162 @@ int ck_expr_index(struct AstNode* n) {
     return TY_INVALID;
 }
 
+// ---------------------------------------------------------------------------
+// Generic-call type inference (§18). A call to a generic template without
+// explicit `<...>` arguments infers each parameter from the arguments' types:
+// `id(7)` becomes `id<i32>(7)`. The parameter type node is unified against the
+// argument's resolved type, pinning any `T` it mentions.
+// ---------------------------------------------------------------------------
+struct AstNode* g_infer_targs[16];   // pinned type node per parameter (or 0)
+char* g_infer_names[16];             // parameter name per slot
+int g_infer_n;
+
+// Pins template parameters in `tn` from the concrete argument type `ty`.
+// Returns 1 (unification is best-effort; a structural mismatch just leaves the
+// parameter unpinned, and the caller reports "cannot infer").
+int ck_unify(struct AstNode* tn, int ty) {
+    int i;
+    int k;
+    if (tn == 0 || ty == TY_INVALID) { return 1; }
+    k = tn->kind;
+    if (k == AST_TYPE_NAME) {
+        // `Heap<T>`: match the head name, then the element.
+        if (tn->sval != 0 && str_eq(tn->sval, "Heap")
+            && tn->kids != 0 && tn->kids->len == 1) {
+            if (ty_is_heap(ty)) { return ck_unify(tn->kids->items[0], ty_elem(ty)); }
+            return 1;
+        }
+        // A bare name: a parameter to pin, or a concrete type to ignore.
+        if (tn->kids == 0 || tn->kids->len == 0) {
+            i = 0;
+            while (i < g_infer_n) {
+                if (g_infer_names[i] != 0 && str_eq(tn->sval, g_infer_names[i])) {
+                    if (g_infer_targs[i] == 0) { g_infer_targs[i] = ck_ty_to_ast(ty); }
+                    return 1;
+                }
+                i = i + 1;
+            }
+            return 1;
+        }
+        return 1;
+    }
+    if (k == AST_TYPE_REF) {
+        // `&[T]` / `&str` are fat pairs; `&T` is thin. A slice arg is the pair
+        // itself, so recurse into the element node against the slice type.
+        if (ty_kind(ty) == CTY_SLICE) { return ck_unify(tn->a, ty); }
+        if (ty_is_ref(ty) || ty_is_ptr(ty) || ty_is_heap(ty)) {
+            return ck_unify(tn->a, ty_elem(ty));
+        }
+        return 1;
+    }
+    if (k == AST_TYPE_SLICE) {
+        if (ty_kind(ty) == CTY_SLICE) { return ck_unify(tn->a, ty_elem(ty)); }
+        return 1;
+    }
+    if (k == AST_TYPE_ARRAY) {
+        if (ty_is_array(ty)) { return ck_unify(tn->a, ty_elem(ty)); }
+        return 1;
+    }
+    if (k == AST_TYPE_RAW) {
+        if (ty_is_ptr(ty)) { return ck_unify(tn->a, ty_elem(ty)); }
+        return 1;
+    }
+    return 1;
+}
+
+// `name(args)` where `name` is a generic template: infer the type arguments
+// from the argument types, instantiate, and check the call (§18).
+int ck_infer_generic_call(struct AstNode* n, struct AstNode* callee, struct AstList* args) {
+    int ti;
+    struct AstNode* tmpl;
+    struct AstList* params;
+    struct AstList* targs;
+    int ntargs;
+    int na;
+    int npar;
+    int i;
+    int idx;
+    struct AstNode* inst;
+
+    ti = ck_find_template(callee->sval);
+    if (ti < 0) { return TY_INVALID; }
+    tmpl = ck_template_decl(ti);
+    ntargs = ck_template_nparams(tmpl);
+    params = tmpl->kids2;
+    na = ast_list_len(args);
+    npar = ast_list_len(params);
+    if (npar != na) {
+        ck_err_arity(n, callee->sval, npar, na);
+        return TY_INVALID;
+    }
+    if (ntargs > 16) { ntargs = 16; }
+
+    // Set up the per-call inference slots.
+    g_infer_n = ntargs;
+    i = 0;
+    while (i < ntargs) {
+        g_infer_names[i] = ck_template_param(tmpl, i);
+        g_infer_targs[i] = 0;
+        i = i + 1;
+    }
+
+    // Pin parameters from each argument's type. An untyped literal adopts its
+    // default (`i32`/`f64`) first, so `id(7)` infers `id<i32>` (§5.9).
+    i = 0;
+    while (i < na) {
+        int at;
+        at = ck_expr(args->items[i]);
+        if (at == TY_UINT_LIT) { ck_stamp_lits(args->items[i], TY_I32); at = TY_I32; }
+        else if (at == TY_FLOAT_LIT) { ck_stamp_lits(args->items[i], TY_F64); at = TY_F64; }
+        if (at != TY_INVALID) { ck_unify(params->items[i]->a, at); }
+        i = i + 1;
+    }
+
+    // Every parameter must be pinned to a concrete type.
+    targs = ast_list_new();
+    i = 0;
+    while (i < ntargs) {
+        if (g_infer_targs[i] == 0) {
+            lexbuf_reset();
+            lexbuf_push_str("cannot infer `");
+            lexbuf_push_str(g_infer_names[i]);
+            lexbuf_push_str("` for `");
+            lexbuf_push_str(callee->sval);
+            lexbuf_push_str("` from the argument types; write it explicitly");
+            diag_stop("TYPE-01", "cannot infer the generic type arguments",
+                      lexbuf_finish(),
+                      diag_file(callee->file), callee->start, callee->end);
+            return TY_INVALID;
+        }
+        ast_list_push(targs, g_infer_targs[i]);
+        i = i + 1;
+    }
+
+    idx = ck_instantiate(n, callee->sval, targs);
+    if (idx < 0) { return TY_INVALID; }
+    inst = g_fn_decl[idx];
+    // The instance is now an ordinary function. Mirror an explicit generic
+    // call exactly: `n->b` holds the instance and `n->a` is cleared, so the
+    // backend takes its generic-call path (it keys on `callee == 0`).
+    n->a = 0;
+    n->b = inst;
+    n->ty = inst->ty;
+    // Check the argument coercions against the instantiated parameters.
+    i = 0;
+    while (i < na) {
+        int at;
+        at = ck_expr(args->items[i]);
+        if (at != TY_INVALID && inst->kids2->items[i]->ty != TY_INVALID
+            && !ck_coercible(inst->kids2->items[i]->ty, at)) {
+            ck_err_type_mismatch(args->items[i], inst->kids2->items[i]->ty, at,
+                                 "argument");
+        }
+        ck_stamp_lits(args->items[i], inst->kids2->items[i]->ty);
+        i = i + 1;
+    }
+    return inst->ty;
+}
+
 // Calls: free functions, methods, generic calls, and (later) function values.
 int ck_expr_call(struct AstNode* n) {
     struct AstNode* callee;
@@ -552,19 +710,12 @@ int ck_expr_call(struct AstNode* n) {
         }
         sym = ck_lookup(callee->sval);
         if (sym < 0 || g_sym_kind[sym] != SK_FN) {
-            // A generic function is not callable without explicit type
-            // arguments: point at the fix rather than "unknown name".
+            // A generic template is callable without explicit `<...>`: infer
+            // its type arguments from the arguments (§18). The old fallback
+            // ("give its type arguments") is replaced by inference, with a
+            // clear stop when a parameter cannot be pinned.
             if (ck_find_template(callee->sval) >= 0) {
-                lexbuf_reset();
-                lexbuf_push_str("`");
-                lexbuf_push_str(callee->sval);
-                lexbuf_push_str("` is generic; give its type arguments, e.g. `");
-                lexbuf_push_str(callee->sval);
-                lexbuf_push_str("<i32>(...)`");
-                diag_stop("TYPE-01", "generic call needs type arguments",
-                          lexbuf_finish(),
-                          diag_file(callee->file), callee->start, callee->end);
-                return TY_INVALID;
+                return ck_infer_generic_call(n, callee, args);
             }
             ck_err_unknown_name(callee->sval, callee, "did you mean to call a function?");
             return TY_INVALID;

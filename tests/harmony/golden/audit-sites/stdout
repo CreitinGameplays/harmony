@@ -1,0 +1,6 @@
+unchecked audit - 2 sites - 5 lines total
+
+  audited.harmony:2   fn   p must point to at least n initialized, readable bytes
+  audited.harmony:5   block   i < len was checked above and slots 0..len are initialized
+
+  0 sites under 12 characters - 0 sites over 10 lines

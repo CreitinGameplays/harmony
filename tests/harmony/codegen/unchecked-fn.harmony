@@ -1,0 +1,18 @@
+// EXPECT: 9
+// `unchecked("contract") fn` (§13.1): the contract is mandatory, the fn is a
+// normal function whose *calls* need a promise (UNCK-04), and the body is not
+// automatically unchecked (§13.4). The declared contract is also an `audit`
+// site.
+unchecked("n is a small literal chosen by the caller, always in range")
+fn add_one(n: i64) -> i64 {
+    return n + 1;
+}
+
+fn main() -> i32 {
+    let mut t: i64 = 0;
+    unchecked("n = 8 is a small literal, always in range") {
+        t = add_one(8);
+    }
+    if (t == 9) { return 9; }
+    return 0;
+}

@@ -1,0 +1,12 @@
+// WANT: UNCK-04
+// Calling an `unchecked fn` outside an `unchecked` block is rejected: the
+// caller has not written down that it meets the contract (§13.2, §13.4).
+unchecked("n is a small literal chosen by the caller, always in range")
+fn add_one(n: i64) -> i64 {
+    return n + 1;
+}
+
+fn main() -> i32 {
+    let t = add_one(8);
+    return t as i32;
+}

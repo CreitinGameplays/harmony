@@ -1,0 +1,1 @@
+{"file":"audited.harmony","sites":[{"file":"audited.harmony","line":2,"kind":"fn","lines":1,"reason":"p must point to at least n initialized, readable bytes"},{"file":"audited.harmony","line":5,"kind":"block","lines":4,"reason":"i < len was checked above and slots 0..len are initialized"}],"total":2,"lines":5,"short":0,"oversized":0}

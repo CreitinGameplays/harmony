@@ -1,0 +1,10 @@
+// WANT: TYPE-01
+// A type parameter that no argument mentions cannot be inferred, so the call
+// is a stop that asks for the explicit arguments (§18).
+fn make<T>() -> i32 {
+    return 5;
+}
+
+fn main() -> i32 {
+    return make();
+}

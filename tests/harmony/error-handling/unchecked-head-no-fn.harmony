@@ -1,0 +1,7 @@
+// WANT: SYN-05
+// An `unchecked` head must attach to a function in item position; a block is
+// `unchecked("why") { ... }`, not `unchecked("why") struct ...` (§13.1, §18).
+unchecked("this reason dangles with no function after it")
+struct Point { x: i32; }
+
+fn main() -> i32 { return 0; }

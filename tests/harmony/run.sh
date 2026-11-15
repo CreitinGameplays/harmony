@@ -140,13 +140,22 @@ check "explain unknown code exits 2" 2 $?
 "$HB" explain >/dev/null 2>&1
 check "explain missing code exits 2" 2 $?
 
-# audit lists the (currently empty) unchecked surface (§13.6).
+# audit lists the unchecked surface (§13.6, §13.8). With no input the
+# listing is empty; with an input it reports each `unchecked` block / fn.
 audit_out="$("$HB" audit 2>/dev/null)"
 check "audit exits 0" 0 $?
-if echo "$audit_out" | grep -q "unchecked audit"; then
-    pass=$((pass + 1)); printf 'ok   audit prints its header\n'
+if echo "$audit_out" | grep -q "unchecked audit - 0 sites"; then
+    pass=$((pass + 1)); printf 'ok   audit (no input) prints the empty listing\n'
 else
-    fail=$((fail + 1)); printf 'FAIL audit prints its header\n'
+    fail=$((fail + 1)); printf 'FAIL audit (no input) prints the empty listing\n'
+fi
+# A real site: the extern-unchecked codegen case has one block.
+audit_out="$("$HB" audit "$ROOT/tests/harmony/codegen/extern-unchecked.harmony" 2>/dev/null)"
+check "audit <file> exits 0" 0 $?
+if echo "$audit_out" | grep -q "1 sites" && echo "$audit_out" | grep -q "block"; then
+    pass=$((pass + 1)); printf 'ok   audit <file> lists the unchecked block\n'
+else
+    fail=$((fail + 1)); printf 'FAIL audit <file> lists the unchecked block\n'
 fi
 
 # --strict / --all / --deny-unchecked parse and do not disturb a clean check.

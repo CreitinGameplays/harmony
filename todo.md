@@ -104,13 +104,22 @@ binary is `harmony-base` (the spec's `lc`).
   - **Generic monomorphization** (§18): `id<i32>(x)` clones the template,
     substitutes type parameters through the body, registers a concrete
     `name__Ty` instance (deduped, identifier-safe symbols, bounded params).
+    Call-site **inference** infers the type arguments when they are omitted:
+    `id(7)` → `id<i32>(7)`; an uninferable parameter is a `TYPE-01` stop.
+  - **`unchecked fn`** (§13.1): the documented
+    `unchecked("contract") fn ...` item form now parses (it previously did
+    not); the contract is kept on the fn node, callers still need a promise
+    (UNCK-04), and the contract is an `audit` site.
+  - **`harmony-base audit [file]`** (§13.6, §13.8): lists every `unchecked`
+    block / fn with file, line, kind, reason, and span stats,
+    `--format=json` included (`src/harmony-base/audit.c2`).
   - **Stack guard** (§14.2): SIGSEGV handler on an alternate stack → `T-STACK`
     (exit 70); `run`/`build` report signal deaths as `128 + signo`.
   - Quiet toolchain: clang stderr captured to a log; one-line summary + first
     error by default, `-v` replays the whole log.
   - Untyped literals adapt at every coercion site (§5.9), stamped on the node.
-  - Tests: codegen.sh 50, error-handling.sh 26, checker.sh 24, parser.sh 53,
-    lexer.sh 21, golden.sh 9, run.sh 28, fuzz.sh 24, determinism.sh 4.
+  - Tests: codegen.sh 51, error-handling.sh 28, checker.sh 27, parser.sh 55,
+    lexer.sh 21, golden.sh 11, run.sh 30, fuzz.sh 24, determinism.sh 4.
 
 - [x] **M5 (driver part) — diagnostic model + renderers.**
   `code`/`severity`/`title`/`summary`/`story`/`fixes`; pretty (§16.2),
@@ -119,9 +128,13 @@ binary is `harmony-base` (the spec's `lc`).
 
 ### Remaining (harmony-base only)
 
-- [ ] Inferred generic calls: `id(x)` without explicit `<T>` (type inference).
-      Needed for ergonomic self-hosting; until then every generic call spells
-      its type arguments.
+- [x] Inferred generic calls: a call to a generic template without explicit
+      `<...>` infers each type parameter from the argument types (`id(7)` ->
+      `id<i32>(7)`, `max(a, b)` pins `T` and requires both to agree). An
+      untyped literal adopts its default (`i32`/`f64`) before inference; an
+      explicit `<...>` list still wins; a parameter no argument mentions is a
+      `TYPE-01` stop asking for explicit arguments. (`ck_infer_generic_call`
+      in cexpr.c2; `ck_unify` / `ck_ty_to_ast` in check.c2.)
 - [x] Mutable-slice tracking (`&mut [T]`): the exclusivity of a slice is now
       part of its type (the `b` slot of the `CTY_SLICE` entry), so `&mut [T]`
       and `&[T]` are distinct and compare unequal. Writing through a `&mut
@@ -138,15 +151,25 @@ binary is `harmony-base` (the spec's `lc`).
       as the fat pair (was a thin-pointer mis-spill). Remaining for the
       rewrite: a growable `String`/`Vec` over `heap` (needs an allocator grow
       hook).
-- [ ] `harmony-base audit` — list every `unchecked` site with reason (§13.6);
-      today it returns an empty listing (needs M6 surface).
+- [x] `harmony-base audit [file]` — lists every `unchecked` site (block or
+      `unchecked fn`) with file, line, kind, reason, line-span stats, and the
+      under-12-char / over-10-line counts (§13.6, §13.8). `--format=json`
+      emits one object per file. No input prints the empty listing (the CI
+      gate case). Ran into and fixed a real parser bug: the documented
+      `unchecked("contract") fn` item form (§13.1, §18) never parsed — the
+      item parser only accepted `unchecked fn`. It now parses, stores the
+      contract on the fn node, and still enforces UNCK-04 at call sites.
+      (`src/harmony-base/audit.c2`, new; reports.c2 stub removed.)
 - [x] In-memory LLVM IR (AGENTS.md): `build`/`run` feed the generated IR to
       clang on stdin (`clang -x ir - -x c rt.c ...`) through a pipe — no `.ll`
       temp file by default. New `sys_spawn_stdin` (c2x-seed gains a `pipe2`
       stub) writes the IR buffer to the child; `-v` keeps a `/tmp` copy for
       debugging a rejected IR. (`emit-llvm` still prints the IR to stdout.)
-- [ ] Continue growing accept/reject suites per feature. (The runtime
-      `T-ASSERT` trap test already exists: `tests/harmony/codegen/trap-assert`.)
+- [x] Continue growing accept/reject suites per feature: added cases for
+      generic inference (codegen + checker + parser), mutable slices,
+      `unchecked fn` (accept + UNCK-04 reject + head-without-fn reject), and
+      `audit` (run.sh + two golden fixtures). (The runtime `T-ASSERT` trap test
+      already exists: `tests/harmony/codegen/trap-assert`.)
 
 ### Cross-cutting
 

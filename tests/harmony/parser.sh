@@ -116,6 +116,12 @@ ok_case "switch with or-patterns, range, default"
 write 'fn main() { unchecked("i < len was checked above") { return; } }\n'
 ok_case "unchecked blocks with reasons"
 
+write 'unchecked("p is valid for n bytes, checked by the caller") fn sum_bytes(p: i64, n: usize) -> i64 { return 0; }\nfn main() {}\n'
+ok_case "unchecked fn with a contract string"
+
+write 'fn id<T>(x: T) -> T { return x; }\nfn main() { let a = id(1); let b = id("s"); return; }\n'
+ok_case "inferred generic calls (no explicit type args)"
+
 write 'fn main() { { let inner = 1; } return; }\n'
 ok_case "bare block statement (scope)"
 

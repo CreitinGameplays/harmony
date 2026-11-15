@@ -1324,6 +1324,24 @@ unchecked audit · 4 sites · 11 lines total
 
 `lc audit --json` is intended for CI: fail the build if the site count in application code increases without review.
 
+*harmony-base (M1) implements this listing with an ASCII separator (`-`
+instead of `·`) and no surrounding quotes, so it stays grep-friendly and
+byte-stable:*
+
+```
+$ harmony-base audit src/mini_vec.src
+unchecked audit - 4 sites - 11 lines total
+
+  src/mini_vec.src:21   block   grow() guarantees cap > len, so slot len is inside our allocation
+  src/mini_vec.src:44   block   i < len was checked above and slots 0..len are initialized
+
+  0 sites under 12 characters - 0 sites over 10 lines
+```
+
+`harmony-base audit --format=json` prints one object for the whole file
+(`file`, `sites[]`, `total`, `lines`, `short`, `oversized`). An `unchecked fn`
+appears as a `fn` site at its declaration line (its contract is the reason).
+
 ---
 
 ## 14. Runtime traps and error values
@@ -2489,6 +2507,14 @@ literal       = INT | FLOAT | CHAR | BYTE | STRING | "true" | "false" ;
 - `life` and `static` are ordinary identifiers outside the positions shown.
 
 **Checked after parsing (not expressed in the grammar):** `copy` marking validity; `self` only as first parameter of a method; `break` only inside a loop; `..=` requires an end; or-pattern alternatives bind identical names; reason-string length; slices and `str` only behind references.
+
+**Generic-call inference.** When a call to a generic function omits
+`generic_args`, the checker infers each type parameter from the argument types:
+`id(7)` becomes `id<i32>(7)`, and `max(a, b)` pins `T` from `a` and requires
+`b` to agree. An untyped integer/float literal first adopts its default
+(`i32`/`f64`) before inference. A parameter that no argument mentions cannot be
+inferred, which is a `TYPE-01` stop asking for the explicit arguments. An
+explicit `generic_args` list always wins and is checked as before.
 
 ---
 

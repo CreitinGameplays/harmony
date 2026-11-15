@@ -665,14 +665,30 @@ struct AstNode* parse_item(int is_export) {
         return n;
     }
 
-    // unchecked fn ... (unchecked function form, 13.2)
-    if (p_at_kw("unchecked") && p_peek(1)->kind == TOK_KEYWORD
-        && tok_is_kw(p_peek(1), "fn")) {
+    // unchecked("reason") fn ... (unchecked function form, §13.1). The
+    // contract string is mandatory; it is stored on the fn node in `c` (as a
+    // string-literal node) so `audit` and callers' diagnostics can show it.
+    if (p_at_kw("unchecked") && p_peek(1)->kind == TOK_LPAREN) {
         struct AstNode* f;
-        f = parse_fn_decl(1, start);
+        char* reason;
+        reason = parse_unck_head();
+        if (reason == 0) { return 0; }
+        if (!p_at_kw("fn")) {
+            p_syn("SYN-05",
+                  "an `unchecked` contract attaches to a function",
+                  "Spell it `unchecked(\"why\") fn name(...) { ... }`; a bare block is `unchecked(\"why\") { ... }` (§13.1).",
+                  "write `fn`",
+                  "unchecked(\"p is valid for n bytes\") fn sum_bytes(...) { ... }",
+                  p_cur());
+            return 0;
+        }
+        f = parse_fn_decl(0, p_cur());
         if (f == 0) { return 0; }
-        f->ival = 1;
+        f->ival = 1;                     // bit 0: an `unchecked fn`
         if (is_export) { f->ival = 3; }
+        f->c = ast_node_new(AST_STRING_LIT);
+        f->c->sval = reason;
+        f->c->ival = str_len(reason);
         return f;
     }
 

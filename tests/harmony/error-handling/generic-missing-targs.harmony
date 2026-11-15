@@ -1,9 +1,0 @@
-// WANT: TYPE-01
-// A generic function is not callable without explicit type arguments (§18).
-fn id<T>(x: T) -> T {
-    return x;
-}
-
-fn main() -> i32 {
-    return id(1);
-}

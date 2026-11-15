@@ -73,6 +73,7 @@ char* str_concat(char* a, char* b);
 void out_str(char* s);
 void out_int(int n);
 void out_nl(void);
+void out_char(char c);
 void err_str(char* s);
 void err_int(int n);
 void err_nl(void);
@@ -239,10 +240,10 @@ struct Options {
 // the code exists, -1 otherwise (the caller reports the unknown code).
 int explain_lookup(char* code);
 
-// Prints the unchecked audit listing (§13.6): every `unchecked` block and
-// `unchecked fn`, with file, line, and reason. No language surface yet, so
-// the listing is empty; the scanner plugs in during M6.
-void audit_print(void);
+// Prints the unchecked audit listing (§13.6, §13.8): every `unchecked` block
+// and `unchecked fn` in one input, with file, line, kind, and reason.
+// `opts` supplies the input path and the `--format=json` switch.
+int audit_run(struct Options* opts);
 
 // Runs the pipeline for one input file. Returns an exit code (§16.6).
 int pipeline_run(struct Options* opts);
@@ -602,6 +603,11 @@ int ck_lookup(char* name);                 // innermost binding of a name
 int ck_lookup_type(char* name);
 int ck_coercible(int want, int got);       // assignment/arg compatibility
 int ck_find_template(char* name);          // generic template index, or -1
+struct AstNode* ck_template_decl(int ti);  // the AST_FN template at index ti
+int ck_template_nparams(struct AstNode* tmpl);   // count of `T` parameters
+char* ck_template_param(struct AstNode* tmpl, int i); // i-th param name (T)
+struct AstNode* ck_ty_to_ast(int ty);      // type id -> a synthetic type AST
+int ty_array_len(int id);                  // array length (CTY_ARRAY), else 0
 int ck_check_format(struct AstNode* n, char* fname, struct AstList* args);
 int ck_builtin_trap(struct AstNode* n, struct AstList* args);
 int ck_builtin_assert(struct AstNode* n, struct AstList* args);

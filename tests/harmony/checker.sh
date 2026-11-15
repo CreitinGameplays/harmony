@@ -81,6 +81,21 @@ write 'fn main() -> i32 {\n  let n: usize = sizeof(i64);\n  return 0;\n}\n'
 ok_case "sizeof yields usize"
 
 # ---------------------------------------------------------------------------
+# Positive: generic inference (§18).
+# ---------------------------------------------------------------------------
+write 'fn id<T>(x: T) -> T { return x; }\nfn main() -> i32 {\n  let a = id(7);\n  return a;\n}\n'
+ok_case "inferred generic call pins T = i32"
+
+write 'fn id<T>(x: T) -> T { return x; }\nfn max<T: ord>(a: T, b: T) -> T { if (a < b) { return b; } return a; }\nfn main() -> i32 {\n  return max(id(1), id(2));\n}\n'
+ok_case "nested inferred generic calls"
+
+# ---------------------------------------------------------------------------
+# Positive: `unchecked fn` with a contract (§13.1).
+# ---------------------------------------------------------------------------
+write 'unchecked("n is a small literal chosen by the caller")\nfn f(n: i64) -> i64 { return n; }\nfn main() -> i32 {\n  let mut t: i64 = 0;\n  unchecked("n = 1 is a small literal") { t = f(1); }\n  return t as i32;\n}\n'
+ok_case "unchecked fn with a contract, called under a promise"
+
+# ---------------------------------------------------------------------------
 # Negative: type errors.
 # ---------------------------------------------------------------------------
 write 'fn main() -> i32 { let x: i32 = "hi"; return 0; }\n'

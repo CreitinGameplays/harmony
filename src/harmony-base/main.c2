@@ -7,13 +7,13 @@
 //   lc emit-llvm <file>   print the generated LLVM IR (primary backend)
 //   lc emit-c <file>      print the generated C (secondary backend)
 //   lc explain <CODE>     long-form lesson for a diagnostic code
-//   lc audit              list every `unchecked` site
+//   lc audit [file]       list every `unchecked` site (block or fn)
 //
 //   flags: --format=pretty|line|json   --all   --strict   --deny-unchecked
 //          --dump-ast   --no-color   --ascii   -o <out>
 
 char* usage_text() {
-    return "usage: harmony-base build <file.harmony> [-o out]\n       harmony-base run   <file.harmony>\n       harmony-base check <file.harmony>\n       harmony-base emit-llvm <file.harmony>\n       harmony-base emit-c <file.harmony>\n       harmony-base explain <CODE>\n       harmony-base audit\n";
+    return "usage: harmony-base build <file.harmony> [-o out]\n       harmony-base run   <file.harmony>\n       harmony-base check <file.harmony>\n       harmony-base emit-llvm <file.harmony>\n       harmony-base emit-c <file.harmony>\n       harmony-base explain <CODE>\n       harmony-base audit [file.harmony]\n";
 }
 
 void print_usage(void) {
@@ -141,8 +141,7 @@ int main(int argc, char** argv) {
         return EXIT_USAGE;
     }
     if (opts.cmd == CMD_AUDIT) {
-        audit_print();
-        return EXIT_OK;
+        return audit_run(&opts);
     }
 
     return pipeline_run(&opts);

@@ -449,7 +449,12 @@ void ll_collect_strings(struct AstNode* n) {
     }
     ll_collect_strings(n->a);
     ll_collect_strings(n->b);
-    ll_collect_strings(n->c);
+    // An `unchecked fn` keeps its contract string on the fn node in `c`
+    // (§13.1); it is compile-time metadata (an `audit`/diagnostic input), not
+    // a runtime value, so it is not interned into the string pool.
+    if (!((n->kind == AST_FN || n->kind == AST_EXTERN_FN) && (n->ival & 1))) {
+        ll_collect_strings(n->c);
+    }
     if (n->kids != 0) {
         int i;
         i = 0;

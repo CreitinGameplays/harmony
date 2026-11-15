@@ -25,6 +25,7 @@ HB_SRC    := \
 	src/harmony-base/pstmts.c2 \
 	src/harmony-base/pexpr.c2 \
 	src/harmony-base/pastout.c2 \
+	src/harmony-base/audit.c2 \
 	src/harmony-base/pipeline.c2 \
 	src/harmony-base/main.c2
 SEED_SRC  := $(wildcard src/c2x-seed/*.asm)

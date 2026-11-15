@@ -5,9 +5,8 @@
 // code: WHAT/WHY/BAD/GOOD/NOTE/SEE (§16.8). The lessons live next to the
 // compiler so the documentation cannot drift from the binary that renders it.
 //
-// `harmony-base audit` lists every `unchecked` block and `unchecked fn` with
-// file, line, and reason (§13.6). No language surface exists yet, so the
-// scanner returns an empty listing; it plugs in during M6.
+// The `audit` command lives in audit.c2 (it runs the lexer/parser, which the
+// explain catalogue does not need).
 
 const char* EXPLAIN_HEADER =
 "WHAT   A %s\n";
@@ -174,11 +173,4 @@ int explain_lookup(char* code) {
     // own WHAT/WHY/BAD/GOOD text as the stage that emits it lands.
     explain_page(code);
     return 0;
-}
-
-void audit_print(void) {
-    // §13.6: every `unchecked` block / `unchecked fn`, with file, line, reason.
-    // No language surface yet; the listing is empty until M6.
-    out_str("unchecked audit - 0 sites - 0 lines total");
-    out_nl();
 }

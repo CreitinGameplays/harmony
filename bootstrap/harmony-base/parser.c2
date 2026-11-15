@@ -630,32 +630,49 @@ struct AstNode* parse_fn_decl(int unck, struct Token* start_tok) {
     return n;
 }
 
-// extern_decl = "extern" "fn" ID "(" [params] ")" ["->" type] ";"
+// extern_decl = "extern" STRING "fn" ID "(" [params] ")" ["->" type] ";"
 struct AstNode* parse_extern_fn(void) {
     struct AstNode* n;
     struct Token* start;
+    struct Token* abi;
     start = p_cur();
     p_advance();      // extern
+    // The ABI is part of the declaration, never an implicit default (§6.8):
+    // the calling convention across the boundary is written down, so a reader
+    // (and the compiler) never has to guess it.
+    if (!p_at(TOK_STRING)) {
+        p_syn("SYN-05",
+              "a foreign function needs an ABI",
+              "`extern` must name the calling convention: `extern \"C\" fn ...`.",
+              "add the ABI",
+              "extern \"C\" fn abs(x: i32) -> i32;",
+              p_cur());
+        return 0;
+    }
+    abi = p_cur();
+    p_advance();
     if (!p_eat_kw("fn")) {
         p_syn("SYN-05",
-              "`extern fn` declares a foreign function",
-              "`extern fn name(params) -> type;` — external declarations end with `;`, no body.",
+              "`extern \"C\" fn` declares a foreign function",
+              "`extern \"C\" fn name(params) -> type;` — external declarations end with `;`, no body.",
               "write the declaration",
-              "extern fn abs(x: i32) -> i32;",
+              "extern \"C\" fn abs(x: i32) -> i32;",
               p_cur());
         return 0;
     }
     if (!p_at(TOK_IDENT)) {
         p_syn("SYN-05",
               "a foreign function needs a name",
-              "`extern fn name(params) -> type;`",
+              "`extern \"C\" fn name(params) -> type;`",
               "name the function",
-              "extern fn abs(x: i32) -> i32;",
+              "extern \"C\" fn abs(x: i32) -> i32;",
               p_cur());
         return 0;
     }
     n = ast_node_new(AST_EXTERN_FN);
     n->sval = p_cur_word();
+    n->abi = abi->sval;   // the ABI string, cooked ("C")
+    n->ival = abi->start; // byte offset of the ABI string (for diagnostics)
     n->start = start->start;
     p_advance();
     if (!p_expect(TOK_LPAREN, "add `(` for the parameters")) { return 0; }

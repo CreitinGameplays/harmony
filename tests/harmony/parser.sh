@@ -61,8 +61,8 @@ ok_case "empty main"
 write 'export fn add(a: i32, b: i32) -> i32 { return a + b; }\n'
 ok_case "export fn with params and return type"
 
-write 'extern fn abs(x: i32) -> i32;\nextern fn exit(code: i32);\n'
-ok_case "extern fn declarations"
+write 'extern "C" fn abs(x: i32) -> i32;\nextern "C" fn exit(code: i32);\n'
+ok_case "extern fn declarations with an ABI"
 
 write 'const MAX: i32 = 8;\nconst GREETING: &life(static) str = "hi";\n'
 ok_case "const items incl. life(static)"

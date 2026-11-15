@@ -1288,6 +1288,37 @@ int ck_ffi_ty_ok(int ty) {
     return 0;
 }
 
+// The ABIs the backend implements (§6.8). The C ABI is the only one for now:
+// the emitted `declare` uses the C calling convention, so any other name
+// would be a promise the compiler cannot keep.
+int ck_abi_known(char* abi) {
+    if (abi == 0) { return 0; }
+    return str_eq(abi, "C");
+}
+
+// Reports an ABI the backend does not implement (`FFI-01`). The diagnostic
+// points at the ABI string itself (`ival` holds its byte offset).
+void ck_err_abi(struct AstNode* at, char* abi) {
+    lexbuf_reset();
+    lexbuf_push_str("the ABI `");
+    lexbuf_push_str(abi);
+    lexbuf_push_str("` is not supported");
+    {
+        int idx;
+        int from;
+        int to;
+        from = at->ival;
+        // The span covers the string literal, quotes included.
+        to = from + str_len(abi) + 2;
+        idx = diag_stop("FFI-01", "unknown ABI", lexbuf_finish(),
+                        diag_file(at->file), from, to);
+        if (idx >= 0) {
+            diag_fix(diag_get(idx), "use the C ABI",
+                     "extern \"C\" fn abs(x: i32) -> i32;");
+        }
+    }
+}
+
 // Reports an out-of-spec `extern fn` signature type (§6.8). `where` names the
 // offending position ("parameter `p`", "return type").
 void ck_err_ffi_ty(struct AstNode* at, int ty, char* where) {
@@ -1302,16 +1333,20 @@ void ck_err_ffi_ty(struct AstNode* at, int ty, char* where) {
                         diag_file(at->file), at->start, at->end);
         if (idx >= 0) {
             diag_fix(diag_get(idx), "use a primitive or a raw pointer",
-                     "extern fn abs(x: i32) -> i32;   // or a raw pointer like `raw u8`");
+                     "extern \"C\" fn abs(x: i32) -> i32;   // or a raw pointer like `raw u8`");
         }
     }
 }
 
 void ck_register_extern(struct AstNode* n) {
     // Extern declarations are checked like functions but have no body. The
-    // signature is then restricted to what the C ABI the compiler assumes can
-    // actually carry (§6.8: primitives and `raw` pointers only).
+    // ABI must be one the backend implements (§6.8), and the signature is then
+    // restricted to what that ABI can actually carry (primitives and `raw`
+    // pointers only).
     ck_register_fn(n);
+    if (!ck_abi_known(n->abi)) {
+        ck_err_abi(n, n->abi);
+    }
     {
         struct AstList* params;
         int i;
@@ -1330,7 +1365,7 @@ void ck_register_extern(struct AstNode* n) {
                                     diag_file(p->file), p->start, p->end);
                     if (idx >= 0) {
                         diag_fix(diag_get(idx), "name a value parameter",
-                                 "extern fn abs(x: i32) -> i32;");
+                                 "extern \"C\" fn abs(x: i32) -> i32;");
                     }
                 } else if (!ck_ffi_ty_ok(p->ty)) {
                     char* where;

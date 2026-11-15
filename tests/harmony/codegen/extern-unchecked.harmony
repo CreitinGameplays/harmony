@@ -1,9 +1,9 @@
 // EXPECT: 9
 // IR: declare i64 @lc_syscall3
-// `extern fn` FFI (§6.5): the C symbol is kept unmangled, the call must be
+// `extern "C" fn` FFI (§6.8): the C symbol is kept unmangled, the call must be
 // inside `unchecked` (§13.2), and the runtime exposes a raw syscall hook to
 // prove the ABI end to end without a libc.
-extern fn lc_syscall3(n: i64, a: i64, b: i64, c: i64) -> i64;
+extern "C" fn lc_syscall3(n: i64, a: i64, b: i64, c: i64) -> i64;
 
 fn main() -> i32 {
     let mut pid: i64 = 0;

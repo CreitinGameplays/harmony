@@ -1,0 +1,14 @@
+// EXPECT: 9
+// IR: ; extern "C" lc_syscall3
+// The ABI travels with the declaration (§6.8): the emitted `declare` carries
+// it, so the IR says which convention the foreign symbol uses.
+extern "C" fn lc_syscall3(n: i64, a: i64, b: i64, c: i64) -> i64;
+
+fn main() -> i32 {
+    let mut pid: i64 = 0;
+    unchecked("lc_syscall3(39) is getpid, which always succeeds") {
+        pid = lc_syscall3(39, 0, 0, 0);
+    }
+    if (pid <= 0) { return 1; }
+    return 9;
+}

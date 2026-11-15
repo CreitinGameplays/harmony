@@ -17,7 +17,7 @@
 const int AST_PROGRAM   = 1;
 const int AST_IMPORT    = 9;   // sval = module path string
 const int AST_FN        = 10;
-const int AST_EXTERN_FN = 11;
+const int AST_EXTERN_FN = 11;   // sval = name, abi = ABI string ("C")
 const int AST_STRUCT    = 12;
 const int AST_ENUM      = 13;
 const int AST_METHODS   = 14;
@@ -99,6 +99,7 @@ struct AstNode* ast_node_new(int kind) {
     n->kids2 = 0;
     n->ty = 0;
     n->sfx = 0;
+    n->abi = 0;
     return n;
 }
 
@@ -176,6 +177,7 @@ struct AstNode* ast_clone(struct AstNode* n) {
     c->ival = n->ival;
     c->sval = n->sval;
     c->sfx = n->sfx;
+    c->abi = n->abi;
     c->a = ast_clone(n->a);
     c->b = ast_clone(n->b);
     c->c = ast_clone(n->c);

@@ -400,6 +400,7 @@ struct AstNode {
     struct AstList* kids2;  // secondary child list
     int   ty;        // resolved type id (filled by the checker; 0 = unset)
     char* sfx;       // float-literal suffix ("f32"/"f64"); 0 when unsuffixed
+    char* abi;       // ABI of an `extern` declaration ("C"); 0 on other nodes
 };
 
 // ---------------------------------------------------------------------------
@@ -493,7 +494,7 @@ int          p_peek_is_kw(char* kw, int n);
 
 // Byte sizes as fixed literals (c2x-seed needs literal array dimensions and
 // uses an 8-byte field ABI, so every field is one qword).
-const int AST_NODE_SIZE = 104;   // 13 fields * 8
+const int AST_NODE_SIZE = 112;   // 14 fields * 8
 const int AST_LIST_SIZE = 24;    // len, cap, items
 const int AST_NODE_PTR_SIZE = 8;
 

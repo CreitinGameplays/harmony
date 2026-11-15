@@ -369,6 +369,24 @@ binary is `harmony-base` (the spec's `lc`).
       `ffi-fat-reference.harmony`, `ffi-heap-param.harmony` (all verified
       wrongly accepted before the guard), and the positive
       `tests/harmony/codegen/ffi-signature-ok.harmony`.
+- [x] **`extern` requires an ABI string (§6.8).** A foreign declaration now
+      names the calling convention it uses: `extern "C" fn abs(x: i32) -> i32;`.
+      The ABI is part of the declaration, never an implicit default:
+      - `extern fn ...` without the string is a syntax error (`SYN-05`, "a
+        foreign function needs an ABI") with a `try:` fix;
+      - an ABI the backend does not implement is a stop (`FFI-01`, "unknown
+        ABI") pointing at the string itself. `"C"` is the only one implemented
+        today, because the emitted `declare` uses the C convention.
+      The AST node gains an `abi` field (the node grew from 104 to 112 bytes,
+      copied by `ast_clone`) and the ABI travels into the emitted IR as a
+      comment (`; extern "C" abs`), so a reader of the `.ll` sees the
+      convention. Regressions: `tests/harmony/error-handling/extern-missing-abi.harmony`
+      (`SYN-05`), `extern-unknown-abi.harmony` (`FFI-01`), the positive
+      `tests/harmony/codegen/extern-abi-ir.harmony`, and the
+      `tests/harmony/golden/explain-ffi01` lesson. The tree-sitter grammar
+      (language-extension, upstream `tree-sitter-harmony` a8a61a7) takes the ABI
+      as a `string_literal` in a new `abi` field, so `extern fn ...` is now an
+      ERROR there too.
 
 ### Cross-cutting
 

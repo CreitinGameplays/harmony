@@ -3,8 +3,8 @@
 // The in-spec `extern fn` surface (§6.8): primitives and `raw` pointers only.
 // This is the shape the checker now enforces — a scalar/pointer signature, a
 // `raw mut T` out-parameter, and a `unit` (C `void`) return all stay valid.
-extern fn lc_syscall3(n: i64, a: i64, b: i64, c: i64) -> i64;
-extern fn lc_put_str(p: raw u8, n: i64);
+extern "C" fn lc_syscall3(n: i64, a: i64, b: i64, c: i64) -> i64;
+extern "C" fn lc_put_str(p: raw u8, n: i64);
 
 fn main() -> i32 {
     // Primitive signature.

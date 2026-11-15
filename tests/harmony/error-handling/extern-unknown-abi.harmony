@@ -1,0 +1,11 @@
+// WANT: FFI-01
+// The backend implements exactly one ABI: the C one. An unknown ABI name is a
+// stop, not a silent fallback to C — the whole point of writing the ABI down
+// is that the declaration says which convention the symbol uses.
+extern "Win64" fn abs(x: i32) -> i32;
+
+fn main() -> i32 {
+    let mut n: i32 = 0;
+    unchecked("call the C function") { n = abs(-5); }
+    return n;
+}

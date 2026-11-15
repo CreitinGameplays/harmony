@@ -1,0 +1,12 @@
+// WANT: SYN-05
+// An `extern` declaration must name the calling convention (§6.8): the ABI
+// is part of the declaration, never an implicit default. Without it the
+// reader (and the compiler) would have to guess which convention the foreign
+// symbol uses.
+extern fn abs(x: i32) -> i32;
+
+fn main() -> i32 {
+    let mut n: i32 = 0;
+    unchecked("call the C function") { n = abs(-5); }
+    return n;
+}

@@ -704,6 +704,13 @@ void ll_emit_fn(struct AstNode* fn) {
         // LLVM rejects the duplicate (`invalid redefinition of function`) even
         // when the signatures match. The prelude's signature wins.
         if (ll_is_predeclared(name)) { return; }
+        // The ABI travels with the declaration (§6.8): the emitted `declare`
+        // carries it as a comment so the IR says which convention it is.
+        ll_out_str("; extern \"");
+        if (fn->abi == 0) { ll_out_str("C"); } else { ll_out_str(fn->abi); }
+        ll_out_str("\" ");
+        ll_out_str(name);
+        ll_out_str("\n");
         ll_out_str("declare ");
         if (sret) { ll_out_str("void "); } else { ll_out_str(ll_type_name(retty)); }
         ll_out_str(" @");
@@ -847,7 +854,7 @@ int ll_is_aggregate(int ty) {
 char* ll_fn_symbol(struct AstNode* fn) {
     int i;
     int fidx;
-    // An `extern fn` is a C symbol: no mangling at all (§6.5, §19.4).
+    // An `extern fn` is a C symbol: no mangling at all (§6.8, §19.4).
     if (fn->kind == AST_EXTERN_FN) { return fn->sval; }
     // A method (registered with a receiver type) mangles to `Type__method`
     // so call sites and definitions agree.

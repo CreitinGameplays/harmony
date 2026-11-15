@@ -2,7 +2,7 @@
 // A fat reference (`&str`, `&[T]`) is a (pointer, length) pair in harmony, but
 // the C boundary passes only one word, so the length is silently lost (§6.8).
 // The signature must be rejected; pass the bytes as `raw u8` plus a length.
-extern fn takes_str(s: &str) -> i32;
+extern "C" fn takes_str(s: &str) -> i32;
 
 fn main() -> i32 {
     let mut n: i32 = 0;

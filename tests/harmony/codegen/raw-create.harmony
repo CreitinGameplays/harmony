@@ -4,7 +4,7 @@
 // passed the operand type through unchanged (`raw(&x)` typed as `&T`), so a
 // `raw T` binding or parameter rejected it. Creating a raw pointer is safe;
 // only *using* one needs `unchecked`.
-extern fn lc_put_str(p: raw u8, n: i64);
+extern "C" fn lc_put_str(p: raw u8, n: i64);
 
 fn main() -> i32 {
     let mut b: u8 = 66;              // 'B'

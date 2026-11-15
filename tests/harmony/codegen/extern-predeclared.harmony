@@ -4,7 +4,7 @@
 // hook) must not emit a second `declare`: LLVM rejects the duplicate even when
 // the signatures match ("invalid redefinition of function"). The prelude's
 // declaration wins, and the call links against the runtime body.
-extern fn lc_put_str(p: raw u8, n: i64);
+extern "C" fn lc_put_str(p: raw u8, n: i64);
 
 fn main() -> i32 {
     let mut a: u8 = 79;    // 'O'

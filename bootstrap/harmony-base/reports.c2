@@ -51,7 +51,8 @@ int explain_known(char* code) {
         || str_eq(code, "LEX-01")
         || str_eq(code, "NAME-02")
         || str_eq(code, "USE-01")
-        || str_eq(code, "CFG-01");
+        || str_eq(code, "CFG-01")
+        || str_eq(code, "FFI-01");
 }
 
 // SYN-01: conditions need parentheses (§8.1).
@@ -157,6 +158,24 @@ void explain_lex01(void) {
     out_nl();
 }
 
+// FFI-01: an ABI the backend does not implement (§6.8).
+void explain_ffi01(void) {
+    out_str("FFI-01 - unknown ABI\n");
+    out_nl();
+    out_str("WHAT   An `extern` declaration names the calling convention\n");
+    out_str("       it uses, in a string: `extern \"C\" fn ...`.\n");
+    out_str("WHY    The convention decides how arguments are passed, who\n");
+    out_str("       cleans the stack, and where the return value lands.\n");
+    out_str("       Only the C ABI is implemented, so any other name is a\n");
+    out_str("       promise the compiler cannot keep.\n");
+    out_str("BAD    extern \"Win64\" fn abs(x: i32) -> i32;\n");
+    out_str("GOOD   extern \"C\" fn abs(x: i32) -> i32;\n");
+    out_str("NOTE   The ABI string is mandatory: `extern fn ...` without\n");
+    out_str("       one is a syntax error (SYN-05), never a default.\n");
+    out_str("SEE    docs/harmony.md - 6.8, 16.10 Code catalogue\n");
+    out_nl();
+}
+
 int explain_lookup(char* code) {
     if (!explain_known(code)) { return -1; }
     if (str_eq(code, "ICE-01")) {
@@ -169,6 +188,7 @@ int explain_lookup(char* code) {
     if (str_eq(code, "SYN-04")) { explain_syn04(); return 0; }
     if (str_eq(code, "SYN-05")) { explain_syn05(); return 0; }
     if (str_eq(code, "LEX-01")) { explain_lex01(); return 0; }
+    if (str_eq(code, "FFI-01")) { explain_ffi01(); return 0; }
     // The remaining codes currently share the stub lesson; each gets its
     // own WHAT/WHY/BAD/GOOD text as the stage that emits it lands.
     explain_page(code);

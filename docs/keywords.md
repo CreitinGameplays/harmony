@@ -24,6 +24,11 @@ heap form is the built-in `heap(x)` (docs/harmony.md §12.2).
 `heap` is a built-in **form** like `sizeof` (§12.2), not a general keyword:
 `heap(x)` is a primary expression.
 
+`extern` is followed by an **ABI string** and then `fn`:
+`extern "C" fn abs(x: i32) -> i32;` (§6.8). The string is mandatory — an
+`extern fn` without one is a syntax error — and `"C"` is the only ABI the
+backend implements (`FFI-01` for any other name).
+
 **Reserved for the future:** `abilities` `async` `await` `macro` `try`.
 Dropped reservations (v0.3.1): `spawn`, `send` (concurrency will use
 ordinary method-style names), and `trait` (the v1 trait-like feature is
@@ -59,7 +64,8 @@ compiler recognizes their hook *names and shapes* (`next`, `cleanup`,
 ## Diagnostic codes (docs/harmony.md §16.10)
 
 The stable code set the checker may emit: `SYN-01..05`, `NAME-01..04`,
-`SHADOW-01`, `TYPE-01..06`, `FMT-01`, `MUT-01..03`, `INIT-01`, `MOVE-01..04`,
-`LOAN-01..03`, `LIFE-01..04`, `CASE-01..02`, `DROP-01..02`, `UNCK-01..05`,
-`UNUSED-01..02`, `DEAD-01`, `STYLE-01`. The compiler-reserved code is `ICE-01`
-(not in the spec catalogue; marks an internal invariant that must never fire).
+`SHADOW-01`, `TYPE-01..06`, `FMT-01`, `FFI-01`, `MUT-01..03`, `INIT-01`,
+`MOVE-01..04`, `LOAN-01..03`, `LIFE-01..04`, `CASE-01..02`, `DROP-01..02`,
+`UNCK-01..05`, `UNUSED-01..02`, `DEAD-01`, `STYLE-01`. The compiler-reserved
+code is `ICE-01` (not in the spec catalogue; marks an internal invariant that
+must never fire).

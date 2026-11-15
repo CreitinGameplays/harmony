@@ -6,7 +6,7 @@
 // wrong data, so the checker must reject the shape outright.
 struct Pair { x: i32; y: i32; }
 
-extern fn mkpair(a: i32, b: i32) -> Pair;
+extern "C" fn mkpair(a: i32, b: i32) -> Pair;
 
 fn main() -> i32 {
     let mut p: Pair = Pair { .x = 0, .y = 0 };

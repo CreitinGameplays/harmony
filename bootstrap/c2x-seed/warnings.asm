@@ -1,3 +1,5 @@
+format ELF64
+
 ; ================================================================
 ; warnings.asm — Centralized Warning System
 ;
@@ -10,92 +12,60 @@
 ; Warning Categories
 ; ------------------------------------------------------------
 ; Semantic warnings (1-99)
-    global WARN_UNINIT_VAR
-WARN_UNINIT_VAR      equ 1
-    global WARN_UNINIT_PTR
-WARN_UNINIT_PTR      equ 2
-    global WARN_MISSING_RETURN
-WARN_MISSING_RETURN  equ 3
-    global WARN_UNUSED_VAR
-WARN_UNUSED_VAR      equ 4
-    global WARN_DEAD_CODE
-WARN_DEAD_CODE       equ 5
-    global WARN_IMPLICIT_CAST
-WARN_IMPLICIT_CAST   equ 6
-    global WARN_EMPTY_BODY
-WARN_EMPTY_BODY      equ 7
-    global WARN_CONSTANT_COND
-WARN_CONSTANT_COND   equ 8
+WARN_UNINIT_VAR = 1
+WARN_UNINIT_PTR = 2
+WARN_MISSING_RETURN = 3
+WARN_UNUSED_VAR = 4
+WARN_DEAD_CODE = 5
+WARN_IMPLICIT_CAST = 6
+WARN_EMPTY_BODY = 7
+WARN_CONSTANT_COND = 8
 
-NUM_WARNINGS equ 8
+NUM_WARNINGS = 8
 
 ; ------------------------------------------------------------
 ; External dependencies
 ; ------------------------------------------------------------
-extern out_write_string
-extern out_write_string_len
-extern out_write_int
-extern out_write_char
-extern out_write_newline
-extern out_set_fd
-extern out_flush
-extern out_fd
-extern source_path
-extern lexer_state
-extern STDERR
 
 ; ------------------------------------------------------------
 ; Initialized Data — Warning Messages
 ; ------------------------------------------------------------
-section .data
+section '.data' writeable
 
-msg_warn_prefix      db ": warning: ", 0
+msg_warn_prefix:      db ": warning: ", 0
 
 ; Specific warning messages
-msg_warn_uninit_var      db "uninitialized variable", 0
-msg_warn_uninit_ptr      db "uninitialized pointer dereferenced", 0
-msg_warn_missing_return  db "non-void function should return a value", 0
-msg_warn_unused_var      db "unused variable", 0
-msg_warn_dead_code       db "unreachable code after return/break/continue", 0
-msg_warn_implicit_cast   db "implicit cast", 0
-msg_warn_empty_body      db "empty body for control flow statement", 0
-msg_warn_constant_cond   db "condition is always true", 0
+msg_warn_uninit_var:      db "uninitialized variable", 0
+msg_warn_uninit_ptr:      db "uninitialized pointer dereferenced", 0
+msg_warn_missing_return:  db "non-void function should return a value", 0
+msg_warn_unused_var:      db "unused variable", 0
+msg_warn_dead_code:       db "unreachable code after return/break/continue", 0
+msg_warn_implicit_cast:   db "implicit cast", 0
+msg_warn_empty_body:      db "empty body for control flow statement", 0
+msg_warn_constant_cond:   db "condition is always true", 0
 
 ; Summary message
-msg_warn_summary_fmt    db " warning(s) generated", 10, 0
+msg_warn_summary_fmt:    db " warning(s) generated", 10, 0
 
 ; Export message strings for use by other modules
-    global msg_warn_uninit_var
-    global msg_warn_uninit_ptr
-    global msg_warn_missing_return
-    global msg_warn_unused_var
-    global msg_warn_dead_code
-    global msg_warn_implicit_cast
-    global msg_warn_empty_body
-    global msg_warn_constant_cond
 
 ; ------------------------------------------------------------
 ; Uninitialized Data — Warning State
 ; ------------------------------------------------------------
-section .bss
-    global warning_count
-    warning_count     resq 1          ; total warnings emitted
+section '.bss' writeable
+    warning_count:     rq 1          ; total warnings emitted
 
-    global warnings_enabled
-    warnings_enabled  resq 1          ; 1 = emit warnings (default), 0 = suppressed
+    warnings_enabled:  rq 1          ; 1 = emit warnings (default), 0 = suppressed
 
-    global warning_mask
-    warning_mask      resb NUM_WARNINGS  ; bitmask: bit N set = warning N disabled
+    warning_mask:      rb NUM_WARNINGS  ; bitmask: bit N set = warning N disabled
 
-default rel
 
-section .text
+section '.text' executable
 
 ; ------------------------------------------------------------
 ; warn_init() — Initialize warning system (call once at startup)
 ; Sets warnings_enabled = 1 (default ON) and clears mask
 ; ------------------------------------------------------------
-    global warn_init
 warn_init:
     push rax
     push rcx
@@ -117,7 +87,6 @@ warn_init:
 ; warn_disable_all() — Disable all warnings
 ; Used by --no-warnings flag
 ; ------------------------------------------------------------
-    global warn_disable_all
 warn_disable_all:
     push rax
     xor rax, rax
@@ -134,7 +103,6 @@ warn_disable_all:
 ; rcx = message string pointer
 ; Honors warnings_enabled and warning_mask.
 ; ------------------------------------------------------------
-    global warn_at
 warn_at:
     push rbx
     push r12
@@ -157,7 +125,7 @@ warn_at:
     cmp r12, NUM_WARNINGS
     jg .warn_at_skip
     mov rax, r12
-    bt [warning_mask], rax
+    bt qword [warning_mask], rax
     jc .warn_at_skip
 
     ; Emit warning
@@ -222,7 +190,6 @@ warn_at:
 ; rdi = warning category
 ; rsi = message string pointer
 ; ------------------------------------------------------------
-    global warn_simple
 warn_simple:
     push rbx
     push r12
@@ -239,7 +206,7 @@ warn_simple:
     cmp r12, NUM_WARNINGS
     jg .warn_simple_skip
     mov rax, r12
-    bt [warning_mask], rax
+    bt qword [warning_mask], rax
     jc .warn_simple_skip
 
     inc qword [warning_count]
@@ -299,7 +266,6 @@ warn_simple:
 ; rdi = warning category
 ; rsi = message string pointer
 ; ------------------------------------------------------------
-    global warn_at_current
 warn_at_current:
     push rbx
     push rcx
@@ -325,7 +291,6 @@ warn_at_current:
 ; rcx = source column
 ; Uses WARN_UNUSED_VAR category.
 ; ------------------------------------------------------------
-    global warn_unused_var
 warn_unused_var:
     push rbx
     push r12
@@ -342,7 +307,7 @@ warn_unused_var:
     je .warn_unused_skip
 
     mov rax, WARN_UNUSED_VAR
-    bt [warning_mask], rax
+    bt qword [warning_mask], rax
     jc .warn_unused_skip
 
     inc qword [warning_count]
@@ -415,7 +380,6 @@ warn_unused_var:
 ; Print total warning count at end of compilation.
 ; Format: "N warning(s) generated\n"
 ; ------------------------------------------------------------
-    global print_warning_summary
 print_warning_summary:
     push rax
     push rsi
@@ -451,3 +415,40 @@ print_warning_summary:
     pop rsi
     pop rax
     ret
+extrn out_write_string
+extrn out_write_string_len
+extrn out_write_int
+extrn out_write_char
+extrn out_write_newline
+extrn out_set_fd
+extrn out_flush
+extrn out_fd
+extrn source_path
+extrn lexer_state
+extrn STDERR
+public WARN_UNINIT_VAR
+public WARN_UNINIT_PTR
+public WARN_MISSING_RETURN
+public WARN_UNUSED_VAR
+public WARN_DEAD_CODE
+public WARN_IMPLICIT_CAST
+public WARN_EMPTY_BODY
+public WARN_CONSTANT_COND
+public msg_warn_uninit_var
+public msg_warn_uninit_ptr
+public msg_warn_missing_return
+public msg_warn_unused_var
+public msg_warn_dead_code
+public msg_warn_implicit_cast
+public msg_warn_empty_body
+public msg_warn_constant_cond
+public warning_count
+public warnings_enabled
+public warning_mask
+public warn_init
+public warn_disable_all
+public warn_at
+public warn_simple
+public warn_at_current
+public warn_unused_var
+public print_warning_summary

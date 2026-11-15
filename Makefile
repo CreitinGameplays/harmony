@@ -4,8 +4,10 @@ SEED      := build/c2x-seed
 HB_OUT    := build/harmony-base
 # Explicit order: c2x-seed resolves cross-file names from *earlier* files only,
 # so foundation modules must be listed first.
-# Bootstrap stage-0 compiler (c2x-seed, NASM) and the stage-1 compiler
-# (harmony-base, written in c2x-seed) live under bootstrap/ (AGENTS.md).
+# Bootstrap stage-0 compiler (c2x-seed, flat assembler) and the stage-1
+# compiler (harmony-base, written in c2x-seed) live under bootstrap/
+# (AGENTS.md). The pre-migration nasm sources are kept in
+# bootstrap/c2x-seed-nasm/ for reference.
 HB_SRC    := \
 	bootstrap/harmony-base/common.c2 \
 	bootstrap/harmony-base/util.c2 \

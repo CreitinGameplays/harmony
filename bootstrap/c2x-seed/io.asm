@@ -1,56 +1,46 @@
+format ELF64
+
 ; C2X Seed - I/O Utilities
 ; String handling, file I/O, buffered output for code generation
 
 ; ------------------------------------------------------------
 ; External Dependencies (from syscalls.asm)
 ; ------------------------------------------------------------
-extern sys_exit, sys_read, sys_write, sys_open, sys_close, sys_brk
-extern STDIN, STDOUT, STDERR
 
 ; Local constant definitions (matching syscalls.asm)
-O_RDONLY    equ 0
-O_WRONLY    equ 1
-O_RDWR      equ 2
-O_CREAT     equ 64
-O_TRUNC     equ 512
-O_APPEND    equ 1024
+O_RDONLY = 0
+O_WRONLY = 1
+O_RDWR = 2
+O_CREAT = 64
+O_TRUNC = 512
+O_APPEND = 1024
 
 ; ------------------------------------------------------------
 ; Exported Functions and Data
 ; ------------------------------------------------------------
-global out_init, out_flush, out_write_char, out_write_string, out_write_string_len
-global out_write_newline, out_write_int, out_write_hex
-global out_set_fd, out_set_limit
-global in_init, in_fill, in_get_char, in_peek_char, in_skip_char
-global file_open_read, file_open_write, file_close, file_read_all
-global out_buffer, out_ptr, out_end, out_fd
-global out_limit_enabled, out_limit_remaining, out_limit_hit
-global in_buffer, in_ptr, in_end, src_fd
-global OUT_BUF_SIZE, IN_BUF_SIZE
 
-section .data
+section '.data' writeable
     ; Output buffer for generated assembly
-    OUT_BUF_SIZE    equ 65536
-    out_buffer:     times OUT_BUF_SIZE db 0
+    OUT_BUF_SIZE = 65536
+    out_buffer: db OUT_BUF_SIZE dup 0
     out_ptr:        dq out_buffer
     out_end:        dq out_buffer + OUT_BUF_SIZE
     
     ; Input buffer for source reading
-    IN_BUF_SIZE     equ 8192
-    in_buffer:      times IN_BUF_SIZE db 0
+    IN_BUF_SIZE = 8192
+    in_buffer: db IN_BUF_SIZE dup 0
     in_ptr:         dq in_buffer
     in_end:         dq in_buffer
     src_fd:         dq 0
 
-section .bss
-    out_fd:         resq 1          ; output file descriptor (defaults to STDOUT)
-    out_limit_enabled:  resq 1      ; 1 when output limiting is active
-    out_limit_remaining: resq 1     ; bytes left before the debug limit is hit
-    out_limit_hit:   resq 1         ; 1 once the limit has been exceeded
+section '.bss' writeable
+    out_fd:         rq 1          ; output file descriptor (defaults to STDOUT)
+    out_limit_enabled:  rq 1      ; 1 when output limiting is active
+    out_limit_remaining: rq 1     ; bytes left before the debug limit is hit
+    out_limit_hit:   rq 1         ; 1 once the limit has been exceeded
 
-default rel
 
-section .text
+section '.text' executable
 
 ; ------------------------------------------------------------
 ; Output Buffer Management
@@ -413,7 +403,7 @@ file_open_read:
 ; Input: rdi = path
 ; Output: rax = fd or negative error
 file_open_write:
-    mov rsi, O_WRONLY | O_CREAT | O_TRUNC
+    mov rsi, O_WRONLY  or  O_CREAT  or  O_TRUNC
     mov rdx, 0644o
     call sys_open
     ret
@@ -446,3 +436,44 @@ file_read_all:
     pop rsi
     xor rax, rax
     ret
+extrn sys_exit
+extrn sys_read
+extrn sys_write
+extrn sys_open
+extrn sys_close
+extrn sys_brk
+extrn STDIN
+extrn STDOUT
+extrn STDERR
+public out_init
+public out_flush
+public out_write_char
+public out_write_string
+public out_write_string_len
+public out_write_newline
+public out_write_int
+public out_write_hex
+public out_set_fd
+public out_set_limit
+public in_init
+public in_fill
+public in_get_char
+public in_peek_char
+public in_skip_char
+public file_open_read
+public file_open_write
+public file_close
+public file_read_all
+public out_buffer
+public out_ptr
+public out_end
+public out_fd
+public out_limit_enabled
+public out_limit_remaining
+public out_limit_hit
+public in_buffer
+public in_ptr
+public in_end
+public src_fd
+public OUT_BUF_SIZE
+public IN_BUF_SIZE

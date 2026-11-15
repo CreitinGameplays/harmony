@@ -1,35 +1,31 @@
+format ELF64
+
 ; C2X Seed - Memory Management
 ; Bump allocator for heap, stack frame management
 
 ; ------------------------------------------------------------
 ; Exported Functions and Data
 ; ------------------------------------------------------------
-global heap_init, heap_alloc, heap_alloc_zero
-global frame_push, frame_pop, frame_alloc
-global mem_zero, mem_copy, mem_eq
-global heap_base, heap_ptr, heap_end, current_rbp, frame_depth
-global HEAP_SIZE, STACK_FRAME_SIZE
 
-section .data
+section '.data' writeable
     ; Heap configuration
     ; Large multi-file units (c2x-proto with ELF/MC backend modules) need
     ; more headroom than the original 10 MiB; 64 MiB keeps self-host viable.
-    HEAP_SIZE       equ 64 * 1024 * 1024
-    STACK_FRAME_SIZE equ 256               ; Default stack frame size
+    HEAP_SIZE = 64 * 1024 * 1024
+    STACK_FRAME_SIZE = 256  ; Default stack frame size
 
-section .bss
+section '.bss' writeable
     ; Heap memory region
-    heap_base:      resb HEAP_SIZE
-    heap_ptr:       resq 1                 ; Current heap pointer
-    heap_end:       resq 1                 ; End of heap (heap_base + HEAP_SIZE)
+    heap_base:      rb HEAP_SIZE
+    heap_ptr:       rq 1                 ; Current heap pointer
+    heap_end:       rq 1                 ; End of heap (heap_base + HEAP_SIZE)
     
     ; Stack frame tracking
-    current_rbp:    resq 1                 ; Saved RBP for current frame
-    frame_depth:    resq 1                 ; Current frame nesting depth
+    current_rbp:    rq 1                 ; Saved RBP for current frame
+    frame_depth:    rq 1                 ; Current frame nesting depth
 
-default rel
 
-section .text
+section '.text' executable
 
 ; ------------------------------------------------------------
 ; Heap Initialization
@@ -60,7 +56,7 @@ heap_alloc:
     ; Align size to 8 bytes (64-bit alignment)
     mov rax, rdi
     add rax, 7
-    and rax, ~7
+    and rax, not 7
     mov rdi, rax                 ; rdi = aligned size
     
     ; Check if allocation fits
@@ -143,7 +139,7 @@ frame_alloc:
     ; Align to 16 bytes for SSE compatibility
     mov rax, rdi
     add rax, 15
-    and rax, ~15
+    and rax, not 15
     
     sub rsp, rax
     mov rax, rsp                 ; Return pointer to allocated space
@@ -200,3 +196,19 @@ mem_eq:
 .notequal:
     mov rax, 1
     ret
+public heap_init
+public heap_alloc
+public heap_alloc_zero
+public frame_push
+public frame_pop
+public frame_alloc
+public mem_zero
+public mem_copy
+public mem_eq
+public heap_base
+public heap_ptr
+public heap_end
+public current_rbp
+public frame_depth
+public HEAP_SIZE
+public STACK_FRAME_SIZE

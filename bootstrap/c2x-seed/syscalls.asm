@@ -1,60 +1,57 @@
+format ELF64
+
+section '.text' executable
+
 ; C2X Seed - System Call Definitions and Wrappers
 ; x86_64 Linux syscalls only, no libc
 
 ; ------------------------------------------------------------
 ; Exported Functions
 ; ------------------------------------------------------------
-global sys_exit, sys_read, sys_write, sys_open, sys_close, sys_brk, sys_mmap
-global sys_fork, sys_execve, sys_wait4, sys_unlink, sys_getpid, sys_dup2
 
 ; ------------------------------------------------------------
 ; Exported Constants
 ; ------------------------------------------------------------
-global SYS_READ, SYS_WRITE, SYS_OPEN, SYS_CLOSE, SYS_EXIT, SYS_BRK, SYS_MMAP, SYS_MUNMAP
-global SYS_FORK, SYS_EXECVE, SYS_WAIT4, SYS_UNLINK, SYS_GETPID, SYS_DUP2
-global STDIN, STDOUT, STDERR
-global O_RDONLY, O_WRONLY, O_RDWR, O_CREAT, O_TRUNC, O_APPEND
-global EXIT_SUCCESS, EXIT_FAILURE
 
 ; ------------------------------------------------------------
 ; Syscall Numbers (x86_64 Linux)
 ; ------------------------------------------------------------
-SYS_READ    equ 0
-SYS_WRITE   equ 1
-SYS_OPEN    equ 2
-SYS_CLOSE   equ 3
-SYS_EXIT    equ 60
-SYS_BRK     equ 12
-SYS_MMAP    equ 9
-SYS_MUNMAP  equ 11
-SYS_FORK    equ 57
-SYS_EXECVE  equ 59
-SYS_WAIT4   equ 61
-SYS_UNLINK  equ 87
-SYS_GETPID  equ 39
-SYS_DUP2    equ 33
+SYS_READ = 0
+SYS_WRITE = 1
+SYS_OPEN = 2
+SYS_CLOSE = 3
+SYS_EXIT = 60
+SYS_BRK = 12
+SYS_MMAP = 9
+SYS_MUNMAP = 11
+SYS_FORK = 57
+SYS_EXECVE = 59
+SYS_WAIT4 = 61
+SYS_UNLINK = 87
+SYS_GETPID = 39
+SYS_DUP2 = 33
 
 ; ------------------------------------------------------------
 ; File Descriptors
 ; ------------------------------------------------------------
-STDIN       equ 0
-STDOUT      equ 1
-STDERR      equ 2
+STDIN = 0
+STDOUT = 1
+STDERR = 2
 
 ; Process exit codes. `equ` constants are absolute symbols; `global` makes
 ; them linkable, so `extern EXIT_SUCCESS/FAILURE` resolves across objects.
-EXIT_SUCCESS equ 0
-EXIT_FAILURE equ 1
+EXIT_SUCCESS = 0
+EXIT_FAILURE = 1
 
 ; ------------------------------------------------------------
 ; File Open Flags
 ; ------------------------------------------------------------
-O_RDONLY    equ 0
-O_WRONLY    equ 1
-O_RDWR      equ 2
-O_CREAT     equ 64
-O_TRUNC     equ 512
-O_APPEND    equ 1024
+O_RDONLY = 0
+O_WRONLY = 1
+O_RDWR = 2
+O_CREAT = 64
+O_TRUNC = 512
+O_APPEND = 1024
 
 ; ------------------------------------------------------------
 ; Exit Codes
@@ -62,75 +59,74 @@ O_APPEND    equ 1024
 ; ------------------------------------------------------------
 ; Memory Protection Flags (for mmap)
 ; ------------------------------------------------------------
-PROT_READ   equ 1
-PROT_WRITE  equ 2
-PROT_EXEC   equ 4
+PROT_READ = 1
+PROT_WRITE = 2
+PROT_EXEC = 4
 
-MAP_PRIVATE equ 2
-MAP_ANONYMOUS equ 32
-MAP_FIXED   equ 16
+MAP_PRIVATE = 2
+MAP_ANONYMOUS = 32
+MAP_FIXED = 16
 
 ; ------------------------------------------------------------
 ; Syscall Wrapper Macros
 ; ------------------------------------------------------------
 
-%macro syscall0 1
-    mov rax, %1
+macro syscall0 nr {
+    mov rax, nr
     syscall
-%endmacro
+}
 
-%macro syscall1 2
-    mov rax, %1
-    mov rdi, %2
+macro syscall1 nr, a {
+    mov rax, nr
+    mov rdi, a
     syscall
-%endmacro
+}
 
-%macro syscall2 3
-    mov rax, %1
-    mov rdi, %2
-    mov rsi, %3
+macro syscall2 nr, a, b {
+    mov rax, nr
+    mov rdi, a
+    mov rsi, b
     syscall
-%endmacro
+}
 
-%macro syscall3 4
-    mov rax, %1
-    mov rdi, %2
-    mov rsi, %3
-    mov rdx, %4
+macro syscall3 nr, a, b, c {
+    mov rax, nr
+    mov rdi, a
+    mov rsi, b
+    mov rdx, c
     syscall
-%endmacro
+}
 
-%macro syscall4 5
-    mov rax, %1
-    mov rdi, %2
-    mov rsi, %3
-    mov rdx, %4
-    mov r10, %5
+macro syscall4 nr, a, b, c, d {
+    mov rax, nr
+    mov rdi, a
+    mov rsi, b
+    mov rdx, c
+    mov r10, d
     syscall
-%endmacro
+}
 
-%macro syscall5 6
-    mov rax, %1
-    mov rdi, %2
-    mov rsi, %3
-    mov rdx, %4
-    mov r10, %5
-    mov r8, %6
+macro syscall5 nr, a, b, c, d, e {
+    mov rax, nr
+    mov rdi, a
+    mov rsi, b
+    mov rdx, c
+    mov r10, d
+    mov r8, e
     syscall
-%endmacro
+}
 
-%macro syscall6 7
-    mov rax, %1
-    mov rdi, %2
-    mov rsi, %3
-    mov rdx, %4
-    mov r10, %5
-    mov r8, %6
-    mov r9, %7
+macro syscall6 nr, a, b, c, d, e, f {
+    mov rax, nr
+    mov rdi, a
+    mov rsi, b
+    mov rdx, c
+    mov r10, d
+    mov r8, e
+    mov r9, f
     syscall
-%endmacro
+}
 
-default rel
 
 ; ------------------------------------------------------------
 ; Syscall Wrapper Functions
@@ -237,3 +233,41 @@ sys_unlink:
     mov rax, SYS_UNLINK
     syscall
     ret
+public sys_exit
+public sys_read
+public sys_write
+public sys_open
+public sys_close
+public sys_brk
+public sys_mmap
+public sys_fork
+public sys_execve
+public sys_wait4
+public sys_unlink
+public sys_getpid
+public sys_dup2
+public SYS_READ
+public SYS_WRITE
+public SYS_OPEN
+public SYS_CLOSE
+public SYS_EXIT
+public SYS_BRK
+public SYS_MMAP
+public SYS_MUNMAP
+public SYS_FORK
+public SYS_EXECVE
+public SYS_WAIT4
+public SYS_UNLINK
+public SYS_GETPID
+public SYS_DUP2
+public STDIN
+public STDOUT
+public STDERR
+public O_RDONLY
+public O_WRONLY
+public O_RDWR
+public O_CREAT
+public O_TRUNC
+public O_APPEND
+public EXIT_SUCCESS
+public EXIT_FAILURE

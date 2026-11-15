@@ -1,6 +1,8 @@
 # C2X Seed (Stage 0) — Reference
 
-The seed compiler is the bootstrap stage of the C2X compiler chain. Written in x86_64 NASM assembly, it compiles `c2x-proto` source files into x86_64 assembly. It has no dependencies beyond Linux syscalls.
+The seed compiler is the bootstrap stage of the C2X compiler chain. Written in x86_64 assembly, it compiles `c2x-proto` source files into x86_64 assembly. It has no dependencies beyond Linux syscalls.
+
+**Assembler:** the source is written for the **flat assembler (FASM)**. It is ~100× faster than NASM on the 89k-line programs c2x-seed emits (a full harmony-base bootstrap is ~0.5 s instead of ~26 s) and produces smaller, byte-reproducible objects (FASM does not embed the input path). The pre-migration NASM sources are kept under `bootstrap/c2x-seed-nasm/` for reference; `bootstrap/tools/nasm_to_fasm.py` is the mechanical converter between the two dialects.
 
 **Current status:** The compiler successfully compiles programs with:
 - Variable declarations (`int`, `char`)
@@ -50,7 +52,7 @@ See [Limitations](#limitations) for what is not yet implemented.
 ```bash
 make                    # build c2x-seed -> build/c2x-seed
 ./build/c2x-seed file.c2                   # compile file.c2 → a.out (ELF binary)
-./build/c2x-seed file.c2 -S                # compile → NASM assembly to stdout
+./build/c2x-seed file.c2 -S                # compile → x86_64 assembly (FASM) to stdout
 ./build/c2x-seed file.c2 -o output         # compile → output (ELF binary)
 ./build/c2x-seed file1.c2 file2.c2 -o out  # multi-file compilation
 ./build/c2x-seed --verbose file.c2         # verbose debug output
@@ -60,11 +62,11 @@ make                    # build c2x-seed -> build/c2x-seed
 make clean              # remove build artifacts
 ```
 
-By default, the compiler produces an ELF binary (`a.out`). Use `-S` to output raw assembly to stdout instead (the version banner is printed to stderr, so the stdout stream is always valid nasm input). The `-o` flag specifies the output binary path. Use `--emit-result` (or `-r`) to have the generated binary print `main()`'s return value as decimal text to stdout before exiting — this avoids Linux exit-code mod-256 truncation. Use `--emit-returns` (or `-e`) to print every `return` value to stdout at runtime, one per line; useful for debugging and test validation. Use `--keep-asm` to preserve the intermediate `.asm` file (its path is printed to stdout) instead of deleting it after assembly — useful for inspecting generated code.
+By default, the compiler produces an ELF binary (`a.out`). Use `-S` to output raw assembly to stdout instead (the version banner is printed to stderr, so the stdout stream is always valid FASM input). The `-o` flag specifies the output binary path. Use `--emit-result` (or `-r`) to have the generated binary print `main()`'s return value as decimal text to stdout before exiting — this avoids Linux exit-code mod-256 truncation. Use `--emit-returns` (or `-e`) to print every `return` value to stdout at runtime, one per line; useful for debugging and test validation. Use `--keep-asm` to preserve the intermediate `.asm` file (its path is printed to stdout) instead of deleting it after assembly — useful for inspecting generated code.
 
-The compiler runs `nasm` and `ld` as subprocesses to produce the binary (includes a `_start` entry that calls `main` and exits). Temp files are created under `/tmp` using a per-process prefix such as `/tmp/c2x_build_<pid>.asm` and `/tmp/c2x_build_<pid>.o`, then cleaned up afterward (unless `--keep-asm` is given).
+The compiler runs `fasm` and `ld` as subprocesses to produce the binary (includes a `_start` entry that calls `main` and exits). Temp files are created under `/tmp` using a per-process prefix such as `/tmp/c2x_build_<pid>.asm` and `/tmp/c2x_build_<pid>.o`, then cleaned up afterward (unless `--keep-asm` is given).
 
-The toolchain: `nasm` (assembler) → `ld` (linker). No libc or external tools.
+The toolchain: `fasm` (assembler) → `ld` (linker). No libc or external tools.
 
 ## Source Organization
 
@@ -186,7 +188,7 @@ If the initializer list has fewer elements than the array size, the remaining el
 
 Every array access (`arr[i]` in expressions and assignments, including struct array fields like `s.cells[i]`) is bounds-checked at runtime. The codegen emits:
 
-```nasm
+```asm
 cmp rax, 0          ; check negative index
 jl .L_bounds_fail_N
 mov rbx, count
@@ -452,7 +454,7 @@ int main() {
 ```
 
 Globals reside in the `.bss` section (zero-initialized). Emitted as:
-```nasm
+```asm
 section .bss
 g_g_counter:  resq 1
 g_g_buffer:   resq 256
@@ -529,7 +531,7 @@ int main() {
 
 Each unique string literal gets a label in the form `LC0`, `LC1`, etc. The codegen maintains a string pool (up to 64 entries) that collects string pointers and lengths during `gen_expr`. After all function code is generated, the codegen emits a `.rodata` section with the pooled string data:
 
-```nasm
+```asm
 section .rodata
 LC0:
     db 104, 101, 108, 108, 111, 0     ; "hello"
@@ -588,7 +590,7 @@ int main() {
 **Callee codegen** (`register_params` + `emit_param_copy` in `codegen.asm`):
 - Parameters are registered as local symbols with negative `rbp` offsets, just like local variables
 - After the frame is allocated (`sub rsp, frame_size`), the callee emits copies from ABI registers to frame slots:
-  ```nasm
+  ```asm
   mov qword [rbp-16], rdi      ; param 0 (a)
   mov qword [rbp-24], rsi      ; param 1 (b)
   ; ... for params 6+:
@@ -599,7 +601,7 @@ int main() {
 
 **Caller codegen** (`gen_call`):
 - Arguments are evaluated right-to-left (for stack ordering), each pushed:
-  ```nasm
+  ```asm
   mov rax, 28
   push rax
   mov rax, 14
@@ -865,7 +867,7 @@ Features:
 
 ### Code Generator (`codegen.asm`)
 
-The code generator walks the AST and emits x86_64 NASM assembly. It is organized as a set of mutually recursive `gen_*` functions following the AST node types.
+The code generator walks the AST and emits x86_64 assembly in the FASM dialect. It is organized as a set of mutually recursive `gen_*` functions following the AST node types.
 
 **Key functions:**
 
@@ -944,7 +946,7 @@ int main() {
 ```
 
 Output (abridged):
-```nasm
+```asm
 section .bss
 g_g_counter:  resq 1
 g_g_buffer:   resq 4
@@ -1009,6 +1011,50 @@ main:
 | **Dynamic statement arrays** | `parse_block` allocates a growing pointer array for block statements: starts at capacity 32, doubles on overflow, copies old entries. No hard limit on statements per block. |
 | **Nested member chains** | Chained access through struct-typed fields works for any depth (`b.a.x`, `c.b.a.x`) and for index-rooted chains (`o[i].inner.a`). Struct-typed field reads yield the field *address* (struct value semantics), and the address-of/index paths recurse through a shared `gen_addr` helper. |
 
+## Assembler migration: NASM → FASM
+
+The stage-0 sources and the assembler the compiler drives are **flat assembler
+(FASM)** by default. The reason is speed: c2x-seed emits ~89k lines of assembly
+for `harmony-base`, and NASM spends ~26 s on it (the whole bottleneck of the
+bootstrap), while FASM does it in ~0.15 s — a ~120× reduction that takes a full
+`make` from ~26 s to ~0.5 s. FASM's objects are also smaller (lowering the
+seed binary from ~740 KB to ~309 KB) and byte-reproducible: unlike NASM, FASM
+does not record the input path in the object, so the PID temp name never leaks
+into the binary (the NASM build needed a stable `/dev/stdin` for the same
+reason).
+
+The conversion is mechanical and was automated by
+`bootstrap/tools/nasm_to_fasm.py` (input under `bootstrap/c2x-seed-nasm/`,
+output `bootstrap/c2x-seed/`). **`bootstrap/c2x-seed/` (FASM) is now the
+primary source and is edited directly**; `bootstrap/c2x-seed-nasm/` and the
+converter are kept as a safety net and a record of the migration (re-running
+the converter from the NASM tree regenerates the FASM tree). The deltas the
+converter applies:
+
+| NASM | FASM |
+|---|---|
+| `global a, b` | one `public a` per symbol (must follow `=`/`label` definitions) |
+| `extern a, b` | one `extrn a` per symbol (duplicates rejected) |
+| `section .text` | `section '.text' executable` (`.data`/`.bss` `writeable`, `.rodata` plain) |
+| `default rel`, `[rel x]` | dropped / `[x]` (FASM is RIP-relative by default) |
+| `resb/resq N` | `rb/rq N` |
+| `equ` | `=` (assembler-time constant; `$`-relative works) |
+| `~N` | `not N` |
+| `bt [m], r` | `bt qword [m], r` (size required) |
+| `A \| B` | `A or B` |
+| `times N db X` | `db N dup X` |
+| `struc N` / `.f resq` / `endstruc` | `N.f = <offset>` + `N_size = <total>` |
+| `%define` | `=` |
+| `%macro n a,b` / `%endmacro`, `%1` | `macro n a, b { }` |
+| `PROLOGUE`/`EPILOGUE` (`%rep`/`%rotate`) | `macro PROLOGUE [regs] { push regs }`, `... { reverse, pop regs, common, ret }` |
+| emitted `section .text`, `global`, `[rel g_`, `resb` strings | the FASM spellings |
+| `nasm -f elf64 -o obj -` (stdin) | `fasm -m 262144 src obj` |
+| label `match` (reserved) | renamed `match_tok` |
+
+Files with no `section` directive (only `syscalls.asm`) are pinned to
+`.text`: FASM's default section is `.flat` (WAX), which would make the linked
+writable segment executable.
+
 ## Recent Bug Fixes (harmony-base bring-up)
 
 These c2x-seed defects were found and fixed while bootstrapping `harmony-base`.
@@ -1071,7 +1117,7 @@ Multiple source files can be passed on the command line; the parser accumulates 
 - After all files, a single `AST_PROGRAM` is handed to codegen.
 
 **Compiler loop:**
-```nasm
+```asm
 .init_source_loop:
     xor r15, r15
 .source_loop:

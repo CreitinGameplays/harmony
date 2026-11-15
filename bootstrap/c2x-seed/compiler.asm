@@ -1,130 +1,102 @@
+format ELF64
+
 ; C2X Seed - Compiler Pipeline
 ; Main compiler logic: initialization, main loop, cleanup
 
-; Token type constants (must match lexer.asm)
-%define TOK_EOF         0
-%define TOK_IDENT       1
-%define TOK_NUMBER      2
-%define TOK_STRING      3
-%define TOK_CHAR        4
+; Token type constants (must match_tok lexer.asm)
+TOK_EOF = 0
+TOK_IDENT = 1
+TOK_NUMBER = 2
+TOK_STRING = 3
+TOK_CHAR = 4
 
-%define TOK_PLUS        10
-%define TOK_MINUS       11
-%define TOK_STAR        12
-%define TOK_SLASH       13
-%define TOK_PERCENT     14
+TOK_PLUS = 10
+TOK_MINUS = 11
+TOK_STAR = 12
+TOK_SLASH = 13
+TOK_PERCENT = 14
 
-%define TOK_EQ          20
-%define TOK_EQEQ        21
-%define TOK_NEQ         22
-%define TOK_LT          23
-%define TOK_LE          24
-%define TOK_GT          25
-%define TOK_GE          26
+TOK_EQ = 20
+TOK_EQEQ = 21
+TOK_NEQ = 22
+TOK_LT = 23
+TOK_LE = 24
+TOK_GT = 25
+TOK_GE = 26
 
-%define TOK_LPAREN      30
-%define TOK_RPAREN      31
-%define TOK_LBRACE      32
-%define TOK_RBRACE      33
-%define TOK_LBRACKET    34
-%define TOK_RBRACKET    35
+TOK_LPAREN = 30
+TOK_RPAREN = 31
+TOK_LBRACE = 32
+TOK_RBRACE = 33
+TOK_LBRACKET = 34
+TOK_RBRACKET = 35
 
-%define TOK_SEMI        40
-%define TOK_COMMA       41
-%define TOK_COLON       42
-%define TOK_ARROW       43
-%define TOK_AMPERSAND   44
+TOK_SEMI = 40
+TOK_COMMA = 41
+TOK_COLON = 42
+TOK_ARROW = 43
+TOK_AMPERSAND = 44
 
-%define TOK_KW_INT      50
-%define TOK_KW_CHAR     51
-%define TOK_KW_IF       52
-%define TOK_KW_ELSE     53
-%define TOK_KW_WHILE    54
-%define TOK_KW_RETURN   55
-%define TOK_KW_VOID     56
-%define TOK_KW_EXTERN   58
-%define TOK_KW_FOR      59
-%define TOK_KW_BREAK    60
-%define TOK_KW_CONTINUE 61
+TOK_KW_INT = 50
+TOK_KW_CHAR = 51
+TOK_KW_IF = 52
+TOK_KW_ELSE = 53
+TOK_KW_WHILE = 54
+TOK_KW_RETURN = 55
+TOK_KW_VOID = 56
+TOK_KW_EXTERN = 58
+TOK_KW_FOR = 59
+TOK_KW_BREAK = 60
+TOK_KW_CONTINUE = 61
 
-%define OUT_ASM_LIMIT  33554432    ; 32 MiB safety cap for generated asm output
+OUT_ASM_LIMIT = 33554432  ; 32 MiB safety cap for generated asm output
 
-; Lexer state offsets (must match lexer.asm)
-struc lexer_state_t
-    .current_char   resb 1
-    .pad            resb 7
-    .line           resq 1
-    .column         resq 1
-    .tok_type       resq 1
-    .tok_buf        resb 256
-    .tok_len        resq 1
-    .tok_line       resq 1
-    .tok_col        resq 1
-    .tok_ptr        resq 1
-    .tok_cap        resq 1
-endstruc
+; Lexer state offsets (must match_tok lexer.asm)
+lexer_state_t.current_char = 0
+lexer_state_t.pad = 1
+lexer_state_t.line = 8
+lexer_state_t.column = 16
+lexer_state_t.tok_type = 24
+lexer_state_t.tok_buf = 32
+lexer_state_t.tok_len = 288
+lexer_state_t.tok_line = 296
+lexer_state_t.tok_col = 304
+lexer_state_t.tok_ptr = 312
+lexer_state_t.tok_cap = 320
+lexer_state_t_size = 328
 
 ; ------------------------------------------------------------
 ; External Dependencies
 ; ------------------------------------------------------------
-extern heap_init, out_init, out_flush, out_write_char
-extern out_write_string, out_write_string_len
-extern out_write_newline
-extern out_write_int
-extern out_set_fd, out_set_limit
-extern out_limit_hit
-extern out_fd
-extern file_open_read, file_open_write, file_close, in_init
-extern lexer_init, lexer_next_token, lexer_cleanup
-extern lexer_state
-extern error_at_code, error_code
-extern msg_asm_fail, msg_ld_fail, msg_build_fail, msg_open_fail
-extern parser_init, parser_parse_program, parser_cleanup, parser_reinit, parser_reset
-extern codegen_init, codegen_generate, codegen_cleanup, symbol_tables_init
-extern error_count
-extern argc, argv, envp
-extern warn_init, warn_disable_all, print_warning_summary
-extern sys_open, sys_read, sys_close
-extern sys_fork, sys_execve, sys_wait4, sys_unlink, sys_exit, sys_getpid, sys_dup2
-extern STDOUT
-extern STDERR
 
 ; ------------------------------------------------------------
 ; Exported Functions and Data
 ; ------------------------------------------------------------
-global compiler_init, compiler_main, compiler_cleanup
-global verbose_flag, verbose_print, verbose_print_int
-global verbose_print_char, verbose_newline
 
-section .data
-    msg_init        db "c2x-seed v0.1.0 - C2X Stage 0 Compiler", 10, 0
-    msg_colon       db ": ", 0
-    msg_newl        db 10, 0
-    msg_verbose_on  db "[VERBOSE] Verbose mode enabled", 10, 0
-    msg_verbose_    db "[VERBOSE] ", 0
-    msg_v_file_open db "Opening source file: ", 0
-    msg_v_file_ok   db " (fd=", 0
-    msg_v_close     db ")", 10, 0
-    msg_v_init_io   db "Initializing I/O subsystem", 10, 0
-    msg_v_init_lex  db "Initializing lexer", 10, 0
-    msg_v_start     db "Starting tokenization loop", 10, 0
-    msg_v_done      db "Tokenization complete", 10, 0
-    msg_v_cleanup   db "Cleaning up", 10, 0
-    msg_v_file_cl   db "Closing source file", 10, 0
+section '.data' writeable
+    msg_init:        db "c2x-seed v0.1.0 - C2X Stage 0 Compiler", 10, 0
+    msg_colon:       db ": ", 0
+    msg_newl:        db 10, 0
+    msg_verbose_on:  db "[VERBOSE] Verbose mode enabled", 10, 0
+    msg_verbose_:    db "[VERBOSE] ", 0
+    msg_v_file_open: db "Opening source file: ", 0
+    msg_v_file_ok:   db " (fd=", 0
+    msg_v_close:     db ")", 10, 0
+    msg_v_init_io:   db "Initializing I/O subsystem", 10, 0
+    msg_v_init_lex:  db "Initializing lexer", 10, 0
+    msg_v_start:     db "Starting tokenization loop", 10, 0
+    msg_v_done:      db "Tokenization complete", 10, 0
+    msg_v_cleanup:   db "Cleaning up", 10, 0
+    msg_v_file_cl:   db "Closing source file", 10, 0
 
-section .bss
-    global verbose_flag
-    verbose_flag    resq 1
-    global emit_result_flag
-    emit_result_flag resq 1
-    global emit_returns_flag
-    emit_returns_flag resq 1
-    global keep_asm_flag
-    keep_asm_flag    resq 1
+section '.bss' writeable
+    verbose_flag:    rq 1
+    emit_result_flag: rq 1
+    emit_returns_flag: rq 1
+    keep_asm_flag:    rq 1
 
-default rel
 
-section .text
+section '.text' executable
 
 ; ------------------------------------------------------------
 ; Compiler Initialization
@@ -136,7 +108,7 @@ compiler_init:
     call init_temp_paths
 
     ; Banner goes to stderr: stdout carries emitted artifacts, and with `-S`
-    ; the assembly stream must stay clean (nasm parses stdout as input).
+    ; the assembly stream must stay clean (the compiler banners go to stderr).
     mov rax, [out_fd]
     push rax                    ; save original fd (STDOUT right after out_init)
     mov rdi, STDERR
@@ -430,7 +402,7 @@ compiler_main:
     cmp qword [out_limit_hit], 0
     je .continue_build
 
-    ; The temp assembly file hit the asm safety cap. Abort before invoking nasm,
+    ; The temp assembly file hit the asm safety cap. Abort before assembling,
     ; but keep the partial .asm around so we can inspect it directly.
     mov rdi, [tmp_asm_fd]
     call file_close
@@ -447,7 +419,7 @@ compiler_main:
 
 .continue_build:
 
-    ; If -o was given, close temp file and run nasm+ld
+    ; If -o was given, close temp file and run fasm+ld
     cmp qword [output_path], 0
     je .cleanup_only
     mov rdi, [tmp_asm_fd]
@@ -516,7 +488,7 @@ compiler_cleanup:
 
 ; ------------------------------------------------------------
 ; assemble_and_link()
-; Build final binary by running nasm + ld as subprocesses.
+; Build final binary by running fasm + ld as subprocesses.
 ; Uses output_path (final binary) and tmp_asm_path / tmp_obj_path (temp files).
 ; Clobbers: rax, rbx, rcx, rdx, rsi, rdi, r8, r9, r10, r11
 ; ------------------------------------------------------------
@@ -526,51 +498,34 @@ assemble_and_link:
     push r14
     push r15
 
-    ; --- NASM: assemble .asm -> .o ---
-    ; The assembly is fed to nasm on stdin (input argument "/dev/stdin"),
-    ; NOT through its PID-unique temp path. nasm records the *input path* in
-    ; the object's FILE symbol, and `ld` copies that into the final
-    ; executable's .strtab; a temp path containing the PID would make the
-    ; output binary differ on every build. "/dev/stdin" is stable, so the
-    ; build is reproducible (docs/harmony.md §25.6). The temp .asm is still
-    ; written to disk so --keep-asm can show it after a failure.
+    ; --- ASM: assemble .asm -> .o (fasm) ---
+    ; fasm reads the temp .asm by path and does NOT embed that path in the
+    ; object, so a PID-unique temp name stays reproducible (docs/harmony.md
+    ; §25.6). The nasm build needed a stable "/dev/stdin" name for the same
+    ; reason. The temp .asm is written to disk so --keep-asm can show it.
     mov rsi, msg_assemble
     call verbose_print
 
-    ; Build nasm argv
+    ; Build fasm argv: fasm -m <limit> <asm> <obj>
     lea r15, [nasm_argv]
     mov rax, str_nasm_path
-    mov [r15], rax          ; argv[0] = nasm path
-    mov rax, str_f
-    mov [r15 + 8], rax      ; argv[1] = "-f"
-    mov rax, str_elf64
-    mov [r15 + 16], rax     ; argv[2] = "elf64"
-    mov rax, str_o_flag
-    mov [r15 + 24], rax     ; argv[3] = "-o"
+    mov [r15], rax          ; argv[0] = fasm path
+    mov rax, str_m_flag
+    mov [r15 + 8], rax      ; argv[1] = "-m"
+    mov rax, str_mem_limit
+    mov [r15 + 16], rax     ; argv[2] = memory limit (KB)
+    lea rax, [tmp_asm_path]
+    mov [r15 + 24], rax     ; argv[3] = input .asm (fasm needs a real path)
     lea rax, [tmp_obj_path]
     mov [r15 + 32], rax     ; argv[4] = tmp .o file
-    mov rax, str_dev_stdin
-    mov [r15 + 40], rax     ; argv[5] = "/dev/stdin" (stable FILE symbol)
-    mov qword [r15 + 48], 0 ; argv[6] = NULL
-
-    ; Open the temp .asm read-only; its fd is dup2'd onto the child's stdin.
-    lea rdi, [tmp_asm_path]
-    xor rsi, rsi            ; O_RDONLY
-    xor rdx, rdx
-    call sys_open
-    test rax, rax
-    js .asm_fail            ; unreadable temp .asm -> assembler cannot run
-    mov [nasm_asm_fd], rax
+    mov qword [r15 + 40], 0 ; argv[5] = NULL
 
     mov rdi, str_nasm_path
     lea rsi, [nasm_argv]
     mov rdx, [envp]
-    mov rcx, [nasm_asm_fd]  ; rcx = fd to dup onto the child's stdin
+    mov rcx, -1             ; no stdin redirection for fasm
     call run_and_wait
-    mov rbx, rax            ; save status; always close our stdin copy
-    mov rdi, [nasm_asm_fd]
-    call sys_close
-    test rbx, rbx
+    test rax, rax
     jnz .asm_fail
 
     ; --- LD: link .o -> final binary ---
@@ -666,7 +621,7 @@ assemble_and_link:
 ; run_and_wait(rdi = path, rsi = argv, rdx = envp, rcx = stdin_fd)
 ; Fork, execve, wait for child. Returns 0 on success, 1 on failure.
 ; When rcx >= 0 the child's stdin (fd 0) is dup2'd from that fd before
-; execve, so a tool like nasm can read its input from stdin. Pass -1 to leave
+; execve (for tools that read their input on stdin). Pass -1 to leave
 ; the child's stdin untouched. rcx is clobbered by the syscall wrapper, so it
 ; is preserved in a callee-saved register across the fork.
 ; ------------------------------------------------------------
@@ -707,9 +662,21 @@ run_and_wait:
 .child:
     ; Redirect stdin if a source fd was provided.
     cmp r14, 0
-    jl .child_exec
+    jl .child_null
     mov rdi, r14            ; oldfd
     xor rsi, rsi            ; newfd = 0 (stdin)
+    call sys_dup2
+.child_null:
+    ; Drop stdout to /dev/null: fasm prints a version banner there and
+    ; diagnostics on stderr. Keeps a clean build (errors still visible).
+    lea rdi, [str_dev_null]
+    mov rsi, 1              ; O_WRONLY
+    xor rdx, rdx
+    call sys_open
+    test rax, rax
+    js .child_exec
+    mov rdi, rax            ; oldfd = /dev/null
+    mov rsi, 1              ; newfd = 1 (stdout)
     call sys_dup2
 .child_exec:
     mov rdi, r12            ; path
@@ -946,7 +913,7 @@ print_token_name:
             call out_write_string
             ret
 
-section .data
+section '.data' writeable
 .s_eof:       db "EOF", 0
 .s_ident:     db "IDENT", 0
 .s_number:    db "NUMBER", 0
@@ -987,7 +954,7 @@ section .data
 .s_kw_break:  db "break", 0
 .s_kw_continue: db "continue", 0
 
-section .text
+section '.text' executable
 
 ; ------------------------------------------------------------
 ; Verbose Output Helpers
@@ -1080,59 +1047,57 @@ str_eq_cstr:
 ; ------------------------------------------------------------
 ; String constants for argument parsing and subprocess execution
 ; ------------------------------------------------------------
-section .data
-str_verbose_long    db "--verbose", 0
-str_verbose_short   db "-v", 0
-str_o_flag          db "-o", 0
-str_S_flag          db "-S", 0
-str_emit_result_long db "--emit-result", 0
-str_emit_result_short db "-r", 0
-str_emit_returns_long db "--emit-returns", 0
-str_emit_returns_short db "-e", 0
-str_no_warnings_long db "--no-warnings", 0
-str_no_warnings_short db "-Wno-all", 0
-str_keep_asm         db "--keep-asm", 0
-str_a_out         db "a.out", 0
-msg_usage         db "Usage: c2x-seed [--verbose|-v] [--emit-result|-r] [--emit-returns|-e] [--keep-asm] [-S] [-o <output>] <source.c2>", 10, 0
-tmp_path_prefix   db "/tmp/c2x_build_", 0
-tmp_path_asm_sfx  db ".asm", 0
-tmp_path_obj_sfx  db ".o", 0
-str_nasm_path     db "/usr/bin/nasm", 0
-str_ld_path       db "/usr/bin/ld", 0
-str_f             db "-f", 0
-str_elf64         db "elf64", 0
-str_dev_stdin     db "/dev/stdin", 0     ; stable nasm input name (see assemble_and_link)
-msg_assemble      db "Assembling...", 10, 0
-msg_linking       db "Linking...", 10, 0
-msg_build_ok      db "Build complete: ", 0
-msg_keep_asm      db "Kept assembly: ", 0
-msg_output_limit  db "Error: generated assembly exceeded the asm safety limit", 10, 0
+section '.data' writeable
+str_verbose_long:    db "--verbose", 0
+str_verbose_short:   db "-v", 0
+str_o_flag:          db "-o", 0
+str_S_flag:          db "-S", 0
+str_emit_result_long: db "--emit-result", 0
+str_emit_result_short: db "-r", 0
+str_emit_returns_long: db "--emit-returns", 0
+str_emit_returns_short: db "-e", 0
+str_no_warnings_long: db "--no-warnings", 0
+str_no_warnings_short: db "-Wno-all", 0
+str_keep_asm:         db "--keep-asm", 0
+str_a_out:         db "a.out", 0
+msg_usage:         db "Usage: c2x-seed [--verbose|-v] [--emit-result|-r] [--emit-returns|-e] [--keep-asm] [-S] [-o <output>] <source.c2>", 10, 0
+tmp_path_prefix:   db "/tmp/c2x_build_", 0
+tmp_path_asm_sfx:  db ".asm", 0
+tmp_path_obj_sfx:  db ".o", 0
+str_nasm_path: db "/usr/bin/fasm", 0
+str_ld_path:       db "/usr/bin/ld", 0
+str_m_flag: db "-m", 0
+str_mem_limit: db "262144", 0
+str_dev_null:     db "/dev/null", 0
+msg_assemble:      db "Assembling...", 10, 0
+msg_linking:       db "Linking...", 10, 0
+msg_build_ok:      db "Build complete: ", 0
+msg_keep_asm:      db "Kept assembly: ", 0
+msg_output_limit:  db "Error: generated assembly exceeded the asm safety limit", 10, 0
 
-msg_error_sep     db ": error: ", 0   ; separator for error_at output
-msg_fatal_abort   db "C2X: too many errors, aborting", 0
+msg_error_sep:     db ": error: ", 0   ; separator for error_at output
+msg_fatal_abort:   db "C2X: too many errors, aborting", 0
 
-section .bss
-    global output_path
-    output_path     resq 1          ; output binary path (0 = no binary)
-    global source_path
-    source_path     resq 1          ; source file path (for error reporting)
-    source_first_idx resq 1         ; argv index of first source file
-    source_count    resq 1          ; number of source files
-    assemble_flag   resq 1          ; 1 = produce binary (default), 0 = assembly only (-S)
-    tmp_asm_fd      resq 1
-    nasm_asm_fd     resq 1          ; read-only fd of the temp .asm, dup2'd to nasm's stdin
-    tmp_path_pid    resq 1
-    tmp_asm_path    resb 64
-    tmp_obj_path    resb 64
-    child_status    resq 1
-    last_err_line   resq 1          ; dedup: last error's line (0 = no prior error)
-    last_err_col    resq 1          ; dedup: last error's column
-    last_err_msg    resq 1          ; dedup: last error's message pointer
+section '.bss' writeable
+    output_path:     rq 1          ; output binary path (0 = no binary)
+    source_path:     rq 1          ; source file path (for error reporting)
+    source_first_idx: rq 1         ; argv index of first source file
+    source_count:    rq 1          ; number of source files
+    assemble_flag:   rq 1          ; 1 = produce binary (default), 0 = assembly only (-S)
+    tmp_asm_fd:      rq 1
+    nasm_asm_fd:     rq 1          ; (unused by fasm; kept for the nasm build)
+    tmp_path_pid:    rq 1
+    tmp_asm_path:    rb 64
+    tmp_obj_path:    rb 64
+    child_status:    rq 1
+    last_err_line:   rq 1          ; dedup: last error's line (0 = no prior error)
+    last_err_col:    rq 1          ; dedup: last error's column
+    last_err_msg:    rq 1          ; dedup: last error's message pointer
     ; argv arrays (built at runtime)
-    nasm_argv       resq 7          ; nasm, -f, elf64, -o, tmp.o, tmp.asm, NULL
-    ld_argv         resq 5          ; ld, -o, output, tmp.o, NULL
+    nasm_argv:       rq 7          ; fasm, -m, <limit>, tmp.asm, tmp.o, NULL
+    ld_argv:         rq 5          ; ld, -o, output, tmp.o, NULL
 
-section .text
+section '.text' executable
 
 ; ------------------------------------------------------------
 ; Utility Functions
@@ -1242,7 +1207,6 @@ init_temp_paths:
 ; Print file:line:col: error: msg + source line + caret
 ; rdi = line, rsi = col, rdx = msg
 ; ------------------------------------------------------------
-    global error_at
 error_at:
     push rbx
     push r12
@@ -1496,3 +1460,71 @@ print_source_line:
     pop r12
     pop rbx
     ret
+extrn heap_init
+extrn out_init
+extrn out_flush
+extrn out_write_char
+extrn out_write_string
+extrn out_write_string_len
+extrn out_write_newline
+extrn out_write_int
+extrn out_set_fd
+extrn out_set_limit
+extrn out_limit_hit
+extrn out_fd
+extrn file_open_read
+extrn file_open_write
+extrn file_close
+extrn in_init
+extrn lexer_init
+extrn lexer_next_token
+extrn lexer_cleanup
+extrn lexer_state
+extrn error_at_code
+extrn error_code
+extrn msg_asm_fail
+extrn msg_ld_fail
+extrn msg_build_fail
+extrn msg_open_fail
+extrn parser_init
+extrn parser_parse_program
+extrn parser_cleanup
+extrn parser_reinit
+extrn parser_reset
+extrn codegen_init
+extrn codegen_generate
+extrn codegen_cleanup
+extrn symbol_tables_init
+extrn error_count
+extrn argc
+extrn argv
+extrn envp
+extrn warn_init
+extrn warn_disable_all
+extrn print_warning_summary
+extrn sys_open
+extrn sys_read
+extrn sys_close
+extrn sys_fork
+extrn sys_execve
+extrn sys_wait4
+extrn sys_unlink
+extrn sys_exit
+extrn sys_getpid
+extrn sys_dup2
+extrn STDOUT
+extrn STDERR
+public compiler_init
+public compiler_main
+public compiler_cleanup
+public verbose_flag
+public verbose_print
+public verbose_print_int
+public verbose_print_char
+public verbose_newline
+public emit_result_flag
+public emit_returns_flag
+public keep_asm_flag
+public output_path
+public source_path
+public error_at

@@ -1,56 +1,54 @@
+format ELF64
+
 ; C2X Seed - Data Type Definitions
 ; Minimalist 64-bit architecture: int (64-bit), char (8-bit), pointers
 
 ; ------------------------------------------------------------
 ; Exported Functions
 ; ------------------------------------------------------------
-global type_size, type_align, type_is_integer, type_is_pointer, type_get_pointee
-global sign_extend_char, zero_extend_char, truncate_int_to_char
-global ptr_add, ptr_diff
-global deref_int, deref_char, deref_ptr, store_int, store_char, store_ptr
 
-section .data
+section '.data' writeable
     ; ------------------------------------------------------------
     ; Type System Constants
     ; ------------------------------------------------------------
     
     ; Base type IDs (for compiler symbol table)
-    TYPE_VOID     equ 0
-    TYPE_INT      equ 1        ; 64-bit signed integer (universal workhorse)
-    TYPE_CHAR     equ 2        ; 8-bit signed integer (byte/ASCII)
-    TYPE_PTR      equ 3        ; Pointer type (base + pointee type)
+    TYPE_VOID = 0
+    TYPE_INT = 1  ; 64-bit signed integer (universal workhorse)
+    TYPE_CHAR = 2  ; 8-bit signed integer (byte/ASCII)
+    TYPE_PTR = 3  ; Pointer type (base + pointee type)
     
     ; Type sizes in bytes
-    SIZE_INT      equ 8
-    SIZE_CHAR     equ 1
-    SIZE_PTR      equ 8        ; 64-bit pointers
+    SIZE_INT = 8
+    SIZE_CHAR = 1
+    SIZE_PTR = 8  ; 64-bit pointers
     
     ; Type alignment requirements
-    ALIGN_INT     equ 8
-    ALIGN_CHAR    equ 1
-    ALIGN_PTR     equ 8
+    ALIGN_INT = 8
+    ALIGN_CHAR = 1
+    ALIGN_PTR = 8
     
     ; ------------------------------------------------------------
     ; Type Encoding
     ; ------------------------------------------------------------
     ; High 32 bits: kind bits, low 32 bits = pointee type ID (for pointers)
     ; ------------------------------------------------------------
-    TYPE_KIND_SHIFT   equ 32
-    TYPE_KIND_MASK    equ 7
+    TYPE_KIND_SHIFT = 32
+    TYPE_KIND_MASK = 7
     
-    KIND_BASE     equ 0        ; int, char, void
-    KIND_PTR      equ 1        ; pointer to type
-    KIND_ARRAY    equ 2        ; array of type
+    KIND_BASE = 0  ; int, char, void
+    KIND_PTR = 1  ; pointer to type
+    KIND_ARRAY = 2  ; array of type
     
-    ; Pre-encoded common types (computed: kind << 32 | base_type)
+    ; Pre-encoded common types (computed: kind << 32  or  base_type)
     ; KIND_BASE (0) << 32 = 0
-    TYPE_ENC_INT      equ 1
-    TYPE_ENC_CHAR     equ 2
-    TYPE_ENC_VOID     equ 0
+    TYPE_ENC_INT = 1
+    TYPE_ENC_CHAR = 2
+    TYPE_ENC_VOID = 0
     ; KIND_PTR (1) << 32 = 0x100000000
-    TYPE_ENC_CHAR_PTR equ 0x100000002  ; 0x100000000 | TYPE_CHAR(2)
-    TYPE_ENC_INT_PTR  equ 0x100000001  ; 0x100000000 | TYPE_INT(1)
-    TYPE_ENC_VOID_PTR equ 0x100000000  ; 0x100000000 | TYPE_VOID(0)
+    TYPE_ENC_CHAR_PTR = 0x100000002  ; 0x100000000  or  TYPE_CHAR(2)
+    TYPE_ENC_INT_PTR = 0x100000001  ; 0x100000000  or  TYPE_INT(1)
+    TYPE_ENC_VOID_PTR = 0x100000000  ; 0x100000000  or  TYPE_VOID(0)
     
     ; ------------------------------------------------------------
     ; Register Calling Convention (System V AMD64 ABI)
@@ -60,15 +58,14 @@ section .data
     ; Callee-saved: rbx, rbp, r12-r15
     ; Caller-saved: rax, rcx, rdx, rsi, rdi, r8-r11
     
-    ARG_REGS_COUNT equ 6
+    ARG_REGS_COUNT = 6
     ; Argument registers (use as register names directly in code)
     ; ARG_REG_1 = rdi, ARG_REG_2 = rsi, ARG_REG_3 = rdx
     ; ARG_REG_4 = rcx, ARG_REG_5 = r8, ARG_REG_6 = r9
     ; Return registers: RET_REG_64 = rax, RET_REG_8 = al
 
-default rel
 
-section .text
+section '.text' executable
 
 ; ------------------------------------------------------------
 ; Type Utility Functions (for compiler runtime)
@@ -283,3 +280,19 @@ store_char:
 store_ptr:
     mov [rdi], rsi
     ret
+public type_size
+public type_align
+public type_is_integer
+public type_is_pointer
+public type_get_pointee
+public sign_extend_char
+public zero_extend_char
+public truncate_int_to_char
+public ptr_add
+public ptr_diff
+public deref_int
+public deref_char
+public deref_ptr
+public store_int
+public store_char
+public store_ptr

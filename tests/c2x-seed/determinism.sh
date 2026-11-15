@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # c2x-seed determinism regression.
 #
-# Guards the fix for the PID-in-FILE-symbol bug: c2x-seed used to feed nasm a
-# PID-unique temp .asm path, and nasm records that path in the object's FILE
-# symbol, which `ld` copies into the final executable's .strtab. So two builds
-# of the *same* source produced binaries differing in those bytes.
-#
-# The compiler now feeds nasm the stable "/dev/stdin" path. This test builds
-# one source four times and requires the four binaries to be byte-identical.
+# Guards the PID-in-FILE-symbol bug the nasm build once had: c2x-seed fed nasm
+# a PID-unique temp .asm path, nasm recorded that path in the object's FILE
+# symbol, and `ld` copied it into the executable's .strtab, so two builds of the
+# *same* source produced binaries differing in those bytes. The nasm build is
+# fixed by feeding nasm the stable "/dev/stdin" path; the default fasm build is
+# immune because fasm does not embed the input path at all. This test builds one
+# source four times and requires the four binaries to be byte-identical.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"

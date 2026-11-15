@@ -238,6 +238,21 @@ binary is `harmony-base` (the spec's `lc`).
 
 ### Cross-cutting
 
+- [x] **c2x-seed migrated from NASM to flat assembler (FASM).** NASM spends
+      ~26 s assembling the ~89k lines c2x-seed emits for `harmony-base` (the
+      entire bootstrap), while FASM does it in ~0.15 s — a ~120× speedup that
+      takes a full `make` from ~26 s to ~0.5 s. FASM objects are smaller (seed
+      binary 740 KB → 309 KB) and byte-reproducible (FASM does not embed the
+      input path, so the PID temp name never leaks). Both c2x-seed's own source
+      and the assembly it *emits* moved to FASM syntax, and the driver now runs
+      `fasm -m 262144 src obj` (the `-m` raises FASM's memory cap for the
+      16 MiB arena; fasm cannot read source from stdin). The conversion is
+      automated by `bootstrap/tools/nasm_to_fasm.py`; the pre-migration NASM
+      sources are kept under `bootstrap/c2x-seed-nasm/`. The FASM child's
+      stdout (its version banner) is redirected to `/dev/null` so builds stay
+      quiet. `build.sh`, `Makefile`, `README.md`, `docs/c2x-seed.md`,
+      `tests/c2x-seed/determinism.sh` updated; `make test` green (identical IR
+      and byte-identical binaries vs the NASM build).
 - [x] **Repository layout reorganized to the AGENTS.md target.** The stage-0
       compilers moved under `bootstrap/`: `bootstrap/c2x-seed/` (NASM),
       `bootstrap/harmony-base/` (c2x-seed), and `bootstrap/runtime/rt.c` (the

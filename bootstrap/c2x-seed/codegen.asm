@@ -1,296 +1,258 @@
+format ELF64
+
 ; C2X Seed - Code Generator
-; Walks AST and emits x86_64 NASM assembly
+; Walks AST and emits x86_64 assembly (the FASM dialect)
 
 ; ------------------------------------------------------------
 ; External Dependencies
 ; ------------------------------------------------------------
-extern out_write_string, out_write_string_len, out_write_char
-extern out_write_newline, out_write_int
-extern heap_alloc_zero, mem_copy
-extern emit_result_flag
-extern emit_returns_flag
-extern warn_simple, warn_at_current, warn_at, warn_unused_var
-extern lexer_state
-extern msg_warn_uninit_var, msg_warn_uninit_ptr
-extern msg_warn_missing_return, msg_warn_unused_var
-extern msg_warn_dead_code, msg_warn_implicit_cast
-extern msg_warn_dead_code, msg_warn_implicit_cast
-extern msg_warn_empty_body, msg_warn_constant_cond
-extern msg_assign_const
-extern msg_undeclared
-extern msg_no_field
-extern WARN_UNINIT_VAR, WARN_UNINIT_PTR
-extern WARN_MISSING_RETURN, WARN_UNUSED_VAR
-extern WARN_DEAD_CODE, WARN_IMPLICIT_CAST
-extern WARN_EMPTY_BODY, WARN_CONSTANT_COND
-extern current_func_return_type
-extern current_func_return_fields
-extern mem_eq_str
-extern STDERR
-extern out_fd, out_flush, out_set_fd
-extern error_count
-extern source_path
-extern prog_func_source_array
-extern prog_global_source_array
 
 
 ; ------------------------------------------------------------
 ; Exported Functions
 ; ------------------------------------------------------------
-global codegen_init, codegen_generate, codegen_cleanup, symbol_tables_init
 
 ; ------------------------------------------------------------
 ; AST Node Types (matching parser.asm)
 ; ------------------------------------------------------------
-%define AST_PROGRAM     1
-%define AST_FUNCTION    2
-%define AST_BLOCK       3
-%define AST_RETURN      4
-%define AST_IF          5
-%define AST_WHILE       6
-%define AST_BINARY_OP   10
-%define AST_UNARY_OP    11
-%define AST_CALL        12
-%define AST_VAR_DECL    13
-%define AST_ASSIGN      14
-%define AST_ARRAY_DECL  15
-%define AST_INDEX       16
-%define AST_STRUCT_DEF  17
-%define AST_MEMBER      18
-%define AST_INIT_LIST   19
-%define AST_IDENT       20
-%define AST_NUMBER      21
-%define AST_STRING      22
-%define AST_CHAR        23
-%define AST_POST_INCR   24
-%define AST_POST_DECR   25
-%define AST_BREAK       30
-%define AST_CONTINUE    31
-%define AST_DESIGNATED_INIT 32
-%define AST_LOGICAL_AND   33
-%define AST_LOGICAL_OR    34
-%define AST_FOR           35
-%define AST_CAST          36
+AST_PROGRAM = 1
+AST_FUNCTION = 2
+AST_BLOCK = 3
+AST_RETURN = 4
+AST_IF = 5
+AST_WHILE = 6
+AST_BINARY_OP = 10
+AST_UNARY_OP = 11
+AST_CALL = 12
+AST_VAR_DECL = 13
+AST_ASSIGN = 14
+AST_ARRAY_DECL = 15
+AST_INDEX = 16
+AST_STRUCT_DEF = 17
+AST_MEMBER = 18
+AST_INIT_LIST = 19
+AST_IDENT = 20
+AST_NUMBER = 21
+AST_STRING = 22
+AST_CHAR = 23
+AST_POST_INCR = 24
+AST_POST_DECR = 25
+AST_BREAK = 30
+AST_CONTINUE = 31
+AST_DESIGNATED_INIT = 32
+AST_LOGICAL_AND = 33
+AST_LOGICAL_OR = 34
+AST_FOR = 35
+AST_CAST = 36
 
 ; Token types for operators inside AST
-%define TOK_PLUS        10
-%define TOK_MINUS       11
-%define TOK_STAR        12
-%define TOK_SLASH       13
-%define TOK_PERCENT     14
-%define TOK_LSHIFT      15
-%define TOK_RSHIFT      16
-%define TOK_EQ          20
-%define TOK_EQEQ        21
-%define TOK_NEQ         22
-%define TOK_LT          23
-%define TOK_LE          24
-%define TOK_GT          25
-%define TOK_GE          26
-%define TOK_KW_INT      50
-%define TOK_KW_CHAR     51
-%define TOK_KW_VOID     56
-%define TOK_KW_STRUCT   57
-%define TOK_KW_FOR      59
-%define TOK_AMPERSAND   44
-%define TOK_DOT         45
-%define TOK_PIPE        47
-%define TOK_XOR         48
-%define TOK_TILDE       49
-%define TOK_AND         82
-%define TOK_OR          83
-%define TOK_INCR        80
-%define TOK_DECR        81
+TOK_PLUS = 10
+TOK_MINUS = 11
+TOK_STAR = 12
+TOK_SLASH = 13
+TOK_PERCENT = 14
+TOK_LSHIFT = 15
+TOK_RSHIFT = 16
+TOK_EQ = 20
+TOK_EQEQ = 21
+TOK_NEQ = 22
+TOK_LT = 23
+TOK_LE = 24
+TOK_GT = 25
+TOK_GE = 26
+TOK_KW_INT = 50
+TOK_KW_CHAR = 51
+TOK_KW_VOID = 56
+TOK_KW_STRUCT = 57
+TOK_KW_FOR = 59
+TOK_AMPERSAND = 44
+TOK_DOT = 45
+TOK_PIPE = 47
+TOK_XOR = 48
+TOK_TILDE = 49
+TOK_AND = 82
+TOK_OR = 83
+TOK_INCR = 80
+TOK_DECR = 81
 
 ; Pointer type encoding: PTR_TYPE_FLAG + base_token_type, plus one more
 ; PTR_TYPE_FLAG per extra pointer level (e.g. int* = 10050, int** = 20050).
 ; Must stay identical to the defines in parser.asm.
-%define PTR_TYPE_FLAG   10000
+PTR_TYPE_FLAG = 10000
 ; Array field encoding: ARRAY_TYPE_FLAG + element_type.
 ; Must sit above every reachable pointer encoding so `type >= ARRAY_TYPE_FLAG`
 ; only matches arrays. The old value (20000) collided with depth-2 pointers
 ; like `struct N**` = 20057, which crashed `struct_total_size`. See parser.asm.
-%define ARRAY_TYPE_FLAG  268435456
+ARRAY_TYPE_FLAG = 268435456
 ; Const struct field flag: a distinct high bit OR'd into the field type.
-%define FIELD_CONST_FLAG 536870912
+FIELD_CONST_FLAG = 536870912
 
 ; ------------------------------------------------------------
 ; AST node struct (5 qwords = 40 bytes)
 ; ------------------------------------------------------------
-struc ast_node_t
-    .type       resq 1
-    .data1      resq 1
-    .data2      resq 1
-    .data3      resq 1
-    .data4      resq 1
-    .data5      resq 1
-    .line       resq 1
-    .column     resq 1
-endstruc
+ast_node_t.type = 0
+ast_node_t.data1 = 8
+ast_node_t.data2 = 16
+ast_node_t.data3 = 24
+ast_node_t.data4 = 32
+ast_node_t.data5 = 40
+ast_node_t.line = 48
+ast_node_t.column = 56
+ast_node_t_size = 64
 
 ; ------------------------------------------------------------
 ; Var flags (matching parser.asm)
 ; ------------------------------------------------------------
-%define VAR_CONST       2
-%define VLA_FLAG        1       ; AST_ARRAY_DECL data5: runtime-sized (VLA)
+VAR_CONST = 2
+VLA_FLAG = 1  ; AST_ARRAY_DECL data5: runtime-sized (VLA)
 
 ; ------------------------------------------------------------
 ; Symbol entry (8 qwords = 64 bytes)
 ; ------------------------------------------------------------
-struc symbol_t
-    .name_ptr   resq 1      ; 0
-    .name_len   resq 1      ; 8
-    .offset     resq 1      ; 16 (negative offset from rbp)
-    .type       resq 1      ; 24 (token type or special encoding)
-    .extra      resq 1      ; 32 (array count, struct type id, or 0)
-    .line       resq 1      ; 40 (source line of declaration)
-    .column     resq 1      ; 48 (source column of declaration)
-    .fields     resq 1      ; 56 (pointee field_array_ptr for arrays of
-                            ;      struct pointers; 0 otherwise). `extra`
-                            ;      stays the element count for those, so
-                            ;      bounds checks keep working AND chained
-                            ;      `arr[i]->field` can resolve the pointee.
-    .elem_ty    resq 1      ; 64 (encoded element type for arrays of
-                            ;      pointers, e.g. TOK_KW_CHAR + PTR_TYPE_FLAG
-                            ;      for char* arr[N]; 0 otherwise). The array
-                            ;      itself is registered as TOK_KW_INT (8-byte
-                            ;      elements), so this is the only place the
-                            ;      pointee type survives for a chained
-                            ;      `arr[i][j]` to scale by the pointee size.
-endstruc
+symbol_t.name_ptr = 0
+symbol_t.name_len = 8
+symbol_t.offset = 16
+symbol_t.type = 24
+symbol_t.extra = 32
+symbol_t.line = 40
+symbol_t.column = 48
+symbol_t.fields = 56
+symbol_t.elem_ty = 64
+symbol_t_size = 72
 
-SYMBOL_TABLE_INITIAL_CAPACITY equ 256
-STRING_POOL_INITIAL_CAPACITY equ 512
-STRING_POOL_GROW_FACTOR equ 2
+SYMBOL_TABLE_INITIAL_CAPACITY = 256
+STRING_POOL_INITIAL_CAPACITY = 512
+STRING_POOL_GROW_FACTOR = 2
 
 ; ------------------------------------------------------------
 ; Data
 ; ------------------------------------------------------------
-section .data
-    asm_section_text    db "section .text", 10, 0
-    asm_global          db "global ", 0
-    asm_label_sep       db ":", 10, 0
-    asm_newline         db 10, 0
-    asm_prologue        db "    push rbp", 10, "    mov rbp, rsp", 10, 0
-    asm_sub_rsp         db "    sub rsp, ", 0
+section '.data' writeable
+    asm_format_elf64:      db "format ELF64", 10, 0
+    asm_section_text:    db "section '.text' executable", 10, 0
+    asm_global:          db "public ", 0
+    asm_label_sep:       db ":", 10, 0
+    asm_newline:         db 10, 0
+    asm_prologue:        db "    push rbp", 10, "    mov rbp, rsp", 10, 0
+    asm_sub_rsp:         db "    sub rsp, ", 0
     ; Save the hidden struct return pointer (in rdi) to the reserved stack
     ; slot at [rbp - 8]. This is set up in gen_function by adding 8 bytes
     ; to frame_size BEFORE collect_symbols when the function returns a struct.
     ; Using a stack slot instead of a global makes struct returns reentrant
     ; (works correctly with recursion and nested calls).
-    asm_mov_rbp_ret_ptr db "    mov qword [rbp - 8], rdi", 10, 0
+    asm_mov_rbp_ret_ptr: db "    mov qword [rbp - 8], rdi", 10, 0
     ; Push the struct return slot address (in BSS) onto the stack so it gets
     ; popped as the hidden first argument (rdi) by the pop-args sequence.
-    asm_push_struct_ret db "    push struct_ret_slot", 10, 0
+    asm_push_struct_ret: db "    push struct_ret_slot", 10, 0
     ; Load struct result address into rax (after call)
-    asm_mov_rax_struct_ret db "    mov rax, struct_ret_slot", 10, 0
+    asm_mov_rax_struct_ret: db "    mov rax, struct_ret_slot", 10, 0
     ; Struct copy call sequence
-    asm_mov_rdi_g_prefix db "    mov rdi, g_", 0
-    asm_lea_rdi_rbp    db "    lea rdi, [rbp - ", 0
-    asm_rbp_close      db "]", 10, 0
-    asm_mov_rsi_rax    db "    mov rsi, rax", 10, 0
-    asm_mov_rdx_imm    db "    mov rdx, ", 0
-    asm_call_struct_copy db "    call __struct_copy", 10, 0
-    asm_mov_rdi_rbp_ret db "    mov rdi, [rbp - 8]", 10, 0
-    asm_label_struct_ret_slot db "struct_ret_slot", 0
-    asm_label_current_ret_ptr db "current_ret_ptr", 0
-    asm_epilogue        db "    mov rsp, rbp", 10, "    pop rbp", 10, "    ret", 10, 0
-    asm_start_entry     db "global _start", 10, "_start:", 10, "    pop rax", 10, "    mov [rel g_argc], rax", 10, "    mov [rel g_argv], rsp", 10, "    mov rdi, rax", 10, "    mov rsi, rsp", 10, "    push rax", 10, "    call main", 10, "    mov rdi, rax", 10, "    mov rax, 60", 10, "    syscall", 10, 0
-    asm_start_result    db "global _start", 10, "_start:", 10, "    pop rax", 10, "    mov [rel g_argc], rax", 10, "    mov [rel g_argv], rsp", 10, "    mov rdi, rax", 10, "    mov rsi, rsp", 10, "    push rax", 10, "    call main", 10, "    mov r15, rax", 10, "    sub rsp, 32", 10, "    mov rbx, 10", 10, "    lea rsi, [rsp+8]", 10, "    mov r8, rsi", 10, "    mov rax, r15", 10, ".div_loop:", 10, "    xor rdx, rdx", 10, "    div rbx", 10, "    add dl, '0'", 10, "    dec rsi", 10, "    mov [rsi], dl", 10, "    test rax, rax", 10, "    jnz .div_loop", 10, "    mov rdx, r8", 10, "    sub rdx, rsi", 10, "    mov rdi, 1", 10, "    mov rax, 1", 10, "    syscall", 10, "    add rsp, 32", 10, "    mov rdi, r15", 10, "    mov rax, 60", 10, "    syscall", 10, 0
-    asm_argv_save       db "    pop rax", 10, "    mov [rel g_argc], rax", 10, "    mov [rel g_argv], rsp", 10, "    mov rdi, rax", 10, "    mov rsi, rsp", 10, "    push rax", 10, 0
-    asm_argc_name       db "argc", 0
-    asm_argv_name       db "argv", 0
+    asm_mov_rdi_g_prefix: db "    mov rdi, g_", 0
+    asm_lea_rdi_rbp:    db "    lea rdi, [rbp - ", 0
+    asm_rbp_close:      db "]", 10, 0
+    asm_mov_rsi_rax:    db "    mov rsi, rax", 10, 0
+    asm_mov_rdx_imm:    db "    mov rdx, ", 0
+    asm_call_struct_copy: db "    call __struct_copy", 10, 0
+    asm_mov_rdi_rbp_ret: db "    mov rdi, [rbp - 8]", 10, 0
+    asm_label_struct_ret_slot: db "struct_ret_slot", 0
+    asm_label_current_ret_ptr: db "current_ret_ptr", 0
+    asm_epilogue:        db "    mov rsp, rbp", 10, "    pop rbp", 10, "    ret", 10, 0
+    asm_start_entry:     db "public _start", 10, "_start:", 10, "    pop rax", 10, "    mov [g_argc], rax", 10, "    mov [g_argv], rsp", 10, "    mov rdi, rax", 10, "    mov rsi, rsp", 10, "    push rax", 10, "    call main", 10, "    mov rdi, rax", 10, "    mov rax, 60", 10, "    syscall", 10, 0
+    asm_start_result:    db "public _start", 10, "_start:", 10, "    pop rax", 10, "    mov [g_argc], rax", 10, "    mov [g_argv], rsp", 10, "    mov rdi, rax", 10, "    mov rsi, rsp", 10, "    push rax", 10, "    call main", 10, "    mov r15, rax", 10, "    sub rsp, 32", 10, "    mov rbx, 10", 10, "    lea rsi, [rsp+8]", 10, "    mov r8, rsi", 10, "    mov rax, r15", 10, ".div_loop:", 10, "    xor rdx, rdx", 10, "    div rbx", 10, "    add dl, '0'", 10, "    dec rsi", 10, "    mov [rsi], dl", 10, "    test rax, rax", 10, "    jnz .div_loop", 10, "    mov rdx, r8", 10, "    sub rdx, rsi", 10, "    mov rdi, 1", 10, "    mov rax, 1", 10, "    syscall", 10, "    add rsp, 32", 10, "    mov rdi, r15", 10, "    mov rax, 60", 10, "    syscall", 10, 0
+    asm_argv_save:       db "    pop rax", 10, "    mov [g_argc], rax", 10, "    mov [g_argv], rsp", 10, "    mov rdi, rax", 10, "    mov rsi, rsp", 10, "    push rax", 10, 0
+    asm_argc_name:       db "argc", 0
+    asm_argv_name:       db "argv", 0
 
 
     ; --- Syscall runtime stubs (emitted into generated binaries) ---
     ; All follow System V AMD64 ABI: args in rdi, rsi, rdx; return in rax
-    asm_sys_read        db "global syscall_read", 10
+    asm_sys_read:        db "public syscall_read", 10
                         db "syscall_read:", 10
                         db "    mov rax, 0", 10
                         db "    syscall", 10
                         db "    ret", 10, 0
-    asm_sys_write       db "global syscall_write", 10
+    asm_sys_write:       db "public syscall_write", 10
                         db "syscall_write:", 10
                         db "    mov rax, 1", 10
                         db "    syscall", 10
                         db "    ret", 10, 0
-    asm_sys_open        db "global syscall_open", 10
+    asm_sys_open:        db "public syscall_open", 10
                         db "syscall_open:", 10
                         db "    mov rax, 2", 10
                         db "    syscall", 10
                         db "    ret", 10, 0
-    asm_sys_close       db "global syscall_close", 10
+    asm_sys_close:       db "public syscall_close", 10
                         db "syscall_close:", 10
                         db "    mov rax, 3", 10
                         db "    syscall", 10
                         db "    ret", 10, 0
-    asm_sys_dup2        db "global syscall_dup2", 10
+    asm_sys_dup2:        db "public syscall_dup2", 10
                         db "syscall_dup2:", 10
                         db "    mov rax, 33", 10
                         db "    syscall", 10
                         db "    ret", 10, 0
-    asm_sys_pipe2       db "global syscall_pipe2", 10
+    asm_sys_pipe2:       db "public syscall_pipe2", 10
                         db "syscall_pipe2:", 10
                         db "    mov rax, 293", 10
                         db "    syscall", 10
                         db "    ret", 10, 0
-    asm_sys_exit        db "global syscall_exit", 10
+    asm_sys_exit:        db "public syscall_exit", 10
                         db "syscall_exit:", 10
                         db "    mov rax, 60", 10
                         db "    syscall", 10, 0
 
     ; --- Extended syscall runtime stubs (emitted into generated binaries) ---
-    ; These let c2x-proto (and other generated compilers) fork/exec nasm+ld to
+    ; These let c2x-proto (and other generated compilers) fork/exec ld to
     ; produce binaries. Note the raw-syscall ABI: 4th arg in r10 (not rcx), and
     ; the `syscall` instruction clobbers rcx and r11.
     ; sys_fork() -> pid_t (rax = 0 in child, child PID in parent, negative on error)
-    asm_sys_fork        db "global syscall_fork", 10
+    asm_sys_fork:        db "public syscall_fork", 10
                         db "syscall_fork:", 10
                         db "    mov rax, 57", 10
                         db "    syscall", 10
                         db "    ret", 10, 0
     ; sys_execve(pathname, argv, envp) -> int (only returns on error)
-    asm_sys_execve      db "global syscall_execve", 10
+    asm_sys_execve:      db "public syscall_execve", 10
                         db "syscall_execve:", 10
                         db "    mov rax, 59", 10
                         db "    syscall", 10
                         db "    ret", 10, 0
     ; sys_wait4(pid, wstatus, options, rusage) -> pid_t
     ; NOTE: 4th arg (rusage) passed in r10 per Linux syscall ABI.
-    asm_sys_wait4       db "global syscall_wait4", 10
+    asm_sys_wait4:       db "public syscall_wait4", 10
                         db "syscall_wait4:", 10
                         db "    mov rax, 61", 10
                         db "    syscall", 10
                         db "    ret", 10, 0
     ; sys_unlink(pathname) -> int
-    asm_sys_unlink      db "global syscall_unlink", 10
+    asm_sys_unlink:      db "public syscall_unlink", 10
                         db "syscall_unlink:", 10
                         db "    mov rax, 87", 10
                         db "    syscall", 10
                         db "    ret", 10, 0
     ; sys_getpid() -> pid_t
-    asm_sys_getpid      db "global syscall_getpid", 10
+    asm_sys_getpid:      db "public syscall_getpid", 10
                         db "syscall_getpid:", 10
                         db "    mov rax, 39", 10
                         db "    syscall", 10
                         db "    ret", 10, 0
     ; sys_getdents64(fd, buf, count) -> int (bytes read, or negative on error)
     ; 3 args in rdi/rsi/rdx (same in both C and syscall ABIs).
-    asm_sys_getdents64  db "global syscall_getdents64", 10
+    asm_sys_getdents64:  db "public syscall_getdents64", 10
                         db "syscall_getdents64:", 10
                         db "    mov rax, 217", 10
                         db "    syscall", 10
                         db "    ret", 10, 0
     ; sys_clock_gettime(clk_id, timespec) -> int (0 on success)
     ; 2 args in rdi/rsi (same in both C and syscall ABIs).
-    asm_sys_clock_gettime db "global syscall_clock_gettime", 10
+    asm_sys_clock_gettime: db "public syscall_clock_gettime", 10
                         db "syscall_clock_gettime:", 10
                         db "    mov rax, 228", 10
                         db "    syscall", 10
                         db "    ret", 10, 0
     ; sys_mkdir(pathname, mode) -> int (0 on success)
     ; 2 args in rdi/rsi (same in both C and syscall ABIs).
-    asm_sys_mkdir       db "global syscall_mkdir", 10
+    asm_sys_mkdir:       db "public syscall_mkdir", 10
                         db "syscall_mkdir:", 10
                         db "    mov rax, 83", 10
                         db "    syscall", 10
@@ -298,21 +260,21 @@ section .data
     ; sys_nanosleep(req, rem) -> int (0 on success). Used by the build-UI
     ; spinner child to pause between animation frames.
     ; 2 args in rdi/rsi (same in both C and syscall ABIs).
-    asm_sys_nanosleep   db "global syscall_nanosleep", 10
+    asm_sys_nanosleep:   db "public syscall_nanosleep", 10
                         db "syscall_nanosleep:", 10
                         db "    mov rax, 35", 10
                         db "    syscall", 10
                         db "    ret", 10, 0
     ; sys_kill(pid, sig) -> int (0 on success). Used to stop the spinner child.
     ; 2 args in rdi/rsi (same in both C and syscall ABIs).
-    asm_sys_kill        db "global syscall_kill", 10
+    asm_sys_kill:        db "public syscall_kill", 10
                         db "syscall_kill:", 10
                         db "    mov rax, 62", 10
                         db "    syscall", 10
                         db "    ret", 10, 0
     ; sys_ioctl(fd, request, arg) -> int. Used by isatty() to gate the spinner
     ; on an interactive terminal. 3 args in rdi/rsi/rdx (same in both ABIs).
-    asm_sys_ioctl       db "global syscall_ioctl", 10
+    asm_sys_ioctl:       db "public syscall_ioctl", 10
                         db "syscall_ioctl:", 10
                         db "    mov rax, 16", 10
                         db "    syscall", 10
@@ -321,7 +283,7 @@ section .data
     ; Struct copy helper: __struct_copy(rdi=dest, rsi=src, rdx=size)
     ; Copies `size` bytes from src to dest. Used for struct assignments
     ; and struct returns (System V AMD64 ABI for aggregate copies).
-    asm_struct_copy     db "global __struct_copy", 10
+    asm_struct_copy:     db "public __struct_copy", 10
                         db "__struct_copy:", 10
                         db "    push rbp", 10
                         db "    mov rbp, rsp", 10
@@ -341,135 +303,135 @@ section .data
                         db "    ret", 10, 0
 
     ; Load / store patterns
-    asm_mov_rax_imm     db "    mov rax, ", 0
-    asm_push_rax        db "    push rax", 10, 0
-    asm_pop_rbx         db "    pop rbx", 10, 0
+    asm_mov_rax_imm:     db "    mov rax, ", 0
+    asm_push_rax:        db "    push rax", 10, 0
+    asm_pop_rbx:         db "    pop rbx", 10, 0
 
-    asm_mov_qword_rbp   db "    mov qword [rbp-", 0
-    asm_mov_byte_rbp    db "    mov byte [rbp-", 0
-    asm_rbp_rax         db "], rax", 10, 0
-    asm_rbp_al          db "], al", 10, 0
-    asm_load_qword_rbp  db "    mov rax, [rbp-", 0
-    asm_load_byte_rbp   db "    movsx rax, byte [rbp-", 0
-    asm_close_bracket   db "]", 10, 0
+    asm_mov_qword_rbp:   db "    mov qword [rbp-", 0
+    asm_mov_byte_rbp:    db "    mov byte [rbp-", 0
+    asm_rbp_rax:         db "], rax", 10, 0
+    asm_rbp_al:          db "], al", 10, 0
+    asm_load_qword_rbp:  db "    mov rax, [rbp-", 0
+    asm_load_byte_rbp:   db "    movsx rax, byte [rbp-", 0
+    asm_close_bracket:   db "]", 10, 0
 
     ; Arithmetic
-    asm_add_rax_rbx     db "    add rax, rbx", 10, 0
-    asm_sub_rbx_rax     db "    sub rbx, rax", 10, "    mov rax, rbx", 10, 0
-    asm_imul_rax_rbx    db "    imul rax, rbx", 10, 0
-    asm_div_setup       db "    xchg rax, rbx", 10, "    xor rdx, rdx", 10, "    div rbx", 10, 0
-    asm_mod_result      db "    mov rax, rdx", 10, 0
-    asm_neg_rax         db "    neg rax", 10, 0
-    asm_not_rax         db "    not rax", 10, 0
-    asm_mov_rax_from_rax db "    mov rax, [rax]", 10, 0
-    asm_lea_rax_rbp     db "    lea rax, [rbp-", 0
-    asm_mov_rbx_rax     db "    mov [rbx], rax", 10, 0
-    asm_mov_rbx_al      db "    mov [rbx], al", 10, 0
-    asm_shl_rax_3       db "    shl rax, 3", 10, 0
-    asm_mov_rbx_imm     db "    mov rbx, ", 0
-    asm_imul_rax_imm     db "    imul rax, ", 0
-    asm_semi_comment     db "; ", 0
-    asm_inline_asm_marker db "inline asm:", 0
-    asm_rbp_prefix db "[rbp-", 0
+    asm_add_rax_rbx:     db "    add rax, rbx", 10, 0
+    asm_sub_rbx_rax:     db "    sub rbx, rax", 10, "    mov rax, rbx", 10, 0
+    asm_imul_rax_rbx:    db "    imul rax, rbx", 10, 0
+    asm_div_setup:       db "    xchg rax, rbx", 10, "    xor rdx, rdx", 10, "    div rbx", 10, 0
+    asm_mod_result:      db "    mov rax, rdx", 10, 0
+    asm_neg_rax:         db "    neg rax", 10, 0
+    asm_not_rax:         db "    not rax", 10, 0
+    asm_mov_rax_from_rax: db "    mov rax, [rax]", 10, 0
+    asm_lea_rax_rbp:     db "    lea rax, [rbp-", 0
+    asm_mov_rbx_rax:     db "    mov [rbx], rax", 10, 0
+    asm_mov_rbx_al:      db "    mov [rbx], al", 10, 0
+    asm_shl_rax_3:       db "    shl rax, 3", 10, 0
+    asm_mov_rbx_imm:     db "    mov rbx, ", 0
+    asm_imul_rax_imm:     db "    imul rax, ", 0
+    asm_semi_comment:     db "; ", 0
+    asm_inline_asm_marker: db "inline asm:", 0
+    asm_rbp_prefix: db "[rbp-", 0
 
     ; Pointer arithmetic
-    asm_imul_rax_8      db "    imul rax, 8", 10, 0
-    asm_imul_rbx_8      db "    imul rbx, 8", 10, 0
-    asm_sar_rax_3       db "    sar rax, 3", 10, 0
-    asm_movsx_byte_rax  db "    movsx rax, byte [rax]", 10, 0
-    asm_movsx_byte_rbx  db "    movsx rax, byte [rbx]", 10, 0
-    asm_inc_rax         db "    inc rax", 10, 0
-    asm_dec_rax         db "    dec rax", 10, 0
-    asm_mov_rax_rbx     db "    mov rax, rbx", 10, 0
+    asm_imul_rax_8:      db "    imul rax, 8", 10, 0
+    asm_imul_rbx_8:      db "    imul rbx, 8", 10, 0
+    asm_sar_rax_3:       db "    sar rax, 3", 10, 0
+    asm_movsx_byte_rax:  db "    movsx rax, byte [rax]", 10, 0
+    asm_movsx_byte_rbx:  db "    movsx rax, byte [rbx]", 10, 0
+    asm_inc_rax:         db "    inc rax", 10, 0
+    asm_dec_rax:         db "    dec rax", 10, 0
+    asm_mov_rax_rbx:     db "    mov rax, rbx", 10, 0
 
     ; VLA runtime stack allocation
-    asm_add_rax_15      db "    add rax, 15", 10, 0
-    asm_and_rax_neg16   db "    and rax, -16", 10, 0
-    asm_sub_rsp_rax     db "    sub rsp, rax", 10, 0
-    asm_mov_qword_rbp_rsp db "    mov qword [rbp-", 0
-    asm_rbp_rsp         db "], rsp", 10, 0
+    asm_add_rax_15:      db "    add rax, 15", 10, 0
+    asm_and_rax_neg16:   db "    and rax, -16", 10, 0
+    asm_sub_rsp_rax:     db "    sub rsp, rax", 10, 0
+    asm_mov_qword_rbp_rsp: db "    mov qword [rbp-", 0
+    asm_rbp_rsp:         db "], rsp", 10, 0
     ; VLA index helpers
-    asm_mov_r9_rbp      db "    mov r9, qword [rbp-", 0
-    asm_cmp_rax_r9      db "    cmp rax, r9", 10, 0
-    asm_add_rbx_rax     db "    add rbx, rax", 10, 0
-    asm_mov_rax_rbx_indirect db "    mov rax, [rbx]", 10, 0
+    asm_mov_r9_rbp:      db "    mov r9, qword [rbp-", 0
+    asm_cmp_rax_r9:      db "    cmp rax, r9", 10, 0
+    asm_add_rbx_rax:     db "    add rbx, rax", 10, 0
+    asm_mov_rax_rbx_indirect: db "    mov rax, [rbx]", 10, 0
 
     ; Bitwise operators
-    asm_shl_rax_cl      db "    mov rcx, rax", 10, "    mov rax, rbx", 10, "    shl rax, cl", 10, 0
-    asm_sar_rax_cl      db "    mov rcx, rax", 10, "    mov rax, rbx", 10, "    sar rax, cl", 10, 0
-    asm_and_rax_rbx     db "    and rax, rbx", 10, 0
-    asm_or_rax_rbx      db "    or rax, rbx", 10, 0
-    asm_xor_rax_rbx     db "    xor rax, rbx", 10, 0
+    asm_shl_rax_cl:      db "    mov rcx, rax", 10, "    mov rax, rbx", 10, "    shl rax, cl", 10, 0
+    asm_sar_rax_cl:      db "    mov rcx, rax", 10, "    mov rax, rbx", 10, "    sar rax, cl", 10, 0
+    asm_and_rax_rbx:     db "    and rax, rbx", 10, 0
+    asm_or_rax_rbx:      db "    or rax, rbx", 10, 0
+    asm_xor_rax_rbx:     db "    xor rax, rbx", 10, 0
 
     ; Comparisons
-    asm_cmp_rbx_rax     db "    cmp rbx, rax", 10, 0
-    asm_cmp_rax_0       db "    cmp rax, 0", 10, 0
-    asm_sete            db "    sete al", 10, "    movzx rax, al", 10, 0
-    asm_setne           db "    setne al", 10, "    movzx rax, al", 10, 0
-    asm_setl            db "    setl al", 10, "    movzx rax, al", 10, 0
-    asm_setle           db "    setle al", 10, "    movzx rax, al", 10, 0
-    asm_setg            db "    setg al", 10, "    movzx rax, al", 10, 0
-    asm_setge           db "    setge al", 10, "    movzx rax, al", 10, 0
-    asm_movsx_rax_al    db "    movsx rax, al", 10, 0
+    asm_cmp_rbx_rax:     db "    cmp rbx, rax", 10, 0
+    asm_cmp_rax_0:       db "    cmp rax, 0", 10, 0
+    asm_sete:            db "    sete al", 10, "    movzx rax, al", 10, 0
+    asm_setne:           db "    setne al", 10, "    movzx rax, al", 10, 0
+    asm_setl:            db "    setl al", 10, "    movzx rax, al", 10, 0
+    asm_setle:           db "    setle al", 10, "    movzx rax, al", 10, 0
+    asm_setg:            db "    setg al", 10, "    movzx rax, al", 10, 0
+    asm_setge:           db "    setge al", 10, "    movzx rax, al", 10, 0
+    asm_movsx_rax_al:    db "    movsx rax, al", 10, 0
 
     ; Branching labels
-    asm_je_else         db "    je .L_else_", 0
-    asm_jmp_end         db "    jmp .L_end_", 0
-    asm_label_else      db ".L_else_", 0
-    asm_label_end       db ".L_end_", 0
-    asm_label_start     db ".L_start_", 0
-    asm_jmp_start       db "    jmp .L_start_", 0
-    asm_je_end          db "    je .L_end_", 0
+    asm_je_else:         db "    je .L_else_", 0
+    asm_jmp_end:         db "    jmp .L_end_", 0
+    asm_label_else:      db ".L_else_", 0
+    asm_label_end:       db ".L_end_", 0
+    asm_label_start:     db ".L_start_", 0
+    asm_jmp_start:       db "    jmp .L_start_", 0
+    asm_je_end:          db "    je .L_end_", 0
 
-    asm_jmp_continue    db "    jmp .L_cont_", 0
-    asm_label_continue  db ".L_cont_", 0
-    asm_jmp_func_end    db "    jmp .L_func_end_", 0
-    asm_label_func_end  db ".L_func_end_", 0
+    asm_jmp_continue:    db "    jmp .L_cont_", 0
+    asm_label_continue:  db ".L_cont_", 0
+    asm_jmp_func_end:    db "    jmp .L_func_end_", 0
+    asm_label_func_end:  db ".L_func_end_", 0
 
     ; Bounds check runtime labels and instructions
-    asm_jl_bounds_fail  db "    jl .L_bounds_fail_", 0
-    asm_jge_bounds_fail db "    jge .L_bounds_fail_", 0
-    asm_jle_bounds_fail db "    jle .L_bounds_fail_", 0
-    asm_jae_bounds_fail db "    jae .L_bounds_fail_", 0
-    asm_jmp_bounds_ok   db "    jmp .L_bounds_ok_", 0
-    asm_label_bounds_fail db ".L_bounds_fail_", 0
-    asm_label_bounds_ok db ".L_bounds_ok_", 0
+    asm_jl_bounds_fail:  db "    jl .L_bounds_fail_", 0
+    asm_jge_bounds_fail: db "    jge .L_bounds_fail_", 0
+    asm_jle_bounds_fail: db "    jle .L_bounds_fail_", 0
+    asm_jae_bounds_fail: db "    jae .L_bounds_fail_", 0
+    asm_jmp_bounds_ok:   db "    jmp .L_bounds_ok_", 0
+    asm_label_bounds_fail: db ".L_bounds_fail_", 0
+    asm_label_bounds_ok: db ".L_bounds_ok_", 0
     ; Short-circuit logical operator labels
-    asm_je_land_false    db "    je .L_land_false_", 0
-    asm_jmp_land_done    db "    jmp .L_land_done_", 0
-    asm_label_land_false db ".L_land_false_", 0
-    asm_label_land_done  db ".L_land_done_", 0
-    asm_jne_lor_true     db "    jne .L_lor_true_", 0
-    asm_jmp_lor_done     db "    jmp .L_lor_done_", 0
-    asm_label_lor_true   db ".L_lor_true_", 0
-    asm_label_lor_done   db ".L_lor_done_", 0
-    asm_mov_rax_1        db "    mov rax, 1", 10, 0
-    asm_xor_rax_rax      db "    xor rax, rax", 10, 0
+    asm_je_land_false:    db "    je .L_land_false_", 0
+    asm_jmp_land_done:    db "    jmp .L_land_done_", 0
+    asm_label_land_false: db ".L_land_false_", 0
+    asm_label_land_done:  db ".L_land_done_", 0
+    asm_jne_lor_true:     db "    jne .L_lor_true_", 0
+    asm_jmp_lor_done:     db "    jmp .L_lor_done_", 0
+    asm_label_lor_true:   db ".L_lor_true_", 0
+    asm_label_lor_done:   db ".L_lor_done_", 0
+    asm_mov_rax_1:        db "    mov rax, 1", 10, 0
+    asm_xor_rax_rax:      db "    xor rax, rax", 10, 0
 
-    asm_mov_rdi_1       db "    mov rdi, 1", 10, 0
-    asm_mov_rax_60      db "    mov rax, 60", 10, 0
-    asm_syscall         db "    syscall", 10, 0
-    asm_cmp_rax_imm   db "    cmp rax, ", 0
+    asm_mov_rdi_1:       db "    mov rdi, 1", 10, 0
+    asm_mov_rax_60:      db "    mov rax, 60", 10, 0
+    asm_syscall:         db "    syscall", 10, 0
+    asm_cmp_rax_imm:   db "    cmp rax, ", 0
 
-    asm_call            db "    call ", 0
-    asm_call_print_rax  db "    call __print_rax", 10, 0
+    asm_call:            db "    call ", 0
+    asm_call_print_rax:  db "    call __print_rax", 10, 0
 
     ; Global variable assembly patterns
-    asm_section_data    db "section .data", 10, 0
-    asm_section_bss     db "section .bss", 10, 0
-    asm_dq_dir          db "    dq ", 0
-    asm_db_dir          db "    db ", 0
-    asm_resq            db "    resq ", 0
-    asm_resb            db "    resb ", 0
-    asm_label_g_prefix  db "g_", 0
-    asm_mov_rax_g       db "    mov rax, [rel g_", 0
-    asm_movsx_rax_byte_g db "    movsx rax, byte [rel g_", 0
-    asm_lea_rax_g       db "    lea rax, [rel g_", 0
-    asm_store_g_prefix  db "    mov [rel g_", 0
-    asm_store_g_rax_sfx db "], rax", 10, 0
-    asm_store_g_al_sfx  db "], al", 10, 0
-    asm_extern          db "extern g_", 0
-    asm_print_rax_helper db "__print_rax:", 10
+    asm_section_data:    db "section '.data' writeable", 10, 0
+    asm_section_bss:     db "section '.bss' writeable", 10, 0
+    asm_dq_dir:          db "    dq ", 0
+    asm_db_dir:          db "    db ", 0
+    asm_resq:            db "    rq ", 0
+    asm_resb:            db "    rb ", 0
+    asm_label_g_prefix:  db "g_", 0
+    asm_mov_rax_g:       db "    mov rax, [g_", 0
+    asm_movsx_rax_byte_g: db "    movsx rax, byte [g_", 0
+    asm_lea_rax_g:       db "    lea rax, [g_", 0
+    asm_store_g_prefix:  db "    mov [g_", 0
+    asm_store_g_rax_sfx: db "], rax", 10, 0
+    asm_store_g_al_sfx:  db "], al", 10, 0
+    asm_extern:          db "extrn g_", 0
+    asm_print_rax_helper: db "__print_rax:", 10
         db "    push rbx", 10
         db "    push rcx", 10
         db "    push rdx", 10
@@ -509,26 +471,26 @@ section .data
         db "    ret", 10, 0
 
     ; Function parameter / argument patterns
-    asm_pop_rdi         db "    pop rdi", 10, 0
-    asm_pop_rsi         db "    pop rsi", 10, 0
-    asm_pop_rdx         db "    pop rdx", 10, 0
-    asm_pop_rcx         db "    pop rcx", 10, 0
-    asm_pop_r8          db "    pop r8", 10, 0
-    asm_pop_r9          db "    pop r9", 10, 0
-    asm_add_rsp         db "    add rsp, ", 0
-    asm_mov_rax_rbp_plus db "    mov rax, [rbp+", 0
-    asm_rbp_rdi         db "], rdi", 10, 0
-    asm_rbp_rsi         db "], rsi", 10, 0
-    asm_rbp_rdx         db "], rdx", 10, 0
-    asm_rbp_rcx         db "], rcx", 10, 0
-    asm_rbp_r8          db "], r8", 10, 0
-    asm_rbp_r9          db "], r9", 10, 0
-    asm_rbp_dil         db "], dil", 10, 0
-    asm_rbp_sil         db "], sil", 10, 0
-    asm_rbp_dl          db "], dl", 10, 0
-    asm_rbp_cl          db "], cl", 10, 0
-    asm_rbp_r8b         db "], r8b", 10, 0
-    asm_rbp_r9b         db "], r9b", 10, 0
+    asm_pop_rdi:         db "    pop rdi", 10, 0
+    asm_pop_rsi:         db "    pop rsi", 10, 0
+    asm_pop_rdx:         db "    pop rdx", 10, 0
+    asm_pop_rcx:         db "    pop rcx", 10, 0
+    asm_pop_r8:          db "    pop r8", 10, 0
+    asm_pop_r9:          db "    pop r9", 10, 0
+    asm_add_rsp:         db "    add rsp, ", 0
+    asm_mov_rax_rbp_plus: db "    mov rax, [rbp+", 0
+    asm_rbp_rdi:         db "], rdi", 10, 0
+    asm_rbp_rsi:         db "], rsi", 10, 0
+    asm_rbp_rdx:         db "], rdx", 10, 0
+    asm_rbp_rcx:         db "], rcx", 10, 0
+    asm_rbp_r8:          db "], r8", 10, 0
+    asm_rbp_r9:          db "], r9", 10, 0
+    asm_rbp_dil:         db "], dil", 10, 0
+    asm_rbp_sil:         db "], sil", 10, 0
+    asm_rbp_dl:          db "], dl", 10, 0
+    asm_rbp_cl:          db "], cl", 10, 0
+    asm_rbp_r8b:         db "], r8b", 10, 0
+    asm_rbp_r9b:         db "], r9b", 10, 0
 
     ; Register suffix tables for parameter copy (index by param reg 0-5)
     param_reg_suffixes:
@@ -537,87 +499,87 @@ section .data
         dq asm_rbp_dil, asm_rbp_sil, asm_rbp_dl, asm_rbp_cl, asm_rbp_r8b, asm_rbp_r9b
 
     ; Member access helper
-    asm_add_rax_imm     db "    add rax, ", 0
-    asm_add_rdi_imm     db "    add rdi, ", 0
-    asm_mov_rdi_rax     db "    mov [rdi], rax", 10, 0
-    asm_mov_rdi_al      db "    mov [rdi], al", 10, 0
-    asm_mov_rdi_rbx     db "    mov rdi, rbx", 10, 0
+    asm_add_rax_imm:     db "    add rax, ", 0
+    asm_add_rdi_imm:     db "    add rdi, ", 0
+    asm_mov_rdi_rax:     db "    mov [rdi], rax", 10, 0
+    asm_mov_rdi_al:      db "    mov [rdi], al", 10, 0
+    asm_mov_rdi_rbx:     db "    mov rdi, rbx", 10, 0
 
     ; String literal patterns
-    asm_section_rodata  db "section .rodata", 10, 0
-    asm_lea_rax_rel_lc  db "    lea rax, [rel LC", 0
-    asm_label_lc        db "LC", 0
-    loop_start_label    dq 0       ; innermost loop's start label (condition check)
-    loop_continue_label dq 0       ; innermost loop's continue target label
-    loop_end_label      dq 0       ; innermost loop's end label (for break)
+    asm_section_rodata:  db "section '.rodata'", 10, 0
+    asm_lea_rax_rel_lc:  db "    lea rax, [LC", 0
+    asm_label_lc:        db "LC", 0
+    loop_start_label:    dq 0       ; innermost loop's start label (condition check)
+    loop_continue_label: dq 0       ; innermost loop's continue target label
+    loop_end_label:      dq 0       ; innermost loop's end label (for break)
 
 ; ------------------------------------------------------------
 ; BSS
 ; ------------------------------------------------------------
-section .bss
-    label_counter   resq 1
-    symbol_count    resq 1
-    symbol_capacity resq 1
-    symbols_ptr     resq 1
-    symbol_initialized_ptr resq 1
-    symbol_used_ptr resq 1
-    symbol_const_ptr resq 1
-    frame_size      resq 1
-    gen_expr_type       resq 1
-    gen_expr_struct_fields resq 1
-    gen_expr_array_count resq 1
-    gen_index_2d_dim2   resq 1          ; 2D array: dim2 (0 = 1D, nonzero = 2D second dim)
-    find_field_is_const resq 1          ; set by find_field: 1 if the found field was declared const
-    pending_symbol_fields resq 1        ; set by the caller of add_symbol /
+section '.bss' writeable
+    label_counter:   rq 1
+    symbol_count:    rq 1
+    symbol_capacity: rq 1
+    symbols_ptr:     rq 1
+    symbol_initialized_ptr: rq 1
+    symbol_used_ptr: rq 1
+    symbol_const_ptr: rq 1
+    frame_size:      rq 1
+    gen_expr_type:       rq 1
+    gen_expr_struct_fields: rq 1
+    gen_expr_array_count: rq 1
+    gen_index_2d_dim2:   rq 1          ; 2D array: dim2 (0 = 1D, nonzero = 2D second dim)
+    find_field_is_const: rq 1          ; set by find_field: 1 if the found field was declared const
+    pending_symbol_fields: rq 1        ; set by the caller of add_symbol /
                                         ; add_global_symbol: the pointee
                                         ; field_array_ptr for arrays of struct
                                         ; pointers (0 otherwise). Consumed and
                                         ; cleared by the add_* helpers.
-    pending_symbol_elem_ty resq 1       ; set by the caller of add_symbol /
+    pending_symbol_elem_ty: rq 1       ; set by the caller of add_symbol /
                                         ; add_global_symbol: the encoded element
                                         ; type for arrays of pointers (e.g.
                                         ; TOK_KW_CHAR + PTR_TYPE_FLAG), 0
                                         ; otherwise. Consumed and cleared by
                                         ; the add_* helpers.
-    found_symbol_fields resq 1          ; set by find_symbol / find_global_symbol
+    found_symbol_fields: rq 1          ; set by find_symbol / find_global_symbol
                                         ; on a hit: the symbol's `.fields`
                                         ; slot, so index handlers can chain
                                         ; `arr[i]->field` without a second
                                         ; lookup.
-    found_symbol_elem_ty resq 1         ; set by find_symbol / find_global_symbol
+    found_symbol_elem_ty: rq 1         ; set by find_symbol / find_global_symbol
                                         ; on a hit: the symbol's `.elem_ty` slot,
                                         ; the encoded element type for arrays
                                         ; of pointers, so `arr[i][j]` scales by
                                         ; the pointee size.
-    gen_index_elem_fields resq 1        ; pointee field array of the element
+    gen_index_elem_fields: rq 1        ; pointee field array of the element
                                         ; being indexed (captured from
                                         ; found_symbol_fields by the ident
                                         ; fast paths; 0 for member/expression
                                         ; bases, which resolve fields through
                                         ; gen_expr_struct_fields instead).
-    gen_index_elem_ty resq 1            ; encoded element type of the array
+    gen_index_elem_ty: rq 1            ; encoded element type of the array
                                         ; being indexed (captured from
                                         ; found_symbol_elem_ty by the ident
                                         ; fast paths). A pointer element
                                         ; (char* arr[N]) becomes the loaded
                                         ; value's type, so a chained
                                         ; `arr[i][j]` scales by the pointee.
-    symbols_storage:        resb SYMBOL_TABLE_INITIAL_CAPACITY * symbol_t_size
-    symbol_initialized_storage: resb SYMBOL_TABLE_INITIAL_CAPACITY  ; 1 byte per symbol: 0=uninit, 1=initialized
-    symbol_used_storage:        resb SYMBOL_TABLE_INITIAL_CAPACITY  ; 1 byte per symbol: 0=unused, 1=used (read or written)
-    symbol_const_storage:       resb SYMBOL_TABLE_INITIAL_CAPACITY  ; 1 byte per symbol: 0=mutable, 1=const
+    symbols_storage:        rb SYMBOL_TABLE_INITIAL_CAPACITY * symbol_t_size
+    symbol_initialized_storage: rb SYMBOL_TABLE_INITIAL_CAPACITY  ; 1 byte per symbol: 0=uninit, 1=initialized
+    symbol_used_storage:        rb SYMBOL_TABLE_INITIAL_CAPACITY  ; 1 byte per symbol: 0=unused, 1=used (read or written)
+    symbol_const_storage:       rb SYMBOL_TABLE_INITIAL_CAPACITY  ; 1 byte per symbol: 0=mutable, 1=const
 
-    global_symbol_count resq 1
-    global_symbol_capacity resq 1
-    global_symbols_ptr  resq 1
-    global_symbol_initialized_ptr resq 1
-    global_symbol_const_ptr resq 1
-    global_symbols_storage:     resb SYMBOL_TABLE_INITIAL_CAPACITY * symbol_t_size
-    global_symbol_initialized_storage: resb SYMBOL_TABLE_INITIAL_CAPACITY  ; for global symbols
-    global_symbol_const_storage:       resb SYMBOL_TABLE_INITIAL_CAPACITY  ; for global symbols: 0=mutable, 1=const
+    global_symbol_count: rq 1
+    global_symbol_capacity: rq 1
+    global_symbols_ptr:  rq 1
+    global_symbol_initialized_ptr: rq 1
+    global_symbol_const_ptr: rq 1
+    global_symbols_storage:     rb SYMBOL_TABLE_INITIAL_CAPACITY * symbol_t_size
+    global_symbol_initialized_storage: rb SYMBOL_TABLE_INITIAL_CAPACITY  ; for global symbols
+    global_symbol_const_storage:       rb SYMBOL_TABLE_INITIAL_CAPACITY  ; for global symbols: 0=mutable, 1=const
 
-    global_label_counter resq 1
-    function_end_label  resq 1
+    global_label_counter: rq 1
+    function_end_label:  rq 1
 
     ; Slot for the struct return value address (BSS buffer).
     ; When a function returns a struct, the caller pushes the address of
@@ -625,54 +587,47 @@ section .bss
     ; struct result is here. The caller then copies it to the destination.
     ; NOTE: This is NOT reentrant for nested struct-returning calls, but
     ; the callee side is reentrant (uses [rbp-8] instead of a global).
-    global struct_ret_slot
-    struct_ret_slot resb 256
+    struct_ret_slot: rb 256
 
     ; Function return type registry — used for struct-returning function calls.
     ; Starts on a small static buffer and grows on demand like the symbol tables.
     ; Note: func_registry_count is defined in parser.asm (shared).
-    FUNC_RETURN_REGISTRY_INITIAL_CAPACITY equ 64
-    extern func_registry_count
-    func_return_registry_capacity resq 1
-    func_registry_names_ptr   resq 1
-    func_registry_types_ptr   resq 1
-    func_registry_fields_ptr  resq 1
-    func_registry_names_storage   resb FUNC_RETURN_REGISTRY_INITIAL_CAPACITY * 8
-    func_registry_types_storage   resb FUNC_RETURN_REGISTRY_INITIAL_CAPACITY * 8
-    func_registry_fields_storage  resb FUNC_RETURN_REGISTRY_INITIAL_CAPACITY * 8
+    FUNC_RETURN_REGISTRY_INITIAL_CAPACITY = 64
+    func_return_registry_capacity: rq 1
+    func_registry_names_ptr:   rq 1
+    func_registry_types_ptr:   rq 1
+    func_registry_fields_ptr:  rq 1
+    func_registry_names_storage:   rb FUNC_RETURN_REGISTRY_INITIAL_CAPACITY * 8
+    func_registry_types_storage:   rb FUNC_RETURN_REGISTRY_INITIAL_CAPACITY * 8
+    func_registry_fields_storage:  rb FUNC_RETURN_REGISTRY_INITIAL_CAPACITY * 8
 
-    string_count        resq 1
-    string_pool_ptr    resq 1          ; pointer to dynamically-allocated pool (16 bytes per entry)
-    string_pool_capacity resq 1         ; current capacity in entries
-    function_has_return resq 1          ; 1 if current function emitted any return
-    last_stmt_terminator resq 1         ; 1 if last stmt was return/break/continue (for dead-code detection)
-    current_ast_node    resq 1          ; AST node pointer for current add_symbol call (line/col tracking)
-    dbg_loop_count      resq 1
+    string_count:        rq 1
+    string_pool_ptr:    rq 1          ; pointer to dynamically-allocated pool (16 bytes per entry)
+    string_pool_capacity: rq 1         ; current capacity in entries
+    function_has_return: rq 1          ; 1 if current function emitted any return
+    last_stmt_terminator: rq 1         ; 1 if last stmt was return/break/continue (for dead-code detection)
+    current_ast_node:    rq 1          ; AST node pointer for current add_symbol call (line/col tracking)
+    dbg_loop_count:      rq 1
 
-default rel
 
-section .text
+section '.text' executable
 
 ; ================================================================
 ; Macro: PROLOGUE regs... - push callee-saved registers in order
 ; ================================================================
-%macro PROLOGUE 1-*
-    %rep %0
-        push %1
-        %rotate 1
-    %endrep
-%endmacro
+macro PROLOGUE [regs] {
+    push regs
+}
 
 ; ================================================================
 ; Macro: EPILOGUE regs... - pop in reverse order, then ret
 ; ================================================================
-%macro EPILOGUE 1-*
-    %rep %0
-        %rotate -1
-        pop %1
-    %endrep
+macro EPILOGUE [regs] {
+    reverse
+    pop regs
+    common
     ret
-%endmacro
+}
 
 ; ================================================================
 ; symbol_tables_init
@@ -1053,7 +1008,7 @@ register_globals:
     ; rcx and r8 already set from data1 and data3
 .array_register:
     ; --- 2D array support: pack dim2 into extra for non-struct arrays ---
-    ; data5 encoding: (dim2 << 2) | const_flag_bits
+    ; data5 encoding: (dim2 << 2)  or  const_flag_bits
     ; Only pack for non-struct arrays (struct arrays use extra for field_array_ptr).
     ; Skip if extern (data4 = 1) — extern arrays don't store dim2.
     cmp qword [r13 + ast_node_t.data4], 1
@@ -1065,7 +1020,7 @@ register_globals:
     shr rax, 2                       ; rax = dim2 (0 for 1D)
     test rax, rax
     jz .array_reg_dim2_done          ; 1D: no packing needed
-    ; 2D: compute dim1 = total_count / dim2, pack extra = dim1 | (dim2 << 32)
+    ; 2D: compute dim1 = total_count / dim2, pack extra = dim1  or  (dim2 << 32)
     push rdx                         ; save (div clobbers rdx)
     push rax                         ; save dim2
     mov rax, r8                      ; rax = total_count
@@ -1074,7 +1029,7 @@ register_globals:
     mov r8, rax                      ; r8 = dim1 (low 32 bits)
     pop rax                          ; rax = dim2
     shl rax, 32                      ; rax = dim2 << 32
-    or r8, rax                       ; r8 = dim1 | (dim2 << 32)
+    or r8, rax                       ; r8 = dim1  or  (dim2 << 32)
     pop rdx                          ; restore
 .array_reg_dim2_done:
     ; --- end 2D array support ---
@@ -1247,6 +1202,8 @@ codegen_generate:
     mov r15, rdi
     mov qword [label_counter], 0
 
+    mov rsi, asm_format_elf64
+    call emit_string
     mov rsi, asm_section_text
     call emit_string
 
@@ -1828,8 +1785,8 @@ collect_symbols:
     ; r8 = extra (element count / total for 2D)
 
     ; --- 2D array support: extract dim2 from data5, pack into extra ---
-    ; data5 encoding: (dim2 << 2) | const_flag_bits
-    ; If dim2 > 0: pack extra = dim1 | (dim2 << 32), where dim1 = total_count / dim2.
+    ; data5 encoding: (dim2 << 2)  or  const_flag_bits
+    ; If dim2 > 0: pack extra = dim1  or  (dim2 << 32), where dim1 = total_count / dim2.
     ; This lets the index handler compute stride = dim2 * elem_size for arr[i].
     push rdx                         ; save offset (div clobbers rdx)
     push rcx                         ; save type
@@ -1845,7 +1802,7 @@ collect_symbols:
     mov r8, rax                      ; r8 = dim1 (low 32 bits of extra)
     pop rax                          ; rax = dim2
     shl rax, 32                      ; rax = dim2 << 32
-    or r8, rax                       ; r8 = dim1 | (dim2 << 32)
+    or r8, rax                       ; r8 = dim1  or  (dim2 << 32)
 .array_dim2_done:
     pop rcx                          ; restore type
     pop rdx                          ; restore offset
@@ -3001,7 +2958,7 @@ find_func_return:
     pop rbx
     pop rdi
     pop rcx
-    xor rax, rax                   ; set ZF=1 for match
+    xor rax, rax                   ; set ZF=1 for match_tok
     jmp .ffr_check
 .ffr_nomatch:
     pop rbx
@@ -3041,8 +2998,6 @@ find_func_return:
 ; set current_func_return_fields for struct-returning functions.
 ; rdi = name_ptr (null-terminated)
 ; ================================================================
-extern func_name_registry
-extern func_field_array_ptrs
 find_func_field_array_ptr:
     push rbx
     push rcx
@@ -3511,11 +3466,11 @@ emit_global_vars:
     xor r9, r9
     ; Pointer-type array (char* arr[N], struct Name* arr[N], char** arr[N]):
     ; each element is an 8-byte pointer. Normalize to TOK_KW_INT so the
-    ; existing resq/count path and INT symbol registration handle it
+    ; existing rq/count path and INT symbol registration handle it
     ; (matches register_globals' .array_ptr handling). Without this, a
     ; pointer-typed array (type = TOK_KW_CHAR + PTR_TYPE_FLAG, etc.) is
     ; neither TOK_KW_INT nor TOK_KW_CHAR and falls through to the struct
-    ; path, emitting resb (type_encoding * count) — a wildly wrong size.
+    ; path, emitting rb (type_encoding * count) — a wildly wrong size.
     cmp rax, PTR_TYPE_FLAG
     jb .dabn_check_struct_kind
     ; Pointer-type array: remember the element's encoded type so a chained
@@ -3561,7 +3516,7 @@ emit_global_vars:
     pop rdi
     mov rcx, TOK_KW_INT
     ; --- 2D array: pack dim2 into extra before add_global_symbol ---
-    call pack_2d_extra                ; r8 = packed extra (dim1 | dim2<<32)
+    call pack_2d_extra                ; r8 = packed extra (dim1  or  dim2<<32)
     ; --- end 2D array ---
     call add_global_symbol
     jmp .data_next
@@ -3580,7 +3535,7 @@ emit_global_vars:
     pop rdi
     mov rcx, TOK_KW_CHAR
     ; --- 2D array: pack dim2 into extra before add_global_symbol ---
-    call pack_2d_extra                ; r8 = packed extra (dim1 | dim2<<32)
+    call pack_2d_extra                ; r8 = packed extra (dim1  or  dim2<<32)
     ; --- end 2D array ---
     call add_global_symbol
     jmp .data_next
@@ -3824,7 +3779,7 @@ emit_global_vars:
     jmp .data_next
 
 .dabn_struct:
-    ; Struct array: resb (struct_size * element_count)
+    ; Struct array: rb (struct_size * element_count)
     ; rax = struct_size (from data1), r8 = element_count (from data3)
     ; Compute total_size = struct_size * element_count
     push rax
@@ -4205,7 +4160,7 @@ gen_stmt:
     ; base ptr is at the more-negative end [rbp + r14]). r14 is negative.
     mov rsi, asm_mov_qword_rbp
     call emit_string
-    ; Emit the positive offset of the count slot = |base_off| - 8.
+    ; Emit the positive offset of the count slot =  or base_off| - 8.
     mov rdi, r14
     add rdi, 8                        ; r14 is negative; +8 → less negative
     neg rdi                           ; positive offset for emit_int
@@ -6212,7 +6167,7 @@ gen_assign:
     cmp r14, PTR_TYPE_FLAG
     jae .ai_local_ptr
 
-    ; Array base: lea rax, [rbp - |offset|]
+    ; Array base: lea rax, [rbp -  or offset|]
     mov rdi, r13
     neg rdi
     push rdi
@@ -6324,7 +6279,7 @@ gen_assign:
     jmp .done
 
 .ai_local_ptr:
-    ; Pointer variable: mov rax, [rbp - |offset|] (load the pointer value)
+    ; Pointer variable: mov rax, [rbp -  or offset|] (load the pointer value)
     mov rdi, r13
     neg rdi
     push rdi
@@ -6549,7 +6504,7 @@ gen_assign:
     jmp .am_global_push
 
 .am_local_addr:
-    ; Local struct — compute: rbp - |struct_offset| + field_offset
+    ; Local struct — compute: rbp -  or struct_offset| + field_offset
     mov rdi, r13
     neg rdi                              ; rdi = struct offset (positive)
     sub rdi, rbx                         ; rdi = struct_offset - field_offset
@@ -7215,7 +7170,7 @@ gen_expr:
     inc qword [string_count]
 
 .string_emit:
-    ; Emit: lea rax, [rel .LC_N] (N = r14)
+    ; Emit: lea rax, [.LC_N] (N = r14)
     mov rsi, asm_lea_rax_rel_lc
     call emit_string
     mov rdi, r14
@@ -7736,7 +7691,7 @@ gen_expr:
     cmp rdi, TOK_TILDE
     jne .done
 
-    ; ~expr → not rax
+    ; not expr → not rax
     mov rsi, asm_not_rax
     call emit_string
     jmp .done
@@ -7871,7 +7826,7 @@ gen_expr:
     jmp .addr_index_compute
 
 .addr_index_local_ptr:
-    ; Pointer variable: mov rax, [rbp - |offset|] (load the pointer value)
+    ; Pointer variable: mov rax, [rbp -  or offset|] (load the pointer value)
     mov rdi, rax
     neg rdi
     push rdi
@@ -8262,7 +8217,7 @@ gen_expr:
     cmp r14, PTR_TYPE_FLAG
     jae .index_local_ptr
 
-    ; Array base: lea rax, [rbp - |offset|]
+    ; Array base: lea rax, [rbp -  or offset|]
     mov rdi, r13
     neg rdi                              ; rdi = positive offset
     push rdi
@@ -8291,7 +8246,7 @@ gen_expr:
     call emit_string
     pop rdi
     ; VLA count is at [rbp - (offset - 8)] (less-negative half of the 16-byte
-    ; slot; base ptr is at the more-negative end [rbp - |offset|]).
+    ; slot; base ptr is at the more-negative end [rbp -  or offset|]).
     ; Emit: mov r9, qword [rbp-|offset-8|]  (count for bounds check)
     mov rsi, asm_mov_r9_rbp              ; "    mov r9, qword [rbp-"
     call emit_string
@@ -8381,7 +8336,7 @@ gen_expr:
     jmp .done
 
 .index_local_ptr:
-    ; Pointer variable: mov rax, [rbp - |offset|] (load the pointer value)
+    ; Pointer variable: mov rax, [rbp -  or offset|] (load the pointer value)
     mov rdi, r13
     neg rdi                              ; rdi = positive offset
     push rdi
@@ -8412,11 +8367,11 @@ gen_expr:
 .index_common:
     ; r13 = extra (0 for non-struct, or field_array_ptr for struct array)
     ; r14 = type (TOK_KW_INT, TOK_KW_CHAR, or TOK_KW_STRUCT for struct array)
-    ; rbx = extra (element count, or packed dim1|dim2<<32 for 2D arrays)
+    ; rbx = extra (element count, or packed dim1 or dim2<<32 for 2D arrays)
     ; rax = base address
 
     ; --- 2D array support: extract dim2 from extra into a BSS variable ---
-    ; For 2D arrays, extra = dim1 | (dim2 << 32). Extract dim2 and save it.
+    ; For 2D arrays, extra = dim1  or  (dim2 << 32). Extract dim2 and save it.
     ; For 1D arrays, dim2 = 0 (upper 32 bits of extra are 0 since count < 2^32).
     mov rax, rbx
     shr rax, 32                      ; rax = dim2 (0 for 1D)
@@ -9434,7 +9389,7 @@ gen_expr:
     mov r14, rbx                         ; r14 = field_type
     mov r9, rcx                          ; r9 = element count / sub_array_ptr
 
-    ; Compute address: rbp - |struct_offset| + field_offset
+    ; Compute address: rbp -  or struct_offset| + field_offset
     mov rdi, r13
     neg rdi                              ; rdi = positive struct offset
     sub rdi, r15                         ; rdi = struct_offset - field_offset
@@ -9895,7 +9850,7 @@ gen_addr:
     mov rsi, r9
     call strip_g_prefix
     mov r9, rsi                         ; r9 = stripped name
-    ; Emit: lea rax, [rel g_name]  — but if it's a pointer variable, load it.
+    ; Emit: lea rax, [g_name]  — but if it's a pointer variable, load it.
     mov rax, rbx
     cmp rax, PTR_TYPE_FLAG
     jae .ga_ident_global_ptr
@@ -10213,7 +10168,7 @@ gen_addr:
     mov rsi, rdi
     call strip_g_prefix
     mov r9, rsi
-    ; Emit: lea rax, [rel g_name]   (emit_string clobbers rdi, so use r9)
+    ; Emit: lea rax, [g_name]   (emit_string clobbers rdi, so use r9)
     mov rsi, asm_lea_rax_g
     call emit_string
     mov rsi, r9
@@ -10642,7 +10597,7 @@ emit_bounds_check:
 ;
 ; Input:  r8 = total_count (from data3)
 ;         r13 = AST_ARRAY_DECL node pointer
-; Output: r8 = packed extra (dim1 | (dim2 << 32)) if 2D, else unchanged
+; Output: r8 = packed extra (dim1  or  (dim2 << 32)) if 2D, else unchanged
 ; Clobbers: rax, rdx (caller-saved); preserves rdi, rsi, rcx, r13
 ; ================================================================
 pack_2d_extra:
@@ -10661,14 +10616,14 @@ pack_2d_extra:
     mov r8, rax                      ; r8 = dim1 (low 32 bits)
     pop rcx                          ; restore type
     pop rdi                          ; restore name_ptr
-    ; Pack: r8 = dim1 | (dim2 << 32)
+    ; Pack: r8 = dim1  or  (dim2 << 32)
     shl rax, 32                      ; rax = dim1 << 32... no, we need dim2 << 32
     ; Actually rax = dim1. We need to shift dim2, not dim1.
     ; Redo: we saved dim2 in rcx but popped it. Use rax = dim2 again.
     mov rax, [r13 + ast_node_t.data5]
     shr rax, 2                       ; rax = dim2
     shl rax, 32                      ; rax = dim2 << 32
-    or r8, rax                       ; r8 = dim1 | (dim2 << 32)
+    or r8, rax                       ; r8 = dim1  or  (dim2 << 32)
 .pack_2d_done:
     ret
 
@@ -10714,3 +10669,55 @@ emit_global_name:
 
 strlen:
     jmp bounded_strlen_256
+extrn out_write_string
+extrn out_write_string_len
+extrn out_write_char
+extrn out_write_newline
+extrn out_write_int
+extrn heap_alloc_zero
+extrn mem_copy
+extrn emit_result_flag
+extrn emit_returns_flag
+extrn warn_simple
+extrn warn_at_current
+extrn warn_at
+extrn warn_unused_var
+extrn lexer_state
+extrn msg_warn_uninit_var
+extrn msg_warn_uninit_ptr
+extrn msg_warn_missing_return
+extrn msg_warn_unused_var
+extrn msg_warn_dead_code
+extrn msg_warn_implicit_cast
+extrn msg_warn_empty_body
+extrn msg_warn_constant_cond
+extrn msg_assign_const
+extrn msg_undeclared
+extrn msg_no_field
+extrn WARN_UNINIT_VAR
+extrn WARN_UNINIT_PTR
+extrn WARN_MISSING_RETURN
+extrn WARN_UNUSED_VAR
+extrn WARN_DEAD_CODE
+extrn WARN_IMPLICIT_CAST
+extrn WARN_EMPTY_BODY
+extrn WARN_CONSTANT_COND
+extrn current_func_return_type
+extrn current_func_return_fields
+extrn mem_eq_str
+extrn STDERR
+extrn out_fd
+extrn out_flush
+extrn out_set_fd
+extrn error_count
+extrn source_path
+extrn prog_func_source_array
+extrn prog_global_source_array
+extrn func_registry_count
+extrn func_name_registry
+extrn func_field_array_ptrs
+public codegen_init
+public codegen_generate
+public codegen_cleanup
+public symbol_tables_init
+public struct_ret_slot

@@ -1,112 +1,96 @@
+format ELF64
+
 ; C2X Seed - Recursive Descent Parser
 ; Builds an AST from the token stream produced by the lexer.
 
 ; ------------------------------------------------------------
 ; External Dependencies
 ; ------------------------------------------------------------
-extern heap_alloc, heap_alloc_zero
-extern lexer_init, lexer_next_token, lexer_cleanup
-extern lexer_state
-extern prev_tok_line, prev_tok_col
-extern out_write_string_len, out_write_newline, out_write_int, out_write_char
-extern error_at
-extern error_at_code, error_code
-extern msg_syntax, msg_expect_semi, msg_expect_rparen, msg_expect_rbrace, msg_void_return_val, msg_undeclared_func
-extern msg_expect_type, msg_expect_ident, msg_expect_lbrace, msg_expect_rbracket
-extern msg_unexpected, msg_expected_primary, msg_expect_lparen
-extern msg_expect_dot, msg_expect_eq
-extern msg_infinite_struct
-extern mem_eq
-extern mem_copy
-extern source_path
 
 ; ------------------------------------------------------------
 ; Exported Functions and Data
 ; ------------------------------------------------------------
-global parser_init, parser_parse_program, parser_cleanup
-global parser_reinit, parser_reset
-global parser_state
 
 ; ------------------------------------------------------------
 ; Token Type Constants (matching lexer.asm)
 ; ------------------------------------------------------------
-%define TOK_EOF         0
-%define TOK_IDENT       1
-%define TOK_NUMBER      2
-%define TOK_STRING      3
-%define TOK_CHAR        4
-%define TOK_PLUS        10
-%define TOK_MINUS       11
-%define TOK_STAR        12
-%define TOK_SLASH       13
-%define TOK_PERCENT     14
-%define TOK_LSHIFT      15
-%define TOK_RSHIFT      16
-%define TOK_EQ          20
-%define TOK_EQEQ        21
-%define TOK_NEQ         22
-%define TOK_LT          23
-%define TOK_LE          24
-%define TOK_GT          25
-%define TOK_GE          26
-%define TOK_LPAREN      30
-%define TOK_RPAREN      31
-%define TOK_LBRACE      32
-%define TOK_RBRACE      33
-%define TOK_LBRACKET    34
-%define TOK_RBRACKET    35
-%define TOK_SEMI        40
-%define TOK_COMMA       41
-%define TOK_COLON       42
-%define TOK_ARROW       43
-%define TOK_AMPERSAND   44
-%define TOK_DOT         45
-    %define TOK_NOT         46
-    %define TOK_AND         82
-    %define TOK_OR          83
-%define TOK_PIPE        47
-%define TOK_XOR         48
-%define TOK_TILDE       49
+TOK_EOF = 0
+TOK_IDENT = 1
+TOK_NUMBER = 2
+TOK_STRING = 3
+TOK_CHAR = 4
+TOK_PLUS = 10
+TOK_MINUS = 11
+TOK_STAR = 12
+TOK_SLASH = 13
+TOK_PERCENT = 14
+TOK_LSHIFT = 15
+TOK_RSHIFT = 16
+TOK_EQ = 20
+TOK_EQEQ = 21
+TOK_NEQ = 22
+TOK_LT = 23
+TOK_LE = 24
+TOK_GT = 25
+TOK_GE = 26
+TOK_LPAREN = 30
+TOK_RPAREN = 31
+TOK_LBRACE = 32
+TOK_RBRACE = 33
+TOK_LBRACKET = 34
+TOK_RBRACKET = 35
+TOK_SEMI = 40
+TOK_COMMA = 41
+TOK_COLON = 42
+TOK_ARROW = 43
+TOK_AMPERSAND = 44
+TOK_DOT = 45
+    TOK_NOT = 46
+    TOK_AND = 82
+    TOK_OR = 83
+TOK_PIPE = 47
+TOK_XOR = 48
+TOK_TILDE = 49
 
 ; Compound assignment
-%define TOK_ADDEQ       70
-%define TOK_SUBEQ       71
-%define TOK_MULEQ       72
-%define TOK_DIVEQ       73
-%define TOK_MODEQ       74
-%define TOK_LSHIFT_EQ   75
-%define TOK_RSHIFT_EQ   76
-%define TOK_ANDEQ       77
-%define TOK_OREQ        78
-%define TOK_XOREQ       79
-%define TOK_INCR        80
-%define TOK_DECR        81
+TOK_ADDEQ = 70
+TOK_SUBEQ = 71
+TOK_MULEQ = 72
+TOK_DIVEQ = 73
+TOK_MODEQ = 74
+TOK_LSHIFT_EQ = 75
+TOK_RSHIFT_EQ = 76
+TOK_ANDEQ = 77
+TOK_OREQ = 78
+TOK_XOREQ = 79
+TOK_INCR = 80
+TOK_DECR = 81
 
-%define TOK_KW_INT      50
-%define TOK_KW_CHAR     51
-%define TOK_KW_IF       52
-%define TOK_KW_ELSE     53
-%define TOK_KW_WHILE    54
-%define TOK_KW_RETURN   55
-%define TOK_KW_VOID     56
-%define TOK_KW_STRUCT   57
-%define TOK_KW_EXTERN   58
-%define TOK_KW_FOR      59
-%define TOK_KW_BREAK    60
-%define TOK_KW_CONTINUE 61
-%define TOK_KW_CONST    62
+TOK_KW_INT = 50
+TOK_KW_CHAR = 51
+TOK_KW_IF = 52
+TOK_KW_ELSE = 53
+TOK_KW_WHILE = 54
+TOK_KW_RETURN = 55
+TOK_KW_VOID = 56
+TOK_KW_STRUCT = 57
+TOK_KW_EXTERN = 58
+TOK_KW_FOR = 59
+TOK_KW_BREAK = 60
+TOK_KW_CONTINUE = 61
+TOK_KW_CONST = 62
 
 ; Const/extern flags for AST_VAR_DECL data4
-%define VAR_EXTERN      1
-%define VAR_CONST       2
+VAR_EXTERN = 1
+VAR_CONST = 2
 ; VLA flag for AST_ARRAY_DECL data5 (bit 0). When set, data3 holds a size
 ; expression AST* instead of a compile-time element count, and codegen
 ; allocates the array on the stack at runtime (base+count frame slot).
-%define VLA_FLAG        1
+VLA_FLAG = 1
 
 ; Pointer type encoding: PTR_TYPE_FLAG + base_token_type, plus one more
 ; PTR_TYPE_FLAG per extra pointer level (e.g. int* = 10050, int** = 20050).
-%define PTR_TYPE_FLAG   10000
+PTR_TYPE_FLAG = 10000
 ; Array field encoding: ARRAY_TYPE_FLAG + element_type (element_type may itself
 ; be a pointer encoding, e.g. struct Field*[N] = ARRAY_TYPE_FLAG + 10057).
 ;
@@ -116,221 +100,200 @@ global parser_state
 ; matches an array. The old value 20000 collided with depth-2 pointers
 ; (struct N** = 57 + 2*10000 = 20057 = 20000 + 57), which made a double
 ; pointer look like a struct array and crashed `struct_total_size`.
-; 1<<28 leaves room for ~26000 pointer levels before a collision, and stays
+; 1<<28 leaves room for not 26000 pointer levels before a collision, and stays
 ; inside the signed 32-bit immediate range that `cmp reg, imm32` requires.
-%define ARRAY_TYPE_FLAG  268435456
+ARRAY_TYPE_FLAG = 268435456
 ; Const struct field flag: a distinct high bit OR'd into the field-descriptor
 ; type. Kept above every pointer encoding and distinct from ARRAY_TYPE_FLAG so
 ; `test`/`or`/`sub` are unambiguous at any pointer depth.
-%define FIELD_CONST_FLAG 536870912
+FIELD_CONST_FLAG = 536870912
 ; Const struct field flag: OR'd into the field type in the field descriptor
 ; so codegen can reject assignments to const fields.
 ; Value chosen to avoid overlapping with PTR_TYPE_FLAG (10000) or
 ; ARRAY_TYPE_FLAG (20000) bit patterns.
-%define FIELD_CONST_FLAG 65536
+FIELD_CONST_FLAG = 65536
 
 ; Error codes (matching errors.asm)
-ERR_SYNTAX         equ 100
-ERR_EXPECTED_SEMI  equ 101
-ERR_EXPECTED_RPAREN equ 102
-ERR_EXPECTED_RBRACE equ 103
-ERR_EXPECTED_TYPE  equ 104
-ERR_EXPECTED_IDENT equ 105
-ERR_EXPECTED_LBRACE equ 106
-ERR_EXPECTED_RBRACKET equ 107
-ERR_UNEXPECTED     equ 108
-ERR_EXPECTED_PRIMARY equ 109
-ERR_EXPECTED_LPAREN equ 110
+ERR_SYNTAX = 100
+ERR_EXPECTED_SEMI = 101
+ERR_EXPECTED_RPAREN = 102
+ERR_EXPECTED_RBRACE = 103
+ERR_EXPECTED_TYPE = 104
+ERR_EXPECTED_IDENT = 105
+ERR_EXPECTED_LBRACE = 106
+ERR_EXPECTED_RBRACKET = 107
+ERR_UNEXPECTED = 108
+ERR_EXPECTED_PRIMARY = 109
+ERR_EXPECTED_LPAREN = 110
 
 ; ------------------------------------------------------------
 ; AST Node Types
 ; ------------------------------------------------------------
-%define AST_PROGRAM     1
-%define AST_FUNCTION    2
-%define AST_BLOCK       3
-%define AST_RETURN      4
-%define AST_IF          5
-%define AST_WHILE       6
-%define AST_BINARY_OP   10
-%define AST_UNARY_OP    11
-%define AST_CALL        12
-%define AST_VAR_DECL    13
-%define AST_ASSIGN      14
-%define AST_ARRAY_DECL  15
-%define AST_INDEX       16
-%define AST_STRUCT_DEF  17
-%define AST_MEMBER      18
-%define AST_INIT_LIST   19
-%define AST_IDENT       20
-%define AST_NUMBER      21
-%define AST_STRING      22
-%define AST_CHAR        23
-%define AST_POST_INCR   24
-%define AST_POST_DECR   25
-%define AST_BREAK       30
-%define AST_CONTINUE    31
-%define AST_DESIGNATED_INIT 32
-%define AST_LOGICAL_AND   33
-%define AST_LOGICAL_OR    34
-%define AST_FOR           35
-%define AST_CAST          36
+AST_PROGRAM = 1
+AST_FUNCTION = 2
+AST_BLOCK = 3
+AST_RETURN = 4
+AST_IF = 5
+AST_WHILE = 6
+AST_BINARY_OP = 10
+AST_UNARY_OP = 11
+AST_CALL = 12
+AST_VAR_DECL = 13
+AST_ASSIGN = 14
+AST_ARRAY_DECL = 15
+AST_INDEX = 16
+AST_STRUCT_DEF = 17
+AST_MEMBER = 18
+AST_INIT_LIST = 19
+AST_IDENT = 20
+AST_NUMBER = 21
+AST_STRING = 22
+AST_CHAR = 23
+AST_POST_INCR = 24
+AST_POST_DECR = 25
+AST_BREAK = 30
+AST_CONTINUE = 31
+AST_DESIGNATED_INIT = 32
+AST_LOGICAL_AND = 33
+AST_LOGICAL_OR = 34
+AST_FOR = 35
+AST_CAST = 36
 
 ; AST node struct (40 bytes = 5 qwords)
-struc ast_node_t
-    .type       resq 1
-    .data1      resq 1
-    .data2      resq 1
-    .data3      resq 1
-    .data4      resq 1
-    .data5      resq 1
-    .line       resq 1
-    .column     resq 1
-endstruc
+ast_node_t.type = 0
+ast_node_t.data1 = 8
+ast_node_t.data2 = 16
+ast_node_t.data3 = 24
+ast_node_t.data4 = 32
+ast_node_t.data5 = 40
+ast_node_t.line = 48
+ast_node_t.column = 56
+ast_node_t_size = 64
 
 ; Lexer state offsets (matching lexer.asm)
-CURRENT_CHAR  equ 0
-LEXER_LINE    equ 8
-LEXER_COLUMN  equ 16
-TOK_TYPE      equ 24
-TOK_BUF       equ 32
-TOK_LEN       equ 288
-TOK_LINE      equ 296
-TOK_COL       equ 304
-TOK_PTR       equ 312           ; active token buffer (inline or heap)
-TOK_CAP       equ 320           ; capacity of the active buffer
+CURRENT_CHAR = 0
+LEXER_LINE = 8
+LEXER_COLUMN = 16
+TOK_TYPE = 24
+TOK_BUF = 32
+TOK_LEN = 288
+TOK_LINE = 296
+TOK_COL = 304
+TOK_PTR = 312  ; active token buffer (inline or heap)
+TOK_CAP = 320  ; capacity of the active buffer
 
 ; ------------------------------------------------------------
 ; Uninitialized Data
 ; ------------------------------------------------------------
-section .bss
-    global parser_state
+section '.bss' writeable
     parser_state:
-        .current_token  resq 1
-        .token_value    resq 1
-        .token_len      resq 1
-        .error_count    resq 1
+        .current_token  rq 1
+        .token_value    rq 1
+        .token_len      rq 1
+        .error_count    rq 1
 
     ; Saved type/name for global var detection (set by parse_function on failure)
-    parser_saved_type   resq 1
-    parser_saved_name   resq 1
-    parser_saved_const  resq 1          ; const flag for global vars (set by const handler)
+    parser_saved_type:   rq 1
+    parser_saved_name:   rq 1
+    parser_saved_const:  rq 1          ; const flag for global vars (set by const handler)
 
     ; Const flag for the current struct field being parsed.
     ; Set to 1 when `const` appears before a field type, consumed by
     ; struct_add_field callers to OR FIELD_CONST_FLAG into the field type.
-    parser_field_const  resq 1
+    parser_field_const:  rq 1
 
     ; Shared error count — incremented by lexer and parser
-    global error_count
-    error_count         resq 1
+    error_count:         rq 1
 
     ; Named struct type registry
     ; Maps tag name → (total_size, field_array_ptr)
-    MAX_NAMED_STRUCTS equ 16
-    global named_struct_count
-    named_struct_count  resq 1
-    named_struct_names  resb MAX_NAMED_STRUCTS * 8
-    named_struct_sizes  resb MAX_NAMED_STRUCTS * 8
-    named_struct_fields resb MAX_NAMED_STRUCTS * 8
+    MAX_NAMED_STRUCTS = 16
+    named_struct_count:  rq 1
+    named_struct_names:  rb MAX_NAMED_STRUCTS * 8
+    named_struct_sizes:  rb MAX_NAMED_STRUCTS * 8
+    named_struct_fields: rb MAX_NAMED_STRUCTS * 8
 
     ; Index of the currently-being-defined named struct (-1 if none).
     ; Used to update the struct's size after its body is parsed, enabling
     ; self-referential struct definitions like `struct Node { struct Node* next; }`.
-    global struct_pre_reg_index
-    struct_pre_reg_index resq 1
+    struct_pre_reg_index: rq 1
 
     ; Forward-reference back-patch table. A pointer field may reference a named
     ; struct that is defined later (`struct A { struct B* p; }` before B). We
     ; create a placeholder registry entry for B and record the address of the
     ; field descriptor's sub_array_ptr slot (offset 24) here; when B is finally
     ; defined we copy its field array pointer into every recorded slot.
-    FWD_REF_MAX equ 128
-    global fwd_ref_count
-    fwd_ref_count resq 1
-    fwd_ref_slot  resb FWD_REF_MAX * 8      ; named-struct registry index
-    fwd_ref_desc  resb FWD_REF_MAX * 8      ; address of field_descriptor.sub_array_ptr
+    FWD_REF_MAX = 128
+    fwd_ref_count: rq 1
+    fwd_ref_slot:  rb FWD_REF_MAX * 8      ; named-struct registry index
+    fwd_ref_desc:  rb FWD_REF_MAX * 8      ; address of field_descriptor.sub_array_ptr
 
     ; Pending forward-reference state for the field currently being parsed.
     ; parser_fwd_index >= 0 means the field references a not-yet-defined struct;
     ; when its descriptor is stored we record the slot for back-patching.
-    global parser_fwd_index
-    parser_fwd_index resq 1
+    parser_fwd_index: rq 1
 
     ; Current function return type (set during parse_function for void-check)
-    global current_func_return_type
-    current_func_return_type resq 1
+    current_func_return_type: rq 1
 
     ; Current function return struct's field_array_ptr (0 if return type is not
     ; a struct, or if it's an anonymous struct with no known fields).
     ; Used by codegen to set up the hidden return-pointer parameter for
     ; struct-returning functions (System V AMD64 ABI for aggregate returns).
-    global current_func_return_fields
-    current_func_return_fields resq 1
+    current_func_return_fields: rq 1
 
     ; Flag: when set, parse_function should skip the initial type consumption
     ; and use the pre-set current_func_return_type/current_func_return_fields.
     ; Set by parse_struct_def when it detects a function with struct return type
     ; (e.g., "struct Token next_token(void)" where 'struct' and 'Token' have
     ; already been consumed).
-    global struct_ret_pre_consumed
-    struct_ret_pre_consumed resq 1
+    struct_ret_pre_consumed: rq 1
 
     ; Flag: when set, parse_function should also skip the function name
     ; consumption (current token should be '('). Used when parse_struct_def
     ; detects a function definition after consuming the function name.
-    global func_name_pre_consumed
-    func_name_pre_consumed resq 1
+    func_name_pre_consumed: rq 1
 
     ; Pre-consumed function name (used when func_name_pre_consumed is set)
-    global pre_consumed_func_name
-    pre_consumed_func_name resq 1
+    pre_consumed_func_name: rq 1
 
     ; Function name registry for forward-declaration enforcement.
     ; Starts on a small static buffer and grows into heap-backed arrays.
-    FUNC_REGISTRY_INITIAL_CAPACITY equ 64
-    global func_name_registry
-    global func_name_registry_capacity
-    func_name_registry_capacity resq 1
-    func_name_registry resq 1                ; pointer to array of string pointers
-    global func_registry_count
-    func_registry_count resq 1
+    FUNC_REGISTRY_INITIAL_CAPACITY = 64
+    func_name_registry_capacity: rq 1
+    func_name_registry: rq 1                ; pointer to array of string pointers
+    func_registry_count: rq 1
 
     ; Parallel array storing field_array_ptr for each registered function.
     ; Populated by parse_function when the function has a struct return type.
     ; Read by gen_function in the codegen to set current_func_return_fields.
-    global func_field_array_ptrs
-    func_field_array_ptrs resq 1             ; pointer to array of qword field ptrs
+    func_field_array_ptrs: rq 1             ; pointer to array of qword field ptrs
 
-    func_name_registry_storage resb FUNC_REGISTRY_INITIAL_CAPACITY * 8
-    func_field_array_storage   resb FUNC_REGISTRY_INITIAL_CAPACITY * 8
+    func_name_registry_storage: rb FUNC_REGISTRY_INITIAL_CAPACITY * 8
+    func_field_array_storage:   rb FUNC_REGISTRY_INITIAL_CAPACITY * 8
 
     ; Persistent program state for multi-file accumulation
-    global prog_func_count, prog_func_array, prog_func_capacity
-    global prog_global_count, prog_global_array, prog_global_capacity
-    global prog_func_source_array, prog_func_source_capacity
-    global prog_global_source_array, prog_global_source_capacity
-    prog_func_count    resq 1
-    prog_func_array    resq 1
-    prog_func_capacity  resq 1          ; current capacity of prog_func_array (slots)
-    prog_func_source_array resq 1
-    prog_func_source_capacity resq 1
-    prog_global_count  resq 1
-    prog_global_array  resq 1
-    prog_global_capacity resq 1         ; current capacity of prog_global_array (slots)
-    prog_global_source_array resq 1
-    prog_global_source_capacity resq 1
+    prog_func_count:    rq 1
+    prog_func_array:    rq 1
+    prog_func_capacity:  rq 1          ; current capacity of prog_func_array (slots)
+    prog_func_source_array: rq 1
+    prog_func_source_capacity: rq 1
+    prog_global_count:  rq 1
+    prog_global_array:  rq 1
+    prog_global_capacity: rq 1         ; current capacity of prog_global_array (slots)
+    prog_global_source_array: rq 1
+    prog_global_source_capacity: rq 1
 
 ; Type keyword list for parsing type declarations
-section .data
-    type_kw_count equ 3
+section '.data' writeable
+    type_kw_count = 3
     type_keywords: dq TOK_KW_INT, TOK_KW_CHAR, TOK_KW_VOID
-    kw_asm_str db "asm", 0
+    kw_asm_str: db "asm", 0
 
-default rel
 
-section .rodata
+section '.rodata'
 
-section .text
+section '.text' executable
 
 ; ================================================================
 ; Parser Initialization
@@ -479,10 +442,10 @@ advance:
     ret
 
 ; ================================================================
-; match(token_type) -> bool
+; match_tok(token_type) -> bool
 ; If current token matches, advance and return 1
 ; ================================================================
-match:
+match_tok:
     mov rax, [parser_state.current_token]
     cmp rax, rdi
     jne .no
@@ -1083,11 +1046,11 @@ parser_parse_program:
     mov [rax + ast_node_t.data1], rbx    ; type
     mov [rax + ast_node_t.data2], rdi    ; name
     mov [rax + ast_node_t.data3], r8     ; element count (total for 2D)
-    ; Encode dim2 into data5: (dim2 << 2) | const_flag
+    ; Encode dim2 into data5: (dim2 << 2)  or  const_flag
     ; Shifting by 2 avoids colliding with VAR_CONST (bit 1).
     mov rdx, r9                          ; rdx = dim2
     shl rdx, 2                           ; rdx = dim2 << 2
-    or rcx, rdx                          ; rcx = const_flag | (dim2 << 2)
+    or rcx, rdx                          ; rcx = const_flag  or  (dim2 << 2)
     mov [rax + ast_node_t.data5], rcx    ; const flag + optional dim2
     ; For non-struct arrays, store init list in data4
     cmp rbx, TOK_KW_STRUCT
@@ -2599,13 +2562,13 @@ parse_var_decl:
     mov [rax + ast_node_t.data2], r12    ; name_ptr
     mov [rax + ast_node_t.data3], r14    ; element count, or size-expression AST* (VLA)
     pop rcx                              ; rcx = const flag (restore from stack)
-    ; Build data5: const flag | dim2<<2 (for fixed 2D) | VLA_FLAG (for VLAs).
+    ; Build data5: const flag  or  dim2<<2 (for fixed 2D)  or  VLA_FLAG (for VLAs).
     ; r15 holds either dim2 (fixed array, >=0) or -1 for a VLA.
     test r15, r15
     jz .array_store_const_1d
     cmp r15, -1
     je .array_store_vla
-    ; 2D fixed array: data5 = (dim2 << 2) | const_flag
+    ; 2D fixed array: data5 = (dim2 << 2)  or  const_flag
     shl r15, 2
     or rcx, r15
     jmp .array_store_const_1d
@@ -2641,7 +2604,6 @@ parse_var_decl:
 ; register_named_struct(rdi = name_ptr, rsi = total_size, rdx = field_array_ptr)
 ; Register a named struct type for later lookup by tag name.
 ; ================================================================
-    global register_named_struct
 register_named_struct:
     push rdi
     push rsi
@@ -2679,7 +2641,6 @@ register_named_struct:
 ; Like find_named_struct but returns the registry slot so callers can update
 ; a forward-declared placeholder in place.
 ; ================================================================
-    global find_named_struct_index
 find_named_struct_index:
     push rbx
     push r8
@@ -2732,7 +2693,6 @@ find_named_struct_index:
 ; Find a named struct type by tag name. Returns 0 if not found.
 ; strcmp-style: uses mem_eq for comparison.
 ; ================================================================
-    global find_named_struct
 find_named_struct:
     push rbx
     push r8
@@ -2766,7 +2726,7 @@ find_named_struct:
     cmp rax, r9
     jne .nf_next
 
-    ; Lengths match — compare strings
+    ; Lengths match_tok — compare strings
     ; rdi = registered name, r10 = target name, r9 = length
     mov rsi, r10               ; rsi = target name
     mov rdx, r9                ; rdx = length
@@ -5290,7 +5250,7 @@ parse_term:
     jmp .term_loop
 
 ; parse_unary() -> AST node
-; unary = ("-" | "!") unary | primary
+; unary = ("-" | "!") unary  or  primary
 parse_unary:
     push rbx
     push r12
@@ -5733,7 +5693,7 @@ parse_unary:
 
 ; ================================================================
 ; parse_primary() -> AST node
-; primary = NUMBER | STRING | CHAR | IDENT | "(" expression ")"
+; primary = NUMBER  or  STRING  or  CHAR  or  IDENT | "(" expression ")"
 ; ================================================================
 parse_primary:
     push rbx
@@ -6278,7 +6238,6 @@ func_is_declared:
 
 ; mem_eq_str(rdi = str1, rsi = str2) -> rax = 0 if equal, 1 if different
 ; Compare two null-terminated strings
-global mem_eq_str
 mem_eq_str:
     push rcx
     push rsi
@@ -6338,3 +6297,71 @@ strlen:
 .done:
     mov rax, rcx
     ret
+extrn heap_alloc
+extrn heap_alloc_zero
+extrn lexer_init
+extrn lexer_next_token
+extrn lexer_cleanup
+extrn lexer_state
+extrn prev_tok_line
+extrn prev_tok_col
+extrn out_write_string_len
+extrn out_write_newline
+extrn out_write_int
+extrn out_write_char
+extrn error_at
+extrn error_at_code
+extrn error_code
+extrn msg_syntax
+extrn msg_expect_semi
+extrn msg_expect_rparen
+extrn msg_expect_rbrace
+extrn msg_void_return_val
+extrn msg_undeclared_func
+extrn msg_expect_type
+extrn msg_expect_ident
+extrn msg_expect_lbrace
+extrn msg_expect_rbracket
+extrn msg_unexpected
+extrn msg_expected_primary
+extrn msg_expect_lparen
+extrn msg_expect_dot
+extrn msg_expect_eq
+extrn msg_infinite_struct
+extrn mem_eq
+extrn mem_copy
+extrn source_path
+public parser_init
+public parser_parse_program
+public parser_cleanup
+public parser_reinit
+public parser_reset
+public parser_state
+public error_count
+public named_struct_count
+public struct_pre_reg_index
+public fwd_ref_count
+public parser_fwd_index
+public current_func_return_type
+public current_func_return_fields
+public struct_ret_pre_consumed
+public func_name_pre_consumed
+public pre_consumed_func_name
+public func_name_registry
+public func_name_registry_capacity
+public func_registry_count
+public func_field_array_ptrs
+public prog_func_count
+public prog_func_array
+public prog_func_capacity
+public prog_global_count
+public prog_global_array
+public prog_global_capacity
+public prog_func_source_array
+public prog_func_source_capacity
+public prog_global_source_array
+public prog_global_source_capacity
+public register_named_struct
+public find_named_struct_index
+public find_named_struct
+public mem_eq_str

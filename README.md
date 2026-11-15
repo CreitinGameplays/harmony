@@ -21,7 +21,9 @@ sudo apt install make gcc clang file python3 python-is-python3 linux-perf xxd na
 | `docs/harmony.md` | The language design / reference. |
 | `docs/c2x-seed.md` | The bootstrap compiler (stage 0), written in x86_64 assembly. |
 | `docs/keywords.md` | Keyword / builtin reference. |
-| `bootstrap/c2x-seed/` | Stage-0 compiler in NASM assembly (`build.sh` builds it). |
+| `bootstrap/c2x-seed/` | Stage-0 compiler in flat-assembler (FASM) assembly (`build.sh` builds it). |
+| `bootstrap/c2x-seed-nasm/` | Pre-migration NASM sources (reference only). |
+| `bootstrap/tools/` | Migration helpers (e.g. `nasm_to_fasm.py`). |
 | `bootstrap/harmony-base/` | First Harmony compiler, written in c2x-seed. |
 | `bootstrap/runtime/` | The freestanding runtime `harmony-base` links in. |
 | `harmony/` | Self-hosted rewrite (later, `*.hr`). |
@@ -42,7 +44,7 @@ make clean
 ```
 
 `harmony-base` is bootstrapped with `c2x-seed`; `c2x-seed` is bootstrapped with
-`nasm` + `ld` and needs no libc.
+`fasm` + `ld` and needs no libc.
 
 ## Usage (docs/harmony.md §19.5)
 

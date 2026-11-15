@@ -1,45 +1,30 @@
+format ELF64
+
 ; C2X Seed Compiler - Stage 0 (main entry point)
-; Written in x86_64 NASM Assembly for Linux
+; Written in x86_64 assembly (flat assembler / FASM syntax) for Linux
 ; No external dependencies - only Linux syscalls
 ;
-; Build: nasm -f elf64 -o build/main.o bootstrap/c2x-seed/main.asm
+; Build: bash build.sh (fasm assembles each bootstrap/c2x-seed/*.asm)
 ;        ld -o build/c2x-seed build/main.o build/syscalls.o build/memory.o build/types.o build/io.o build/compiler.o
 
 ; External function declarations
-extern sys_exit, sys_read, sys_write, sys_open, sys_close, sys_brk, sys_mmap
-extern heap_init, heap_alloc, heap_alloc_zero, frame_push, frame_pop, frame_alloc, mem_zero, mem_copy, mem_eq
-extern type_size, type_align, type_is_integer, type_is_pointer, type_get_pointee
-extern sign_extend_char, zero_extend_char, truncate_int_to_char
-extern ptr_add, ptr_diff
-extern deref_int, deref_char, deref_ptr, store_int, store_char, store_ptr
-extern out_init, out_flush, out_write_char, out_write_string, out_write_string_len
-extern out_write_newline, out_write_int, out_write_hex
-extern in_init, in_fill, in_get_char, in_peek_char, in_skip_char
-extern file_open_read, file_open_write, file_close, file_read_all
-extern compiler_init, compiler_main, compiler_cleanup
 
 ; External data declarations
-extern EXIT_SUCCESS, EXIT_FAILURE
-extern STDIN, STDOUT, STDERR
-extern O_RDONLY, O_WRONLY, O_RDWR, O_CREAT, O_TRUNC, O_APPEND
 
-section .data
+section '.data' writeable
     ; Program metadata
-    prog_name       db "c2x-seed", 0
-    version         db "0.1.0", 0
-    newline         db 10
+    prog_name:       db "c2x-seed", 0
+    version:         db "0.1.0", 0
+    newline:         db 10
 
-section .bss
+section '.bss' writeable
     ; Command line arguments
-    global argc, argv, envp
-    argc            resq 1
-    argv            resq 1
-    envp            resq 1
+    argc:            rq 1
+    argv:            rq 1
+    envp:            rq 1
 
-default rel
 
-section .text
-    global _start
+section '.text' executable
 
 ; ------------------------------------------------------------
 ; Entry Point
@@ -128,4 +113,71 @@ strlen:
 ; ------------------------------------------------------------
 ; Data: Messages
 ; ------------------------------------------------------------
-msg_not_implemented db "Compiler logic not yet implemented", 10, 0
+msg_not_implemented: db "Compiler logic not yet implemented", 10, 0
+extrn sys_exit
+extrn sys_read
+extrn sys_write
+extrn sys_open
+extrn sys_close
+extrn sys_brk
+extrn sys_mmap
+extrn heap_init
+extrn heap_alloc
+extrn heap_alloc_zero
+extrn frame_push
+extrn frame_pop
+extrn frame_alloc
+extrn mem_zero
+extrn mem_copy
+extrn mem_eq
+extrn type_size
+extrn type_align
+extrn type_is_integer
+extrn type_is_pointer
+extrn type_get_pointee
+extrn sign_extend_char
+extrn zero_extend_char
+extrn truncate_int_to_char
+extrn ptr_add
+extrn ptr_diff
+extrn deref_int
+extrn deref_char
+extrn deref_ptr
+extrn store_int
+extrn store_char
+extrn store_ptr
+extrn out_init
+extrn out_flush
+extrn out_write_char
+extrn out_write_string
+extrn out_write_string_len
+extrn out_write_newline
+extrn out_write_int
+extrn out_write_hex
+extrn in_init
+extrn in_fill
+extrn in_get_char
+extrn in_peek_char
+extrn in_skip_char
+extrn file_open_read
+extrn file_open_write
+extrn file_close
+extrn file_read_all
+extrn compiler_init
+extrn compiler_main
+extrn compiler_cleanup
+extrn EXIT_SUCCESS
+extrn EXIT_FAILURE
+extrn STDIN
+extrn STDOUT
+extrn STDERR
+extrn O_RDONLY
+extrn O_WRONLY
+extrn O_RDWR
+extrn O_CREAT
+extrn O_TRUNC
+extrn O_APPEND
+public argc
+public argv
+public envp
+public _start

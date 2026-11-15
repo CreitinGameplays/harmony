@@ -1,3 +1,5 @@
+format ELF64
+
 ; ================================================================
 ; errors.asm — Centralized Error System
 ;
@@ -10,89 +12,85 @@
 ; Error Codes
 ; ------------------------------------------------------------
 ; Lexer errors (1-99)
-ERR_UNKNOWN_CHAR   equ 1
-ERR_MULTI_CHAR     equ 2
-ERR_UNTERM_STRING  equ 3
-ERR_UNTERM_COMMENT equ 4
-ERR_INVALID_ESC    equ 5
+ERR_UNKNOWN_CHAR = 1
+ERR_MULTI_CHAR = 2
+ERR_UNTERM_STRING = 3
+ERR_UNTERM_COMMENT = 4
+ERR_INVALID_ESC = 5
 
 ; Parser errors (100-199)
-ERR_SYNTAX         equ 100
-ERR_EXPECTED_SEMI  equ 101
-ERR_EXPECTED_RPAREN equ 102
-ERR_EXPECTED_RBRACE equ 103
-ERR_EXPECTED_TYPE  equ 104
-ERR_EXPECTED_IDENT equ 105
-ERR_EXPECTED_LBRACE equ 106
-ERR_EXPECTED_RBRACKET equ 107
-ERR_UNEXPECTED     equ 108
-ERR_EXPECTED_PRIMARY equ 109
-ERR_EXPECTED_LPAREN equ 110
-ERR_ASSIGN_CONST    equ 111
+ERR_SYNTAX = 100
+ERR_EXPECTED_SEMI = 101
+ERR_EXPECTED_RPAREN = 102
+ERR_EXPECTED_RBRACE = 103
+ERR_EXPECTED_TYPE = 104
+ERR_EXPECTED_IDENT = 105
+ERR_EXPECTED_LBRACE = 106
+ERR_EXPECTED_RBRACKET = 107
+ERR_UNEXPECTED = 108
+ERR_EXPECTED_PRIMARY = 109
+ERR_EXPECTED_LPAREN = 110
+ERR_ASSIGN_CONST = 111
 
 ; Semantic errors (150-199)
-ERR_INFINITE_STRUCT equ 150
+ERR_INFINITE_STRUCT = 150
 
 ; Compiler errors (200-299)
-ERR_ASM_FAIL       equ 201
-ERR_LD_FAIL        equ 202
-ERR_BUILD_FAIL     equ 203
-ERR_OPEN_FAIL      equ 204
+ERR_ASM_FAIL = 201
+ERR_LD_FAIL = 202
+ERR_BUILD_FAIL = 203
+ERR_OPEN_FAIL = 204
 
 ; ------------------------------------------------------------
 ; External dependencies
 ; ------------------------------------------------------------
-extern error_at
-extern out_write_string
-extern lexer_state
 
 ; ------------------------------------------------------------
 ; Initialized Data — Error Messages
 ; ------------------------------------------------------------
-section .data
+section '.data' writeable
 
 ; Lexer messages
-msg_unknown_char    db "Unexpected character", 0
-msg_multi_char      db "Multi-character literal", 0
-msg_unterm_string   db "Unterminated string literal", 0
-msg_unterm_comment  db "Unterminated block comment", 0
-msg_invalid_esc     db "Invalid escape sequence", 0
+msg_unknown_char:    db "Unexpected character", 0
+msg_multi_char:      db "Multi-character literal", 0
+msg_unterm_string:   db "Unterminated string literal", 0
+msg_unterm_comment:  db "Unterminated block comment", 0
+msg_invalid_esc:     db "Invalid escape sequence", 0
 
 ; Parser messages
-msg_syntax          db "Syntax error", 0
-msg_expect_semi     db "Expected ';'", 0
-msg_expect_rparen   db "Expected ')'", 0
-msg_expect_rbrace   db "Expected '}'", 0
-msg_expect_type     db "Expected type (int, char, void)", 0
-msg_expect_ident    db "Expected identifier", 0
-msg_expect_lbrace   db "Expected '{'", 0
-msg_expect_rbracket db "Expected ']'", 0
-msg_unexpected      db "Unexpected token", 0
-msg_expected_primary db "Expected primary expression", 0
-msg_expect_lparen   db "Expected '('", 0
-msg_void_return_val db "void function returning a value", 0
-msg_undeclared_func db "function not declared before use", 0
-msg_expect_dot      db "Expected '.'", 0
-msg_expect_eq       db "Expected '='", 0
-msg_assign_const    db "Cannot assign to const variable", 0
-msg_no_field        db "no field named", 0
-msg_infinite_struct db "struct cannot contain itself by value (use a pointer field)", 0
-msg_undeclared      db "undeclared identifier", 0
+msg_syntax:          db "Syntax error", 0
+msg_expect_semi:     db "Expected ';'", 0
+msg_expect_rparen:   db "Expected ')'", 0
+msg_expect_rbrace:   db "Expected '}'", 0
+msg_expect_type:     db "Expected type (int, char, void)", 0
+msg_expect_ident:    db "Expected identifier", 0
+msg_expect_lbrace:   db "Expected '{'", 0
+msg_expect_rbracket: db "Expected ']'", 0
+msg_unexpected:      db "Unexpected token", 0
+msg_expected_primary: db "Expected primary expression", 0
+msg_expect_lparen:   db "Expected '('", 0
+msg_void_return_val: db "void function returning a value", 0
+msg_undeclared_func: db "function not declared before use", 0
+msg_expect_dot:      db "Expected '.'", 0
+msg_expect_eq:       db "Expected '='", 0
+msg_assign_const:    db "Cannot assign to const variable", 0
+msg_no_field:        db "no field named", 0
+msg_infinite_struct: db "struct cannot contain itself by value (use a pointer field)", 0
+msg_undeclared:      db "undeclared identifier", 0
 
 ; Compiler messages
-msg_asm_fail        db "Error: assembly failed", 10, 0
-msg_ld_fail         db "Error: linking failed", 10, 0
-msg_build_fail      db "Error: build failed", 10, 0
-msg_open_fail       db "Error: could not open source file", 10, 0
+msg_asm_fail:        db "Error: assembly failed", 10, 0
+msg_ld_fail:         db "Error: linking failed", 10, 0
+msg_build_fail:      db "Error: build failed", 10, 0
+msg_open_fail:       db "Error: could not open source file", 10, 0
 
 ; Fallback
-msg_unknown_error   db "Unknown error", 0
+msg_unknown_error:   db "Unknown error", 0
 
 ; ------------------------------------------------------------
 ; Error Code-to-String Lookup Table
 ; Pairs of (code, string_ptr), terminated by -1
 ; ------------------------------------------------------------
-    global err_table
 err_table:
     dq ERR_UNKNOWN_CHAR,   msg_unknown_char
     dq ERR_MULTI_CHAR,     msg_multi_char
@@ -121,15 +119,13 @@ err_table:
 ; ------------------------------------------------------------
 ; Text (executable code)
 ; ------------------------------------------------------------
-default rel
-section .text
+section '.text' executable
 
 ; ------------------------------------------------------------
 ; Look up error message by code
 ; rdi = error code
 ; Returns: rax = message string pointer (or ptr to "Unknown error")
 ; ------------------------------------------------------------
-    global lookup_error
 lookup_error:
     push rbx
     push rcx
@@ -159,7 +155,6 @@ lookup_error:
 ; Print error using lexer's current token position.
 ; Replacement for: mov rsi, msg_xxx; call error
 ; ------------------------------------------------------------
-    global error_code
 error_code:
     push rdi
     mov rdi, [lexer_state + 296] ; tok_line
@@ -173,7 +168,6 @@ error_code:
 ; Print error with position, looking up message from code.
 ; Replacement for: mov rdx, msg_xxx; call error_at
 ; ------------------------------------------------------------
-    global error_at_code
 error_at_code:
     push rsi                ; save line
     push rdx                ; save col
@@ -189,33 +183,39 @@ error_at_code:
 ; String exports for legacy compatibility (expect, etc.)
 ; These are the message strings that some callers pass by pointer.
 ; ------------------------------------------------------------
-    global msg_unknown_char
-    global msg_multi_char
-    global msg_unterm_string
-    global msg_unterm_comment
-    global msg_invalid_esc
-    global msg_syntax
-    global msg_expect_semi
-    global msg_expect_rparen
-    global msg_expect_rbrace
-    global msg_expect_type
-    global msg_expect_ident
-    global msg_expect_lbrace
-    global msg_expect_rbracket
-    global msg_unexpected
-    global msg_expected_primary
-    global msg_expect_lparen
-    global msg_void_return_val
-    global msg_undeclared_func
-    global msg_expect_dot
-    global msg_expect_eq
-    global msg_assign_const
-    global msg_no_field
-    global msg_infinite_struct
-    global msg_undeclared
-    global msg_infinite_struct
-    global msg_asm_fail
-    global msg_ld_fail
-    global msg_build_fail
-    global msg_open_fail
-    global msg_unknown_error
+extrn error_at
+extrn out_write_string
+extrn lexer_state
+public err_table
+public lookup_error
+public error_code
+public error_at_code
+public msg_unknown_char
+public msg_multi_char
+public msg_unterm_string
+public msg_unterm_comment
+public msg_invalid_esc
+public msg_syntax
+public msg_expect_semi
+public msg_expect_rparen
+public msg_expect_rbrace
+public msg_expect_type
+public msg_expect_ident
+public msg_expect_lbrace
+public msg_expect_rbracket
+public msg_unexpected
+public msg_expected_primary
+public msg_expect_lparen
+public msg_void_return_val
+public msg_undeclared_func
+public msg_expect_dot
+public msg_expect_eq
+public msg_assign_const
+public msg_no_field
+public msg_infinite_struct
+public msg_undeclared
+public msg_asm_fail
+public msg_ld_fail
+public msg_build_fail
+public msg_open_fail
+public msg_unknown_error

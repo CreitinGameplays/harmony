@@ -1,3 +1,5 @@
+format ELF64
+
 ; C2X Seed - Lexical Analyzer
 ; Tokenizes C2X source code into a stream of tokens.
 ; Input characters come from the buffered I/O system (io.asm):
@@ -12,156 +14,143 @@
 ; ------------------------------------------------------------
 ; External Dependencies
 ; ------------------------------------------------------------
-extern in_get_char, in_peek_char, in_skip_char
-extern out_write_string_len
-extern error_count
-extern error_at
-extern error_at_code
-extern heap_alloc, mem_copy
-extern sys_write, sys_exit
-extern STDERR, EXIT_FAILURE
 
 ; ------------------------------------------------------------
 ; Exported Symbols
 ; ------------------------------------------------------------
-global lexer_init, lexer_next_token, lexer_cleanup
-global lexer_state
 
 ; ------------------------------------------------------------
 ; Token Type Constants
 ; ------------------------------------------------------------
-%define TOK_EOF         0
-%define TOK_IDENT       1
-%define TOK_NUMBER      2
-%define TOK_STRING      3
-%define TOK_CHAR        4
+TOK_EOF = 0
+TOK_IDENT = 1
+TOK_NUMBER = 2
+TOK_STRING = 3
+TOK_CHAR = 4
 
-%define TOK_PLUS        10
-%define TOK_MINUS       11
-%define TOK_STAR        12
-%define TOK_SLASH       13
-%define TOK_PERCENT     14
-%define TOK_LSHIFT      15
-%define TOK_RSHIFT      16
+TOK_PLUS = 10
+TOK_MINUS = 11
+TOK_STAR = 12
+TOK_SLASH = 13
+TOK_PERCENT = 14
+TOK_LSHIFT = 15
+TOK_RSHIFT = 16
 
-%define TOK_EQ          20
-%define TOK_EQEQ        21
-%define TOK_NEQ         22
-%define TOK_LT          23
-%define TOK_LE          24
-%define TOK_GT          25
-%define TOK_GE          26
+TOK_EQ = 20
+TOK_EQEQ = 21
+TOK_NEQ = 22
+TOK_LT = 23
+TOK_LE = 24
+TOK_GT = 25
+TOK_GE = 26
 
-%define TOK_LPAREN      30
-%define TOK_RPAREN      31
-%define TOK_LBRACE      32
-%define TOK_RBRACE      33
-%define TOK_LBRACKET    34
-%define TOK_RBRACKET    35
+TOK_LPAREN = 30
+TOK_RPAREN = 31
+TOK_LBRACE = 32
+TOK_RBRACE = 33
+TOK_LBRACKET = 34
+TOK_RBRACKET = 35
 
-%define TOK_SEMI        40
-%define TOK_COMMA       41
-%define TOK_COLON       42
-%define TOK_ARROW       43
-%define TOK_AMPERSAND   44
-%define TOK_DOT         45
-    %define TOK_NOT         46
-    %define TOK_AND         82
-    %define TOK_OR          83
-%define TOK_PIPE        47
-%define TOK_XOR         48
-%define TOK_TILDE       49
+TOK_SEMI = 40
+TOK_COMMA = 41
+TOK_COLON = 42
+TOK_ARROW = 43
+TOK_AMPERSAND = 44
+TOK_DOT = 45
+    TOK_NOT = 46
+    TOK_AND = 82
+    TOK_OR = 83
+TOK_PIPE = 47
+TOK_XOR = 48
+TOK_TILDE = 49
 
 ; Compound assignment operators
-%define TOK_ADDEQ       70
-%define TOK_SUBEQ       71
-%define TOK_MULEQ       72
-%define TOK_DIVEQ       73
-%define TOK_MODEQ       74
-%define TOK_LSHIFT_EQ   75
-%define TOK_RSHIFT_EQ   76
-%define TOK_ANDEQ       77
-%define TOK_OREQ        78
-%define TOK_XOREQ       79
+TOK_ADDEQ = 70
+TOK_SUBEQ = 71
+TOK_MULEQ = 72
+TOK_DIVEQ = 73
+TOK_MODEQ = 74
+TOK_LSHIFT_EQ = 75
+TOK_RSHIFT_EQ = 76
+TOK_ANDEQ = 77
+TOK_OREQ = 78
+TOK_XOREQ = 79
 
 ; Increment/decrement
-%define TOK_INCR        80
-%define TOK_DECR        81
+TOK_INCR = 80
+TOK_DECR = 81
 
-%define TOK_KW_INT      50
-%define TOK_KW_CHAR     51
-%define TOK_KW_IF       52
-%define TOK_KW_ELSE     53
-%define TOK_KW_WHILE    54
-%define TOK_KW_RETURN   55
-%define TOK_KW_VOID     56
-%define TOK_KW_STRUCT   57
-%define TOK_KW_EXTERN   58
-%define TOK_KW_FOR      59
-%define TOK_KW_BREAK    60
-%define TOK_KW_CONTINUE 61
-%define TOK_KW_CONST    62
+TOK_KW_INT = 50
+TOK_KW_CHAR = 51
+TOK_KW_IF = 52
+TOK_KW_ELSE = 53
+TOK_KW_WHILE = 54
+TOK_KW_RETURN = 55
+TOK_KW_VOID = 56
+TOK_KW_STRUCT = 57
+TOK_KW_EXTERN = 58
+TOK_KW_FOR = 59
+TOK_KW_BREAK = 60
+TOK_KW_CONTINUE = 61
+TOK_KW_CONST = 62
 
 ; Error codes (matching errors.asm)
-ERR_UNKNOWN_CHAR   equ 1
-ERR_MULTI_CHAR     equ 2
+ERR_UNKNOWN_CHAR = 1
+ERR_MULTI_CHAR = 2
 
 ; ------------------------------------------------------------
 ; Initialized Data
 ; ------------------------------------------------------------
-section .data
+section '.data' writeable
     ; Keyword strings for lookup
-    kw_int    db "int", 0
-    kw_char   db "char", 0
-    kw_void   db "void", 0
-    kw_if     db "if", 0
-    kw_else   db "else", 0
-    kw_while  db "while", 0
-    kw_return db "return", 0
-    kw_struct db "struct", 0
-    kw_extern db "extern", 0
-    kw_for    db "for", 0
-    kw_break  db "break", 0
-    kw_continue db "continue", 0
-    kw_const    db "const", 0
+    kw_int:    db "int", 0
+    kw_char:   db "char", 0
+    kw_void:   db "void", 0
+    kw_if:     db "if", 0
+    kw_else:   db "else", 0
+    kw_while:  db "while", 0
+    kw_return: db "return", 0
+    kw_struct: db "struct", 0
+    kw_extern: db "extern", 0
+    kw_for:    db "for", 0
+    kw_break:  db "break", 0
+    kw_continue: db "continue", 0
+    kw_const:    db "const", 0
     ; Error messages
-    msg_tok_oom     db "c2x-seed: out of memory while reading a token", 10
-    msg_tok_oom_len equ $ - msg_tok_oom
+    msg_tok_oom:     db "c2x-seed: out of memory while reading a token", 10
+    msg_tok_oom_len = $ - msg_tok_oom
 
 ; ------------------------------------------------------------
 ; Uninitialized Data
 ; ------------------------------------------------------------
-section .bss
+section '.bss' writeable
     ; Lexer state - exported for parser access
-    global lexer_state
     lexer_state:
-        .current_char   resb 1          ; Current lookahead character (0 = EOF)
-        .pad            resb 7          ; Padding to align next fields
-        .line           resq 1          ; Current line number (1-based)
-        .column         resq 1          ; Current column number (0-based)
-        .tok_type       resq 1          ; Type of the most recently recognized token
-        .tok_buf        resb 256        ; Inline token text (initial storage)
-        .tok_len        resq 1          ; Length of token text in the buffer
-        .tok_line       resq 1          ; Line where the token started
-        .tok_col        resq 1          ; Column where the token started
+        .current_char   rb 1          ; Current lookahead character (0 = EOF)
+        .pad            rb 7          ; Padding to align next fields
+        .line           rq 1          ; Current line number (1-based)
+        .column         rq 1          ; Current column number (0-based)
+        .tok_type       rq 1          ; Type of the most recently recognized token
+        .tok_buf        rb 256        ; Inline token text (initial storage)
+        .tok_len        rq 1          ; Length of token text in the buffer
+        .tok_line       rq 1          ; Line where the token started
+        .tok_col        rq 1          ; Column where the token started
         ; The token buffer starts as the 256-byte inline `.tok_buf` above and
         ; grows onto the heap when a token is longer (lex_grow). `tok_ptr`
         ; always points at the live storage, so scans write through it and
         ; never spill into neighbouring state. Kept AFTER tok_col so the
         ; numeric offsets 296/304 used by errors.asm and warnings.asm stay
         ; valid.
-        .tok_ptr        resq 1          ; Active token buffer (inline or heap)
-        .tok_cap        resq 1          ; Capacity of the active buffer
+        .tok_ptr        rq 1          ; Active token buffer (inline or heap)
+        .tok_cap        rq 1          ; Capacity of the active buffer
 
     ; Previous token position (saved before advancing to next token)
-    global prev_tok_line, prev_tok_col
-    prev_tok_line       resq 1
-    prev_tok_col        resq 1
+    prev_tok_line:       rq 1
+    prev_tok_col:        rq 1
 
-default rel
 
 ; ------------------------------------------------------------
-section .text
+section '.text' executable
 
 ; ------------------------------------------------------------
 ; lexer_init()
@@ -194,7 +183,7 @@ lexer_init:
 ; The four scan loops keep their write cursor in rbx (starting at
 ; `lexer_state.tok_ptr`) and a running length in r12. lex_grow is called just
 ; before each append; on growth the first `rbx - tok_ptr` bytes move with the
-; buffer and rbx is shifted to match, so the loops continue unmodified.
+; buffer and rbx is shifted to match_tok, so the loops continue unmodified.
 ;
 ; Every register except rbx (the cursor) is preserved, so the byte about to be
 ; written — left in al by the caller — survives the call. A failed allocation
@@ -1682,3 +1671,22 @@ print_string:
     pop rcx
     pop rsi
     ret
+extrn in_get_char
+extrn in_peek_char
+extrn in_skip_char
+extrn out_write_string_len
+extrn error_count
+extrn error_at
+extrn error_at_code
+extrn heap_alloc
+extrn mem_copy
+extrn sys_write
+extrn sys_exit
+extrn STDERR
+extrn EXIT_FAILURE
+public lexer_init
+public lexer_next_token
+public lexer_cleanup
+public lexer_state
+public prev_tok_line
+public prev_tok_col

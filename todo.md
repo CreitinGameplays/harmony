@@ -9,7 +9,8 @@ This file tracks **two separate things**, and they must not be conflated:
    minimum needed to express the `harmony` rewrite. This is what the section
    below is about.
 2. **harmony — the final language** — the full-featured compiler written in
-   harmony-base itself, plus `library/core/` and `library/std/` (AGENTS.md).
+   harmony-base itself, plus `library/core/`, `library/alloc/` and
+   `library/std/` (AGENTS.md).
    Its remaining feature work lives in its own section at the bottom and is
    **not** a harmony-base deliverable.
 
@@ -226,6 +227,34 @@ binary is `harmony-base` (the spec's `lc`).
       `lc_put_str`) no longer emits a duplicate `declare`, which LLVM rejects
       even with a matching signature. Regression tests `raw-null-cmp`,
       `extern-predeclared`.
+- [x] **Four compiler/runtime bugs found building the LISP interpreter.**
+      (1) *Literal-literal arithmetic.* A binary arithmetic expression whose
+      operands are both untyped integer literals (`1 + 2`, `6 * 7`) was
+      rejected with `TYPE-01` "arithmetic needs numbers": `ck_expr_binary`'s
+      numeric gate tested `ty_is_integer`/`ty_is_float` but not
+      `ty_is_untyped_lit`, so the literal-only case fell through. Fixed by
+      accepting an untyped literal there; the result then defaults to `i32` as
+      usual. Regression `tests/harmony/codegen/literal-arithmetic.harmony`.
+      (2) *Missing freestanding memory builtins.* clang's optimizer lowers a
+      large aggregate initialization/copy (e.g. `let a: [Val; 64] =
+      [Val::Nil; 64]`) into a `memset`/`memcpy` libcall, and under
+      `-ffreestanding -nostdlib` there is no libc to resolve it, so the link
+      failed with "undefined reference to `memset'". The freestanding runtime
+      (`bootstrap/runtime/rt.c`) now provides the standard `memset`/`memcpy`/
+      `memmove`/`memcmp` (and `__bzero`) so any IR the compiler emits links.
+      Regression `tests/harmony/codegen/big-aggregate-init.harmony`.
+      (3) *Comparison stored in a binding.* `let a = (1 < 2);` recursed
+      `ck_stamp_lits` through the `bool`-typed `<` node and stamped the literal
+      operands with the comparison's *result* type (`i1`), so the backend
+      emitted `icmp ult i1 1, 2` and `if (a)` disagreed with `if (1 < 2)`.
+      `ck_stamp_lits` now stops at a node whose type is not numeric, so a
+      comparison's operands keep their own width. Regression
+      `tests/harmony/codegen/comparison-in-binding.harmony`.
+      (4) *Integer-only operators reject untyped literals.* `100 % 30` (and
+      `& | ^`) on two untyped integer literals was rejected with `TYPE-01`
+      "integer-only operator" for the same reason as (1): the guard tested
+      `ty_is_integer` but not `ty_is_untyped_lit`. Fixed; covered by
+      `comparison-in-binding.harmony`.
 - [x] **`extern "C"` feasibility (answer: leave as is).** The external-function
       mechanism (declaration, call, UNCK gating, unmangled C-ABI symbol) is
       complete and sufficient for the next compiler: it already reaches the OS
@@ -235,6 +264,27 @@ binary is `harmony-base` (the spec's `lc`).
       **libc** symbols, because the build is `-nostdlib -static` (freestanding)
       — and the rewrite does not need libc: it must stay freestanding like
       harmony-base. No change made.
+- [x] **A small LISP interpreter in harmony-base
+      (`tests/harmony/lisp-interpreter/`).** A robustness probe that exercises
+      the M1 slice as a whole: recursive `Heap<T>` enums, pattern `switch` with
+      boxed payloads, `&str` byte access and byte-range slicing, `&mut`
+      receivers, a self-recursive evaluator, and a heap-shared mutable
+      environment. Split into `value.harmony` (values, the frame-chain
+      environment, list helpers), `reader.harmony` (S-expressions from a
+      `&str`, recursive descent, quote sugar), `eval.harmony` (a fused
+      `eval`/`apply` — one self-recursive function, since harmony-base has no
+      forward declarations, so `eval`/`apply` cannot be mutually recursive —
+      plus the variadic primitive procedures), and `main.harmony` (a driver).
+      `make lisp` concatenates them in dependency order (names resolve from
+      earlier text only) and runs it; `make test-lisp` runs the 50-case suite
+      in `tests/harmony/lisp.sh` (arith, closures, capture, `set!`, mutual
+      recursion, ackermann, list processing, and malformed-input robustness),
+      wired into `make test`. Four real compiler bugs fell out while building
+      it (all fixed with regressions): literal-literal arithmetic (`1 + 2`),
+      the missing freestanding memory builtins (`memset`/`memcpy`/…) that
+      clang's optimizer emits under `-ffreestanding -nostdlib`, a comparison
+      stored in a binding that typed its operands as `i1`, and the integer-only
+      `% & | ^` operators rejecting untyped literals.
 
 ### Cross-cutting
 
@@ -258,13 +308,20 @@ binary is `harmony-base` (the spec's `lc`).
       `bootstrap/harmony-base/` (c2x-seed), and `bootstrap/runtime/rt.c` (the
       freestanding runtime, was `src/stdlib/runtime/`). `src/` is gone; the
       self-hosted rewrite will live in the top-level `harmony/` (`lexer/`,
-      `parser/`, `ast/`, `codegen/`, `sema/`, `main.hr`), with the standard
-      library in `library/core/` and `library/std/`. `Makefile`, `build.sh`,
+      `parser/`, `ast/`, `ir/`, `sema/`, `borrowck/`, `codegen/`, `driver/`,
+      `main.hr`), with the standard
+      library in `library/core/`, `library/alloc/`, and `library/std/`.
+      `Makefile`, `build.sh`,
       `emit.c2`'s runtime path, `README.md`, `todo.md`, `roadmap/harmony-base`,
       and `docs/c2x-seed.md` all updated; empty target dirs are tracked with
       `.gitkeep`. `git mv` preserved history; `make test` green afterward.
 - [x] `docs/harmony.md` realigned to the v0.3 rewrite; `docs/keywords.md`
       filled (keywords + builtins + code catalogue).
+- [x] **Library layout split into `core/`, `alloc/`, `std/`** (AGENTS.md): the
+      freestanding core is allocator-free, a separate `library/alloc/` holds
+      the allocator hook `heap(x)` uses, and `library/std/` needs the OS. The
+      empty directory is tracked with `.gitkeep`; `README.md` and the final
+      language section below updated to match.
 - [ ] Keep this checklist in sync as items complete.
 
 ---
@@ -276,12 +333,15 @@ implemented in the `harmony` compiler (written in harmony-base) under
 `harmony/` — the layout AGENTS.md now specifies:
 
 - `harmony/lexer/`, `harmony/parser/`, `harmony/ast/`, `harmony/sema/`
-  (type checking & semantic analysis), `harmony/codegen/` (LLVM IR, C11), and
-  `harmony/main.hr`. The core is `*.hr`.
+  (semantic analysis), `harmony/ir/` (CFG IR), `harmony/borrowck/`
+  (the borrow checker), `harmony/codegen/` (LLVM IR, C11), `harmony/driver/`
+  (the CLI), and `harmony/main.hr`. The core is `*.hr`.
 - `library/core/` (`*.hr`, freestanding-allowed): primitive types, slices,
-  iterators — usable without an OS, like Rust's `core`.
+  iterators — usable without an OS or allocator, like Rust's `core`.
+- `library/alloc/` (`*.hr`): the allocator hook (`heap(x)` calls whatever
+  allocator it exposes, so embedded targets can swap it).
 - `library/std/` (`*.hr`): the full standard library (HashMap, io, fs, net)
-  that needs the OS/allocators.
+  that needs the OS.
 - `bootstrap/` holds the stage-0 compilers: `bootstrap/c2x-seed/` (NASM),
   `bootstrap/harmony-base/` (c2x-seed), and `bootstrap/runtime/` (the
   freestanding runtime only harmony-base links).

@@ -17,6 +17,8 @@
 //                     stack exhaustion into a T-STACK trap (§14.2).
 //   lc_put_*          formatting hooks for print/println/eprintln (§15.1).
 //   lc_trap_msg/      prelude traps: trap/assert/unreachable/exit (§15.1).
+//   memset/memcpy/    the standard freestanding memory builtins clang's
+//   memmove/memcmp    optimizer may emit for a large aggregate init/copy.
 //
 // Everything is deterministic and allocation-free on the hot path.
 

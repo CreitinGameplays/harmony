@@ -1,0 +1,27 @@
+// EXPECT: 42
+// IR: icmp slt i32 1, 2
+// A comparison stored in a binding must compare its operands at their real
+// width, not at the comparison's own result type. Before the fix,
+// `let a = (1 < 2);` recursed `ck_stamp_lits` through the bool-typed `<` node
+// and stamped the literal operands as `i1`, so the backend emitted
+// `icmp ult i1 1, 2` (wrong) and `if (a)` disagreed with `if (1 < 2)`.
+//
+// Also covers the integer-only binary operators: `% & | ^` on two untyped
+// literals (`100 % 30`) used to be rejected with TYPE-01 because their
+// integer guard did not accept `TY_UINT_LIT`.
+fn main() -> i32 {
+    let lt = (1 < 2);            // true
+    let gt = (3 > 4);            // false
+    if (!lt) { return 1; }
+    if (gt) { return 2; }
+    if (lt == true) { } else { return 3; }
+
+    // Literal arithmetic now needs the operands to keep their i32 width too.
+    let m = 100 % 30;            // 10
+    let a = 100 & 30;            // 4
+    let o = 34 | 8;              // 42
+    let x = 100 ^ 30;            // 122
+
+    // 40 + 10 - 4 + 42 - 122 + 76 = 42
+    return 40 + m - a + o - x + 76;
+}

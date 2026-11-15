@@ -10,7 +10,9 @@
 //
 // `read_form` is a single self-recursive function: harmony-base resolves
 // names from earlier text only, so there is no forward declaration to let two
-// functions call each other.
+// functions call each other. Lists are accumulated with a reverse-cons loop
+// and then reversed, so the reader grows with the input instead of capping at
+// a fixed length.
 
 struct Reader { src: &str; pos: usize; }
 
@@ -76,8 +78,8 @@ fn read_atom(r: &mut Reader) -> Val {
 }
 
 // Reads one form. Self-recursive: a list is read by recursing here for each
-// element. The scratch array is reused per call (fixed cap keeps the reader
-// allocation-free; the probe programs stay well under it).
+// element. Elements are consed in reverse and flipped at the end, so the list
+// grows with the input (no fixed cap).
 fn read_form(r: &mut Reader) -> Val {
     skip_ws(r);
     if (at_end(&*r)) { return Val::Nil; }
@@ -89,18 +91,14 @@ fn read_form(r: &mut Reader) -> Val {
     }
     if (b == 40u8) {                                   // "(" ... ")"
         r.pos += 1;
-        let cap = 64;
-        let mut items: [Val; 64] = [Val::Nil; 64];
-        let mut n: i32 = 0;
+        let mut rev = Val::Nil;
         while (true) {
             skip_ws(r);
             if (at_end(&*r)) { break; }
             if (peek(&*r) == 41u8) { r.pos += 1; break; }
-            if (n >= cap) { break; }
-            items[n as usize] = read_form(r);
-            n += 1;
+            rev = cons(read_form(r), rev);
         }
-        return list_of(&items[..], n, Val::Nil);
+        return reverse(rev);
     }
     if (b == 41u8) { r.pos += 1; return Val::Nil; }    // stray ")"
     return read_atom(r);
@@ -109,15 +107,11 @@ fn read_form(r: &mut Reader) -> Val {
 // Reads every top-level form in `src` into one list.
 fn read_all(src: &str) -> Val {
     let mut r = r_new(src);
-    let cap = 64;
-    let mut items: [Val; 64] = [Val::Nil; 64];
-    let mut n: i32 = 0;
+    let mut rev = Val::Nil;
     while (true) {
         skip_ws(&mut r);
         if (at_end(&r)) { break; }
-        if (n >= cap) { break; }
-        items[n as usize] = read_form(&mut r);
-        n += 1;
+        rev = cons(read_form(&mut r), rev);
     }
-    return list_of(&items[..], n, Val::Nil);
+    return reverse(rev);
 }

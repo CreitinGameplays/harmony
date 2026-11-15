@@ -1,0 +1,33 @@
+// Driver: read a LISP program from a source literal, evaluate it, and return
+// the result as the process exit code (mod 256).
+//
+// This is the standalone entry point for the interpreter, split as
+//
+//     value.harmony   values, the frame-chain environment, list helpers
+//     reader.harmony  S-expressions from a `&str`
+//     eval.harmony    the fused eval/apply and the primitive procedures
+//     main.harmony    this driver
+//
+// and compiled by concatenating them in that order (`make lisp` does it), or
+// through `tests/harmony/lisp.sh`, which appends its own `main` per case.
+//
+// The program is a compile-time string literal rather than stdin: harmony-base
+// has no `read_line`/`String`, and the raw syscall FFI cannot yet pass a stack
+// pointer as an integer. Keeping the program in the source keeps the test
+// deterministic; the reader, evaluator, and environment are exactly the code a
+// REPL would use.
+
+fn run_lisp(src: &str) -> i32 {
+    let env = env_new();
+    return as_int(&eval_program(read_all(src), &env));
+}
+
+fn main() -> i32 {
+    // (define fact (lambda (n) (if (< n 2) 1 (* n (fact (- n 1)))))) (fact 5)
+    // => 120.
+    let result = run_lisp(
+        "(define fact (lambda (n) (if (< n 2) 1 (* n (fact (- n 1)))))) (fact 5)"
+    );
+    println("(fact 5) = {}", result);
+    return 0;
+}

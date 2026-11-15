@@ -74,8 +74,19 @@ int ck_coercible(int want, int got) {
 // with an i64 parameter, `x + 1` with x: i64) instead of leaving "untyped
 // integer" behind. Only literal-shaped subtrees are touched: a child with a
 // concrete type stops the recursion, so no expression is silently converted.
+//
+// A node whose own type is *not* numeric (a comparison yields `bool`, say)
+// gives its operands their own semantics, so we must not reach through it and
+// force the outer type on them: `let a = (1 < 2);` must compare two i32s, not
+// two i1s. Arithmetic already stamps its literal operands as it checks them
+// (ck_expr_binary), so the numeric-node recursion is only a convenience for
+// literal-only subtrees.
 void ck_stamp_lits(struct AstNode* n, int want) {
     if (n == 0) { return; }
+    if (n->ty != 0 && !ty_is_untyped_lit(n->ty)
+        && !ty_is_integer(n->ty) && !ty_is_float(n->ty)) {
+        return;
+    }
     if (n->a != 0 && ty_is_untyped_lit(n->a->ty)) { ck_stamp_lits(n->a, want); }
     if (n->b != 0 && ty_is_untyped_lit(n->b->ty)) { ck_stamp_lits(n->b, want); }
     if (ty_is_untyped_lit(n->ty)) { n->ty = want; }
@@ -320,7 +331,7 @@ int ck_expr_binary(struct AstNode* n) {
             return TY_INVALID;
         }
         if (str_eq(op, "%") || str_eq(op, "&") || str_eq(op, "|") || str_eq(op, "^")) {
-            if (!ty_is_integer(lt2)) {
+            if (!ty_is_integer(lt2) && !ty_is_untyped_lit(lt2)) {
                 diag_stop("TYPE-01", "integer-only operator",
                           "This operator needs integer operands.",
                           diag_file(n->file), n->start, n->end);

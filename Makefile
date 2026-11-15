@@ -35,7 +35,7 @@ HB_SRC    := \
 	bootstrap/harmony-base/main.c2
 SEED_SRC  := $(wildcard bootstrap/c2x-seed/*.asm)
 
-.PHONY: all clean test test-fuzz test-seed seed harmony-base
+.PHONY: all clean test test-fuzz test-seed test-lisp seed harmony-base lisp
 
 all: harmony-base
 
@@ -57,11 +57,28 @@ test: test-seed harmony-base
 	bash tests/harmony/codegen.sh
 	bash tests/harmony/golden.sh
 	bash tests/harmony/determinism.sh
+	bash tests/harmony/lisp.sh
 
 # c2x-seed regression corpus (guards the compiler bugs fixed during bring-up).
 test-seed: seed
 	bash tests/c2x-seed/run.sh
 	bash tests/c2x-seed/determinism.sh
+
+# A small LISP written in harmony-base (tests/harmony/lisp-interpreter/).
+# The interpreter is split into modules; they are concatenated in dependency
+# order (names resolve from earlier text only) into one translation unit.
+LISP_SRC := \
+	tests/harmony/lisp-interpreter/value.harmony \
+	tests/harmony/lisp-interpreter/reader.harmony \
+	tests/harmony/lisp-interpreter/eval.harmony \
+	tests/harmony/lisp-interpreter/main.harmony
+
+lisp: harmony-base
+	cat $(LISP_SRC) > build/lisp.harmony
+	$(HB_OUT) run build/lisp.harmony
+
+test-lisp: harmony-base
+	bash tests/harmony/lisp.sh
 
 test-fuzz: harmony-base
 	bash tests/harmony/fuzz.sh

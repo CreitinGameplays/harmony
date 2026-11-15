@@ -27,7 +27,7 @@ sudo apt install make gcc clang file python3 python-is-python3 linux-perf xxd na
 | `bootstrap/harmony-base/` | First Harmony compiler, written in c2x-seed. |
 | `bootstrap/runtime/` | The freestanding runtime `harmony-base` links in. |
 | `harmony/` | Self-hosted rewrite (later, `*.hr`). |
-| `library/core/`, `library/std/` | Standard library for the final language. |
+| `library/core/`, `library/alloc/`, `library/std/` | Standard library for the final language. |
 | `tests/` | Test suites and fuzzing. |
 | `roadmap/` | Milestone checklists. |
 | `todo.md` | Detailed implementation checklist. |
@@ -37,9 +37,11 @@ sudo apt install make gcc clang file python3 python-is-python3 linux-perf xxd na
 ```bash
 bash build.sh      # build c2x-seed (stage 0) -> build/c2x-seed
 make               # build the harmony-base compiler -> build/harmony-base
-make test          # seed corpus + driver + golden fixtures + determinism
+make test          # seed corpus + driver + golden fixtures + determinism + lisp
 make test-seed     # c2x-seed regression corpus + determinism only
 make test-fuzz     # aggressive/fuzz tests for the harmony-base driver
+make test-lisp     # the harmony-base LISP interpreter suite
+make lisp          # build and run the LISP interpreter demo
 make clean
 ```
 

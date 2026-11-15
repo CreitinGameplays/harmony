@@ -2744,6 +2744,7 @@ any — the compiler must keep.
 | Trap message format, exit status 70, stdout flush | Library. The compiler only emits "call the trap hook with this location." |
 | Stack-overflow guard handler (`T-STACK`) | A std runtime module that installs the handler at startup. |
 | Program entry: argv, calling `main`, turning its return value into an exit code | A std runtime module. |
+| The freestanding memory builtins clang's optimizer may emit (`memset`/`memcpy`/`memmove`/`memcmp`) | Library. A large aggregate initialization or copy is lowered to these libcalls; with no libc linked, the runtime must provide them. |
 | `on_trap` hook for freestanding or embedded builds | Library-level hook, which must return `never`. There is no unwinding. |
 
 #### 19.8.5 Protocol implementations

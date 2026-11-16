@@ -1,8 +1,5 @@
 // harmony-base — arena allocator, string helpers, raw output.
 
-char g_arena[16777216];
-int  g_arena_used;
-
 // ---------------------------------------------------------------------------
 // Arena
 //

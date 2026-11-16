@@ -26,8 +26,9 @@ File Extension: .harmony (default), .hr (secondary)
   code for better organization) instead of huge single files (only exception is c2x-seed src).
 - Always add new or update todo.md and docs/*.md if some info got stale, this includes updating harmony language reference/keywords.
 - Use makefile to build harmony lang. build.sh builds the c2x-seed, which is written in assembly.
-- Always make or update tests for any new implementation/feature,
-  as well as fuzzing/aggressive tests, and add them to makefile rules.
+- **Always make or update tests for any new implementation/feature, code fixes,**
+  **as well as fuzzing/aggressive and more importantly, error-handling tests, put them all to make test!**
+- **Critical: it's very important to have as many edge cases/error tests as possible here! Never forget it.**
 - **ALWAYS** use your edit tool to edit source files *instead of shell scripts (including python)*.
 - Never guess at bugs (harmony/c2x-seed), always reproduce:
   use any available debugger in the system (such as gdb, valgrind, strace, etc) to find the bug and fix them.
@@ -38,11 +39,10 @@ File Extension: .harmony (default), .hr (secondary)
   (see harmony.md §19.8). The full-featured compiler (with stdlib and all other features)
   will be the `harmony`, written in `harmony-base` itself. `harmony-base` should only include the bare minimum needed for a `harmony` rewrite.
 - Harmony standard lib code for final language should be written in `library/`.
-- It's good to also add purposely bad code (simple and complex codes).
   in error-handling directory in `tests` to verify if compiler is handling it well.
 - Use `make` with `-j$(nproc)` arg to use all cores when compiling.
 - Also keep compilation warning-free.
-- Do not hardcode harmony.md docs sections in source code (only comments are allowed).
+- **Do NOT** hardcode harmony.md docs sections (§) in source code (only in code comments they are allowed).
 - All risks are accepted.
 - Always add helpful comments in the code.
 - Always use `-s` arg when using `git commit`.

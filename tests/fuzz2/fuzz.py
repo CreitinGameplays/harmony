@@ -850,7 +850,11 @@ def engine_afl(args, tmpdir, findings):
         subprocess.run(cmd, capture_output=True, timeout=args.afl_seconds + 120)
     except subprocess.TimeoutExpired:
         pass
+    except OSError as e:
+        print("engine afl: could not start afl-fuzz: %s" % e)
+        return
     # Replay every crash + hang through the full oracles.
+    n_replayed = 0
     for kind in ("crashes", "hangs"):
         d = os.path.join(outdir, "default", kind)
         if not os.path.isdir(d):
@@ -860,9 +864,57 @@ def engine_afl(args, tmpdir, findings):
             if os.path.isdir(p):
                 continue
             fnd = check_oracles(p)
+            n_replayed += 1
             if fnd is not None:
                 sh = maybe_shrink(read_file(p), fnd.oracle, args, tmpdir)
                 record_finding(findings, "afl-%s-%s" % (kind, fn_), fnd, sh, tmpdir)
+
+    # Report what actually happened. Dumb mode has no coverage feedback, so
+    # the queue holds only the seeds (corpus_count never grows) — the exec
+    # count is the honest measure of the work done. This also guards against
+    # a silent no-op being read as "clean" (a misconfigured valgrind engine
+    # once reported "0 findings" while running nothing).
+    execs = afl_exec_count(outdir)
+    print("engine afl: %ss dumb-mode, %s execs, %d crashes/hangs replayed"
+          % (args.afl_seconds, execs, n_replayed))
+    if execs == 0:
+        print("engine afl: ERROR afl-fuzz ran 0 executions; results are"
+              " meaningless (check that afl-fuzz accepts the target)")
+
+
+def afl_exec_count(outdir):
+    """Total executions AFL performed, from whichever stats file it wrote.
+
+    AFL versions differ: recent ones write `fuzzer_stats` (`execs_done`),
+    while the build in this environment only leaves `plot_data`, whose last
+    line ends with (..., execs_per_sec, total_execs, ...). Returns an int, or
+    0 when no evidence of any execution is found.
+    """
+    stats = os.path.join(outdir, "default", "fuzzer_stats")
+    if os.path.isfile(stats):
+        for line in open(stats, errors="replace"):
+            if line.startswith("execs_done"):
+                try:
+                    return int(line.split(":", 1)[1].strip())
+                except ValueError:
+                    pass
+    plot = os.path.join(outdir, "plot_data")
+    if os.path.isfile(plot):
+        header = None
+        last = None
+        for line in open(plot, errors="replace"):
+            if line.startswith("#"):
+                header = [c.strip() for c in line.lstrip("#").split(",")]
+                continue
+            if line.strip():
+                last = line.strip()
+        if header and last and "total_execs" in header:
+            cols = last.split(",")
+            try:
+                return int(cols[header.index("total_execs")].strip())
+            except (ValueError, IndexError):
+                pass
+    return 0
 
 
 def tmpdir_for_afl(tmpdir):

@@ -77,7 +77,7 @@ void ll_out_int(int v) {
     int neg;
     int div;
     int rem;
-    char tmp[12];
+    char tmp[24];   // 64-bit `int`: 20 digits + sign + NUL
     int n;
     neg = 0;
     if (v < 0) { neg = 1; v = -v; }
@@ -134,8 +134,14 @@ char* ll_new_label(char* hint) {
 }
 
 // Writes `v` as decimal into `buf` (NUL-terminated); returns nothing.
+//
+// `int` in the seed is 64-bit, so `v` reaches 2^63-1 (19 digits) and i64-sized
+// literals pass through here. The scratch buffer was `char tmp[12]` — any
+// 13-digit literal (e.g. a timestamp or 2^63-1) overflowed it, corrupting the
+// stack and killing the emitter with no diagnostic (a fuzzer found this as
+// check-ok / emit-dead). 24 bytes leaves room for 20 digits plus slack.
 void ll_int_into(char* buf, int v) {
-    char tmp[12];
+    char tmp[24];
     int n;
     int i;
     n = 0;

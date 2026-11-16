@@ -12,12 +12,67 @@
 // lives under bootstrap/runtime/ (AGENTS.md layout).
 char* g_rt_c = "bootstrap/runtime/rt.c";
 
-// Temp paths for the generated IR and the linked binary. They live under the
-// TMPDIR the environment provides (defaulting to /tmp), never inside the
-// source tree, so a build leaves the working copy clean.
-char* g_tmp_ir = "/tmp/harmony-base.ll";
-char* g_tmp_bin = "/tmp/harmony-base.bin";
-char* g_tmp_cc_log = "/tmp/harmony-base.clang.log";
+// Temp paths for the generated IR and the linked binary. They live under
+// /tmp, never inside the source tree, so a build leaves the working copy
+// clean.
+//
+// The names are per-process (`<pid>`) because compilations are independent
+// processes and must not collide: with fixed names, two concurrent `run`s
+// raced on /tmp/harmony-base.bin — one clang would truncate the binary the
+// other had just linked, and the loser's exec failed with status 127. A
+// fuzzing campaign runs several compilations at once by design (and the final
+// `harmony` is multi-core by default), so the collision was a real driver
+// bug, not a fuzzer artifact.
+char* g_tmp_ir = 0;
+char* g_tmp_bin = 0;
+char* g_tmp_cc_log = 0;
+
+// Builds "<stem><pid><suffix>" in one arena allocation. Called three times,
+// lazily on the first emit, so a tiny one-off allocation is fine and keeps the
+// code simple.
+char* emit_tmp_path(char* stem, char* suffix) {
+    char* buf;
+    int n;
+    int pid;
+    int i;
+    char digits[24];
+    pid = syscall_getpid();
+    buf = arena_alloc(96);
+    n = 0;
+    i = 0;
+    while (stem[i] != 0) { buf[n] = stem[i]; n = n + 1; i = i + 1; }
+    // Decimal pid, most significant digit first (small scratch, reversed).
+    i = 0;
+    if (pid == 0) { digits[0] = '0'; i = 1; }
+    while (pid > 0) { digits[i] = (char) ('0' + (pid - (pid / 10) * 10)); pid = pid / 10; i = i + 1; }
+    while (i > 0) { i = i - 1; buf[n] = digits[i]; n = n + 1; }
+    i = 0;
+    while (suffix[i] != 0) { buf[n] = suffix[i]; n = n + 1; i = i + 1; }
+    buf[n] = 0;
+    return buf;
+}
+
+// Creates the three temp paths on first use (see above for why they are
+// per-process).
+void emit_init_tmp_paths(void) {
+    if (g_tmp_ir != 0) { return; }
+    g_tmp_ir = emit_tmp_path("/tmp/harmony-base-", ".ll");
+    g_tmp_bin = emit_tmp_path("/tmp/harmony-base-", ".bin");
+    g_tmp_cc_log = emit_tmp_path("/tmp/harmony-base-", ".clang.log");
+}
+
+// Removes `path` when it exists and is empty. Used to leave no litter behind
+// on the happy path (a clean clang link writes an empty log).
+void emit_unlink_if_empty(char* path) {
+    int fd;
+    int n;
+    char c;
+    fd = syscall_open(path, O_RDONLY, 0);
+    if (fd < 0) { return; }
+    n = syscall_read(fd, &c, 1);
+    syscall_close(fd);
+    if (n == 0) { syscall_unlink(path); }
+}
 
 // ---------------------------------------------------------------------------
 // Files.
@@ -86,6 +141,44 @@ int sys_spawn_log(char** argv, char* logpath) {
 
 int sys_spawn(char** argv) {
     return sys_spawn_log(argv, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Like sys_spawn, but also reports *how* the child ended. `*signal_no` gets
+// the terminating signal (0 when the child exited normally); the return value
+// is the exit status, or 128+signal for a signal death (the shell convention).
+//
+// The distinction matters: a `main` that returns 139 exits with status 139
+// legitimately (the exit code is the value mod 256), so looking at the numeric
+// code alone cannot tell "the program crashed" from "the program returned
+// 139". The fuzzer's opt-level oracle needs the real signal number, and a
+// `run` that traps this way should say so instead of masquerading as a
+// successful run.
+// ---------------------------------------------------------------------------
+int sys_spawn_status(char** argv, int* signal_no) {
+    int pid;
+    int status;
+    int w;
+    char* envp[2];
+    int sig;
+    if (signal_no != 0) { *signal_no = 0; }
+    envp[0] = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+    envp[1] = 0;
+    pid = syscall_fork();
+    if (pid < 0) { return -1; }
+    if (pid == 0) {
+        syscall_execve(argv[0], argv, envp);
+        syscall_exit(127);   // exec failed
+    }
+    status = 0;
+    w = syscall_wait4(pid, &status, 0, 0);
+    if (w < 0) { return -1; }
+    sig = status & 0x7f;
+    if (sig != 0) {
+        if (signal_no != 0) { *signal_no = sig; }
+        return 128 + sig;
+    }
+    return (status >> 8) & 0xff;
 }
 
 // ---------------------------------------------------------------------------
@@ -301,6 +394,7 @@ int emit_optimize_ir(struct Options* opts) {
 }
 
 int emit_command(struct Options* opts, struct AstNode* prog) {
+    emit_init_tmp_paths();
     ll_emit_module(prog);
 
     if (opts->cmd == CMD_EMIT_LLVM) {
@@ -317,7 +411,9 @@ int emit_command(struct Options* opts, struct AstNode* prog) {
     {
         char* binpath;
         int rc;
+        int sig;
 
+        sig = 0;
         binpath = g_tmp_bin;
         if (opts->output != 0) { binpath = opts->output; }
 
@@ -364,10 +460,29 @@ int emit_command(struct Options* opts, struct AstNode* prog) {
             return EXIT_OK;
         }
 
-        // run: execute the binary, forward its exit status.
+        // run: execute the binary, forward its exit status. A signal death is
+        // reported explicitly *and* keeps the shell convention (128+signal):
+        // the numeric code alone cannot distinguish a crash from a `main`
+        // that legitimately returned that value (the exit code is the value
+        // mod 256), so the message is what makes the two unambiguous. Common
+        // causes are a violated `unchecked` contract (§13.6) or an abort from
+        // an `extern "C"` call.
         argv_reset();
         sp_argv[0] = binpath;
-        rc = sys_spawn(sp_argv);
+        sig = 0;
+        rc = sys_spawn_status(sp_argv, &sig);
+        if (sig != 0) {
+            err_str("harmony-base: the compiled program was killed by signal ");
+            err_int(sig);
+            err_nl();
+        }
+        // `run` produces no artifact the user asked for, so the per-process
+        // binary is disposable. The clang log is only kept when it has
+        // something to say (it is empty on a clean link).
+        if (opts->output == 0) {
+            syscall_unlink(g_tmp_bin);
+        }
+        emit_unlink_if_empty(g_tmp_cc_log);
         return rc;
     }
 }

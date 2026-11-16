@@ -108,7 +108,7 @@ void lexbuf_push_int(int v) {
     int neg;
     int div;
     int rem;
-    char tmp[12];
+    char tmp[24];   // 64-bit `int`: 20 digits + sign + NUL
     int n;
     neg = 0;
     if (v < 0) {

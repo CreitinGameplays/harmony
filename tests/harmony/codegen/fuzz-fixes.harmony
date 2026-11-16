@@ -1,0 +1,29 @@
+// EXPECT: 19
+// Regression trio for fuzz findings (tests/fuzz2):
+//   1. Integer literals of 13+ digits overflowed a `char tmp[12]` in the
+//      emitters' decimal writer — `check` accepted the program and `emit`
+//      then corrupted the stack and died with no diagnostic (O2-agreement).
+//      This file keeps i64-sized literals in play.
+//   2. A nested generic type with a *mismatched* initializer used to resolve
+//      the same type node once per comparison row per nesting level —
+//      exponential (a 15-level `Box<Box<...>> = 1` never finished). Type
+//      resolution is memoized on the node now.
+//   3. Multiple instantiations of one template must stay distinct even though
+//      each instance's type nodes cache their resolution (per-clone).
+fn id<T>(x: T) -> T { return x; }
+
+fn main() -> i32 {
+    // (1) i64-range literals at and near the 13-digit boundary.
+    let big = 9223372036854775807;      // i64 max, 19 digits
+    let wide = 1000000000000;            // 13 digits: the old cliff
+    // (3) the same generic function at three instantiations.
+    let a = id<i32>(3);
+    let b = id<u8>(7u8);
+    let c = id<Box<i32>>(Box<i32> { .v = 9 });
+    // (2) the mismatch case: a deep type against an integer initializer must
+    // be a prompt TYPE-01, not a hang. (The mismatch is in dead "code": we
+    // only need the check pass to resolve the type; `check` stops there.)
+    return a + b as i32 + c.v;          // 3 + 7 + 9 = 19
+}
+
+struct Box<T> { v: T; }

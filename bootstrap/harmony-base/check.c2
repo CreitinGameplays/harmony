@@ -30,6 +30,7 @@ void ck_scope_push(void);
 void ck_scope_pop(void);
 int ck_hash_name(char* name, int mod);
 void ck_sym_reindex(int ncap);
+int ck_resolve_type_nocache(struct AstNode* t);
 int ck_declare(char* name, int kind, int ty, struct AstNode* decl, int mut);
 int ck_lookup(char* name);
 int ck_lookup_type(char* name);
@@ -885,6 +886,23 @@ int ck_is_aggregate(int ty) {
 }
 
 int ck_resolve_type(struct AstNode* t) {
+    int k;
+    int res;
+    if (t == 0) { return TY_UNIT; }
+    // Memoize: a type node resolves to exactly one id for the life of the
+    // program (same template, same arguments), and the generic-instantiation
+    // paths below re-resolve the *same* nodes many times — without the cache
+    // a nested `Box<Box<...>>` type was resolved once per comparison row per
+    // level, which is exponential in the nesting (d=15 never finished; the
+    // fuzzer found it). Substitution clones cache independently; correct,
+    // since each clone is a distinct node with fixed arguments.
+    if (t->ty != 0) { return t->ty; }
+    res = ck_resolve_type_nocache(t);
+    if (res != TY_INVALID) { t->ty = res; }
+    return res;
+}
+
+int ck_resolve_type_nocache(struct AstNode* t) {
     int k;
     if (t == 0) { return TY_UNIT; }
     k = t->kind;

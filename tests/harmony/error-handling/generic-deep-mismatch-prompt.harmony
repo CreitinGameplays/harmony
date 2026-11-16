@@ -1,0 +1,11 @@
+// WANT: TYPE-01
+// A deep generic instantiation against a mismatched initializer must be a
+// prompt TYPE-01, never a hang: type resolution is memoized on the type node
+// (a fuzzer found resolution re-descending once per comparison row per
+// nesting level — exponential, so a 15-level nest never finished).
+struct Box<T> { v: T; }
+
+fn main() -> i32 {
+    let b: Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<Box<i32>>>>>>>>>>>>>>> = 1;
+    return 0;
+}

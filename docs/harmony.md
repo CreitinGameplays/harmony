@@ -1405,6 +1405,12 @@ A **trap** is a controlled, immediate stop with a message, used when a bug is de
 | `T-SHIFT` | shift by a negative or too-wide amount |
 | `T-OOM` | allocation failed |
 | `T-STACK` | stack exhausted (guard page hit) |
+
+Any other invalid memory access is a violated `unchecked` contract (§13.6),
+not a trap: the runtime does not dress it up as one. The stack guard only
+reports `T-STACK` when the fault address is in the guard page under the stack;
+anything else re-raises the signal, so the process dies with a real `SIGSEGV`
+and the driver reports the signal number.
 | `T-ASSERT` | `assert(cond)` / `assert(cond, "msg")` failed |
 | `T-EXPECT` | `.or_trap("msg")` on `Empty` / `Bad` |
 | `T-USER` | explicit `trap("msg")` |
@@ -1962,6 +1968,13 @@ BUILD OK        0 stops · 2 warns · 1 hint      → ./main
 | 1 | At least one `STOP` (or a `WARN` under `--strict`). |
 | 2 | Usage or I/O error (bad flag, missing file). |
 | 70 | (Compiled **program**, not `lc`) the program trapped (§14). |
+
+Under `run`, the compiled program's exit status is forwarded as `main`'s
+return value modulo 256, so any value in 0–255 is a normal result — `139` can
+mean "returned 139". A program that dies from a signal (a violated `unchecked`
+contract, an abort) is therefore reported explicitly by the driver as
+`harmony-base: the compiled program was killed by signal N`, and the forwarded
+status keeps the shell convention (128 + signal).
 
 ### 16.7 Machine-readable formats
 

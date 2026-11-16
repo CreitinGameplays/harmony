@@ -36,7 +36,12 @@ typedef long          isize_t;
 // The signal we guard against, and the flag bits it needs.
 #define SIGSEGV    11
 #define SA_ONSTACK 0x08000000
+#define SA_SIGINFO 0x00000004
 #define SA_RESTORER 0x04000000
+// SA_RESETHAND installs SIG_DFL again just before the handler runs, so
+// returning from the handler lets the faulting instruction re-execute and die
+// with a genuine SIGSEGV (the non-guard-page path below relies on this).
+#define SA_RESETHAND 0x80000000
 #define ALT_STACK_SIZE (64 * 1024)
 
 static long sys(long n, long a, long b, long c) {
@@ -106,8 +111,13 @@ int memcmp(const void *a, const void *b, usize_t n) {
 void __bzero(void *dst, usize_t n) { (void) memset(dst, 0, n); }
 
 // The kernel's rt_sigaction ABI on x86-64: handler, flags, restorer, mask.
+//
+// With SA_SIGINFO the kernel calls `handler(sig, siginfo_t*, ucontext_t*)`,
+// so the handler field is the three-argument form. We use it to read the
+// faulting address (`si_addr`) and tell a stack overflow from any other bad
+// memory access — both arrive as SIGSEGV, but only one is `T-STACK`.
 struct ksigaction {
-    void (*handler)(int);
+    void (*handler)(int, void *, void *);
     unsigned long flags;
     void (*restorer)(void);
     unsigned long mask;
@@ -118,6 +128,11 @@ struct kstack {
     int   ss_flags;
     unsigned long ss_size;
 };
+
+// siginfo_t's leading three words: si_signo, si_errno, si_code; then the
+// union `_sifields`, whose first member for SIGSEGV/SIGBUS is `si_addr`.
+// The pointer lives at byte offset 16 in the x86-64 siginfo layout.
+#define SI_ADDR_OFFSET 16
 
 
 // mmap(NULL, len, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) —
@@ -590,18 +605,35 @@ long lc_syscall3(long n, long a, long b, long c) {
 }
 
 // ---------------------------------------------------------------------------
-// Stack-overflow guard (§14.2, T-STACK). A recursive runaway would otherwise
-// hit the guard page and die with SIGSEGV. We install a handler on an
-// alternate signal stack, and where the kernel's SA_RESTORER needs a
-// `sigreturn` trampoline we provide the canonical `mov rax, 15; syscall`
-// sequence. The handler then turns the fault into a normal `T-STACK` trap
-// (exit 70), which is what the language promises.
+// Fault handler (§14.2, T-STACK). Both a runaway recursion and a bad raw
+// pointer arrive as SIGSEGV, but only the first is `T-STACK`. Reporting
+// "stack exhausted" for a null dereference hid real `unchecked` bugs (a
+// probe showed `*null = 5` printing a stack-overflow trap), so the handler
+// inspects the kernel's `siginfo_t`:
 //
-// A thread that never returns runs out of stack where the kernel placed the
-// guard; the handler only prints a fixed message and exits, so it needs no
-// ucontext decoding.
+//   * `si_addr` (offset 16) is the faulting address.
+//   * The interrupted `rsp` is in the ucontext's mcontext (offset 160).
+//     A stack overflow faults in the guard page the kernel keeps just under
+//     the stack: at or below `rsp` and within a short distance of it.
+//
+// A wild access is a violated `unchecked` contract, so it is **not** dressed
+// up as a trap: the handler returns with SIG_DFL already restored
+// (SA_RESETHAND), so the faulting instruction re-executes and the process
+// dies with an honest SIGSEGV. The driver then reports "the compiled program
+// was killed by signal 11". Inventing a trap code would claim a language
+// guarantee that does not exist here.
 // ---------------------------------------------------------------------------
 static char alt_stack[ALT_STACK_SIZE];
+
+// Byte offsets inside the x86-64 ucontext_t the kernel hands the handler:
+// uc_flags(8) + uc_link(8) + uc_stack(24) = 40, then mcontext.gregs[], where
+// REG_RSP is index 15 (40 + 15*8 = 160).
+#define UCTX_RSP_OFFSET 160
+// A guard-page hit lands within one page below the stack pointer that caused
+// it. GUARD_WINDOW is generous (16 pages) so deep frames and kernel page
+// rounding still classify correctly, while a wild pointer almost never lands
+// that close to the live stack.
+#define GUARD_WINDOW (16 * 4096)
 
 // The restorer the kernel expects for SA_RESTORER on x86-64: invoke
 // `rt_sigreturn` (syscall 15).
@@ -609,14 +641,37 @@ static void sigrestorer(void) {
     __asm__ volatile("mov $15, %rax\n\tsyscall");
 }
 
-static void segv_handler(int sig) {
+static void segv_handler(int sig, void *info, void *uctx) {
+    unsigned long fault;
+    unsigned long rsp;
     (void) sig;
-    // The main stack is gone; write through the trap formatting used by
-    // lc_trap's message, then exit 70 (§14.3).
+    fault = *(unsigned long *) ((char *) info + SI_ADDR_OFFSET);
+    rsp = *(unsigned long *) ((char *) uctx + UCTX_RSP_OFFSET);
+    // A stack overflow faults in the unmapped guard page under the stack:
+    // the address is at or below rsp and within a short distance of it.
+    // (Test fault <= rsp first, then the distance — both subtractions are
+    // then safe.)
+    if (fault >= 4096 && fault <= rsp && (rsp - fault) < GUARD_WINDOW) {
+        // Report on stderr whatever fd a prior `print` left selected, and
+        // flush: a trap exits immediately, so a buffered message would be
+        // lost (this was a real bug — the handler used to buffer and exit).
+        out_fd = 2;
+        out_str("TRAP  T-STACK  stack exhausted\n");
+        out_flush();
+        sys(SYS_exit, 70, 0, 0);
+        for (;;) { }
+    }
+    // Not the guard page: a bad access that violates an `unchecked` contract.
+    // It must *not* be dressed up as a trap (a trap code would claim a
+    // guarantee the language does not make here). The handler is installed
+    // with SA_RESETHAND, so simply returning resumes the faulting instruction
+    // with SIG_DFL in place: it faults again and the process dies with a real
+    // SIGSEGV, which the driver reports truthfully. (Sending the signal from
+    // inside the handler would not work: SIGSEGV stays blocked until the
+    // handler returns, so the signal would be pending forever and the process
+    // would hang — verified with strace.)
     out_flush();
-    sys(SYS_write, 2, (long) "TRAP  T-STACK  stack exhausted\n", 31);
-    sys(SYS_exit, 70, 0, 0);
-    for (;;) { }
+    return;
 }
 
 // Installs the handler. Returns 0 on success.
@@ -632,10 +687,11 @@ static int install_stack_guard(void) {
     if (r < 0) { return -1; }
 
     // SA_ONSTACK so the handler runs on alt_stack, never on the exhausted
-    // main stack; SA_RESTORER names the sigreturn trampoline (required for a
-    // hand-built sigaction on x86-64).
+    // main stack; SA_SIGINFO so it receives siginfo_t (the faulting address)
+    // and the ucontext (the interrupted rsp); SA_RESTORER names the sigreturn
+    // trampoline (required for a hand-built sigaction on x86-64).
     sa.handler = segv_handler;
-    sa.flags = SA_ONSTACK | SA_RESTORER;
+    sa.flags = SA_ONSTACK | SA_SIGINFO | SA_RESTORER | SA_RESETHAND;
     sa.restorer = sigrestorer;
     sa.mask = 0;
     // rt_sigaction(sig, &sa, old, sigset_size): the kernel requires the last

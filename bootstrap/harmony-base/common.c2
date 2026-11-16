@@ -21,6 +21,8 @@ extern int syscall_exit(int code);
 extern int syscall_fork(void);
 extern int syscall_execve(char* path, char** argv, char** envp);
 extern int syscall_wait4(int pid, int* status, int options, int rusage);
+extern int syscall_getpid(void);
+extern int syscall_unlink(char* path);
 
 const int FD_STDOUT = 1;
 const int FD_STDERR = 2;
@@ -222,6 +224,12 @@ const int FORMAT_LINE = 1;
 const int FORMAT_JSON = 2;
 
 // Driver options gathered from the command line.
+// Options are filled by parse_options(), which must assign **every** field:
+// this struct lives on main's stack, so a field it forgets reads whatever the
+// previous frames left there. That is not theoretical — `dump_ast` was once
+// omitted, so `--dump-ast` fired at random depending on stack garbage (a
+// valgrind sample in tests/fuzz2 caught it as an uninitialised-value read).
+// When adding a field here, add its initialization in parse_options too.
 struct Options {
     int   cmd;
     char* input;        // input .harmony path
@@ -718,6 +726,12 @@ int emit_write_file(char* path, char* text, int len);
 // Forks and execs argv[0] with the given arguments (argv NULL-terminated).
 // Returns the child's exit code, or -1 on spawn failure.
 int sys_spawn(char** argv);
+// Like sys_spawn, but also reports the terminating signal in `*signal_no`
+// (0 when the child exited normally). The return value is the exit status, or
+// 128+signal for a signal death. Needed because an exit code alone cannot
+// distinguish a crash from a program that legitimately returned that value.
+// Both live in emit.c2; sys_spawn remains for callers that do not care.
+int sys_spawn_status(char** argv, int* signal_no);
 // Implements `emit-llvm` / `build` / `run` for one checked program and
 // returns an exit code (§16.6).
 int emit_command(struct Options* opts, struct AstNode* prog);

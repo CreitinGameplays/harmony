@@ -35,7 +35,7 @@ HB_SRC    := \
 	bootstrap/harmony-base/main.c2
 SEED_SRC  := $(wildcard bootstrap/c2x-seed/*.asm)
 
-.PHONY: all clean test test-fuzz test-seed test-lisp seed harmony-base lisp
+.PHONY: all clean test test-fuzz test-fuzz2 fuzz2-deep test-seed test-lisp seed harmony-base lisp
 
 all: harmony-base
 
@@ -76,6 +76,15 @@ test-lisp: harmony-base
 
 test-fuzz: harmony-base
 	bash tests/harmony/fuzz.sh
+
+# The aggressive fuzzer (tests/fuzz2). `test-fuzz2` is the fast smoke gate:
+# the deterministic adversarial shapes, no shrinking, parallel over cores.
+# `fuzz2-deep` runs a real campaign (grammar + mutation, shrinking on).
+test-fuzz2: harmony-base
+	python3 tests/fuzz2/fuzz.py --engines specials --no-shrink
+
+fuzz2-deep: harmony-base
+	python3 tests/fuzz2/fuzz.py --engines specials,gen,mut --iterations 1000
 
 clean:
 	rm -rf build

@@ -1,0 +1,12 @@
+// EXPECT: 241
+// Regression for a driver bug the fuzzer found: `run` used fixed temp paths
+// (/tmp/harmony-base.bin, ...), so two concurrent compilations clobbered each
+// other's binary — one clang truncated the file the other had just linked and
+// the loser's exec failed with status 127. Campaigns compile in parallel by
+// design (and the final `harmony` is multi-core), so the paths are per-process
+// now. This program is also the O4 oracle's false-positive repro: a `main`
+// that returns a value above 255 exits with `value mod 256` (241 here), which
+// is a legitimate exit status and must not be mistaken for a signal death.
+fn main() -> i32 {
+    return 1033658417137;      // 1033658417137 % 256 == 241
+}

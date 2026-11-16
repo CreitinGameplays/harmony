@@ -30,7 +30,13 @@ run_case() {
 
     "$HB" run "$src" >"$TMP/out" 2>"$TMP/err"
     local rc=$?
-    if [ "$rc" -ge 128 ]; then
+    # A crash is a *signal* death, which the driver reports on stderr (it
+    # keeps the shell's 128+n code). A large exit code alone is not a crash:
+    # `run` forwards `main`'s value mod 256, so 241 is a legitimate result.
+    if [ "$rc" -ge 128 ] && grep -q "killed by signal" "$TMP/err"; then
+        fail=$((fail + 1)); printf 'FAIL %s (crashed, exit %s)\n' "$name" "$rc"; return
+    fi
+    if [ "$rc" -ge 128 ] && [ -z "$expect" ] && [ -z "$trap" ]; then
         fail=$((fail + 1)); printf 'FAIL %s (crashed, exit %s)\n' "$name" "$rc"; return
     fi
     if [ -n "$trap" ]; then

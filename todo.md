@@ -127,8 +127,11 @@ binary is `harmony-base` (the spec's `lc`).
   - **`harmony-base audit [file]`** (§13.6, §13.8): lists every `unchecked`
     block / fn with file, line, kind, reason, and span stats,
     `--format=json` included (`bootstrap/harmony-base/audit.c2`).
-  - **Stack guard** (§14.2): SIGSEGV handler on an alternate stack → `T-STACK`
-    (exit 70); `run`/`build` report signal deaths as `128 + signo`.
+  - **Stack guard** (§14.2): SIGSEGV handler on an alternate stack. It reads
+    `siginfo_t`/`ucontext` and reports `T-STACK` (exit 70) only when the fault
+    is in the stack guard page; any other fault (a violated `unchecked`
+    contract) re-raises, and `run`/`build` report the signal death by name as
+    well as `128 + signo`, so it is never confused with a large exit value.
   - Quiet toolchain: clang stderr captured to a log; one-line summary + first
     error by default, `-v` replays the whole log.
   - Untyped literals adapt at every coercion site (§5.9), stamped on the node.
@@ -718,6 +721,13 @@ directly into its binary and (b) support **multi-core compilation by default**.
 
 ### Self-hosting
 
+- [ ] **Fuzzer gate before the rewrite**: `tests/fuzz2/fuzz.py` (5 engines,
+      5 oracles, parallel) must run clean for a sustained campaign. It has
+      already found and driven fixes for 7 real defects (13-digit literal
+      stack overflow, exponential generic resolution, concurrent temp-path
+      clobbering, SIGSEGV mislabeled `T-STACK`, parser depth SIGSEGV, name
+      truncation, quadratic instantiation). `make test-fuzz2` is the fast
+      gate; `make fuzz2-deep` a real campaign.
 - [ ] Rewrite the compiler in harmony-base (`harmony/`).
 - [ ] Integrate LLVM IR emission directly into the compiler binary (AGENTS.md).
 - [ ] Multi-core compilation by default (AGENTS.md).

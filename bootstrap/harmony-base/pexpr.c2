@@ -593,7 +593,15 @@ int p_at_mult_end(void) {
 
 // expr = range_expr
 struct AstNode* parse_expr(void) {
-    return parse_range_expr();
+    struct AstNode* n;
+    if (p_depth_enter(p_cur())) {
+        // Over the limit: consume nothing and yield no node. Callers all check
+        // for 0 and recover, and `p_ppanic` is set so reporting stays quiet.
+        return 0;
+    }
+    n = parse_range_expr();
+    p_depth_leave();
+    return n;
 }
 
 // cast_expr = unary { "as" type }

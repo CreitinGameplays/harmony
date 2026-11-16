@@ -331,11 +331,20 @@ int* g_tyinst_id;
 char** g_tyinst_name;      // mangled instance name (`Box__i32`)
 char** g_tyinst_base;      // template base name (`Box`)
 struct AstList** g_tyinst_targs;   // the concrete type args (`[i32]`)
+int* g_tyinst_nargs;       // count of type args (<= g_tyinst_max_args)
 int g_tyinst_cap;
 int g_tyinst_name_cap;
 int g_tyinst_base_cap;
 int g_tyinst_targs_cap;
+int g_tyinst_nargs_cap;
+int g_tyinst_args_cap;     // rows of resolved arg ids (see g_tyinst_args)
 int g_ntyinst;
+
+// Flat storage for the resolved type-arg ids of every instance, one fixed
+// width per row (small: a template with >16 parameters is rare; extra args
+// are simply not cached and the fast-path match falls back to the name scan).
+const int TYINST_ARGS_ROW = 16;
+int* g_tyinst_args;        // g_tyinst_args[i * 16 .. +nargs)
 
 // Generic *methods* declared on a generic type template (`methods<T> Box<T> {
 // fn get(&self) -> T }`). Each is a function template keyed by the receiver's
@@ -1637,13 +1646,41 @@ int ck_instantiate_type(struct AstNode* at, char* base, struct AstList* targs) {
         i = i + 1;
     }
 
-    iname = ck_instance_name(base, targs);
-    // Reuse an existing instance of the same mangled name.
-    i = 0;
-    while (i < g_ntyinst) {
-        if (str_eq(g_tyinst_name[i], iname)) { return g_tyinst_id[i]; }
-        i = i + 1;
+    // Reuse an existing instance of the same concrete arguments (fast path:
+    // compare the resolved type-arg ids, exact and O(ntargs); the mangled
+    // names were compared before, but a deep `Box<Box<...>>` instantiation
+    // makes those names grow with the nesting, and comparing them made the
+    // whole instantiation quadratic — a 300-deep nest took ~27s).
+    {
+        int match;
+        match = 0;
+        i = 0;
+        while (i < g_ntyinst) {
+            if (g_tyinst_nargs[i] == ntargs
+                && str_eq(g_tyinst_base[i], base)) {
+                int j;
+                int same;
+                same = 1;
+                j = 0;
+                while (j < ntargs) {
+                    if (g_tyinst_args[i * TYINST_ARGS_ROW + j]
+                        != ck_resolve_type(targs->items[j])) {
+                        same = 0;
+                        break;
+                    }
+                    j = j + 1;
+                }
+                if (same) { match = 1; break; }
+            }
+            i = i + 1;
+        }
+        if (match) { return g_tyinst_id[i]; }
     }
+
+    // A new instance: build its mangled name (only on this miss path — the
+    // name embeds the full nested spelling, so building it per reuse was the
+    // other half of the quadratic cost).
+    iname = ck_instance_name(base, targs);
 
     // Build the instance's nominal type. `ty_new_typed` gives it the decl
     // node for `--dump-ast`/audit; its name is the mangled instance name.
@@ -1723,20 +1760,42 @@ int ck_instantiate_type(struct AstNode* at, char* base, struct AstList* targs) {
     // Record the instance. Three parallel tables share one capacity.
     if (g_ntyinst >= g_tyinst_cap) {
         ck_grow((char**) &g_tyinst_id, &g_tyinst_cap, 8, g_ntyinst + 1);
-        if (g_ntyinst >= g_tyinst_name_cap) {
-            ck_grow((char**) &g_tyinst_name, &g_tyinst_name_cap, 8, g_ntyinst + 1);
-        }
-        if (g_ntyinst >= g_tyinst_base_cap) {
-            ck_grow((char**) &g_tyinst_base, &g_tyinst_base_cap, 8, g_ntyinst + 1);
-        }
+    }
+    if (g_ntyinst >= g_tyinst_name_cap) {
+        ck_grow((char**) &g_tyinst_name, &g_tyinst_name_cap, 8, g_ntyinst + 1);
+    }
+    if (g_ntyinst >= g_tyinst_base_cap) {
+        ck_grow((char**) &g_tyinst_base, &g_tyinst_base_cap, 8, g_ntyinst + 1);
+    }
+    if (g_ntyinst >= g_tyinst_nargs_cap) {
+        ck_grow((char**) &g_tyinst_nargs, &g_tyinst_nargs_cap, 8, g_ntyinst + 1);
+    }
+    if (g_ntyinst >= g_tyinst_targs_cap) {
+        ck_grow((char**) &g_tyinst_targs, &g_tyinst_targs_cap, 8, g_ntyinst + 1);
     }
     g_tyinst_id[g_ntyinst] = id;
     g_tyinst_name[g_ntyinst] = iname;
     g_tyinst_base[g_ntyinst] = base;
-    if (g_ntyinst >= g_tyinst_targs_cap) {
-        ck_grow((char**) &g_tyinst_targs, &g_tyinst_targs_cap, 8, g_ntyinst + 1);
-    }
     g_tyinst_targs[g_ntyinst] = targs;
+    // Cache the resolved arg ids for the O(n) reuse fast path (a row wider
+    // than the fixed width is simply not cached; the match falls back).
+    if (ntargs <= TYINST_ARGS_ROW) {
+        int row;
+        int j;
+        if (g_ntyinst >= g_tyinst_args_cap) {
+            ck_grow((char**) &g_tyinst_args, &g_tyinst_args_cap,
+                    8 * TYINST_ARGS_ROW, (g_ntyinst + 1) * TYINST_ARGS_ROW);
+        }
+        row = g_ntyinst * TYINST_ARGS_ROW;
+        g_tyinst_nargs[g_ntyinst] = ntargs;
+        j = 0;
+        while (j < ntargs) {
+            g_tyinst_args[row + j] = ck_resolve_type(targs->items[j]);
+            j = j + 1;
+        }
+    } else {
+        g_tyinst_nargs[g_ntyinst] = 0;   // not cached: fall back to names
+    }
     g_ntyinst = g_ntyinst + 1;
     return id;
 }

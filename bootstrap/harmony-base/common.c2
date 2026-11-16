@@ -360,6 +360,7 @@ int lex_scan_string(struct SourceFile* sf, int* pos, struct Token* t);
 // Shared lexer scratch buffer (identifier/literal assembly; one at a time —
 // the lexer and the parser both build short names through it, never nested).
 void   lexbuf_reset(void);
+void   lexbuf_release(void);
 void   lexbuf_push(char c);
 void   lexbuf_push_str(char* s);
 char*  lexbuf_finish(void);      // arena copy, NUL-terminated
@@ -456,6 +457,14 @@ char* p_prev_word(void);          // arena copy of prev token spelling
 // Returns the diagnostic index or -1.
 int p_syn(char* code, char* title, char* summary,
           char* fix_label, char* fix_text, struct Token* at);
+
+// Recursion-depth guard for the recursive-descent grammar. p_depth_enter
+// returns 1 (and reports one SYN-05 stop) when nesting exceeds the limit, so
+// the parser stays alive on adversarial input instead of overflowing the
+// native stack; callers must then recover without descending. Every enter
+// must be paired with a leave.
+int  p_depth_enter(struct Token* at);
+void p_depth_leave(void);
 
 // The grammar halves.
 struct AstNode* parse_type(void);

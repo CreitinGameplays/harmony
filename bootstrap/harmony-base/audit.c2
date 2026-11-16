@@ -230,6 +230,7 @@ int audit_run(struct Options* opts) {
     }
 
     arena_reset();
+    lexbuf_release();
     diag_reset();
     if (source_load(opts->input, &sf) != 0) {
         diag_plain("source.not-found", opts->input);

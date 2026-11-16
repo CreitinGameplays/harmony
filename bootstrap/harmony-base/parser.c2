@@ -24,6 +24,40 @@ int g_ppanic;                   // panic mode until the next sync boundary
 int g_ploop_depth;              // nested loop depth (break/continue checks)
 struct AstNode* g_pprogram;    // program root (for later stages)
 
+// Recursion depth guard. The grammar is recursive descent, so a deeply nested
+// source (`(((((...`, `[[[[[...`, `{{{{...`) would exhaust the native stack
+// and crash the compiler. A fuzzer (tests/harmony/fuzz2.sh) found the cliff at
+// ~8k-12k levels. We refuse instead: past the limit the parser reports one
+// clear stop and stops descending, so the process stays alive and well-defined
+// on *any* input. The limit is deliberately far above real code (a machine-
+// generated 4k-deep expression still parses) and far below the stack ceiling.
+int g_pdepth;
+int g_pdepth_limit = 2000;
+
+// Enters one level of recursion. Returns 1 when the limit is exceeded (the
+// caller must recover without descending); in that case a single SYN-05 stop
+// is reported (once — repeated reports in panic mode would be noise).
+int p_depth_enter(struct Token* at) {
+    g_pdepth = g_pdepth + 1;
+    if (g_pdepth > g_pdepth_limit) {
+        g_pdepth = g_pdepth - 1;
+        if (!g_ppanic) {
+            p_syn("SYN-05",
+                  "the nesting is too deep",
+                  "The parser refuses recursion beyond its depth limit; nest it less, or split the expression.",
+                  "flatten the nesting",
+                  "a.b().c instead of (((a).b()).c)",
+                  at);
+        }
+        return 1;
+    }
+    return 0;
+}
+
+void p_depth_leave(void) {
+    if (g_pdepth > 0) { g_pdepth = g_pdepth - 1; }
+}
+
 // ---------------------------------------------------------------------------
 // Cursor helpers.
 // ---------------------------------------------------------------------------
@@ -314,7 +348,7 @@ int parse_generic_args(struct AstNode* onto) {
 }
 
 // parse_type (§18). Returns a type node, or 0 after a stop.
-struct AstNode* parse_type(void) {
+struct AstNode* parse_type_core(void) {
     struct AstNode* n;
     int start;
 
@@ -399,6 +433,16 @@ struct AstNode* parse_type(void) {
         p_end_at(n, p_prev());
         return n;
     }
+}
+
+// The depth-guarded type entry point (see `p_depth_enter`). Nested type forms
+// (`[[[[...`, `&&&&...`, `Box<Box<...>>`) all re-enter here.
+struct AstNode* parse_type(void) {
+    struct AstNode* n;
+    if (p_depth_enter(p_cur())) { return 0; }
+    n = parse_type_core();
+    p_depth_leave();
+    return n;
 }
 
 // ---------------------------------------------------------------------------

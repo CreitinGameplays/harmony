@@ -8,6 +8,7 @@ int pipeline_run(struct Options* opts) {
     struct AstNode* root;
 
     arena_reset();
+    lexbuf_release();
     diag_reset();
 
     // Stage 1+2+3: load the root module plus everything it imports, merged

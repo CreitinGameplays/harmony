@@ -18,11 +18,45 @@
 
 // Scratch buffer for identifiers and joined names (parser uses it too; never
 // nested — the cursor helpers copy it out before re-entering).
-char g_lexbuf[512];
-int  g_lexbuf_len;
+//
+// Grows on demand: a fixed 512-byte buffer silently truncated any longer
+// identifier, joined path, or mangled generic-instance name (a deep
+// `Box<Box<...>>` instantiates a name that grows with the nesting), and two
+// distinct names cut to the same 510 bytes then collided as the same type —
+// a silent miscompile a fuzzer found. The buffer lives in the arena (never
+// freed mid-run), so the growth is unconditional and amortized.
+char* g_lexbuf;
+int   g_lexbuf_len;
+int   g_lexbuf_cap;
 
 void lexbuf_reset(void) {
     g_lexbuf_len = 0;
+}
+
+// Drops the arena-backed scratch buffer so the next append reallocates. Called
+// after `arena_reset` (the old buffer's memory is rewound).
+void lexbuf_release(void) {
+    g_lexbuf = 0;
+    g_lexbuf_cap = 0;
+    g_lexbuf_len = 0;
+}
+
+void lexbuf_grow(int need) {
+    char* bigger;
+    int ncap;
+    int i;
+    if (g_lexbuf_cap == 0) {
+        ncap = 512;
+    } else {
+        ncap = g_lexbuf_cap;
+    }
+    while (ncap <= need) { ncap = ncap * 2; }
+    bigger = arena_alloc(ncap);
+    i = 0;
+    while (i < g_lexbuf_len) { bigger[i] = g_lexbuf[i]; i = i + 1; }
+    bigger[i] = 0;
+    g_lexbuf = bigger;
+    g_lexbuf_cap = ncap;
 }
 
 // Scratch buffer for cooked literal bytes (chars, strings): escapes decode
@@ -101,11 +135,10 @@ void lexbuf_push_int(int v) {
 }
 
 void lexbuf_push(char c) {
-    if (g_lexbuf_len < 510) {
-        g_lexbuf[g_lexbuf_len] = c;
-        g_lexbuf_len = g_lexbuf_len + 1;
-        g_lexbuf[g_lexbuf_len] = 0;   // keep NUL-terminated at the length
-    }
+    if (g_lexbuf_len + 2 > g_lexbuf_cap) { lexbuf_grow(g_lexbuf_len + 2); }
+    g_lexbuf[g_lexbuf_len] = c;
+    g_lexbuf_len = g_lexbuf_len + 1;
+    g_lexbuf[g_lexbuf_len] = 0;   // keep NUL-terminated at the length
 }
 
 char* lexbuf_finish(void) {

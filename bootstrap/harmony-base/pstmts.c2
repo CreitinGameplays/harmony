@@ -533,7 +533,7 @@ struct AstNode* parse_block(void) {
 }
 
 // stmt (§18). Returns 0 after a reported stop (the caller recovers).
-struct AstNode* parse_stmt(void) {
+struct AstNode* parse_stmt_core(void) {
     struct AstNode* n;
     struct Token* start;
 
@@ -630,6 +630,17 @@ struct AstNode* parse_stmt(void) {
         p_end_at(n, p_prev());
         return n;
     }
+}
+
+// The depth-guarded statement entry point: `parse_stmt` wraps the core body so
+// nested blocks (`{{{{...`) and nested statements cannot overflow the stack.
+// Every recursive statement path re-enters here through `parse_stmt`.
+struct AstNode* parse_stmt(void) {
+    struct AstNode* n;
+    if (p_depth_enter(p_cur())) { return 0; }
+    n = parse_stmt_core();
+    p_depth_leave();
+    return n;
 }
 
 // ---------------------------------------------------------------------------
@@ -768,6 +779,7 @@ struct AstNode* parser_run(struct SourceFile* sf, struct Token* tokens, int ntok
     g_pstops = 0;
     g_ppanic = 0;
     g_ploop_depth = 0;
+    g_pdepth = 0;
 
     root = ast_node_new(AST_PROGRAM);
     root->start = 0;

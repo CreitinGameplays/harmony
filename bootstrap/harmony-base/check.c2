@@ -82,6 +82,9 @@ void ck_note_variant(struct AstNode* p, int st, int vi, int* seen, int* nseen);
 void ck_stmt_return(struct AstNode* n);
 int ceval_const_int(struct AstNode* n);
 void check_program(struct AstNode* prog);
+void ck_grow(char** items, int* cap, int elem, int at_least);
+void ck_syms_grow(int at_least);
+void ck_scopes_grow(int at_least);
 
 // ---------------------------------------------------------------------------
 // Symbol table. Flat, resizable; scopes are marks into the array.
@@ -100,17 +103,20 @@ const int SK_GEN    = 7;   // generic parameter (T): ty = its placeholder id
 int g_unchecked_depth;
 int g_deny_unchecked;
 
-char* g_sym_name[4096];
-int g_sym_kind[4096];
-int g_sym_ty[4096];
-struct AstNode* g_sym_decl[4096];
-int g_sym_mut[4096];
-int g_sym_init[4096];  // definite-initialization tracking (INIT-01)
+char** g_sym_name;
+int* g_sym_kind;
+int* g_sym_ty;
+struct AstNode** g_sym_decl;
+int* g_sym_mut;
+int* g_sym_init;       // definite-initialization tracking (INIT-01)
+int g_sym_cap;
 int g_nsyms;
-int g_scope[256];      // scope start marks
+int* g_scope;          // scope start marks
+int g_scope_cap;       // allocated scope slots
 int g_nscope;
 
 void ck_scope_push(void) {
+    if (g_nscope >= g_scope_cap) { ck_scopes_grow(g_nscope + 1); }
     g_scope[g_nscope] = g_nsyms;
     g_nscope = g_nscope + 1;
 }
@@ -137,7 +143,7 @@ int ck_declare(char* name, int kind, int ty, struct AstNode* decl, int mut) {
         }
         i = i - 1;
     }
-    if (g_nsyms >= 4096) { return -1; }
+    if (g_nsyms >= g_sym_cap) { ck_syms_grow(g_nsyms + 1); }
     g_sym_name[g_nsyms] = name;
     g_sym_kind[g_nsyms] = kind;
     g_sym_ty[g_nsyms] = ty;
@@ -200,7 +206,7 @@ int ck_meth_ty(int i) {
 }
 
 int ck_fn_self_ty(int i) {
-    if (i < 0 || i >= 1024) { return 0; }
+    if (i < 0 || i >= g_nfn) { return 0; }
     return g_fn_self_ty[i];
 }
 
@@ -264,9 +270,13 @@ int ck_lookup_type(char* name) {
 }
 
 // ---------------------------------------------------------------------------
-// Item registries.
+// Item registries. Resizable (doubling), because the `harmony` rewrite (and
+// any large program) has far more than a fixed handful of functions (§19.4
+// "prefer things to be auto resizable"). The old fixed `[1024]` silently
+// dropped the 1025th function's return type, so it emitted as `void`.
 // ---------------------------------------------------------------------------
-struct AstNode* g_fn_decl[1024];   // AST_FN nodes, in declaration order
+struct AstNode** g_fn_decl;        // AST_FN nodes, in declaration order
+int g_fn_cap;                      // allocated slots
 int g_nfn;
 
 // Generic-function templates and their monomorphized instances (§18). A
@@ -274,17 +284,95 @@ int g_nfn;
 // explicit type arguments clones the template, substitutes the type nodes, and
 // registers a concrete instance (`id__i32`) as an ordinary function, which the
 // normal body-checking and emission then handle.
-struct AstNode* g_gen_decl[256];   // template AST_FN nodes
-char* g_gen_name[256];
+struct AstNode** g_gen_decl;       // template AST_FN nodes
+char** g_gen_name;
+int g_gen_cap;
+int g_gen_name_cap;
 int g_ngen;
 
-struct AstNode* g_gen_inst[512];   // instantiated AST_FN clones (emitted too)
+struct AstNode** g_gen_inst;       // instantiated AST_FN clones (emitted too)
+int g_gen_inst_cap;
 int g_ngen_inst;
 
-int g_meth_ty[1024];               // receiver type id per method
-char* g_meth_name[1024];
-int g_meth_fn[1024];               // index into g_fn_decl
+int* g_meth_ty;                    // receiver type id per method
+char** g_meth_name;
+int* g_meth_fn;                    // index into g_fn_decl
+int g_meth_cap;
 int g_nmeth;
+
+// Grows one resizable table by doubling. `cap` and `items` are pointers to the
+// table's live fields; `elem` is the element size in bytes. The old block is
+// arena-backed and never freed, which is fine (the arena is per-run).
+void ck_grow(char** items, int* cap, int elem, int at_least) {
+    int ncap;
+    char* ni;
+    int i;
+    ncap = *cap;
+    if (ncap == 0) { ncap = 8; }
+    while (ncap < at_least) { ncap = ncap * 2; }
+    ni = arena_alloc(ncap * elem);
+    i = 0;
+    while (i < ncap * elem) { ni[i] = 0; i = i + 1; }
+    if (*items != 0 && *cap > 0) {
+        i = 0;
+        while (i < (*cap) * elem) { ni[i] = ((char*) *items)[i]; i = i + 1; }
+    }
+    *items = ni;
+    *cap = ncap;
+}
+
+// The symbol table is six parallel arrays sharing one capacity; grow them
+// together so an index is valid in all six.
+void ck_syms_grow(int at_least) {
+    int ncap;
+    int i;
+    char** nn;
+    int* nk;
+    int* nt;
+    struct AstNode** nd;
+    int* nm;
+    int* ni_s;
+    ncap = g_sym_cap;
+    if (ncap == 0) { ncap = 64; }
+    while (ncap < at_least) { ncap = ncap * 2; }
+    nn = arena_alloc(ncap * 8);
+    nk = arena_alloc(ncap * 8);
+    nt = arena_alloc(ncap * 8);
+    nd = arena_alloc(ncap * 8);
+    nm = arena_alloc(ncap * 8);
+    ni_s = arena_alloc(ncap * 8);
+    i = 0;
+    while (i < g_nsyms) {
+        nn[i] = g_sym_name[i];
+        nk[i] = g_sym_kind[i];
+        nt[i] = g_sym_ty[i];
+        nd[i] = g_sym_decl[i];
+        nm[i] = g_sym_mut[i];
+        ni_s[i] = g_sym_init[i];
+        i = i + 1;
+    }
+    g_sym_name = nn;
+    g_sym_kind = nk;
+    g_sym_ty = nt;
+    g_sym_decl = nd;
+    g_sym_mut = nm;
+    g_sym_init = ni_s;
+    g_sym_cap = ncap;
+}
+
+void ck_scopes_grow(int at_least) {
+    int ncap;
+    int i;
+    int* ns;
+    ncap = g_scope_cap;
+    if (ncap == 0) { ncap = 64; }
+    while (ncap < at_least) { ncap = ncap * 2; }
+    ns = arena_alloc(ncap * 8);
+    i = 0;
+    while (i < g_nscope) { ns[i] = g_scope[i]; i = i + 1; }
+    g_scope = ns;
+    g_scope_cap = ncap;
+}
 
 struct AstNode* g_prog;            // program root (for --dump-ast and later)
 
@@ -558,8 +646,10 @@ int g_fn_depth;
 int g_loop_depth;
 
 // Per-function receiver type (0 for a free function): the type of `self`
-// inside a method body.
-int g_fn_self_ty[1024];
+// inside a method body. Indexed by function index, so it grows with the
+// function table.
+int* g_fn_self_ty;
+int g_fn_self_ty_cap;
 
 int ck_cur_fn(void) {
     if (g_fn_depth <= 0) { return 0; }
@@ -1066,7 +1156,12 @@ int ck_fn_register_node(struct AstNode* n) {
     int i;
     int idx;
     struct AstList* params;
-    if (g_nfn >= 1024) { return -1; }
+    if (g_nfn >= g_fn_cap) {
+        ck_grow((char**) &g_fn_decl, &g_fn_cap, 8, g_nfn + 1);
+    }
+    if (g_nfn >= g_fn_self_ty_cap) {
+        ck_grow((char**) &g_fn_self_ty, &g_fn_self_ty_cap, 8, g_nfn + 1);
+    }
     idx = g_nfn;
     g_fn_decl[g_nfn] = n;
     // The body node carries the function index for return-type lookup; an
@@ -1101,11 +1196,15 @@ void ck_register_fn(struct AstNode* n) {
     // A generic `fn id<T>(...)` is a template (§18): record it, do not bind a
     // symbol. Its `T` type nodes cannot resolve without concrete arguments.
     if (n->kids != 0) {
-        if (g_ngen < 256) {
-            g_gen_decl[g_ngen] = n;
-            g_gen_name[g_ngen] = n->sval;
-            g_ngen = g_ngen + 1;
+        if (g_ngen >= g_gen_cap) {
+            ck_grow((char**) &g_gen_decl, &g_gen_cap, 8, g_ngen + 1);
         }
+        if (g_ngen >= g_gen_name_cap) {
+            ck_grow((char**) &g_gen_name, &g_gen_name_cap, 8, g_ngen + 1);
+        }
+        g_gen_decl[g_ngen] = n;
+        g_gen_name[g_ngen] = n->sval;
+        g_ngen = g_ngen + 1;
         return;
     }
     {
@@ -1354,7 +1453,6 @@ int ck_instantiate(struct AstNode* n, char* name, struct AstList* targs) {
         if (str_eq(g_fn_decl[i]->sval, iname)) { return i; }
         i = i + 1;
     }
-    if (g_nfn >= 1024) { return -1; }
 
     inst = ast_clone(tmpl);
     inst->sval = iname;
@@ -1373,10 +1471,11 @@ int ck_instantiate(struct AstNode* n, char* name, struct AstList* targs) {
 
     idx = ck_fn_register_node(inst);
     if (idx < 0) { return -1; }
-    if (g_ngen_inst < 512) {
-        g_gen_inst[g_ngen_inst] = inst;
-        g_ngen_inst = g_ngen_inst + 1;
+    if (g_ngen_inst >= g_gen_inst_cap) {
+        ck_grow((char**) &g_gen_inst, &g_gen_inst_cap, 8, g_ngen_inst + 1);
     }
+    g_gen_inst[g_ngen_inst] = inst;
+    g_ngen_inst = g_ngen_inst + 1;
     return idx;
 }
 
@@ -1508,12 +1607,33 @@ void ck_register_methods(struct AstNode* n) {
     while (i < fns->len) {
         struct AstNode* f;
         f = fns->items[i];
-        if (g_nmeth < 1024) {
-            g_meth_ty[g_nmeth] = recv;
-            g_meth_name[g_nmeth] = f->sval;
-            g_meth_fn[g_nmeth] = g_nfn;
-            g_nmeth = g_nmeth + 1;
+        if (g_nmeth >= g_meth_cap) {
+            ck_grow((char**) &g_meth_ty, &g_meth_cap, 8, g_nmeth + 1);
+            // `g_meth_name` and `g_meth_fn` share the capacity; grow to match.
+            {
+                char** nn;
+                int* nf;
+                int k;
+                nn = arena_alloc(g_meth_cap * 8);
+                nf = arena_alloc(g_meth_cap * 8);
+                k = 0;
+                while (k < g_meth_cap * 8) { ((char*) nn)[k] = 0; k = k + 1; }
+                k = 0;
+                while (k < g_meth_cap) { nf[k] = 0; k = k + 1; }
+                k = 0;
+                while (k < g_nmeth) {
+                    nn[k] = g_meth_name[k];
+                    nf[k] = g_meth_fn[k];
+                    k = k + 1;
+                }
+                g_meth_name = nn;
+                g_meth_fn = nf;
+            }
         }
+        g_meth_ty[g_nmeth] = recv;
+        g_meth_name[g_nmeth] = f->sval;
+        g_meth_fn[g_nmeth] = g_nfn;
+        g_nmeth = g_nmeth + 1;
         ck_register_fn(f);
         // Record the receiver type on the (just-registered) function, and
         // give its `self` parameter the right reference shape.
@@ -2069,13 +2189,10 @@ void check_program(struct AstNode* prog) {
     g_nscope = 0;
     g_nfn = 0;
     g_nmeth = 0;
+    g_ngen = 0;
+    g_ngen_inst = 0;
     g_fn_depth = 0;
     g_loop_depth = 0;
-    {
-        int i;
-        i = 0;
-        while (i < 4096) { g_sym_init[i] = 0; i = i + 1; }
-    }
     types_reset();
     ck_register_primitives();
     ck_register_program(prog);

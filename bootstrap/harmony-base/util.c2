@@ -5,28 +5,70 @@ int  g_arena_used;
 
 // ---------------------------------------------------------------------------
 // Arena
+//
+// Two regions. The fixed 16 MiB BSS block is the fast path (no syscall) and
+// covers all small inputs. When it fills, the arena grows from the OS in large
+// `mmap` chunks, so the compiler is no longer capped at 16 MiB of generated IR
+// — the `harmony` rewrite is far larger (§19.4). Every chunk is kept mapped and
+// never reused mid-run, so all earlier pointers stay valid; the region is only
+// rewound by `arena_reset` (a fresh program/audit), which reuses the chunks.
 // ---------------------------------------------------------------------------
+
+char g_arena[16777216];
+int  g_arena_used;
+
+// The current spill chunk (0 until the fixed block first overflows).
+char* g_spill_base;
+int   g_spill_used;
+int   g_spill_cap;
 
 void arena_reset(void) {
     g_arena_used = 0;
+    g_spill_used = 0;   // reuse the first chunk; earlier pointers are dead
 }
 
 int arena_used(void) {
     return g_arena_used;
 }
 
+// Grows the spill region by one chunk, big enough for `need` bytes.
+void arena_spill_grow(int need) {
+    int want;
+    int base;
+    want = 32 * 1024 * 1024;            // 32 MiB chunks
+    if (need > want) { want = (need + 4095) & (0 - 4096); }
+    // mmap(NULL, want, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0).
+    // Raw syscall 9 through the seed's `asm()` seam (docs/c2x-seed.md): the
+    // generated-binary runtime only emits the read/write/fork family, not mmap,
+    // so the compiler reaches the kernel directly for its scratch region.
+    base = 0;
+    asm("    mov rax, 9\n    xor rdi, rdi\n    mov rsi, %0\n    mov rdx, 3\n    mov r10, 34\n    mov r8, -1\n    xor r9, r9\n    syscall\n    mov %1, rax",
+        want, base);
+    if (base == 0 || base < 0) {
+        err_str("harmony-base: internal: out of memory (ICE-01)\n");
+        syscall_exit(EXIT_STOP);
+    }
+    g_spill_base = (char*) base;
+    g_spill_used = 0;
+    g_spill_cap = want;
+}
+
 char* arena_alloc(int n) {
     char* p;
     // 8-byte align (c2x-seed structs/pointers want natural alignment).
-    g_arena_used = (g_arena_used + 7) & (0 - 8);
-    p = &g_arena[g_arena_used];
-    g_arena_used = g_arena_used + n;
-    // A hard arena-overflow is a compiler bug (ICE-01, §16.6): fail loudly
-    // on stderr with the STOP exit code instead of scribbling past the block.
-    if (g_arena_used > 16777216) {
-        err_str("harmony-base: internal: arena exhausted (ICE-01)\n");
-        syscall_exit(EXIT_STOP);
+    n = (n + 7) & (0 - 8);
+    // Fast path: the fixed block, as long as this request still fits.
+    if (g_arena_used + n <= 16777216) {
+        p = &g_arena[g_arena_used];
+        g_arena_used = g_arena_used + n;
+        return p;
     }
+    // Spill path: a fresh OS chunk (or the current one if the request fits).
+    if (g_spill_base == 0 || g_spill_used + n > g_spill_cap) {
+        arena_spill_grow(n);
+    }
+    p = g_spill_base + g_spill_used;
+    g_spill_used = g_spill_used + n;
     return p;
 }
 

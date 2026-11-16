@@ -73,6 +73,13 @@ binary is `harmony-base` (the spec's `lc`).
     with keyword matching and token copies reading the live `tok_ptr`
     (regression `long_token_buffer.c2`). `EXIT_SUCCESS`/`EXIT_FAILURE` were
     `global` but never defined; now real symbols.
+  - **`sys_wait4` lost its 4th argument.** The emitted `syscall_wait4` stub
+    documented "4th arg in r10 per Linux syscall ABI" but never moved `rcx ->
+    r10`, so the raw `syscall` read garbage from `r10` and returned `-EFAULT`.
+    Latent until the arena spill began using inline-asm `mmap` (which sets
+    `r10`), making the failure deterministic; found while fixing the compiler
+    arena. The stub now moves `rcx -> r10` first (regression
+    `tests/c2x-seed/cases/wait4_r10.c2`). No other stub takes a 4th argument.
 
 - [x] **M1 — Type checker + LLVM backend: "LLVM with types and traps" (§19.7).**
   - Checker for scalars, functions, structs, enums, `switch`, arrays,
@@ -399,64 +406,68 @@ wrong exit code, or ICE) with a repro.
 
 #### Blocking — must fix before the rewrite can start
 
-- [ ] **`const` is a silent miscompile (§6.2).** A constant used in *value*
-      position lowers to a zero, not its value: `const A: i32 = 10; fn main()
-      -> i32 { return A; }` returns `0`, and the emitted IR is literally
-      `ret i32 0` — no diagnostic, `check` exits 0. `A` in a call argument,
-      an `if` condition, or a `let` initializer all read 0 where the constant's
-      value belongs; `A + B` adds `0 + 0`. Consts are only correct in *type*
-      position (array length: `let a: [i32; N]` works, because that path is
-      `ceval_const_int`). Worse, a const **array** indexed (`const T: [i32; 3]
-      = [10,20,30]; ... T[0]`) emits `getelementptr ... ptr null` — a load
-      through null, `run` traps (`T-STACK`), and `T[1]` reads address 4. Root
-      cause: the constant is registered as a symbol (`SK_CONST`, `ck_register_const`)
-      but never lowered — `ll_expr_path` has no path for it and falls through to
-      `ll_zero_of(ty)`. Fix requires either folding the initializer into the
-      expression or emitting an LLVM `global` for the constant. There is **no
-      test coverage for constants in value position** at all (an implied gap:
-      the M1.5 suite left it out). Repros are 3 lines each. This is the single
-      most dangerous gap: a rewrite is full of `const`, and every use is silently
-      wrong.
-- [ ] **The compiler arena caps the program size (ICE-01).** `harmony-base`
-      keeps a single fixed **16 MiB** arena (`g_arena[16777216]`,
-      `bootstrap/harmony-base/util.c2`) that is never freed between functions,
+- [x] **`const` was a silent miscompile (§6.2).** *(FIXED, commit `7075b63`.)*
+      A constant used in *value* position lowered to a zero, not its value:
+      `const A: i32 = 10; fn main() -> i32 { return A; }` returned `0`, and the
+      emitted IR was literally `ret i32 0` — no diagnostic, `check` exited 0.
+      `A` in a call argument, an `if` condition, or a `let` initializer all read
+      0 where the constant's value belongs; `A + B` added `0 + 0`. Consts were
+      only correct in *type* position (array length, via `ceval_const_int`).
+      Worse, a const **array** indexed emitted `getelementptr ... ptr null` — a
+      load through null (`run` trapped `T-STACK`). Root cause: the constant was
+      registered as a symbol (`SK_CONST`) but never checked or lowered;
+      `ll_expr_path`/`ll_addr` had no path for it and fell through to
+      `ll_zero_of(ty)` / `"null"`.
+      - *Fix*: the checker now requires a compile-time-evaluable initializer
+        (`ck_is_const_expr`: literals, arithmetic on literals, another
+        constant, array/struct literals) — anything else is the new `CONST-01`
+        stop — and type-checks it (TYPE-01) and stamps untyped literals; the
+        backend inlines the initializer at the use site (`ll_expr_path`,
+        `ll_addr`, via `ck_sym_decl_node`).
+      - *Tests*: `codegen/const-value.harmony` (scalar/arithmetic/chain/array/
+        struct/&str/condition/loop/negative), `error-handling/const-call-init.harmony`
+        (CONST-01), `error-handling/const-bad-init.harmony` (CONST-01 +
+        TYPE-01), `golden/explain-const01`, plus the CONST-01 lesson and
+        catalogue rows in `docs/harmony.md` §16.10 and `docs/keywords.md`.
+- [x] **The compiler arena capped the program size (ICE-01).** *(FIXED.)*
+      `harmony-base` kept a single fixed **16 MiB** arena (`g_arena[16777216]`,
+      `bootstrap/harmony-base/util.c2`) that was never freed between functions,
       and the SSA-name/label helpers each `arena_alloc` (16/64 bytes) *per
-      instruction* (`ll_new_reg`, `ll_new_label`), so memory grows with the
-      generated code, not with the input size. The practical limit is therefore
-      **~1 MB of emitted IR** (about 16× the IR size in arena bytes): a
-      branch-heavy program of **145 functions / ~1600 lines** (IR 1.05 MB)
-      compiles, **150 functions** (IR just over 1 MB) fails with
-      `harmony-base: internal: arena exhausted (ICE-01)`. Straight-line code
-      goes much further (1400 trivial functions = 1400 lines still compile),
-      so the trigger is IR volume, not source volume — meaning the ceiling moves
-      with code shape, which is exactly what makes it a trap. A 15k-line
-      compiler with realistic bodies sits well past it.
-      - *Raising the arena helps linearly*: 32 MiB compiles a 453-function
-        program; 176 MiB compiles **~15.4k lines** (the size of `harmony-base`
-        itself). But FASM caps the build at `-m 262144` (256 MiB) and a
-        **188 MiB** BSS arena already fails to assemble ("error: out of
-        memory"), so **~184 MiB is the hard ceiling** — enough for a 15k-line
-        rewrite, not for it to grow.
-      - *The real fix is to stop leaking*: reset `g_arena_used` to a mark
-        between `ll_emit_fn` calls (bump/free per function) or reuse a scratch
-        string pool for SSA names, so memory tracks the largest function instead
-        of the whole program. Because the rewrite must be compilable by
-        harmony-base and will exceed 1 MB of IR, this blocks it today.
-      (Note: c2x-seed correctly exits non-zero on "out of memory" during the
-      build, so raising the arena past the FASM cap fails loudly, not silently.)
-- [ ] **Function count silently capped at 1024 (`g_fn_decl[1024]`).** A
-      program with more than 1024 functions registers only the first 1024
-      (`ck_fn_register_node` returns -1 past the cap with **no diagnostic**);
-      every later function is still emitted, but the checker never resolved its
-      return type, so its signature comes out `void` — `define void
-      @harmony__extra(i32)` for a function that returns `i32`, and `define void
-      @harmony_main()` for `main` — while the body still `ret i32`. clang then
-      rejects the IR (`value doesn't match function result type 'void'`), so the
-      failure is **loud but confusing** (a clang error instead of a `NAME`/ICE
-      stop), and whether a file compiles depends on the *order* functions
-      appear in. `harmony-base` itself has 491 functions so it is not hit yet,
-      but the rewrite will pass 1024. Fix: make the table resizable (project
-      rule) and report a clean stop instead of silently truncating.
+      instruction* (`ll_new_reg`, `ll_new_label`), so memory grew with the
+      generated code. The practical limit was **~1 MB of emitted IR**: a
+      branch-heavy program of 145 functions compiled, 150 failed with
+      `harmony-base: internal: arena exhausted (ICE-01)`.
+      - *Fix*: the arena now has two regions. The fixed 16 MiB BSS block stays
+        the fast path; when it fills, `arena_alloc` spills to `mmap`'d chunks
+        (32 MiB each, grown as needed). The chunk is requested through the
+        seed's `asm()` seam (the generated-binary runtime only emits the
+        read/write/fork family, not mmap). Memory grows from the OS, so the
+        ceiling is gone: a 3000-function / 33k-line program (21 MB of IR, far
+        past `harmony-base` itself) now emits.
+      - *Tests*: `tests/harmony/scale.sh` case `arena-past-16mib` (220
+        branch-heavy functions, ~1.5 MB of IR), wired into `make test`. The
+        regression was verified to fail (ICE-01) with the spill reverted.
+      (Note: a true per-function reclamation would use even less memory, but
+      the spill is enough to unblock the rewrite and keeps the fast path.)
+- [x] **Function count was silently capped at 1024 (`g_fn_decl[1024]`).**
+      *(FIXED.)* A program with more than 1024 functions registered only the
+      first 1024 (`ck_fn_register_node` returned -1 past the cap with **no
+      diagnostic**); every later function was still emitted, but the checker
+      never resolved its return type, so its signature came out `void` —
+      `define void @harmony__extra(i32)` for a function returning `i32`, and
+      `define void @harmony_main()` for `main` — while the body still `ret i32`.
+      clang then rejected the IR (`value doesn't match function result type
+      'void'`): loud but confusing, and order-dependent.
+      - *Fix*: the item registries are resizable (the documented "prefer auto
+        resizable" rule). A shared `ck_grow` doubles `g_fn_decl`,
+        `g_fn_self_ty`, the generic-template/instance tables, and the method
+        table; the symbol table (`g_sym_*`, six parallel arrays) and the scope
+        stack grow the same way. All `1024`/`4096`/`256` caps are gone.
+      - *Tests*: `tests/harmony/scale.sh` cases `just-past-1024` and
+        `past-1024-fns` assert the last function keeps its `i32` signature in
+        the IR and that the program still runs; wired into `make test`. Both
+        were verified to fail ("function N lost its i32 signature") with the
+        cap restored.
 
 #### Blocking for the standard library, not for the compiler driver
 

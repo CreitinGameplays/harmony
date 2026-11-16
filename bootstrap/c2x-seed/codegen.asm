@@ -218,9 +218,12 @@ section '.data' writeable
                         db "    syscall", 10
                         db "    ret", 10, 0
     ; sys_wait4(pid, wstatus, options, rusage) -> pid_t
-    ; NOTE: 4th arg (rusage) passed in r10 per Linux syscall ABI.
+    ; The C caller passes the 4th argument in rcx, but the raw Linux syscall
+    ; ABI expects it in r10. The stub must move it, or `syscall` reads garbage
+    ; from r10 and returns -EFAULT. (Regression: tests/c2x-seed/wait4_r10.c2.)
     asm_sys_wait4:       db "public syscall_wait4", 10
                         db "syscall_wait4:", 10
+                        db "    mov r10, rcx", 10
                         db "    mov rax, 61", 10
                         db "    syscall", 10
                         db "    ret", 10, 0

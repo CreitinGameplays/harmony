@@ -55,6 +55,7 @@ test: test-seed harmony-base
 	bash tests/harmony/checker.sh
 	bash tests/harmony/error-handling.sh
 	bash tests/harmony/codegen.sh
+	bash tests/harmony/scale.sh
 	bash tests/harmony/golden.sh
 	bash tests/harmony/determinism.sh
 	bash tests/harmony/lisp.sh

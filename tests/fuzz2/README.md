@@ -12,18 +12,25 @@ rewrite.
 |---|---|
 | `specials` | Adversarial *shapes* hand-derived from the real failure modes found so far: parser-depth walls, name-length truncation, lexical boundaries, unbalanced structure, unicode, self-referential types. Deterministic — a fixed regression list. |
 | `gen` | Grammar-sampled *valid-ish* programs. Reaches deep checker/backend states (generic nests, `unchecked` + raw pointers, switch exhaustiveness, casts) that byte mutators never produce because they destroy syntax first. |
-| `mut` | Token-level mutation of the **real test corpus** (146 programs): splice, span-duplicate, adversarial-token insert, identifier swap, overlong token. Walks real syntax much farther than byte flips. |
-| `afl` | AFL++ dumb-mode (the binary is FASM-built: no compile-time instrumentation exists; QEMU/FRIDA absent in this environment). Beats the channel for *corruption* the structured engines won't emit (bytes inside cooked strings, radical splices). |
-| `valgrind` | The only oracle for uninitialised reads / invalid heap access (this build class showed up during the design probing). Samples the corpus; too slow for the hot loop. |
+| `mut` | Token-level mutation of the **real test corpus** (the `tests/harmony` suite, ~150 programs): splice, span-duplicate, adversarial-token insert, identifier swap, overlong token. Walks real syntax much farther than byte flips. |
+| `afl` | AFL++ dumb-mode (the binary is FASM-built: no compile-time instrumentation exists; QEMU/FRIDA absent in this environment). Beats the channel for *corruption* the structured engines won't emit (bytes inside cooked strings, radical splices). Dumb mode has no coverage feedback, so the queue stays at the seed set — its value is raw execution volume, and the engine reports its real exec count so a broken launch cannot read as "clean". |
+| `valgrind` | The only oracle for uninitialised reads / invalid heap access (this build class showed up during the design probing). Runs `check` and `emit-llvm` over a corpus+generated sample; too slow for the hot loop. |
+
+**Every engine must prove it ran.** A fuzzer that silently does nothing
+reports "0 findings" and is worse than no fuzzer, because it manufactures
+confidence. The valgrind engine once passed a nonexistent flag
+(`--exit-code-first`) and spent an unknown number of campaigns reporting a
+false clean; it now counts completed runs and errors out at zero, and the AFL
+engine reports its execution count. Any new engine needs the same property.
 
 ## The five oracles (a crash alone is a weak bar for a compiler)
 
 - **O1 liveness** — every exit is defined and in the driver's vocabulary
-  (0 ok, 1 stop, 2 usage); nothing ≥128; nothing times out. "Crash" and
-  "large exit value" are distinguished: the driver reports a signal death on
-  stderr, because `run` forwards `main`'s value mod 256 and 241 is a legal
-  result (an early oracle flagged those; the driver now says "killed by
-  signal N", which makes the two unambiguous).
+  (0 ok, 1 stop, 2 usage); nothing times out. "Crash" and "large exit value"
+  are distinguished: the driver reports a signal death on stderr, because
+  `run` forwards `main`'s value mod 256 and 241 is a legal result (an early
+  oracle flagged those; the driver now says "killed by signal N", which makes
+  the two unambiguous).
 - **O2 agreement** — `check` rc==0 ⟹ `emit-llvm` rc==0 with non-empty output;
   `check` rc!=0 ⟹ emit refuses. The two stages must agree on every input.
 - **O3 determinism** — two `emit-llvm` runs are byte-identical (the rewrite's
@@ -54,7 +61,6 @@ python3 tests/fuzz2/fuzz.py --engines valgrind --vg-sample 30
 ```
 
 Historical record (kept so a regression is noticeable):
-
 - 2026-11: designing the fuzzer by direct probing found 3 real bugs *before
   the first automated run*: a parser stack-overflow SIGSEGV at ~10k nesting,
   a silent 512-byte name-truncation that made distinct generic types collide,
@@ -77,3 +83,11 @@ Historical record (kept so a regression is noticeable):
 - 2026-11: two oracle *false positives* fixed (they were the fuzzer's bug, not
   the compiler's): exit values ≥128 are legitimate (`main` mod 256), and O4
   must skip `unchecked` programs because their UB may differ per opt level.
+- 2026-11: **sustained-campaign baseline** (the rewrite gate). Full sweep,
+  2 cores, seed 31, 496s wall:
+  `--engines specials,gen,mut,valgrind,afl --iterations 3000 --run-generated
+  --vg-sample 120 --afl-seconds 180`
+  → 3,000 generated + 3,000 mutants + 27 specials, 240 valgrind runs, 126,204
+  AFL executions, **0 findings**. Re-run this (and vary `--seed`) before
+  trusting any later change; a regression here means the rewrite would
+  inherit an unstable front end.

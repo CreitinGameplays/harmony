@@ -479,13 +479,17 @@ wrong exit code, or ICE) with a repro.
       and `library/std` cannot be written without this. The path is already
       half there: function monomorphization exists (`ck_instantiate`), so
       extending it to nominal types is the natural next step.
-- [ ] **No iteration protocol / ranges in `for` (§8.5, §6.6).** `for (x : expr)`
-      parses but does not lower: a range (`for (i : 0..3)`), an array
-      (`for (x : a)`), and a custom iterator all fail at check time
-      (`TYPE-05`/`NAME-01`). Only the C-style `for (let mut i = 0; ...)` works.
-      Ranges are not even a first-class value (`let r = 0..3` is `TYPE-05`).
-      The compiler's own code can use C-style loops (harmony-base does), so
-      this blocks library ergonomics, not the compiler driver itself.
+- [x] **No iteration protocol / ranges in `for` (§8.5, §6.6).** *(RANGE PART FIXED,
+      commit `33af90f`.)* `for (i : lo..hi)` and `for (i : lo..=hi)` now lower:
+      bounds evaluated once, the binding a fresh mutable local typed by the
+      bounds, with nested loops, `break`, and `continue` all working. A
+      non-range iterable (an array or a custom `next` type) is a clear
+      `TYPE-05` stop, not a miscompile, because the full iteration protocol —
+      a type with `fn next(&mut self) -> Maybe<T>`, which needs generic user
+      types *and* `Maybe` — is still unimplemented. `for (x : collection)`
+      therefore stays a library-side gap tied to the generic-types item above.
+      Tests: `codegen/for-range.harmony`, `error-handling/for-range-float-bound.harmony`,
+      `for-collection-unsupported.harmony`, `range-not-a-value.harmony`.
 
 #### Blocking for a self-hosted allocator (M6, workaround-able)
 

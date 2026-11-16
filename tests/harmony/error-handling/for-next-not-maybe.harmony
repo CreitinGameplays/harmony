@@ -1,0 +1,16 @@
+// WANT: TYPE-05
+// The iteration protocol requires `fn next(&mut self) -> Maybe<T>` (§8.5). A
+// `next` that returns a non-`Maybe` type is not an iterator: the `for` loop
+// must reject it rather than mis-iterate the return value.
+struct Bad { i: i32; }
+methods Bad {
+    export fn next(&mut self) -> i32 { return self.i; }
+}
+fn main() -> i32 {
+    let mut b = Bad { .i = 0 };
+    let mut s = 0;
+    for (x : b) {
+        s = s + x;
+    }
+    return s;
+}

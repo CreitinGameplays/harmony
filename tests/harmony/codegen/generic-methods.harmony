@@ -1,0 +1,28 @@
+// EXPECT: 42
+// Generic methods on a generic type (§5.8, §6.6, §18): `methods<T> Box<T>`
+// declares methods once; each concrete receiver (`Box<i32>`, `Box<u8>`)
+// instantiates them, so `self`, the return type, and the body's `T` are all
+// substituted per instance. Also covers an associated (`Type::make`) function.
+fn main() -> i32 {
+    let b: Box<i32> = Box<i32>::make(20);   // associated function
+    let mut acc = b.get();                   // generic method returning T
+
+    let mut m: Box<i32> = Box<i32>::make(0);
+    m.set(10);                               // generic `&mut self` method
+    acc = acc + m.get();
+
+    // The same template at a different instantiation.
+    let u: Box<u8> = Box<u8>::make(12u8);
+    acc = acc + (u.get() as i32);
+
+    // 20 + 10 + 12 = 42.
+    return acc;
+}
+
+struct Box<T> { v: T; }
+
+methods<T> Box<T> {
+    export fn make(x: T) -> Box<T> { return Box { .v = x }; }
+    export fn get(&self) -> T { return self.v; }
+    export fn set(&mut self, x: T) { self.v = x; }
+}

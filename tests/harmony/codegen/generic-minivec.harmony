@@ -1,0 +1,61 @@
+// EXPECT: 94
+// §17.8's `MiniVec`: a generic growable buffer over the raw toolbox. This is
+// the realistic "library author" shape that ties the M1 features together —
+// generic types + methods, `alloc`/`dealloc`, `raw` pointers under `unchecked`,
+// `&mut self` mutation, and a self-method call (`self.grow()`) from another
+// method (regression: a reference-typed receiver used to pass the address of
+// the `self` pointer slot instead of the pointee).
+struct MiniVec<T> {
+    ptr: raw mut T;
+    len: usize;
+    cap: usize;
+}
+
+methods<T> MiniVec<T> {
+    export fn make() -> MiniVec<T> {
+        return MiniVec { .ptr = Raw::null<T>(), .len = 0, .cap = 0 };
+    }
+
+    export fn grow(&mut self) {
+        let newcap = grow_cap(self.cap);
+        let mut np: raw mut T = Raw::null<T>();
+        unchecked("allocate the new, larger buffer") { np = alloc<T>(newcap); }
+        let mut i: usize = 0;
+        while (i < self.len) {
+            unchecked("copy an element into the new buffer") { np[i] = self.ptr[i]; }
+            i = i + 1;
+        }
+        unchecked("free the old buffer") { dealloc<T>(self.ptr, self.cap); }
+        self.ptr = np;
+        self.cap = newcap;
+    }
+
+    export fn push(&mut self, value: T) {
+        if (self.len == self.cap) { self.grow(); }
+        unchecked("grow() guarantees cap > len, so slot len is inside our allocation") {
+            self.ptr[self.len] = value;
+        }
+        self.len = self.len + 1;
+    }
+
+    export fn at(&self, i: usize) -> T {
+        // Idiomatic §13 style: the read is the function's return.
+        unchecked("the caller promised i < size()") { return self.ptr[i]; }
+    }
+
+    export fn size(&self) -> usize { return self.len; }
+}
+
+fn grow_cap(c: usize) -> usize {
+    if (c == 0) { return 4; }
+    return c * 2;
+}
+
+fn main() -> i32 {
+    let mut v: MiniVec<i32> = MiniVec<i32>::make();
+    v.push(10); v.push(20); v.push(30); v.push(40); v.push(50);   // grows 0->4->8
+    let mut s = 0;
+    let mut i: usize = 0;
+    while (i < v.size()) { s = s + v.at(i); i = i + 1; }
+    return s - 56;   // 10+20+30+40+50 = 150; 150-56 = 94 (under 128 so the exit code is not read as a signal)
+}

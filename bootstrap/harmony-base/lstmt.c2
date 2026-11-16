@@ -50,6 +50,7 @@ void ll_stmt_assign(struct AstNode* n);
 void ll_stmt_if(struct AstNode* n);
 void ll_stmt_while(struct AstNode* n);
 void ll_stmt_for(struct AstNode* n);
+void ll_stmt_for_iter(struct AstNode* n);
 void ll_stmt_break(struct AstNode* n);
 void ll_stmt_continue(struct AstNode* n);
 void ll_stmt_return(struct AstNode* n);
@@ -325,9 +326,15 @@ void ll_stmt_for(struct AstNode* n) {
     char* steplbl;
     char* endlbl;
     ll_env_scope_push();
-    // Shape 2: `for (x : a..b)` — a range loop (§8.5). The binding (`n->sval`)
-    // is a fresh mutable local; the bounds are evaluated once, before the loop.
-    // `a..=b` uses `<=` for the condition. Everything else is the C-style loop.
+    // Shape 2: `for (x : expr)` — `n->sval` is the binding. Two forms:
+    //   - a range `a..b` (checker marks `n->ival == 1`);
+    //   - an iterable (the §8.5 iteration protocol): call `it.next()` and loop
+    //     over its `Maybe<T>` (`Has(x)` runs the body, `Empty` breaks).
+    // Everything else is the C-style loop.
+    if (n->sval != 0 && n->ival != 1) {
+        ll_stmt_for_iter(n);
+        return;
+    }
     if (n->sval != 0) {
         int ty;
         char* esz;
@@ -506,6 +513,159 @@ void ll_stmt_for(struct AstNode* n) {
     ll_label(endlbl);
     ll_set_terminated(0);
     ll_env_scope_pop();
+}
+
+// `for (x : it)` over an iterator (§8.5 iteration protocol):
+//
+//   { let mut __it = <it>;            // a mutable local holding the iterator
+//     loop {
+//       let m = __it.next();          // Maybe<T>
+//       switch (m) { case Has(x): body; case Empty: break; }
+//     } }
+//
+// The iterator is materialized once (an aggregate value is address-represented,
+// so a copy of its storage is fine); the body's `break` targets the loop end,
+// and `continue` targets the loop head (the desugared switch is transparent to
+// both — a `break` in the body must leave the *loop*, so the switch never owns
+// a loop-exit label).
+void ll_stmt_for_iter(struct AstNode* n) {
+    int it_ty;
+    int m;
+    int fidx;
+    int ret_ty;
+    int has_vi;
+    char* it_slot;
+    char* it_addr;
+    char* head;
+    char* body;
+    char* endlbl;
+    struct AstNode* next_call;
+
+    it_ty = ll_node_ty(n->a);
+    m = ll_find_method(it_ty, "next");
+    if (m < 0) {
+        // The checker reported the miss; emit nothing so the IR stays valid.
+        return;
+    }
+    fidx = ck_meth_fn(m);
+    ret_ty = ck_fn(fidx)->ty;
+    if (ret_ty == 0 || ty_kind(ret_ty) != CTY_ENUM) { return; }
+    has_vi = ty_find_member(ret_ty, "Has");
+    if (has_vi < 0) { has_vi = 0; }
+
+    // The iterator lives in a slot so it can be mutated across `next` calls.
+    it_slot = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(it_slot);
+    ll_out_str(" = alloca ");
+    ll_out_str(ll_type_name(it_ty));
+    ll_out_nl();
+    {
+        char* v;
+        v = ll_expr(n->a);
+        ll_store_value(it_slot, it_ty, v);
+    }
+
+    head = ll_new_label("for.iter.next");
+    body = ll_new_label("for.iter.body");
+    endlbl = ll_new_label("for.iter.end");
+    ll_out_str("  br label %");
+    ll_out_str(head);
+    ll_out_nl();
+    ll_label(head);
+    ll_set_terminated(0);
+
+    // `it.next()` — pass the iterator's address as the `&mut self` receiver.
+    {
+        char* buf;
+        char* sslot;
+        buf = arena_alloc(160);
+        buf[0] = 0;
+        ll_str_append(buf, "ptr ");
+        ll_str_append(buf, it_slot);
+        sslot = ll_new_reg();
+        ll_out_str("  ");
+        ll_out_str(sslot);
+        ll_out_str(" = alloca ");
+        ll_out_str(ll_type_name(ret_ty));
+        ll_out_nl();
+        ll_out_str("  call void @");
+        ll_out_str(ll_method_symbol(it_ty, "next"));
+        ll_out_str("(ptr sret(");
+        ll_out_str(ll_type_name(ret_ty));
+        ll_out_str(") ");
+        ll_out_str(sslot);
+        ll_out_str(", ");
+        ll_out_str(buf);
+        ll_out_str(")\n");
+        it_addr = sslot;
+    }
+
+    // Read the tag: `Has(..)` runs the body (binding its payload), `Empty`
+    // exits the loop. The tag is field 0 of the enum.
+    {
+        char* tagp;
+        char* tag;
+        char* isbody;
+        tagp = ll_struct_gep(it_addr, ret_ty, 0);
+        tag = ll_load(TY_I32, tagp);
+        isbody = ll_new_reg();
+        ll_out_str("  ");
+        ll_out_str(isbody);
+        ll_out_str(" = icmp eq i32 ");
+        ll_out_str(tag);
+        ll_out_str(", ");
+        ll_out_int(has_vi);
+        ll_out_nl();
+        ll_out_str("  br i1 ");
+        ll_out_str(isbody);
+        ll_out_str(", label %");
+        ll_out_str(body);
+        ll_out_str(", label %");
+        ll_out_str(endlbl);
+        ll_out_nl();
+    }
+
+    ll_label(body);
+    ll_loop_push(endlbl, head);
+    ll_set_terminated(0);
+    // Bind the `Has` payload to the loop variable.
+    {
+        int pid;
+        int pty;
+        char* payload_addr;
+        char* bind_slot;
+        char* v;
+        pid = ty_member_type(ret_ty, has_vi);
+        pty = ty_member_type(pid, 0);
+        payload_addr = ll_offset_addr(it_addr, 8 + ty_field_offset(pid, 0));
+        bind_slot = ll_new_reg();
+        ll_out_str("  ");
+        ll_out_str(bind_slot);
+        ll_out_str(" = alloca ");
+        ll_out_str(ll_type_name(pty));
+        ll_out_nl();
+        if (ll_is_aggregate(pty)) {
+            // Aggregate payload: copy its bytes into the binding's slot (the
+            // payload address already points at the value's storage).
+            ll_store_value(bind_slot, pty, payload_addr);
+        } else {
+            v = ll_load(pty, payload_addr);
+            ll_store_value(bind_slot, pty, v);
+        }
+        ll_local_declare(n->sval, bind_slot, pty);
+    }
+    if (n->kids != 0 && n->kids->len > 0) {
+        ll_block(n->kids->items[0]);
+    }
+    ll_loop_pop();
+    if (!ll_get_terminated()) {
+        ll_out_str("  br label %");
+        ll_out_str(head);
+        ll_out_nl();
+    }
+    ll_label(endlbl);
+    ll_set_terminated(0);
 }
 
 void ll_loop_push(char* brk, char* cont) {

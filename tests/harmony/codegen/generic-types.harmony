@@ -1,0 +1,50 @@
+// EXPECT: 97
+// Generic user-defined types (§5.8, §18): `struct Box<T>`, `enum Opt<T>`, and
+// their monomorphization. Each distinct `<args>` becomes one nominal type
+// (`Box__i32`), so `Box<i32>` and `Box<u8>` are separate; nested instances
+// (`Box<Box<i32>>`) and multiple type parameters (`Pair<A, B>`) work too.
+fn main() -> i32 {
+    // A generic struct, constructed with explicit arguments.
+    let b: Box<i32> = Box<i32> { .v = 40 };
+    let mut acc = b.v;
+
+    // A generic enum, matched with a switch.
+    let o: Opt<i32> = Opt<i32>::Some(2);
+    switch (o) {
+        case Some(v): { acc = acc + v; }
+        case None: { acc = acc + 1000; }
+    }
+
+    // The payload-less variant, resolved by the annotation.
+    let e: Opt<i32> = Opt<i32>::None;
+    switch (e) {
+        case Some(v): { acc = acc + 1000; }
+        case None: { acc = acc + 1; }
+    }
+
+    // Multiple type parameters.
+    let p: Pair<i32, u8> = Pair<i32, u8> { .a = 50, .b = 4u8 };
+    acc = acc + (p.b as i32);
+
+    // Nested instance: Box<Box<i32>>.
+    let nb: Box<Box<i32>> = Box<Box<i32>> { .v = Box<i32> { .v = 3 } };
+    acc = acc + nb.v.v;
+
+    // A generic type as a parameter/return type.
+    acc = acc + unwrap_or(o, -1000);
+
+    // 40 + 2 + 1 + 4 + 3 + 2 = 52; +45 = 97.
+    return acc + 45;
+}
+
+struct Box<T> { v: T; }
+struct Pair<A, B> { a: A; b: B; }
+enum Opt<T> { Some(T), None, }
+
+fn unwrap_or(o: Opt<i32>, d: i32) -> i32 {
+    switch (o) {
+        case Some(v): { return v; }
+        case None: { return d; }
+    }
+    return d;
+}

@@ -104,8 +104,60 @@ int p_looks_like_generic_call(void) {
                 }
                 return 0;
             }
+        } else if (k == TOK_SHR) {
+            // `>>` closes two levels at once (`Vec<Vec<T>>`). If both levels
+            // end here, the token after `>>` decides.
+            depth = depth - 2;
+            if (depth <= 0) {
+                if (i + 1 < g_pntoks && g_ptoks[i + 1].kind == TOK_LPAREN) {
+                    return 1;
+                }
+                return 0;
+            }
         } else if (k == TOK_SEMI || k == TOK_EOF || k == TOK_RBRACE) {
             return 0;      // a statement boundary: not generic args
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// True when the `<...>` starting at the cursor is a generic *type* use, i.e.
+// the matching `>` is followed by a struct body (`{`) or a path continuation
+// (`::`): `Box<i32> { ... }`, `Opt<i32>::Some(3)`. This is the §5.8 companion
+// to `p_looks_like_generic_call`.
+int p_looks_like_generic_type_use(void) {
+    int depth;
+    int i;
+    depth = 0;
+    i = g_ppos;
+    while (i < g_pntoks) {
+        int k;
+        k = g_ptoks[i].kind;
+        if (k == TOK_LT) {
+            depth = depth + 1;
+        } else if (k == TOK_GT) {
+            depth = depth - 1;
+            if (depth == 0) {
+                if (i + 1 < g_pntoks) {
+                    int nk;
+                    nk = g_ptoks[i + 1].kind;
+                    if (nk == TOK_LBRACE || nk == TOK_DCOLON) { return 1; }
+                }
+                return 0;
+            }
+        } else if (k == TOK_SHR) {
+            depth = depth - 2;
+            if (depth <= 0) {
+                if (i + 1 < g_pntoks) {
+                    int nk;
+                    nk = g_ptoks[i + 1].kind;
+                    if (nk == TOK_LBRACE || nk == TOK_DCOLON) { return 1; }
+                }
+                return 0;
+            }
+        } else if (k == TOK_SEMI || k == TOK_EOF || k == TOK_RBRACE) {
+            return 0;
         }
         i = i + 1;
     }
@@ -695,14 +747,50 @@ struct AstNode* parse_primary(void) {
     // Path (call or plain), or struct init `Path { .f = v, ... }`
     if (p_at(TOK_IDENT)) {
         struct AstNode* n;
+        struct AstList* tyargs;
         char* name;
+        tyargs = 0;
         name = parse_path_name();
         if (name == 0) { return 0; }
+
+        // Generic *type* use: `Box<i32> { ... }` (a generic struct literal) or
+        // `Opt<i32>::Some(3)` (a generic enum variant). The `<...>` arguments
+        // belong to the type, not a call, so they are captured here and the
+        // caller (struct-init / call) resolves the instantiation. This is the
+        // §5.8 companion to the generic-call lookahead.
+        if (p_at(TOK_LT) && p_looks_like_generic_type_use()) {
+            struct AstNode* t;
+            t = ast_node_new(AST_TYPE_NAME);
+            t->sval = "";
+            if (!parse_generic_args(t)) { return 0; }
+            tyargs = t->kids;
+            // A following `::Segment` continues the path: fold the segments
+            // back into the name so `Opt<i32>::Some` reads as an enum call.
+            while (p_at(TOK_DCOLON)) {
+                p_advance();
+                if (!p_at(TOK_IDENT)) {
+                    p_syn("SYN-05",
+                          "`::` needs a name after it",
+                          "A path segment must be an identifier: `mod::name`.",
+                          "write the name",
+                          "Opt<i32>::Some",
+                          p_cur());
+                    return 0;
+                }
+                lexbuf_reset();
+                lexbuf_push_str(name);
+                lexbuf_push_str("::");
+                lexbuf_push_str(p_cur_word());
+                name = lexbuf_finish();
+                p_advance();
+            }
+        }
 
         // Struct literal: Path { .field = value, ... }
         if (p_at(TOK_LBRACE)) {
             n = ast_node_new(AST_STRUCT_INIT);
             n->sval = name;
+            n->kids2 = tyargs;     // generic args (0 for a non-generic type)
             n->start = start->start;
             n->kids = ast_list_new();
             p_advance();      // {
@@ -745,6 +833,38 @@ struct AstNode* parse_primary(void) {
             return n;
         }
 
+        // A captured generic type use (`Box<i32>`) that is not a struct literal
+        // and not a call: a generic enum variant (`Opt<i32>::Some(3)` becomes a
+        // plain call whose callee path carries the type args). Attach the args
+        // to the callee so the checker can instantiate the enum.
+        if (tyargs != 0) {
+            if (p_at(TOK_LPAREN)) {
+                struct AstNode* callee;
+                struct AstList* args;
+                int tcomma;
+                callee = ast_node_new(AST_PATH);
+                callee->sval = name;
+                callee->kids = tyargs;  // type args live on the callee path
+                callee->start = start->start;
+                callee->end = p_prev()->end;
+                args = parse_call_args(&tcomma);
+                if (args == 0) { return 0; }
+                n = ast_node_new(AST_CALL);
+                n->a = callee;
+                n->kids = args;
+                n->start = start->start;
+                n->end = p_prev()->end;
+                return n;
+            }
+            // A bare generic variant path (`Opt<i32>::None`): a path node that
+            // carries the type arguments.
+            n = ast_node_new(AST_PATH);
+            n->sval = name;
+            n->kids = tyargs;
+            n->start = start->start;
+            n->end = p_prev()->end;
+            return n;
+        }
         // Generic call args: Path<args>(...) — lookahead rule applies.
         if (p_at(TOK_LT) && p_looks_like_generic_call()) {
             struct AstNode* targs;

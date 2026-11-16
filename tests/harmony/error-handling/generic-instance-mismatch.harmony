@@ -1,0 +1,10 @@
+// WANT: TYPE-01
+// Distinct instantiations are distinct types (§5.8): `Box<u8>` cannot stand in
+// for `Box<i32>` even though both come from the same template. The compiler
+// must reject the assignment, not treat the payloads as interchangeable.
+struct Box<T> { v: T; }
+fn main() -> i32 {
+    let a: Box<i32> = Box<i32> { .v = 1 };
+    let b: Box<u8> = a;
+    return 0;
+}

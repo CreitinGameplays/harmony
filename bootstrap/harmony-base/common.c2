@@ -620,6 +620,14 @@ int ck_lookup(char* name);                 // innermost binding of a name
 int ck_lookup_type(char* name);
 int ck_coercible(int want, int got);       // assignment/arg compatibility
 int ck_find_template(char* name);          // generic template index, or -1
+int ck_instantiate_type(struct AstNode* at, char* base, struct AstList* targs);
+int ck_find_ty_template(char* name);
+char* ck_ty_instance_base(int id);
+struct AstList* ck_ty_instance_targs(int id);
+int ck_find_gtmeth(char* base, char* name);
+int ck_instantiate_gtmeth(int gi, int recv_ty);
+int ck_nty_instances(void);
+int ck_ty_instance_at(int i);
 struct AstNode* ck_template_decl(int ti);  // the AST_FN template at index ti
 int ck_template_nparams(struct AstNode* tmpl);   // count of `T` parameters
 char* ck_template_param(struct AstNode* tmpl, int i); // i-th param name (T)

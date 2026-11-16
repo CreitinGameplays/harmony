@@ -26,6 +26,7 @@ char* ll_fn_symbol(struct AstNode* fn);
 char* ll_sized_field_type(int id);
 int   ll_is_aggregate(int ty);
 char* ll_method_symbol(int rt, char* name);
+int   ll_method_recv_ty(int rt);
 int   ll_str_intern(char* body, int len);
 char* ll_str_symbol(int i);
 void  ll_emit_str_def(int i);
@@ -609,6 +610,16 @@ void ll_emit_module(struct AstNode* prog) {
         }
         i = i + 1;
     }
+    // Monomorphized generic-type instances (`%struct.Box__i32`, ...), each an
+    // ordinary definition. Emitted after the source types; the instance order
+    // is first-instantiation order, which is deterministic.
+    i = 0;
+    while (i < ck_nty_instances()) {
+        int iid;
+        iid = ck_ty_instance_at(i);
+        if (iid != TY_INVALID) { ll_emit_type_def(iid); }
+        i = i + 1;
+    }
     ll_out_nl();
 
     // Functions. Two passes so every definition precedes no other (order in
@@ -628,7 +639,7 @@ void ll_emit_module(struct AstNode* prog) {
     while (i < items->len) {
         struct AstNode* it;
         it = items->items[i];
-        if (it->kind == AST_METHODS && it->kids2 != 0) {
+        if (it->kind == AST_METHODS && it->kids2 != 0 && it->kids == 0) {
             int k;
             k = 0;
             while (k < it->kids2->len) {

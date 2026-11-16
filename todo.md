@@ -469,27 +469,64 @@ wrong exit code, or ICE) with a repro.
         were verified to fail ("function N lost its i32 signature") with the
         cap restored.
 
-#### Blocking for the standard library, not for the compiler driver
+#### Generic types and iteration — now implemented (the last rewrite blockers)
 
-- [ ] **No generic user-defined types (§5.7, §6.4).** Only generic
-      *functions* monomorphize; a generic `struct`/`enum` (`struct Box<T> {...}`,
-      `enum Opt<T> {...}`) rejects `T` with `NAME-01` ("no type named `T`").
-      The rewrite's front end can hand-roll its `Vec`/`HashMap` over a fixed
-      `Heap<[T; N]>` arena (see the working probe below), but `library/core`
-      and `library/std` cannot be written without this. The path is already
-      half there: function monomorphization exists (`ck_instantiate`), so
-      extending it to nominal types is the natural next step.
-- [x] **No iteration protocol / ranges in `for` (§8.5, §6.6).** *(RANGE PART FIXED,
-      commit `33af90f`.)* `for (i : lo..hi)` and `for (i : lo..=hi)` now lower:
-      bounds evaluated once, the binding a fresh mutable local typed by the
-      bounds, with nested loops, `break`, and `continue` all working. A
-      non-range iterable (an array or a custom `next` type) is a clear
-      `TYPE-05` stop, not a miscompile, because the full iteration protocol —
-      a type with `fn next(&mut self) -> Maybe<T>`, which needs generic user
-      types *and* `Maybe` — is still unimplemented. `for (x : collection)`
-      therefore stays a library-side gap tied to the generic-types item above.
-      Tests: `codegen/for-range.harmony`, `error-handling/for-range-float-bound.harmony`,
-      `for-collection-unsupported.harmony`, `range-not-a-value.harmony`.
+- [x] **Generic user-defined types (§5.7, §5.8, §6.4).** *(FIXED.)*
+      `struct Box<T>`, `enum Opt<T>`, multiple parameters (`Pair<A, B>`),
+      nested instances (`Box<Box<i32>>`), generic types as parameters and
+      return types, and generic *methods* (`methods<T> Box<T> { ... }`,
+      including associated `Type::make` functions) all work by
+      monomorphization, mirroring the existing generic-function machinery.
+      - *How*: a generic struct/enum declares a **type template** (recorded,
+        not a type). The first `Box<i32>` use clones the template, substitutes
+        the parameters in every field/variant payload, builds a fresh nominal
+        type named `Box__i32`, and records the instance; later uses resolve to
+        that one instance, so `ty_eq` (nominal, by name) makes them
+        interchangeable and `Box<u8>` ≠ `Box<i32>`. Generic methods on a
+        generic type are instantiated per concrete receiver
+        (`ck_instantiate_gtmeth`); a bare `Box { ... }` inside a method body is
+        rewritten to the instance's arguments (`ck_subst_ctor_args`).
+      - *Parser*: `Box<i32> { ... }` (a generic struct literal) and
+        `Opt<i32>::Some(3)` / `Opt<i32>::None` / `Box<i32>::make(...)` (a
+        generic enum variant or associated function) are recognized by a new
+        `p_looks_like_generic_type_use` lookahead (`>` followed by `{` or `::`),
+        the §5.8 companion to the existing generic-call lookahead. Nested
+        `>>` closing two levels is handled.
+      - *Backend*: each instance emits as an ordinary `%struct.Box__i32` /
+        `%enum.Opt__i32` definition (`ll_emit_type_def`), so no new lowering
+        case was needed; only the instance list is walked.
+      - *Tests*: `codegen/generic-types.harmony`, `generic-methods.harmony`,
+        `generic-minivec.harmony` (§17.8's `MiniVec` end to end); plus
+        error-handling `generic-missing-targs`, `generic-wrong-targ-count`,
+        `generic-unknown-targ`, `generic-field-type`, `generic-instance-mismatch`.
+      - *Not yet*: bounds (`<T: copy + ord>`) are parsed but not enforced on
+        generic types/methods (they are on generic functions), and `copy` is
+        not conditionally derived for a generic instance. Neither blocks the
+        rewrite or the iterators below.
+- [x] **The iteration protocol and ranges in `for` (§8.5, §6.6).** *(FIXED.)*
+      `for (i : lo..hi)` / `lo..=hi` lower (bounds evaluated once, a fresh
+      mutable binding, nested/`break`/`continue`), and any type with
+      `fn next(&mut self) -> Maybe<T>` is now iterable: `for (x : it)` desugars
+      to `loop { switch (it.next()) { case Has(x): body; case Empty: break; } }`
+      in the backend (`ll_stmt_for_iter`), with the payload bound to the loop
+      variable. The prelude enums `Maybe<T>` (Has/Empty) and `Outcome<T, E>`
+      (Good/Bad) are registered as ordinary generic enums (§5.3), so bare
+      `Has(5)`/`Empty`/`Good(x)`/`Bad(e)` resolve from the expected type (the
+      `let` annotation or `return` type).
+      - *A receiver bug found and fixed*: a method call on a reference-typed
+        receiver (e.g. `self` inside a `&mut self` method calling
+        `self.grow()`) passed the address of the `self` pointer slot instead of
+        the pointee; the symbol also mangled from the reference (`&mut T`)
+        rather than the auto-derefed `T`. Both are fixed
+        (`ll_method_call`/`ll_method_recv_ty`); `generic-minivec.harmony` is
+        the regression.
+      - *Also fixed*: `RET-01` no longer fires when a function ends in
+        `unchecked("...") { return ...; }` (or a returning `if`/`else`) — the
+        idiomatic §13 shape.
+      - *Tests*: `codegen/iteration.harmony`, `prelude-enums.harmony`,
+        `for-range.harmony`, `generic-minivec.harmony`; error-handling
+        `for-not-iterable`, `for-next-not-maybe`, plus the earlier
+        `for-range-float-bound`, `range-not-a-value`.
 
 #### Blocking for a self-hosted allocator (M6, workaround-able)
 
@@ -555,7 +592,9 @@ $HB run /tmp/ca.harmony; echo "rc=$? (bug: traps; IR has `getelementptr ... ptr 
 # 2. arena cap: ~150 branch-heavy fns (IR > 1 MB) -> ICE-01 at the default 16 MiB
 #    (a generator printing 150 structs + 150 fns with 8 `if`s each)
 # 3. 1024-fn cap: main past the cap -> 'define void @harmony_main()' + clang reject
-# 4/5/6: generic struct / `for (x : ...)` -> STOP (see probes)
+# 4/5/6: all fixed — generic structs/enums/methods, `for (x : ...)` over an
+# iterator, and `alloc<T>(n)`/`dealloc` now compile and run (see the sections
+# above). `docs/harmony.md` §5.8 and §8.5 describe the implemented semantics.
 
 ### Cross-cutting
 

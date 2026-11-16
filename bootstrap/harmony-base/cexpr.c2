@@ -30,6 +30,7 @@ int ck_infer_generic_call(struct AstNode* n, struct AstNode* callee, struct AstL
 int ck_unify(struct AstNode* tn, int ty);
 int ck_expr_method_call(struct AstNode* n, struct AstNode* callee, struct AstList* args);
 int ck_expr_assoc_call(struct AstNode* n, struct AstNode* callee, struct AstList* args);
+int ck_assoc_call_ty(struct AstNode* n, int ty, char* mname, struct AstList* args);
 int ck_enum_construct(struct AstNode* n, struct AstNode* callee, struct AstList* args);
 int ck_enum_construct_unqualified(struct AstNode* n, struct AstList* args);
 int ck_enum_construct_ty(struct AstNode* n, int ty, char* vname, struct AstList* args);
@@ -170,8 +171,38 @@ int ck_expr(struct AstNode* n) {
 // the single string "A::B", so split on the last `::` here).
 int ck_expr_path(struct AstNode* n) {
     int sym;
-    if (n->a != 0) {
-        // Qualified path: resolve the base type, then the final segment.
+    // A bare generic variant path (`Opt<i32>::None`): the parser stored the
+    // type arguments on the path node. Instantiate the enum and construct the
+    // payload-less variant.
+    if (n->kind == AST_PATH && n->kids != 0 && n->kids->len > 0
+        && str_contains(n->sval, "::")) {
+        int cut;
+        char* ename;
+        char* vname;
+        int ety;
+        cut = str_rfind(n->sval, "::");
+        ename = str_prefix(n->sval, cut);
+        vname = n->sval + cut + 2;
+        ety = ck_instantiate_type(n, ename, n->kids);
+        if (ety == TY_INVALID) { return TY_INVALID; }
+        {
+            int vi;
+            vi = ty_find_member(ety, vname);
+            if (vi < 0) {
+                ck_err_no_field(n, ety, vname);
+                return TY_INVALID;
+            }
+            if (ty_member_count(ty_member_type(ety, vi)) != 0) {
+                diag_stop("TYPE-01", "this variant has a payload",
+                          "Construct it with `Enum::Variant(value)`.",
+                          diag_file(n->file), n->start, n->end);
+                return TY_INVALID;
+            }
+            n->ival = 1000 + vi;
+        }
+        return ety;
+    }
+    if (n->a != 0) {        // Qualified path: resolve the base type, then the final segment.
         int base;
         int seg;
         base = ck_expr(n->a);
@@ -271,6 +302,20 @@ int ck_expr_variant_unqualified(struct AstNode* n) {
     int fty;
     found = 0;
     fty = TY_INVALID;
+    // An expected type narrows the search: `let m: Maybe<i32> = Empty` knows
+    // the enum from the annotation (a prelude template instance is not a
+    // symbol, so a plain scan would miss it).
+    if (g_expected_ty != 0 && ty_kind(g_expected_ty) == CTY_ENUM) {
+        int vi;
+        vi = ty_find_member(g_expected_ty, n->sval);
+        if (vi >= 0) {
+            if (ty_member_count(ty_member_type(g_expected_ty, vi)) != 0) {
+                return 0;   // payload variant: needs construction
+            }
+            n->ty = g_expected_ty;
+            return 1;
+        }
+    }
     i = 0;
     while (i < g_nsyms) {
         if (g_sym_kind[i] == SK_TYPE && ty_kind(g_sym_ty[i]) == CTY_ENUM) {
@@ -747,6 +792,33 @@ int ck_expr_call(struct AstNode* n) {
     }
     {
         int sym;
+        if (callee->kids != 0 && callee->kids->len > 0
+            && str_contains(callee->sval, "::")) {
+            // `Opt<i32>::Some(3)` or `Box<i32>::make(3)`: the callee path
+            // carries the generic type arguments. Instantiate the type, then
+            // dispatch: an enum constructor, or an associated function.
+            int cut;
+            char* ename;
+            char* vname;
+            int ety;
+            cut = str_rfind(callee->sval, "::");
+            ename = str_prefix(callee->sval, cut);
+            vname = callee->sval + cut + 2;
+            ety = ck_instantiate_type(callee, ename, callee->kids);
+            if (ety == TY_INVALID) { return TY_INVALID; }
+            if (ty_kind(ety) == CTY_ENUM) {
+                return ck_enum_construct_ty(n, ety, vname, args);
+            }
+            // An associated function on the instance (`Box__i32::make`): the
+            // symbol is `ll_method_symbol(instance, name)`, so rewrite the
+            // callee path to the instance's display name for `ll_call_symbol`.
+            lexbuf_reset();
+            lexbuf_push_str(ty_display(ety));
+            lexbuf_push_str("::");
+            lexbuf_push_str(vname);
+            callee->sval = lexbuf_finish();
+            return ck_assoc_call_ty(n, ety, vname, args);
+        }
         if (str_contains(callee->sval, "::")) {
             int modsym;
             // A module function first (`geometry::length`, 6.7): the merged
@@ -1159,6 +1231,25 @@ int ck_expr_method_call(struct AstNode* n, struct AstNode* callee, struct AstLis
         i = i + 1;
     }
     if (!found) {
+        // A generic method on a generic type (`b.get()` on `Box<i32>`): find
+        // the template on the instance's base name and instantiate it for this
+        // receiver. The result is registered as an ordinary method.
+        char* ibase;
+        int gi;
+        ibase = ck_ty_instance_base(rt);
+        if (ibase != 0) {
+            gi = ck_find_gtmeth(ibase, callee->sval);
+            if (gi >= 0) {
+                int midx;
+                midx = ck_instantiate_gtmeth(gi, rt);
+                if (midx >= 0) {
+                    found = 1;
+                    fidx = midx;
+                }
+            }
+        }
+    }
+    if (!found) {
         ck_err_no_field(callee, rt, callee->sval);
         return TY_INVALID;
     }
@@ -1267,6 +1358,12 @@ int ck_enum_construct_unqualified(struct AstNode* n, struct AstList* args) {
     int fty;
     found = 0;
     fty = TY_INVALID;
+    // An expected type narrows the search first (§5.3 prelude enums are
+    // templates, so a plain symbol scan would not see `Maybe<i32>`).
+    if (g_expected_ty != 0 && ty_kind(g_expected_ty) == CTY_ENUM
+        && ty_find_member(g_expected_ty, n->a->sval) >= 0) {
+        return ck_enum_construct_ty(n, g_expected_ty, n->a->sval, args);
+    }
     i = 0;
     while (i < g_nsyms) {
         if (g_sym_kind[i] == SK_TYPE && ty_kind(g_sym_ty[i]) == CTY_ENUM) {
@@ -1337,6 +1434,27 @@ int ck_expr_assoc_call(struct AstNode* n, struct AstNode* callee, struct AstList
         return TY_INVALID;
     }
     ty = g_sym_ty[sym];
+    return ck_assoc_call_ty(n, ty, mname, args);
+}
+
+// Checks `Type::assoc(args)` against an already-resolved receiver type id:
+// finds the (non-receiver) method `mname` on `ty` and checks the arguments.
+int ck_assoc_call_ty(struct AstNode* n, int ty, char* mname, struct AstList* args) {
+    int i;
+    // A generic method template on a generic type: `Box<i32>::make(3)`.
+    {
+        char* ibase;
+        ibase = ck_ty_instance_base(ty);
+        if (ibase != 0) {
+            int gi;
+            gi = ck_find_gtmeth(ibase, mname);
+            if (gi >= 0) {
+                // Only an associated (no-receiver) can be reached here; the
+                // instance is keyed by receiver type, so ensure one exists.
+                ck_instantiate_gtmeth(gi, ty);
+            }
+        }
+    }
     i = 0;
     while (i < g_nmeth) {
         if (g_meth_ty[i] == ty && str_eq(g_meth_name[i], mname)) {
@@ -1374,7 +1492,7 @@ int ck_expr_assoc_call(struct AstNode* n, struct AstNode* callee, struct AstList
         }
         i = i + 1;
     }
-    ck_err_no_field(callee, ty, mname);
+    ck_err_no_field(n, ty, mname);
     return TY_INVALID;
 }
 
@@ -1419,23 +1537,41 @@ int ck_expr_struct_init(struct AstNode* n) {
     int ty;
     int i;
     struct AstList* inits;
-    sym = ck_lookup(n->sval);
-    if (sym < 0 || g_sym_kind[sym] != SK_TYPE) {
-        ck_err_unknown_type(n->sval, n);
-        return TY_INVALID;
+    // A generic struct literal (`Box<i32> { .v = 1 }`): the parser stores the
+    // type arguments in `n->kids2` (the field initializers are in `kids`).
+    if (n->kids2 != 0 && n->kids2->len > 0) {
+        ty = ck_instantiate_type(n, n->sval, n->kids2);
+        if (ty == TY_INVALID) { return TY_INVALID; }
+    } else {
+        sym = ck_lookup(n->sval);
+        if (sym < 0 || g_sym_kind[sym] != SK_TYPE) {
+            // A generic template name without arguments: a clear stop.
+            if (ck_find_ty_template(n->sval) >= 0) {
+                diag_stop("TYPE-01", "a generic type needs type arguments",
+                          "Write the instantiation: `Box<i32> { ... }` (§5.8).",
+                          diag_file(n->file), n->start, n->end);
+                return TY_INVALID;
+            }
+            ck_err_unknown_type(n->sval, n);
+            return TY_INVALID;
+        }
+        ty = g_sym_ty[sym];
     }
-    ty = g_sym_ty[sym];
     inits = n->kids;
     if (inits != 0) {
         i = 0;
         while (i < inits->len) {
             struct AstNode* fi;
             int vt;
+            int mi;
             fi = inits->items[i];
             vt = ck_expr(fi->a);
-            {
+            mi = ty_find_member(ty, fi->sval);
+            if (mi < 0) {
+                ck_err_no_field(fi, ty, fi->sval);
+            } else {
                 int want;
-                want = ty_member_type(ty, ty_find_member(ty, fi->sval));
+                want = ty_member_type(ty, mi);
                 if (vt != TY_INVALID && want != TY_INVALID && !ck_coercible(want, vt)) {
                     ck_err_type_mismatch(fi, want, vt, "field value");
                 }

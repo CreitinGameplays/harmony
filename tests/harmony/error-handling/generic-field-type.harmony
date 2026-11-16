@@ -1,0 +1,9 @@
+// WANT: TYPE-01
+// A generic struct's field is typed by the instantiation: `Box<i32>` has an
+// `i32` field, so a `bool` initializer is a type mismatch (§5.8). The check is
+// against the *substituted* field type, not the parameter `T`.
+struct Box<T> { v: T; }
+fn main() -> i32 {
+    let b: Box<i32> = Box<i32> { .v = true };
+    return 0;
+}

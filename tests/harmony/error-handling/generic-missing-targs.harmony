@@ -1,0 +1,9 @@
+// WANT: TYPE-01
+// A generic type must be instantiated with its type arguments (§5.8). Writing
+// the bare template name (`Box`) in type position is a stop, not a silent
+// default. The compiler must reject it and never crash.
+struct Box<T> { v: T; }
+fn main() -> i32 {
+    let b: Box = Box { .v = 1 };
+    return 0;
+}

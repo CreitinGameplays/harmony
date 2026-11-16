@@ -1,0 +1,55 @@
+// EXPECT: 33
+// The prelude enums (§5.3): `Maybe<T>` (Has/Empty) and `Outcome<T, E>`
+// (Good/Bad) are ordinary generic enums available without a declaration.
+// Bare variants (`Has(5)`, `Empty`) resolve from the expected type: the `let`
+// annotation or the `return` type. Also: a generic container whose `next`
+// yields its own `T` payload.
+struct FixedVec<T> { buf: [T; 4]; len: usize; }
+
+methods<T> FixedVec<T> {
+    // Yields the last element first, then shrinks (consuming iteration).
+    export fn next(&mut self) -> Maybe<T> {
+        if (self.len == 0) { return Empty; }
+        self.len = self.len - 1;
+        return Has(self.buf[self.len]);
+    }
+}
+
+fn checked_div(a: i32, b: i32) -> Outcome<i32, i32> {
+    if (b == 0) { return Bad(-1); }
+    return Good(a / b);
+}
+
+fn main() -> i32 {
+    // prelude Maybe via the annotation
+    let m: Maybe<i32> = Has(10);
+    let mut acc = 0;
+    switch (m) {
+        case Has(v): { acc = acc + v; }
+        case Empty: { acc = acc + 500; }
+    }
+    let e: Maybe<i32> = Empty;
+    switch (e) {
+        case Has(v): { acc = acc + 500; }
+        case Empty: { acc = acc + 1; }
+    }
+
+    // prelude Outcome, including a `return Bad(...)` inferred from the type.
+    let d: Outcome<i32, i32> = checked_div(20, 4);
+    switch (d) {
+        case Good(v): { acc = acc + v; }
+        case Bad(err): { acc = acc + err; }
+    }
+    let z: Outcome<i32, i32> = checked_div(1, 0);
+    switch (z) {
+        case Good(v): { acc = acc + 1000; }
+        case Bad(err): { acc = acc - err; }
+    }
+
+    // A generic container iterated through the protocol.
+    let mut fv: FixedVec<i32> = FixedVec<i32> { .buf = [5, 3, 0, 0], .len = 2 };
+    for (x : fv) { acc = acc + x; }   // 3 + 5 = 8
+
+    // 10 + 1 + 5 - (-1) + 8 = 25; +8 = 33.
+    return acc + 8;
+}

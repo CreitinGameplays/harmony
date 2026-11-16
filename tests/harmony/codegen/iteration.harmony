@@ -1,0 +1,47 @@
+// EXPECT: 60
+// The iteration protocol (§8.5): any type with `fn next(&mut self) ->
+// Maybe<T>` is iterable, and `for (x : it)` calls `next` until `Empty`:
+//
+//   let mut it = <expr>;
+//   loop { switch (it.next()) { case Has(x): body; case Empty: break; } }
+//
+// The prelude `Maybe<T>`/`Has`/`Empty` are ordinary generic enums (§5.3), so
+// this also exercises generic types. `break`, `continue`, and nested iterable
+// loops all target the loop, not the desugared switch.
+struct CountTo { i: i32; n: i32; nxt_count: i32; }
+
+methods CountTo {
+    export fn next(&mut self) -> Maybe<i32> {
+        if (self.i >= self.n) { return Empty; }
+        let v = self.i;
+        self.i = self.i + 1;
+        return Has(v);
+    }
+}
+
+fn main() -> i32 {
+    let mut acc = 0;
+
+    // Sum 0..5 = 10.
+    let mut a = CountTo { .i = 0, .n = 5, .nxt_count = 0 };
+    for (x : a) { acc = acc + x; }
+
+    // `break` at 3 stops the loop after 3 iterations (adds 3).
+    let mut b = CountTo { .i = 0, .n = 100, .nxt_count = 0 };
+    for (x : b) { if (x == 3) { break; } acc = acc + 1; }
+
+    // `continue` over even values in 0..6: adds 1 for each odd (3 total).
+    let mut c = CountTo { .i = 0, .n = 6, .nxt_count = 0 };
+    for (x : c) { if (x - (x / 2) * 2 == 0) { continue; } acc = acc + 1; }
+
+    // Nested iterable loops: 2 * 3 = 6 iterations (adds 6).
+    let mut d = CountTo { .i = 0, .n = 2, .nxt_count = 0 };
+    for (x : d) {
+        let mut e = CountTo { .i = 0, .n = 3, .nxt_count = 0 };
+        for (y : e) { acc = acc + 1; }
+    }
+
+    // 10 + 3 + 3 + 6 = 22; then a range `for` adds 38 = 60.
+    for (i : 0..38) { acc = acc + 1; }
+    return acc;
+}

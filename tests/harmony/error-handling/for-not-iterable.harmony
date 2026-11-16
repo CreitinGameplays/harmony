@@ -1,0 +1,13 @@
+// WANT: TYPE-05
+// `for (x : expr)` over a value with no `next` method is not iterable (§8.5).
+// An integer has no iteration protocol, so the compiler must reject it with a
+// clear stop (it used to reject *every* non-range iterable; now only the ones
+// without `fn next(&mut self) -> Maybe<T>`).
+fn main() -> i32 {
+    let n = 5;
+    let mut s = 0;
+    for (x : n) {
+        s = s + x;
+    }
+    return s;
+}

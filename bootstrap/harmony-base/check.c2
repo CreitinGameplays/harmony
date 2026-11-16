@@ -59,8 +59,20 @@ void ck_register_program(struct AstNode* prog);
 void ck_register_item(struct AstNode* n);
 void ck_register_struct(struct AstNode* n);
 void ck_register_enum(struct AstNode* n);
+void ck_register_ty_template(struct AstNode* n);
+void ck_register_prelude_enums(void);
+struct AstNode* ck_synth_param(char* name);
+struct AstNode* ck_synth_tname(char* name);
+struct AstNode* ck_synth_enum(char* name, struct AstList* params, struct AstList* variants);
 void ck_fill_struct(struct AstNode* n);
 void ck_fill_enum(struct AstNode* n);
+int ck_instantiate_type(struct AstNode* at, char* base, struct AstList* targs);
+int ck_find_ty_template(char* name);
+char* ck_payload_name(int j);
+int ck_template_kind(struct AstNode* tmpl);
+void ck_register_gtmeth(struct AstNode* blk, struct AstNode* f);
+int ck_find_gtmeth(char* base, char* name);
+void ck_subst_ctor_args(struct AstNode* n, char* base, struct AstList* targs);
 void ck_register_const(struct AstNode* n);
 void ck_register_fn(struct AstNode* n);
 void ck_register_extern(struct AstNode* n);
@@ -295,6 +307,48 @@ struct AstNode** g_gen_inst;       // instantiated AST_FN clones (emitted too)
 int g_gen_inst_cap;
 int g_ngen_inst;
 
+// Generic *type* templates (`struct Box<T>`, `enum Opt<T>`, §5.8/§18). Like
+// the function templates above: the generic decl is not a real type by
+// itself. Each distinct `<args>` list instantiates a nominal type (a fresh
+// struct/enum whose member types have the parameters substituted), and that
+// instance is an ordinary named type from then on. The instances emit as
+// ordinary `%struct.Box__i32` definitions, so the backend needs no new case.
+struct AstNode** g_tytmpl_decl;    // the AST_STRUCT/AST_ENUM template
+char** g_tytmpl_name;
+int g_tytmpl_cap;
+int g_tytmpl_name_cap;
+int g_ntytmpl;
+
+// Instance side table: instance type id -> (base name, concrete type args),
+// so a resolved instance type can be turned back into `Box<i32>` when generic
+// *function* inference needs to match it against a parameter (`fn get<T>(b:
+// Box<T>)` in the future; also `ck_ty_to_ast`).
+// Instance registry: instance type id -> its template base name, mangled
+// name, and the concrete type arguments (needed to instantiate generic
+// methods declared on the template). The backend walks this to emit each
+// instance's `%struct.Box__i32` def.
+int* g_tyinst_id;
+char** g_tyinst_name;      // mangled instance name (`Box__i32`)
+char** g_tyinst_base;      // template base name (`Box`)
+struct AstList** g_tyinst_targs;   // the concrete type args (`[i32]`)
+int g_tyinst_cap;
+int g_tyinst_name_cap;
+int g_tyinst_base_cap;
+int g_tyinst_targs_cap;
+int g_ntyinst;
+
+// Generic *methods* declared on a generic type template (`methods<T> Box<T> {
+// fn get(&self) -> T }`). Each is a function template keyed by the receiver's
+// template base name and the method name; a call on an instance (`b.get()` on
+// `Box<i32>`) instantiates it with the instance's type arguments.
+struct AstNode** g_gtmeth_fn;
+char** g_gtmeth_base;
+char** g_gtmeth_name;
+int g_gtmeth_cap;
+int g_gtmeth_name_cap;
+int g_gtmeth_base_cap;
+int g_ngtmeth;
+
 int* g_meth_ty;                    // receiver type id per method
 char** g_meth_name;
 int* g_meth_fn;                    // index into g_fn_decl
@@ -381,6 +435,12 @@ struct AstNode* g_prog;            // program root (for --dump-ast and later)
 // a declared array type checks its initializer, so `let a: [i64; 3] = [1, 2, 3]`
 // stamps the elements as i64 instead of the i32 default. 0 = no hint.
 int g_array_elem_hint;
+
+// Expected-type hint for the next expression (0 = none). Used so a bare
+// prelude variant without payload (`Empty`, `None`) can pick its instantiation
+// from the annotation: `let m: Maybe<i32> = Empty;`. Set around a `let`
+// initializer and a `return` value by their declared types.
+int g_expected_ty;   // expected-type hint for the next expression (0 = none)
 
 // ---------------------------------------------------------------------------
 // Diagnostics helpers (§16). Every stop carries a `try:` fix where one is
@@ -732,11 +792,29 @@ int ck_resolve_type(struct AstNode* t) {
         }
         sym = ck_lookup(t->sval);
         if (sym < 0) {
+            // A generic type template (`struct Box<T>`): `Box<i32>` instantiates
+            // it, and a bare `Box` with no arguments is an error.
+            if (ck_find_ty_template(t->sval) >= 0) {
+                if (t->kids == 0 || t->kids->len == 0) {
+                    diag_stop("TYPE-01", "a generic type needs type arguments",
+                              "Write the instantiation, like `Box<i32>` (§5.8).",
+                              diag_file(t->file), t->start, t->end);
+                    return TY_INVALID;
+                }
+                return ck_instantiate_type(t, t->sval, t->kids);
+            }
             ck_err_unknown_type(t->sval, t);
             return TY_INVALID;
         }
         if (g_sym_kind[sym] != SK_TYPE && g_sym_kind[sym] != SK_GEN) {
             ck_err_unknown_type(t->sval, t);
+            return TY_INVALID;
+        }
+        // A non-generic nominal type does not take arguments.
+        if (t->kids != 0 && t->kids->len > 0) {
+            diag_stop("TYPE-01", "this type takes no type arguments",
+                      "Only a generic type (`struct Box<T>`) is instantiated with `<...>`.",
+                      diag_file(t->file), t->start, t->end);
             return TY_INVALID;
         }
         return g_sym_ty[sym];
@@ -976,14 +1054,39 @@ void ck_register_item(struct AstNode* n) {
 // by pass 2 (ck_register_members).
 void ck_register_struct(struct AstNode* n) {
     int id;
+    // A generic struct (`struct Box<T>`) is a *template* (§5.8): it does not
+    // name a type by itself. Record it and return; `Box<i32>` instantiates it.
+    if (n->kids != 0) {
+        ck_register_ty_template(n);
+        return;
+    }
     id = ty_new_typed(CTY_STRUCT, n->sval, n);
     if (ck_declare(n->sval, SK_TYPE, id, n, 0) < 0) { return; }
 }
 
 void ck_register_enum(struct AstNode* n) {
     int id;
+    if (n->kids != 0) {
+        ck_register_ty_template(n);
+        return;
+    }
     id = ty_new_typed(CTY_ENUM, n->sval, n);
     if (ck_declare(n->sval, SK_TYPE, id, n, 0) < 0) { return; }
+}
+
+// Registers a generic struct/enum template. Declared in a forward-purpose
+// pass before the members are filled; the template's fields may still name a
+// parameter (`T`), so they are only substituted at instantiation time.
+void ck_register_ty_template(struct AstNode* n) {
+    if (g_ntytmpl >= g_tytmpl_cap) {
+        ck_grow((char**) &g_tytmpl_decl, &g_tytmpl_cap, 8, g_ntytmpl + 1);
+        if (g_ntytmpl >= g_tytmpl_name_cap) {
+            ck_grow((char**) &g_tytmpl_name, &g_tytmpl_name_cap, 8, g_ntytmpl + 1);
+        }
+    }
+    g_tytmpl_decl[g_ntytmpl] = n;
+    g_tytmpl_name[g_ntytmpl] = n->sval;
+    g_ntytmpl = g_ntytmpl + 1;
 }
 
 // Pass 2: resolve the members of one struct/enum now that every nominal name
@@ -992,6 +1095,7 @@ void ck_fill_struct(struct AstNode* n) {
     int id;
     int i;
     struct AstList* fields;
+    if (n->kids != 0) { return; }   // a generic template: instantiated on use
     id = ck_lookup_type(n->sval);
     if (id == TY_INVALID) { return; }
     fields = n->kids2;
@@ -1017,6 +1121,7 @@ void ck_fill_enum(struct AstNode* n) {
     int id;
     int i;
     struct AstList* variants;
+    if (n->kids != 0) { return; }   // a generic template: instantiated on use
     id = ck_lookup_type(n->sval);
     if (id == TY_INVALID) { return; }
     variants = n->kids2;
@@ -1353,6 +1458,15 @@ int ck_subst_type(struct AstNode* n, struct AstNode* tmpl, struct AstList* targs
             }
             i = i + 1;
         }
+        // A concrete type name (`Box<T>`) still has arguments that may name a
+        // parameter: recurse into `kids` so `Box<T>` becomes `Box<i32>`.
+        if (n->kids != 0) {
+            i = 0;
+            while (i < n->kids->len) {
+                if (!ck_subst_type(n->kids->items[i], tmpl, targs, ntargs)) { return 0; }
+                i = i + 1;
+            }
+        }
         return 1;   // a concrete (non-parameter) name survives
     }
     if (!ck_subst_type(n->a, tmpl, targs, ntargs)) { return 0; }
@@ -1425,6 +1539,219 @@ char* ck_instance_name(char* base, struct AstList* targs) {
     return lexbuf_finish();
 }
 
+// ---------------------------------------------------------------------------
+// Generic user-defined types (§5.8, §18): `struct Box<T>`, `enum Opt<T>`.
+//
+// The same monomorphization approach as generic functions. A generic
+// struct/enum decl is registered as a *type template* (not a type); the first
+// `Box<i32>` use clones the template, substitutes the type parameters in every
+// field/payload, builds a fresh nominal type named `Box__i32`, and records the
+// instance. All later `Box<i32>` uses resolve to that one instance, so
+// `ty_eq` (which compares nominal types by name) makes them interchangeable.
+// ---------------------------------------------------------------------------
+
+int ck_find_ty_template(char* name) {
+    int i;
+    i = 0;
+    while (i < g_ntytmpl) {
+        if (str_eq(g_tytmpl_name[i], name)) { return i; }
+        i = i + 1;
+    }
+    return -1;
+}
+
+struct AstNode* ck_ty_template_decl(int ti) {
+    if (ti < 0 || ti >= g_ntytmpl) { return 0; }
+    return g_tytmpl_decl[ti];
+}
+
+// A variant payload field's synthetic name (`_0`, `_1`, ...). This matches
+// the naming `ck_fill_enum` uses for a non-generic enum's payload struct, so
+// a generic instance's variant payloads look identical to `ty_member_type`.
+char* ck_payload_name(int j) {
+    lexbuf_reset();
+    lexbuf_push('_');
+    lexbuf_push_int(j);
+    return lexbuf_finish();
+}
+
+// The runtime kind (`CTY_STRUCT`/`CTY_ENUM`) of a generic type template.
+int ck_template_kind(struct AstNode* tmpl) {
+    if (tmpl != 0 && tmpl->kind == AST_ENUM) { return CTY_ENUM; }
+    return CTY_STRUCT;
+}
+
+// Is `id` one of the monomorphized generic-type instances? Returns the
+// template base name (`Box`), or 0.
+char* ck_ty_instance_base(int id) {
+    int i;
+    i = 0;
+    while (i < g_ntyinst) {
+        if (g_tyinst_id[i] == id) { return g_tyinst_base[i]; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+int ck_nty_instances(void) {
+    return g_ntyinst;
+}
+
+int ck_ty_instance_at(int i) {
+    if (i < 0 || i >= g_ntyinst) { return TY_INVALID; }
+    return g_tyinst_id[i];
+}
+
+// Instantiates the type template `base` with `targs`, returning the instance
+// type id (or TY_INVALID after a stop). Reuses an existing instance of the
+// same concrete arguments.
+int ck_instantiate_type(struct AstNode* at, char* base, struct AstList* targs) {
+    int ti;
+    int ntargs;
+    struct AstNode* tmpl;
+    char* iname;   // reserved: instance symbols are derived from the receiver type
+    int id;
+    int i;
+
+    ti = ck_find_ty_template(base);
+    if (ti < 0) {
+        ck_err_unknown_type(base, at);
+        return TY_INVALID;
+    }
+    tmpl = g_tytmpl_decl[ti];
+    ntargs = 0;
+    if (tmpl->kids != 0) { ntargs = tmpl->kids->len; }
+    if (targs == 0 || targs->len != ntargs) {
+        ck_err_arity(at, base, ntargs, ast_list_len(targs));
+        return TY_INVALID;
+    }
+    // Reject `life` parameters for now (they arrive with the borrow checker).
+    i = 0;
+    while (i < ntargs) {
+        if (tmpl->kids->items[i]->ival != 0) {
+            diag_stop("TYPE-01", "life parameters are not implemented yet",
+                      "Generic life parameters arrive with the borrow checker (M4).",
+                      diag_file(at->file), at->start, at->end);
+            return TY_INVALID;
+        }
+        i = i + 1;
+    }
+
+    iname = ck_instance_name(base, targs);
+    // Reuse an existing instance of the same mangled name.
+    i = 0;
+    while (i < g_ntyinst) {
+        if (str_eq(g_tyinst_name[i], iname)) { return g_tyinst_id[i]; }
+        i = i + 1;
+    }
+
+    // Build the instance's nominal type. `ty_new_typed` gives it the decl
+    // node for `--dump-ast`/audit; its name is the mangled instance name.
+    id = ty_new_typed(ck_template_kind(tmpl), iname, tmpl);
+    // Substitute the type parameters in every field/variant payload. The
+    // template's `kids2` is the field list (struct) or variant list (enum).
+    {
+        struct AstList* fields;
+        fields = tmpl->kids2;
+        if (fields != 0) {
+            int is_enum;
+            is_enum = (tmpl->kind == AST_ENUM);
+            if (is_enum) {
+                // Two phases, exactly like `ck_fill_enum`: build every
+                // variant's payload struct first, then add the enum's own
+                // member list. Members must be contiguous per type, so adding
+                // a payload and the enum turn-by-turn would interleave them.
+                int pids[64];
+                int npids;
+                npids = fields->len;
+                if (npids > 64) { npids = 64; }
+                i = 0;
+                while (i < npids) {
+                    struct AstNode* fld;
+                    int pid;
+                    fld = fields->items[i];
+                    // Payload struct name `Enum::Variant`, matching
+                    // `ck_fill_enum` (a unique, meaningful IR type name).
+                    lexbuf_reset();
+                    lexbuf_push_str(iname);
+                    lexbuf_push_str("::");
+                    lexbuf_push_str(fld->sval);
+                    pid = ty_new_typed(CTY_STRUCT, lexbuf_finish(), fld);
+                    if (fld->kids != 0) {
+                        int j;
+                        j = 0;
+                        while (j < fld->kids->len) {
+                            int pt;
+                            struct AstNode* clone;
+                            clone = ast_clone(fld->kids->items[j]);
+                            ck_subst_type(clone, tmpl, targs, ntargs);
+                            pt = ck_resolve_type(clone);
+                            if (pt == TY_INVALID) { pt = TY_I32; }
+                            ty_add_member(pid, ck_payload_name(j), pt);
+                            j = j + 1;
+                        }
+                    }
+                    pids[i] = pid;
+                    i = i + 1;
+                }
+                i = 0;
+                while (i < npids) {
+                    struct AstNode* fld;
+                    fld = fields->items[i];
+                    ty_add_member(id, fld->sval, pids[i]);
+                    i = i + 1;
+                }
+            } else {
+                i = 0;
+                while (i < fields->len) {
+                    // A struct field: substitute its declared type.
+                    struct AstNode* fld;
+                    int ft;
+                    struct AstNode* clone;
+                    fld = fields->items[i];
+                    clone = ast_clone(fld->a);
+                    ck_subst_type(clone, tmpl, targs, ntargs);
+                    ft = ck_resolve_type(clone);
+                    if (ft == TY_INVALID) { ft = TY_I32; }
+                    ty_add_member(id, fld->sval, ft);
+                    i = i + 1;
+                }
+            }
+        }
+    }
+
+    // Record the instance. Three parallel tables share one capacity.
+    if (g_ntyinst >= g_tyinst_cap) {
+        ck_grow((char**) &g_tyinst_id, &g_tyinst_cap, 8, g_ntyinst + 1);
+        if (g_ntyinst >= g_tyinst_name_cap) {
+            ck_grow((char**) &g_tyinst_name, &g_tyinst_name_cap, 8, g_ntyinst + 1);
+        }
+        if (g_ntyinst >= g_tyinst_base_cap) {
+            ck_grow((char**) &g_tyinst_base, &g_tyinst_base_cap, 8, g_ntyinst + 1);
+        }
+    }
+    g_tyinst_id[g_ntyinst] = id;
+    g_tyinst_name[g_ntyinst] = iname;
+    g_tyinst_base[g_ntyinst] = base;
+    if (g_ntyinst >= g_tyinst_targs_cap) {
+        ck_grow((char**) &g_tyinst_targs, &g_tyinst_targs_cap, 8, g_ntyinst + 1);
+    }
+    g_tyinst_targs[g_ntyinst] = targs;
+    g_ntyinst = g_ntyinst + 1;
+    return id;
+}
+
+// The concrete type arguments an instance was created with (`[i32]`), or 0.
+struct AstList* ck_ty_instance_targs(int id) {
+    int i;
+    i = 0;
+    while (i < g_ntyinst) {
+        if (g_tyinst_id[i] == id) { return g_tyinst_targs[i]; }
+        i = i + 1;
+    }
+    return 0;
+}
+
 // Instantiates `name<args>`: clones the template, substitutes the parameters,
 // registers the instance, and returns its function index (or -1 after a stop).
 int ck_instantiate(struct AstNode* n, char* name, struct AstList* targs) {
@@ -1432,7 +1759,7 @@ int ck_instantiate(struct AstNode* n, char* name, struct AstList* targs) {
     int ntargs;
     struct AstNode* tmpl;
     struct AstNode* inst;
-    char* iname;
+    char* iname;   // reserved: instance symbols are derived from the receiver type
     int idx;
     int i;
 
@@ -1605,11 +1932,52 @@ void ck_register_extern(struct AstNode* n) {
 // Registers the methods of a `methods Type { ... }` block. The receiver is
 // the first parameter named `self` (§6.6): `self` takes the type by value,
 // `&self` a shared reference, `&mut self` an exclusive one.
+// Ensures the three parallel method tables have room for one more entry.
+void ck_meth_reserve(void) {
+    if (g_nmeth >= g_meth_cap) {
+        ck_grow((char**) &g_meth_ty, &g_meth_cap, 8, g_nmeth + 1);
+        // `g_meth_name` and `g_meth_fn` follow the same capacity.
+        {
+            char** nn;
+            int* nf;
+            int k;
+            nn = arena_alloc(g_meth_cap * 8);
+            nf = arena_alloc(g_meth_cap * 8);
+            k = 0;
+            while (k < g_meth_cap * 8) { ((char*) nn)[k] = 0; k = k + 1; }
+            k = 0;
+            while (k < g_meth_cap) { nf[k] = 0; k = k + 1; }
+            k = 0;
+            while (k < g_nmeth) {
+                nn[k] = g_meth_name[k];
+                nf[k] = g_meth_fn[k];
+                k = k + 1;
+            }
+            g_meth_name = nn;
+            g_meth_fn = nf;
+        }
+    }
+}
+
 void ck_register_methods(struct AstNode* n) {
     int i;
     int base;
     int recv;
     struct AstList* fns;
+    // A methods block on a *generic* type template (`methods<T> Box<T>`) or
+    // with its own generic parameters: each method is a template instantiated
+    // once per concrete receiver (`b.get()` on `Box<i32>` instantiates it).
+    if (n->kids != 0) {
+        struct AstList* fns2;
+        fns2 = n->kids2;
+        if (fns2 == 0) { return; }
+        i = 0;
+        while (i < fns2->len) {
+            ck_register_gtmeth(n, fns2->items[i]);
+            i = i + 1;
+        }
+        return;
+    }
     base = ck_lookup(n->sval);
     if (base < 0 || g_sym_kind[base] != SK_TYPE) {
         ck_err_unknown_type(n->sval, n);
@@ -1622,29 +1990,7 @@ void ck_register_methods(struct AstNode* n) {
     while (i < fns->len) {
         struct AstNode* f;
         f = fns->items[i];
-        if (g_nmeth >= g_meth_cap) {
-            ck_grow((char**) &g_meth_ty, &g_meth_cap, 8, g_nmeth + 1);
-            // `g_meth_name` and `g_meth_fn` share the capacity; grow to match.
-            {
-                char** nn;
-                int* nf;
-                int k;
-                nn = arena_alloc(g_meth_cap * 8);
-                nf = arena_alloc(g_meth_cap * 8);
-                k = 0;
-                while (k < g_meth_cap * 8) { ((char*) nn)[k] = 0; k = k + 1; }
-                k = 0;
-                while (k < g_meth_cap) { nf[k] = 0; k = k + 1; }
-                k = 0;
-                while (k < g_nmeth) {
-                    nn[k] = g_meth_name[k];
-                    nf[k] = g_meth_fn[k];
-                    k = k + 1;
-                }
-                g_meth_name = nn;
-                g_meth_fn = nf;
-            }
-        }
+        ck_meth_reserve();
         g_meth_ty[g_nmeth] = recv;
         g_meth_name[g_nmeth] = f->sval;
         g_meth_fn[g_nmeth] = g_nfn;
@@ -1667,6 +2013,222 @@ void ck_register_methods(struct AstNode* n) {
         }
         i = i + 1;
     }
+}
+
+// Records one method from a generic methods block (`methods<T> Box<T>`) as a
+// template. The method's `self` and `T` are substituted at instantiation.
+void ck_register_gtmeth(struct AstNode* blk, struct AstNode* f) {
+    if (g_ngtmeth >= g_gtmeth_cap) {
+        ck_grow((char**) &g_gtmeth_fn, &g_gtmeth_cap, 8, g_ngtmeth + 1);
+    }
+    if (g_ngtmeth >= g_gtmeth_name_cap) {
+        ck_grow((char**) &g_gtmeth_name, &g_gtmeth_name_cap, 8, g_ngtmeth + 1);
+    }
+    if (g_ngtmeth >= g_gtmeth_base_cap) {
+        ck_grow((char**) &g_gtmeth_base, &g_gtmeth_base_cap, 8, g_ngtmeth + 1);
+    }
+    g_gtmeth_fn[g_ngtmeth] = f;
+    g_gtmeth_name[g_ngtmeth] = f->sval;
+    g_gtmeth_base[g_ngtmeth] = blk->sval;
+    g_ngtmeth = g_ngtmeth + 1;
+}
+
+// Looks up a generic method template by receiver base name + method name.
+int ck_find_gtmeth(char* base, char* name) {
+    int i;
+    i = 0;
+    while (i < g_ngtmeth) {
+        if (str_eq(g_gtmeth_base[i], base) && str_eq(g_gtmeth_name[i], name)) {
+            return i;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+// True when a generic method template matches a receiver type (the receiver
+// is an instance of the template's base name).
+int ck_gtmeth_matches(int gi, int recv_ty) {
+    char* base;
+    if (gi < 0 || gi >= g_ngtmeth) { return 0; }
+    base = g_gtmeth_base[gi];
+    // Direct instance match, or through a reference/heap to one.
+    {
+        int t;
+        t = recv_ty;
+        while (ty_is_ref(t) || ty_is_heap(t)) { t = ty_elem(t); }
+        if (ck_ty_instance_base(t) != 0 && str_eq(ck_ty_instance_base(t), base)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Rewrites bare struct/enum-variant constructors in a generic method body to
+// carry the instance's type arguments: inside `methods<T> Box<T>`, the body
+// writes `Box { .v = x }` (no `<...>`), which must resolve to `Box<i32>` once
+// the method is instantiated for `Box<i32>`. Also rewrites `Enum::Variant`
+// calls of the same generic enum.
+void ck_subst_ctor_args(struct AstNode* n, char* base, struct AstList* targs) {
+    int i;
+    if (n == 0) { return; }
+    if (n->kind == AST_STRUCT_INIT && n->sval != 0 && str_eq(n->sval, base)
+        && (n->kids2 == 0 || n->kids2->len == 0)) {
+        n->kids2 = targs;
+    }
+    if (n->kind == AST_CALL && n->a != 0 && n->a->kind == AST_PATH
+        && n->a->sval != 0 && (n->a->kids == 0 || n->a->kids->len == 0)) {
+        // `Enum::Variant(...)` or bare `Variant(...)` on this template's enum.
+        char* s;
+        int cut;
+        s = n->a->sval;
+        cut = str_rfind(s, "::");
+        if (cut >= 0) {
+            if (str_eq(str_prefix(s, cut), base)) { n->a->kids = targs; }
+        }
+    }
+    if (n->kind == AST_PATH && n->sval != 0 && (n->kids == 0 || n->kids->len == 0)) {
+        // A bare `Enum::Variant` value of this template's enum.
+        int cut;
+        cut = str_rfind(n->sval, "::");
+        if (cut >= 0 && str_eq(str_prefix(n->sval, cut), base)) {
+            n->kids = targs;
+        }
+    }
+    ck_subst_ctor_args(n->a, base, targs);
+    ck_subst_ctor_args(n->b, base, targs);
+    ck_subst_ctor_args(n->c, base, targs);
+    if (n->kids != 0) {
+        i = 0;
+        while (i < n->kids->len) {
+            ck_subst_ctor_args(n->kids->items[i], base, targs);
+            i = i + 1;
+        }
+    }
+    if (n->kids2 != 0) {
+        i = 0;
+        while (i < n->kids2->len) {
+            ck_subst_ctor_args(n->kids2->items[i], base, targs);
+            i = i + 1;
+        }
+    }
+}
+
+// Finds the `next` method of an iterable type (§8.5 iteration protocol).
+// Searches the type itself and one auto-deref level (a `&mut it`/`Heap<it>`
+// receiver). Returns the method index, or -1.
+int ck_find_next_method(int it) {
+    int i;
+    int t;
+    t = it;
+    while (ty_is_ref(t) || ty_is_heap(t)) { t = ty_elem(t); }
+    // A generic method `next` on a generic type instance must be instantiated
+    // first so a concrete entry exists.
+    {
+        char* ibase;
+        ibase = ck_ty_instance_base(t);
+        if (ibase != 0) {
+            int gi;
+            gi = ck_find_gtmeth(ibase, "next");
+            if (gi >= 0) { ck_instantiate_gtmeth(gi, t); }
+        }
+    }
+    i = 0;
+    while (i < g_nmeth) {
+        if (g_meth_ty[i] == t && str_eq(g_meth_name[i], "next")) { return i; }
+        i = i + 1;
+    }
+    return -1;
+}
+
+// Instantiates generic method template `gi` for receiver type `recv_ty`.
+// Returns the new function index (registered with a method entry), or -1.
+int ck_instantiate_gtmeth(int gi, int recv_ty) {
+    struct AstNode* f;
+    struct AstNode* inst;
+    struct AstList* targs;
+    char* base;
+    int ntargs;
+    int i;
+    int idx;
+    int recv_core;
+
+    if (gi < 0 || gi >= g_ngtmeth) { return -1; }
+    f = g_gtmeth_fn[gi];
+    base = g_gtmeth_base[gi];
+    // The receiver's instance arguments are the method's type arguments.
+    recv_core = recv_ty;
+    while (ty_is_ref(recv_core) || ty_is_heap(recv_core)) { recv_core = ty_elem(recv_core); }
+    targs = ck_ty_instance_targs(recv_core);
+    if (targs == 0) { return -1; }
+    ntargs = targs->len;
+    // Reuse an existing instance for this receiver type + method name. A
+    // method instance's symbol is `Type__method` (ll_method_symbol), which is
+    // already unique per receiver type, so `inst->sval` stays the plain name.
+    {
+        int m;
+        m = 0;
+        while (m < g_nmeth) {
+            if (g_meth_ty[m] == recv_core && str_eq(g_meth_name[m], f->sval)) {
+                return g_meth_fn[m];
+            }
+            m = m + 1;
+        }
+    }
+    inst = ast_clone(f);
+    inst->sval = f->sval;
+    // Substitute the type parameters in the signature and body. The template
+    // here is the *type* template so its `T` names line up.
+    {
+        struct AstNode* tytmpl;
+        int ti;
+        ti = ck_find_ty_template(base);
+        tytmpl = ck_ty_template_decl(ti);
+        if (tytmpl == 0) { return -1; }
+        if (inst->a != 0 && !ck_subst_type(inst->a, tytmpl, targs, ntargs)) { return -1; }
+        if (inst->b != 0 && !ck_subst_type(inst->b, tytmpl, targs, ntargs)) { return -1; }
+        if (inst->kids2 != 0) {
+            i = 0;
+            while (i < inst->kids2->len) {
+                struct AstNode* p;
+                p = inst->kids2->items[i];
+                if (!ck_subst_type(p->a, tytmpl, targs, ntargs)) { return -1; }
+                i = i + 1;
+            }
+        }
+        // A bare `Box { ... }` / `Opt::None` inside the body needs the instance
+        // arguments too, now that the method is concrete.
+        if (inst->b != 0) { ck_subst_ctor_args(inst->b, base, targs); }
+    }
+    // Register it: an ordinary method on the instance type, with a resolved
+    // `self` parameter shape like `ck_register_methods` does.
+    idx = ck_fn_register_node(inst);
+    if (idx < 0) { return -1; }
+    ck_meth_reserve();
+    g_meth_ty[g_nmeth] = recv_core;
+    g_meth_name[g_nmeth] = f->sval;
+    g_meth_fn[g_nmeth] = idx;
+    g_nmeth = g_nmeth + 1;
+    if (g_nfn > 0) { g_fn_self_ty[idx] = recv_core; }
+    {
+        struct AstList* ps;
+        ps = inst->kids2;
+        if (ps != 0 && ps->len > 0 && ps->items[0]->sval != 0) {
+            struct AstNode* sp;
+            sp = ps->items[0];
+            if (str_eq(sp->sval, "self")) { sp->ty = recv_core; }
+            else if (str_eq(sp->sval, "mut self")) { sp->ty = recv_core; }
+            else if (str_eq(sp->sval, "&self")) { sp->ty = ty_new(CTY_REF, ck_ref_name("&", recv_core), recv_core, 0); }
+            else if (str_eq(sp->sval, "&mut self")) { sp->ty = ty_new(CTY_MUTREF, ck_ref_name("&mut", recv_core), recv_core, 0); }
+        }
+    }
+    // Record the instance for emission like any other generic function.
+    if (g_ngen_inst >= g_gen_inst_cap) {
+        ck_grow((char**) &g_gen_inst, &g_gen_inst_cap, 8, g_ngen_inst + 1);
+    }
+    g_gen_inst[g_ngen_inst] = inst;
+    g_ngen_inst = g_ngen_inst + 1;
+    return idx;
 }
 
 // ---------------------------------------------------------------------------
@@ -1754,6 +2316,21 @@ int ck_block_ends_in_return(struct AstNode* blk) {
     // `unreachable` call, §5.1/§15.1) also ends the function: control never
     // reaches the end of the body.
     if (last->ty == TY_NEVER) { return 1; }
+    // A final block-like statement that itself ends in a `return` also ends
+    // the function: `unchecked("...") { ... return x; }`, a bare nested block,
+    // or an `if`/`else` whose every arm returns. Without this, an idiomatic
+    // `unchecked { return ...; }` (the §13 style) tripped RET-01.
+    if (last->kind == AST_UNCHECKED && last->a != 0) {
+        return ck_block_ends_in_return(last->a);
+    }
+    if (last->kind == AST_BLOCK) {
+        return ck_block_ends_in_return(last);
+    }
+    if (last->kind == AST_IF) {
+        // Both arms must be present and return.
+        if (last->c == 0) { return 0; }
+        return ck_block_ends_in_return(last->b) && ck_block_ends_in_return(last->c);
+    }
     return 0;
 }
 
@@ -1833,8 +2410,10 @@ void ck_stmt_let(struct AstNode* n) {
         if (ty != 0 && ty_is_array(ty) && n->b->kind == AST_ARRAY_LIT) {
             g_array_elem_hint = ty_elem(ty);
         }
+        g_expected_ty = ty;      // a bare `Empty`/`None` picks its instantiation
         ck_expr(n->b);
         g_array_elem_hint = 0;
+        g_expected_ty = 0;
         if (ty == 0) {
             // No type given: infer from the initializer. An untyped literal
             // defaults to i32 / f64 (§5.9).
@@ -1973,10 +2552,9 @@ void ck_stmt_for(struct AstNode* n) {
     g_loop_depth = g_loop_depth + 1;
     ck_scope_push();
     // Shape 2: `for (x : expr)` — `n->sval` is the binding, `n->a` the
-    // iterable. Ranges (`a..b`, `a..=b`) are supported here; a collection or a
-    // custom iterator is not yet (they need the iteration protocol, §8.5).
+    // iterable. Either a range (`a..b`, `a..=b`) or a type with
+    // `fn next(&mut self) -> Maybe<T>` (the §8.5 iteration protocol).
     if (n->sval != 0) {
-        int it;
         // A range is not a value the expression checker accepts on its own
         // (`let r = 0..3` is `TYPE-05`), so recognize the shape first.
         if (n->a != 0 && n->a->kind == AST_BINARY
@@ -2001,6 +2579,7 @@ void ck_stmt_for(struct AstNode* n) {
             et = lo;
             if (et == TY_UINT_LIT || et == TY_INVALID) { et = TY_I32; }
             n->a->ty = et;         // the backend reads the element type here
+            n->ival = 1;           // marks the range form (backend dispatch)
             ck_stamp_lits(n->a->a, et);
             ck_stamp_lits(n->a->b, et);
             {
@@ -2021,15 +2600,60 @@ void ck_stmt_for(struct AstNode* n) {
             n->ty = TY_UNIT;
             return;
         }
-        // Not a range: a collection or iterator needs `next(&mut self)` (§8.5),
-        // which is not implemented yet.
-        diag_stop("TYPE-05", "unsupported `for` iterable",
-                  "Only ranges (`for (i : 0..n)`) are implemented; collections and custom iterators need the iteration protocol (§8.5).",
-                  diag_file(n->a->file), n->a->start, n->a->end);
-        ck_scope_pop();
-        g_loop_depth = g_loop_depth - 1;
-        n->ty = TY_UNIT;
-        return;
+        // The iteration protocol (§8.5): a type with `fn next(&mut self) ->
+        // Maybe<T>` is an iterator; `for (x : it)` calls `next` until `Empty`.
+        // Resolve `next` on the iterable's type and bind `x` to the payload.
+        {
+            int it;
+            int m;
+            int ret;
+            int has_vi;
+            int elem;
+            m = -1;
+            it = ck_expr(n->a);
+            if (it == TY_INVALID) {
+                ck_scope_pop(); g_loop_depth = g_loop_depth - 1; n->ty = TY_UNIT; return;
+            }
+            m = ck_find_next_method(it);
+            if (m < 0) {
+                diag_stop("TYPE-05", "unsupported `for` iterable",
+                          "Only ranges (`for (i : 0..n)`) and types with `fn next(&mut self) -> Maybe<T>` are iterable (§8.5).",
+                          diag_file(n->a->file), n->a->start, n->a->end);
+                ck_scope_pop(); g_loop_depth = g_loop_depth - 1; n->ty = TY_UNIT; return;
+            }
+            ret = ck_fn(g_meth_fn[m])->ty;
+            if (ret == 0 || ty_kind(ret) != CTY_ENUM) {
+                diag_stop("TYPE-05", "`next` must return `Maybe<T>`",
+                          "The iteration protocol requires `fn next(&mut self) -> Maybe<T>` (§8.5).",
+                          diag_file(n->a->file), n->a->start, n->a->end);
+                ck_scope_pop(); g_loop_depth = g_loop_depth - 1; n->ty = TY_UNIT; return;
+            }
+            has_vi = ty_find_member(ret, "Has");
+            if (has_vi < 0 || ty_member_count(ty_member_type(ret, has_vi)) != 1) {
+                diag_stop("TYPE-05", "`next` must return `Maybe<T>`",
+                          "`Maybe<T>` has a `Has(T)` variant; the loop binds its payload (§8.5).",
+                          diag_file(n->a->file), n->a->start, n->a->end);
+                ck_scope_pop(); g_loop_depth = g_loop_depth - 1; n->ty = TY_UNIT; return;
+            }
+            elem = ty_member_type(ty_member_type(ret, has_vi), 0);
+            {
+                int idx;
+                idx = ck_declare(n->sval, SK_LET, elem, n, 1);
+                if (idx >= 0) { g_sym_init[idx] = 1; }
+            }
+            if (n->kids != 0) {
+                int i;
+                i = 0;
+                while (i < n->kids->len) {
+                    ck_stmt(n->kids->items[i]);
+                    i = i + 1;
+                }
+            }
+            ck_scope_pop();
+            g_loop_depth = g_loop_depth - 1;
+            n->ty = TY_UNIT;
+            return;
+        }
     }
     if (n->a != 0) { ck_stmt(n->a); }
     if (n->b != 0) {
@@ -2215,7 +2839,9 @@ void ck_stmt_return(struct AstNode* n) {
     if (n->a == 0) {
         got = TY_UNIT;
     } else {
+        g_expected_ty = want;    // a bare `Empty`/`None` picks the return type
         got = ck_expr(n->a);
+        g_expected_ty = 0;
     }
     n->ty = TY_NEVER;
     if (want == TY_INVALID || got == TY_INVALID) { return; }
@@ -2272,6 +2898,9 @@ void check_program(struct AstNode* prog) {
     g_nmeth = 0;
     g_ngen = 0;
     g_ngen_inst = 0;
+    g_ntytmpl = 0;
+    g_ntyinst = 0;
+    g_ngtmeth = 0;
     g_fn_depth = 0;
     g_loop_depth = 0;
     types_reset();
@@ -2315,6 +2944,79 @@ void ck_check_main(void) {
 }
 
 // The primitive type names (§5.2) are always in scope.
+// Builds a synthetic type-parameter node (`T`). `ck_template_param` reads the
+// name from `sval`; ival 0 marks a type (not `life`) parameter.
+struct AstNode* ck_synth_param(char* name) {
+    struct AstNode* p;
+    p = ast_node_new(AST_PARAM);
+    p->sval = name;
+    p->ival = 0;
+    return p;
+}
+
+// Builds a synthetic type AST naming the parameter `name` (`T`).
+struct AstNode* ck_synth_tname(char* name) {
+    struct AstNode* t;
+    t = ast_node_new(AST_TYPE_NAME);
+    t->sval = name;
+    return t;
+}
+
+// Builds a synthetic generic enum decl (prelude `Maybe`/`Outcome`, §5.3). The
+// payload of each variant is 0 or more type names taken from `pnames`.
+struct AstNode* ck_synth_enum(char* name, struct AstList* params,
+                              struct AstList* variants) {
+    struct AstNode* e;
+    e = ast_node_new(AST_ENUM);
+    e->sval = name;
+    e->kids = params;      // generic parameters
+    e->kids2 = variants;   // variant list
+    return e;
+}
+
+// Registers the prelude enums (`Maybe<T>` and `Outcome<T, E>`, §5.3). They are
+// ordinary generic enums in the prelude, so they go through the very same
+// template/instantiation machinery as user code (`Maybe<i32>` instantiates on
+// first use). A user declaration of the same name wins (it is registered
+// first, and template lookup returns the earliest).
+void ck_register_prelude_enums(void) {
+    struct AstList* ps;
+    struct AstList* vs;
+    struct AstNode* has;
+    struct AstNode* empty;
+    struct AstNode* good;
+    struct AstNode* bad;
+    // copy enum Maybe<T> { Has(T), Empty, }
+    ps = ast_list_new();
+    ast_list_push(ps, ck_synth_param("T"));
+    has = ast_node_new(AST_VARIANT);
+    has->sval = "Has";
+    has->kids = ast_list_new();
+    ast_list_push(has->kids, ck_synth_tname("T"));
+    empty = ast_node_new(AST_VARIANT);
+    empty->sval = "Empty";
+    vs = ast_list_new();
+    ast_list_push(vs, has);
+    ast_list_push(vs, empty);
+    ck_register_ty_template(ck_synth_enum("Maybe", ps, vs));
+    // copy enum Outcome<T, E> { Good(T), Bad(E), }
+    ps = ast_list_new();
+    ast_list_push(ps, ck_synth_param("T"));
+    ast_list_push(ps, ck_synth_param("E"));
+    good = ast_node_new(AST_VARIANT);
+    good->sval = "Good";
+    good->kids = ast_list_new();
+    ast_list_push(good->kids, ck_synth_tname("T"));
+    bad = ast_node_new(AST_VARIANT);
+    bad->sval = "Bad";
+    bad->kids = ast_list_new();
+    ast_list_push(bad->kids, ck_synth_tname("E"));
+    vs = ast_list_new();
+    ast_list_push(vs, good);
+    ast_list_push(vs, bad);
+    ck_register_ty_template(ck_synth_enum("Outcome", ps, vs));
+}
+
 void ck_register_primitives(void) {
     ck_declare("i8", SK_TYPE, TY_I8, 0, 0);
     ck_declare("i16", SK_TYPE, TY_I16, 0, 0);
@@ -2330,4 +3032,5 @@ void ck_register_primitives(void) {
     ck_declare("f64", SK_TYPE, TY_F64, 0, 0);
     ck_declare("bool", SK_TYPE, TY_BOOL, 0, 0);
     ck_declare("char", SK_TYPE, TY_CHAR, 0, 0);
+    ck_register_prelude_enums();
 }

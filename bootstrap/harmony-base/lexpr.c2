@@ -86,6 +86,7 @@ char* ll_method_call(struct AstNode* n, struct AstNode* callee, struct AstList* 
 char* ll_emit_call(char* symbol, char* arglist, int retty, int agg);
 int   ll_find_method(int rt, char* name);
 char* ll_method_symbol(int rt, char* name);
+int   ll_method_recv_ty(int rt);
 char* ll_checked_bin(char* op, int ty, struct AstNode* n, char* l, char* r);
 int   ll_get_terminated(void);
 void  ll_set_terminated(int v);
@@ -1745,12 +1746,15 @@ char* ll_expr_struct_init(struct AstNode* n) {
         while (i < inits->len) {
             struct AstNode* fi;
             int ft;
+            int mi;
             char* addr;
             char* v;
             fi = inits->items[i];
-            ft = ty_member_type(ty, ty_find_member(ty, fi->sval));
+            mi = ty_find_member(ty, fi->sval);
+            if (mi < 0) { i = i + 1; continue; }   // unknown field: checker stopped
+            ft = ty_member_type(ty, mi);
             v = ll_expr(fi->a);            // evaluate in written order (§7.5)
-            addr = ll_struct_gep(slot, ty, ty_find_member(ty, fi->sval));
+            addr = ll_struct_gep(slot, ty, mi);
             ll_store_value(addr, ft, v);
             i = i + 1;
         }
@@ -2322,8 +2326,14 @@ char* ll_method_call(struct AstNode* n, struct AstNode* callee, struct AstList* 
 
     rt = callee->a->ty;
     // Evaluate the receiver once; auto-deref through references/boxes to the
-    // underlying value's address.
-    selfv = ll_addr(callee->a);
+    // underlying value's address. A reference-typed receiver (`&mut T`, `&T`;
+    // e.g. `self` inside a `&mut self` method) is *itself* the address, so
+    // loading it yields the pointee; a value receiver is addressed by its slot.
+    if (ty_is_ref(rt) || ty_is_heap(rt)) {
+        selfv = ll_expr(callee->a);
+    } else {
+        selfv = ll_addr(callee->a);
+    }
     m = ll_find_method(rt, callee->sval);
     if (m < 0) {
         g_expr_ty = retty;
@@ -2342,7 +2352,9 @@ char* ll_method_call(struct AstNode* n, struct AstNode* callee, struct AstList* 
             while (i < args->len) {
                 char* a;
                 int aty;
-                if (i > 0) { ll_str_append(buf, ", "); }
+                // The receiver is already in the list, so every argument needs
+                // a leading comma (including the first).
+                ll_str_append(buf, ", ");
                 a = ll_expr(args->items[i]);
                 aty = g_expr_ty;
                 if (ll_is_aggregate(aty)) {
@@ -2358,7 +2370,7 @@ char* ll_method_call(struct AstNode* n, struct AstNode* callee, struct AstList* 
     }
 
     agg = ll_is_aggregate(retty);
-    ret = ll_emit_call(ll_method_symbol(rt, callee->sval), buf, retty, agg);
+    ret = ll_emit_call(ll_method_symbol(ll_method_recv_ty(rt), callee->sval), buf, retty, agg);
     g_expr_ty = retty;
     return ret;
 }
@@ -2444,6 +2456,14 @@ int ll_find_method(int rt, char* name) {
         return ll_find_method(ty_elem(rt), name);
     }
     return -1;
+}
+
+// The receiver type a method symbol mangles: methods are registered on the
+// auto-derefed receiver (a `&mut MiniVec<i32>` call finds the method on
+// `MiniVec<i32>`), so the symbol must use that same type, not the reference.
+int ll_method_recv_ty(int rt) {
+    while (ty_is_ref(rt) || ty_is_heap(rt)) { rt = ty_elem(rt); }
+    return rt;
 }
 
 // `Type__method` — the §19.4 mangling for methods (no colons in IR names).

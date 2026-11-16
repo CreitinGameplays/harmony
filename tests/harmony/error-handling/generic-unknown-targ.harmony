@@ -1,0 +1,9 @@
+// WANT: NAME-01
+// A generic type argument must name a real type (§5.8, NAME-01 for the inner
+// name). `Box<Nope>` is a stop; the compiler must never crash or silently
+// substitute a default.
+struct Box<T> { v: T; }
+fn main() -> i32 {
+    let b: Box<Nope> = Box<Nope> { .v = 1 };
+    return 0;
+}

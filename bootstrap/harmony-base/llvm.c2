@@ -278,14 +278,58 @@ char* ll_zero_of(int id) {
 // ---------------------------------------------------------------------------
 // Local-variable environment: name -> alloca slot + type. Resizable, with
 // scope marks so shadowed names and block scopes work.
+//
+// Resizable (the old fixed `[4096]` was a silent out-of-bounds write past the
+// 4097th local: `check` accepted the program and the backend then scribbled
+// past the arrays — the fuzzer's O2-agreement oracle found it as
+// check-ok/emit-dead). Doubling, arena-backed like every other table.
 // ---------------------------------------------------------------------------
-const int LL_MAX_LOCALS = 4096;
-char* g_loc_name[4096];
-char* g_loc_slot[4096];
-int   g_loc_ty[4096];
-int   g_nlocals;
-int   g_lscope[256];
-int   g_nlscope;
+char** g_loc_name;
+char** g_loc_slot;
+int*   g_loc_ty;
+int    g_loc_cap;
+int    g_nlocals;
+int*   g_lscope;
+int    g_lscope_cap;
+int    g_nlscope;
+
+void ll_env_grow(int at_least) {
+    int ncap;
+    char** nn;
+    char** ns;
+    int* nt;
+    int* nsc;
+    int i;
+    ncap = g_loc_cap;
+    if (ncap == 0) { ncap = 64; }
+    while (ncap < at_least) { ncap = ncap * 2; }
+    nn = arena_alloc(ncap * 8);
+    ns = arena_alloc(ncap * 8);
+    nt = arena_alloc(ncap * 8);
+    i = 0;
+    while (i < ncap * 8) { ((char*) nn)[i] = 0; ((char*) ns)[i] = 0; ((char*) nt)[i] = 0; i = i + 1; }
+    i = 0;
+    while (i < g_nlocals) {
+        nn[i] = g_loc_name[i];
+        ns[i] = g_loc_slot[i];
+        nt[i] = g_loc_ty[i];
+        i = i + 1;
+    }
+    g_loc_name = nn;
+    g_loc_slot = ns;
+    g_loc_ty = nt;
+    g_loc_cap = ncap;
+    // The scope stack grows in lockstep (a scope marks an index into the
+    // same tables).
+    ncap = g_lscope_cap;
+    if (ncap == 0) { ncap = 64; }
+    while (ncap < g_lscope_cap * 2 && ncap < 128) { ncap = ncap * 2; }
+    nsc = arena_alloc(ncap * 8);
+    i = 0;
+    while (i < g_nlscope) { nsc[i] = g_lscope[i]; i = i + 1; }
+    g_lscope = nsc;
+    g_lscope_cap = ncap;
+}
 
 void ll_env_reset(void) {
     g_nlocals = 0;
@@ -293,6 +337,7 @@ void ll_env_reset(void) {
 }
 
 void ll_env_scope_push(void) {
+    if (g_nlscope >= g_lscope_cap) { ll_env_grow(g_nlocals + 1); }
     g_lscope[g_nlscope] = g_nlocals;
     g_nlscope = g_nlscope + 1;
 }
@@ -305,6 +350,7 @@ void ll_env_scope_pop(void) {
 }
 
 void ll_local_declare(char* name, char* slot, int ty) {
+    if (g_nlocals >= g_loc_cap) { ll_env_grow(g_nlocals + 1); }
     g_loc_name[g_nlocals] = name;
     g_loc_slot[g_nlocals] = slot;
     g_loc_ty[g_nlocals] = ty;

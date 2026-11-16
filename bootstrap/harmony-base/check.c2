@@ -28,6 +28,8 @@ void ck_register_primitives(void);
 void ck_check_main(void);
 void ck_scope_push(void);
 void ck_scope_pop(void);
+int ck_hash_name(char* name, int mod);
+void ck_sym_reindex(int ncap);
 int ck_declare(char* name, int kind, int ty, struct AstNode* decl, int mut);
 int ck_lookup(char* name);
 int ck_lookup_type(char* name);
@@ -137,24 +139,56 @@ void ck_scope_push(void) {
 void ck_scope_pop(void) {
     if (g_nscope > 0) {
         g_nscope = g_nscope - 1;
+        // Unlink the dying rows from their hash chains (O(chain) each, so
+        // O(symbols in this scope) total), then rewind the scope. Rebuilding
+        // the whole index here would make deeply nested scopes quadratic.
+        if (g_sym_hash_cap != 0) {
+            int row;
+            row = g_scope[g_nscope];
+            while (row < g_nsyms) {
+                int b;
+                int cur;
+                int prev;
+                b = ck_hash_name(g_sym_name[row], g_sym_hash_cap);
+                cur = g_sym_hash[b];
+                prev = -1;
+                while (cur >= 0 && cur != row) {
+                    prev = cur;
+                    cur = g_sym_next[cur];
+                }
+                if (cur == row) {
+                    if (prev >= 0) { g_sym_next[prev] = g_sym_next[row]; }
+                    else { g_sym_hash[b] = g_sym_next[row]; }
+                }
+                row = row + 1;
+            }
+        }
         g_nsyms = g_scope[g_nscope];
     }
 }
 
 // Adds a symbol. Returns its index, or -1 when the name is already taken in
 // the *current* scope (NAME-03).
+//
+// The duplicate check walks the name's hash chain, not the whole table: the
+// chain is newest-first and holds only live rows, so comparing down to the
+// current scope's start is exact and stops at an outer binding. (The old
+// full-table scan made a function with N locals O(N^2) in declares alone —
+// 60k locals took ~96s even after lookups were indexed.)
 int ck_declare(char* name, int kind, int ty, struct AstNode* decl, int mut) {
     int i;
     int lo;
     lo = 0;
     if (g_nscope > 0) { lo = g_scope[g_nscope - 1]; }
-    i = g_nsyms - 1;
-    while (i >= lo) {
-        if (str_eq(g_sym_name[i], name)) {
-            ck_err_name_taken(name, decl);
-            return -1;
+    if (g_sym_hash_cap != 0) {
+        i = g_sym_hash[ck_hash_name(name, g_sym_hash_cap)];
+        while (i >= 0 && i >= lo) {
+            if (str_eq(g_sym_name[i], name)) {
+                ck_err_name_taken(name, decl);
+                return -1;
+            }
+            i = g_sym_next[i];
         }
-        i = i - 1;
     }
     if (g_nsyms >= g_sym_cap) { ck_syms_grow(g_nsyms + 1); }
     g_sym_name[g_nsyms] = name;
@@ -169,17 +203,27 @@ int ck_declare(char* name, int kind, int ty, struct AstNode* decl, int mut) {
     } else {
         g_sym_init[g_nsyms] = 0;
     }
+    // Link at the front of its chain (newest first).
+    if (g_sym_hash_cap != 0) {
+        int b;
+        b = ck_hash_name(name, g_sym_hash_cap);
+        g_sym_next[g_nsyms] = g_sym_hash[b];
+        g_sym_hash[b] = g_nsyms;
+    }
     g_nsyms = g_nsyms + 1;
     return g_nsyms - 1;
 }
 
-// Innermost binding of a name (shadowing: later entries win).
+// Innermost binding of a name (shadowing: later entries win). O(chain): the
+// index finds the bucket, and the chain is ordered newest-first, so the first
+// hit is the innermost binding.
 int ck_lookup(char* name) {
     int i;
-    i = g_nsyms - 1;
+    if (g_sym_hash_cap == 0) { return -1; }
+    i = g_sym_hash[ck_hash_name(name, g_sym_hash_cap)];
     while (i >= 0) {
         if (str_eq(g_sym_name[i], name)) { return i; }
-        i = i - 1;
+        i = g_sym_next[i];
     }
     return -1;
 }
@@ -266,10 +310,11 @@ struct AstNode* ck_sym_decl_node(char* name) {
 }
 
 // Resolves a type name to its type id, or TY_INVALID. Looks for a nominal
-// type or a generic parameter (both register as SK_TYPE / SK_GEN).
+// type or a generic parameter (both register as SK_TYPE / SK_GEN). O(chain).
 int ck_lookup_type(char* name) {
     int i;
-    i = g_nsyms - 1;
+    if (g_sym_hash_cap == 0) { return TY_INVALID; }
+    i = g_sym_hash[ck_hash_name(name, g_sym_hash_cap)];
     while (i >= 0) {
         if (str_eq(g_sym_name[i], name)) {
             if (g_sym_kind[i] == SK_TYPE || g_sym_kind[i] == SK_GEN) {
@@ -277,7 +322,7 @@ int ck_lookup_type(char* name) {
             }
             return TY_INVALID;
         }
-        i = i - 1;
+        i = g_sym_next[i];
     }
     return TY_INVALID;
 }
@@ -387,6 +432,51 @@ void ck_grow(char** items, int* cap, int elem, int at_least) {
 
 // The symbol table is six parallel arrays sharing one capacity; grow them
 // together so an index is valid in all six.
+//
+// Lookup index: the plain linear scan was O(nsyms) per name use, which made a
+// function with many locals quadratic (60k locals took ~78s in `check`; the
+// fuzzer's slow-path probe flagged it). A chained hash index over the symbol
+// rows makes lookups O(chain). Chains hold *every* symbol, newest first, so
+// shadowing still resolves to the innermost binding; the index is rebuilt
+// whenever the parallel arrays move.
+int  ck_hash_name(char* name, int mod);
+void ck_sym_reindex(int ncap);
+int* g_sym_hash;        // hash buckets: first symbol index in the chain
+int* g_sym_next;        // per-symbol: next index in its chain
+int g_sym_hash_cap;     // bucket count (power of two)
+
+int ck_hash_name(char* name, int mod) {
+    int h;
+    int i;
+    h = 5381;
+    i = 0;
+    while (name[i] != 0) {
+        h = h * 33 + name[i];
+        i = i + 1;
+    }
+    if (h < 0) { h = 0 - h; }
+    return h & (mod - 1);
+}
+
+// Rebuilds the hash chains from g_sym_name[0..g_nsyms). Newest-first order is
+// preserved by linking at the *front* walking oldest -> newest.
+void ck_sym_reindex(int ncap) {
+    int i;
+    int b;
+    i = 0;
+    while (i < ncap) { g_sym_hash[i] = -1; i = i + 1; }
+    i = 0;
+    while (i < g_nsyms) { g_sym_next[i] = -1; i = i + 1; }
+    i = 0;
+    while (i < g_nsyms) {
+        b = ck_hash_name(g_sym_name[i], ncap);
+        g_sym_next[i] = g_sym_hash[b];
+        g_sym_hash[b] = i;
+        i = i + 1;
+    }
+    g_sym_hash_cap = ncap;
+}
+
 void ck_syms_grow(int at_least) {
     int ncap;
     int i;
@@ -422,6 +512,19 @@ void ck_syms_grow(int at_least) {
     g_sym_mut = nm;
     g_sym_init = ni_s;
     g_sym_cap = ncap;
+    // (Re)build the hash index: the buckets scale with the table, and the
+    // per-symbol chain array must exist before any declare runs.
+    {
+        int* nh;
+        int* nx;
+        int hcap;
+        hcap = ncap * 2;
+        nh = arena_alloc(hcap * 8);
+        nx = arena_alloc(ncap * 8);
+        g_sym_hash = nh;
+        g_sym_next = nx;
+        ck_sym_reindex(hcap);
+    }
 }
 
 void ck_scopes_grow(int at_least) {

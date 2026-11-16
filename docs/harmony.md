@@ -2048,6 +2048,7 @@ SEE    Language guide § Ownership and moves
 | `TYPE-06` | stop | bound not satisfied | `<` on a `T` without `ord` | add the bound |
 | `FMT-01` | stop | format string mismatch | `println("{} {}", x)` | match arguments to `{}` |
 | `FFI-01` | stop | unknown ABI | `extern "Win64" fn ...` | use the C ABI: `extern "C" fn ...` |
+| `CONST-01` | stop | not a compile-time constant | `const A: i32 = compute();` | use a literal, another constant, or a `let` |
 | `MUT-01` | stop | assigning to a read-only binding | `let x = 1; x = 2;` | `let mut` |
 | `MUT-02` | warn | `let mut` never changed | unused `mut` | remove `mut` |
 | `MUT-03` | stop | `&mut` of a read-only binding | `&mut x` where `x` isn't `mut` | `let mut` |

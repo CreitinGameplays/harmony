@@ -1,0 +1,12 @@
+// WANT: CONST-01
+// A `const` is inlined at every use site, so its initializer must be
+// evaluable at compile time (§6.2): a literal, arithmetic on literals,
+// another constant, or an array/struct literal. A function call is runtime
+// work and cannot be a constant.
+fn compute() -> i32 { return 42; }
+
+const BAD: i32 = compute();
+
+fn main() -> i32 {
+    return BAD;
+}

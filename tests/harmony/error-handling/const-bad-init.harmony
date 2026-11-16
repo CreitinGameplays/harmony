@@ -1,0 +1,14 @@
+// WANT: CONST-01 TYPE-01
+// Two independent `const` mistakes, both caught:
+//   - `BAD` calls a function (runtime work, not a compile-time constant);
+//   - `MISMATCH` has an initializer whose type does not match the declared
+//     type (`bool` literal where `i32` is declared).
+// The compiler must report both and never crash.
+fn compute() -> i32 { return 7; }
+
+const BAD: i32 = compute();
+const MISMATCH: i32 = true;
+
+fn main() -> i32 {
+    return BAD + MISMATCH;
+}

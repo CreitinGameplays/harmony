@@ -690,6 +690,7 @@ int ck_fn_self_ty(int i);                  // function i's receiver type (0 = fr
 int ck_fn_ret_ty(struct AstNode* fn);      // resolved return type id
 int ck_sym_kind(char* name);               // symbol-kind id (0 = unknown)
 int ck_sym_is_extern(char* name);          // is `name` an `extern fn` declaration?
+struct AstNode* ck_sym_decl_node(char* name);  // the symbol's declaring node (0 = unknown)
 
 // ---------------------------------------------------------------------------
 // Toolchain driver (emit.c2, docs/harmony.md §19.4/§19.5): turn the emitted

@@ -64,7 +64,7 @@ compiler recognizes their hook *names and shapes* (`next`, `cleanup`,
 ## Diagnostic codes (docs/harmony.md §16.10)
 
 The stable code set the checker may emit: `SYN-01..05`, `NAME-01..04`,
-`SHADOW-01`, `TYPE-01..06`, `FMT-01`, `FFI-01`, `MUT-01..03`, `INIT-01`,
+`SHADOW-01`, `TYPE-01..06`, `FMT-01`, `FFI-01`, `CONST-01`, `MUT-01..03`, `INIT-01`,
 `MOVE-01..04`, `LOAN-01..03`, `LIFE-01..04`, `CASE-01..02`, `DROP-01..02`,
 `UNCK-01..05`, `UNUSED-01..02`, `DEAD-01`, `STYLE-01`. The compiler-reserved
 code is `ICE-01` (not in the spec catalogue; marks an internal invariant that

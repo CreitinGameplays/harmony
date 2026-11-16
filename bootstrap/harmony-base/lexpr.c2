@@ -280,6 +280,7 @@ char* ll_expr(struct AstNode* n) {
 char* ll_expr_path(struct AstNode* n) {
     char* slot;
     int ty;
+    struct AstNode* cd;
     // A qualified path (`Enum::Variant`, `Type::assoc`) is not a local.
     if (str_contains(n->sval, "::")) {
         return ll_expr_variant(n);
@@ -292,6 +293,14 @@ char* ll_expr_path(struct AstNode* n) {
             return slot;
         }
         return ll_load(ty, slot);
+    }
+    // A name that is not a local may be a `const` (§6.2). Constants are
+    // inlined: lower the (already checked and stamped) initializer in place, so
+    // the use site sees the value rather than a zero. `ll_expr` sets
+    // `g_expr_ty`, which is the constant's declared type.
+    cd = ck_sym_decl_node(n->sval);
+    if (cd != 0 && cd->kind == AST_CONST && cd->b != 0) {
+        return ll_expr(cd->b);
     }
     // An unqualified *variant* (`Empty`, `Has`) has no local slot: build the
     // tagged enum value (§6.5). The checker resolved the enum type onto the
@@ -722,8 +731,16 @@ char* ll_addr(struct AstNode* n) {
     if (n == 0) { return "null"; }
     if (n->kind == AST_PATH) {
         char* slot;
+        struct AstNode* cd;
         slot = ll_local_slot(n->sval);
         if (slot != 0) { return slot; }
+        // A `const` aggregate (array/struct) has no storage of its own; the
+        // index/field logic needs an address, so materialize a fresh copy by
+        // lowering the inlined initializer (aggregates are address-represented).
+        cd = ck_sym_decl_node(n->sval);
+        if (cd != 0 && cd->kind == AST_CONST && cd->b != 0) {
+            return ll_expr(cd->b);
+        }
         return "null";
     }
     if (n->kind == AST_DEREF) {

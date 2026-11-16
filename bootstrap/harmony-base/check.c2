@@ -236,6 +236,16 @@ int ck_sym_is_extern(char* name) {
     return 0;
 }
 
+// The node that declared `name` (a `const` declaration for a constant), or 0
+// when the name is unknown. The backend uses it to inline a constant's
+// initializer at the use site (§6.2).
+struct AstNode* ck_sym_decl_node(char* name) {
+    int sym;
+    sym = ck_lookup(name);
+    if (sym < 0) { return 0; }
+    return g_sym_decl[sym];
+}
+
 // Resolves a type name to its type id, or TY_INVALID. Looks for a nominal
 // type or a generic parameter (both register as SK_TYPE / SK_GEN).
 int ck_lookup_type(char* name) {
@@ -944,11 +954,106 @@ void ck_fill_enum(struct AstNode* n) {
     }
 }
 
+// Is `n` a compile-time constant expression? (§6.2: "Constants are inlined,
+// must have a compile-time-evaluable initializer (literals, arithmetic, other
+// constants, array/struct literals)"). A constant is inlined at every use
+// site, so it cannot depend on runtime state.
+int ck_is_const_expr(struct AstNode* n) {
+    int sym;
+    int i;
+    if (n == 0) { return 0; }
+    // Literals.
+    if (n->kind == AST_INT_LIT) { return 1; }
+    if (n->kind == AST_FLOAT_LIT) { return 1; }
+    if (n->kind == AST_CHAR_LIT) { return 1; }
+    if (n->kind == AST_BOOL_LIT) { return 1; }
+    if (n->kind == AST_STRING_LIT) { return 1; }
+    if (n->kind == AST_UNIT_LIT) { return 1; }
+    // A cast of a constant is a constant.
+    if (n->kind == AST_AS) { return ck_is_const_expr(n->a); }
+    // `-x`, `!x`, `~x` over a constant.
+    if (n->kind == AST_UNARY) { return ck_is_const_expr(n->a); }
+    if (n->kind == AST_BINARY) {
+        // A range is not a value (§7.2): it cannot be a constant.
+        if (str_eq(n->sval, "..") || str_eq(n->sval, "..=")) { return 0; }
+        if (!ck_is_const_expr(n->a)) { return 0; }
+        if (!ck_is_const_expr(n->b)) { return 0; }
+        return 1;
+    }
+    // Another constant.
+    if (n->kind == AST_PATH && n->a == 0) {
+        sym = ck_lookup(n->sval);
+        if (sym >= 0 && g_sym_kind[sym] == SK_CONST) { return 1; }
+        return 0;
+    }
+    // An array literal: every element (or the repeated value) is constant.
+    if (n->kind == AST_ARRAY_LIT) {
+        if (n->kids != 0) {
+            i = 0;
+            while (i < n->kids->len) {
+                if (!ck_is_const_expr(n->kids->items[i])) { return 0; }
+                i = i + 1;
+            }
+        }
+        if (n->a != 0) { return ck_is_const_expr(n->a); }
+        return 1;
+    }
+    // A struct initializer: every field value is constant.
+    if (n->kind == AST_STRUCT_INIT) {
+        if (n->kids != 0) {
+            i = 0;
+            while (i < n->kids->len) {
+                if (!ck_is_const_expr(n->kids->items[i]->a)) { return 0; }
+                i = i + 1;
+            }
+        }
+        return 1;
+    }
+    return 0;
+}
+
+// CONST-01: a `const` initializer that is not a compile-time constant.
+void ck_err_const_init(struct AstNode* at) {
+    int idx;
+    idx = diag_stop("CONST-01", "not a compile-time constant",
+                    "A `const` is inlined at every use, so its initializer must be evaluable at compile time: a literal, arithmetic on literals, another constant, or an array/struct literal.",
+                    diag_file(at->file), at->start, at->end);
+    if (idx >= 0) {
+        diag_fix(diag_get(idx), "use a `let` binding for a runtime value",
+                 "let value = compute();");
+    }
+}
+
 void ck_register_const(struct AstNode* n) {
     int ty;
+    int ity;
     ty = ck_resolve_type(n->a);
     if (ty == TY_INVALID) { ty = TY_I32; }
     n->ty = ty;
+    if (n->b != 0) {
+        // The initializer must be a compile-time constant (§6.2).
+        if (!ck_is_const_expr(n->b)) {
+            ck_err_const_init(n);
+            ck_declare(n->sval, SK_CONST, ty, n, 0);
+            return;
+        }
+        // An array literal adapts its *elements* to the declared element
+        // type (§5.9), exactly like a `let` binding.
+        if (ty_is_array(ty) && n->b->kind == AST_ARRAY_LIT) {
+            g_array_elem_hint = ty_elem(ty);
+        }
+        ck_expr(n->b);
+        g_array_elem_hint = 0;
+        ity = n->b->ty;
+        if (ity == TY_UINT_LIT) { ity = TY_I32; }
+        if (ity == TY_FLOAT_LIT) { ity = TY_F64; }
+        if (!ck_coercible(ty, ity)) {
+            ck_err_type_mismatch(n, ty, ity, "`const` initializer");
+        }
+        // Adopt the concrete type on untyped literals (§5.9) so the backend
+        // emits the right width when the constant is inlined.
+        ck_stamp_lits(n->b, ty);
+    }
     ck_declare(n->sval, SK_CONST, ty, n, 0);
 }
 

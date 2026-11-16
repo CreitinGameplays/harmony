@@ -1,0 +1,12 @@
+// WANT: TYPE-01
+// `reinterpret<T, U>` takes exactly two type arguments. Writing one is a type
+// error (the arity check for generic type arguments is TYPE-01 for templates;
+// for this intrinsic the checker reports the missing type argument). The
+// compiler must reject it and never crash.
+fn main() -> i32 {
+    let mut x: i32 = 0;
+    unchecked("reinterpret wants a source and a target type") {
+        x = reinterpret<i32>(1);
+    }
+    return x;
+}

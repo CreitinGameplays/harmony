@@ -66,6 +66,7 @@ char* ll_widen_index(char* idx);
 int   ty_array_len(int id);
 char* ll_int_convert(char* v, int from, int to);
 char* ll_convert_instr(char* op, char* v, int from, int to);
+char* ll_reinterpret_cast(char* v, int from, int to);
 char* ll_fp_convert(char* v, int from, int to, int is_float_seq);
 char* ll_int_cmp(char* op, int ty, char* l, char* r);
 char* ll_logical_and(struct AstNode* n);
@@ -817,7 +818,19 @@ char* ll_index_addr(struct AstNode* n) {
         if (elem == 0) { elem = TY_I32; }
         return ll_array_gep_i64(data, elem, wide);
     }
-    if (ty_is_ref(bt) || ty_is_ptr(bt) || ty_is_heap(bt)) {
+    if (ty_is_ptr(bt)) {
+        // Raw pointer indexing `p[i]` (§13.5): GEP the pointee by i elements.
+        // No bounds check — the pointer carries no length (that is what makes
+        // it an unlocked operation).
+        char* p;
+        p = ll_expr(n->a);
+        idx = ll_expr(n->b);
+        wide = ll_widen_index(idx);
+        elem = ty_elem(bt);
+        if (elem == 0) { elem = TY_U8; }
+        return ll_array_gep_i64(p, elem, wide);
+    }
+    if (ty_is_ref(bt) || ty_is_heap(bt)) {
         // A reference, raw pointer, or `Heap` box evaluates to a pointer to the
         // element data already, so it *is* the base address: `h[i]` auto-derefs
         // through `Heap` exactly like `h.field` does (§5, §12.2). Taking
@@ -1970,6 +1983,102 @@ char* ll_expr_call(struct AstNode* n) {
     args = n->kids;
 
     if (callee == 0) {
+        // `Raw::null<T>()` (§13.5): a null `raw T`. The checker types the node
+        // `raw T`; lower to an LLVM `null` pointer.
+        if (n->ival == 8 && str_eq(n->sval, "Raw::null")) {
+            g_expr_ty = retty;
+            return "null";
+        }
+        // `alloc<T>(n)` / `dealloc<T>(p, n)` (§13.5): the raw allocator hooks.
+        // `n->b->ty` is the element type (the checker recorded it), so the byte
+        // count is `n * sizeof(T)`.
+        if (n->ival == 10 || n->ival == 11) {
+            int elem;
+            int esz;
+            char* count;
+            char* bytes;
+            elem = TY_U8;
+            if (n->b != 0) { elem = n->b->ty; }
+            esz = ty_size(elem);
+            if (esz == 0) { esz = 1; }
+            // `alloc<T>(n)` has the count at index 0; `dealloc<T>(p, n)` at 1.
+            if (n->ival == 10) { count = ll_expr(args->items[0]); }
+            else { count = ll_expr(args->items[1]); }
+            count = ll_widen_index(count);
+            bytes = ll_new_reg();
+            ll_out_str("  ");
+            ll_out_str(bytes);
+            ll_out_str(" = mul i64 ");
+            ll_out_str(count);
+            ll_out_str(", ");
+            ll_out_int(esz);
+            ll_out_nl();
+            if (n->ival == 10) {
+                // alloc: call lc_alloc and return the pointer.
+                char* r;
+                r = ll_new_reg();
+                ll_out_str("  ");
+                ll_out_str(r);
+                ll_out_str(" = call ptr @lc_alloc(i64 ");
+                ll_out_str(bytes);
+                ll_out_str(")\n");
+                g_expr_ty = retty;
+                return r;
+            }
+            // dealloc: call lc_dealloc(ptr, bytes).
+            char* p;
+            p = ll_expr(args->items[0]);
+            ll_out_str("  call void @lc_dealloc(ptr ");
+            ll_out_str(p);
+            ll_out_str(", i64 ");
+            ll_out_str(bytes);
+            ll_out_str(")\n");
+            g_expr_ty = TY_UNIT;
+            return "0";
+        }
+        // `reinterpret<T, U>(x)` (§13.5): same-size bit reinterpretation. For
+        // scalar/pointer pairs the bit pattern is the value; a same-width
+        // integer-to-integer cast is an identity on the register, and
+        // pointer<->integer uses ptrtoint/inttoptr.
+        if (n->ival == 12) {
+            int from;
+            int to;
+            char* v;
+            v = ll_expr(args->items[0]);
+            from = g_expr_ty;
+            to = retty;
+            if (n->b != 0) {
+                from = n->b->ival;
+                to = n->b->ty;
+            }
+            g_expr_ty = to;
+            if (ty_is_ptr(from) && ty_is_integer(to)) {
+                char* r;
+                r = ll_new_reg();
+                ll_out_str("  ");
+                ll_out_str(r);
+                ll_out_str(" = ptrtoint ptr ");
+                ll_out_str(v);
+                ll_out_str(" to ");
+                ll_out_str(ll_type_name(to));
+                ll_out_nl();
+                return r;
+            }
+            if (ty_is_integer(from) && ty_is_ptr(to)) {
+                char* r;
+                r = ll_new_reg();
+                ll_out_str("  ");
+                ll_out_str(r);
+                ll_out_str(" = inttoptr i64 ");
+                ll_out_str(v);
+                ll_out_str(" to ptr\n");
+                return r;
+            }
+            // Same-width scalars: reinterpret via a bitcast through the integer
+            // of matching width (LLVM `bitcast` covers same-size int/float).
+            if (ty_eq(from, to)) { return v; }
+            return ll_reinterpret_cast(v, from, to);
+        }
         // Generic call `name<T>(args)`: the checker instantiated it and stored
         // the concrete instance in `n->b`, whose `sval` is the instance name.
         if (n->b != 0) {
@@ -2003,6 +2112,15 @@ char* ll_expr_call(struct AstNode* n) {
     if (n->ival == 6) { return ll_builtin_unreachable(n, args); }
     if (n->ival == 7) { return ll_builtin_exit(n, args); }
     if (n->ival == 8) { return ll_builtin_args(n); }
+    // `Heap::into_raw(h)` / `Heap::from_raw(p)` (§13.5): a `Heap<T>` is
+    // address-represented, so `into_raw` is the box's pointer as-is and
+    // `from_raw` is the pointer as-is (the type change is all that differs).
+    if (n->ival == 14 || n->ival == 15) {
+        char* v;
+        v = ll_expr(args->items[0]);
+        g_expr_ty = retty;
+        return v;
+    }
 
     // Emit the arguments left to right (§7.5) into a register list.
     // An aggregate argument is passed as a pointer to its value.
@@ -2110,6 +2228,96 @@ char* ll_method_call(struct AstNode* n, struct AstNode* callee, struct AstList* 
         pair = ll_expr(callee->a);
         g_expr_ty = retty;
         return pair;
+    }
+    // Raw pointer toolbox (§13.5). These are intrinsics on a `raw T` receiver
+    // (the checker marks the call node). The receiver is the pointer itself,
+    // so it lowers to the pointer value, not an address.
+    if (n->ival == 3) {
+        // p.is_null() -> bool: `p == null`.
+        char* p;
+        char* r;
+        p = ll_expr(callee->a);
+        r = ll_new_reg();
+        ll_out_str("  ");
+        ll_out_str(r);
+        ll_out_str(" = icmp eq ptr ");
+        ll_out_str(p);
+        ll_out_str(", null\n");
+        g_expr_ty = TY_BOOL;
+        return r;
+    }
+    if (n->ival == 4) {
+        // p.read() -> T: load T from the pointer (aggregates stay addresses).
+        char* p;
+        p = ll_expr(callee->a);
+        g_expr_ty = retty;
+        if (retty == TY_UNIT || ll_is_aggregate(retty)) {
+            return p;
+        }
+        return ll_load(retty, p);
+    }
+    if (n->ival == 5) {
+        // p.write(v): store v through the pointer. The stored type is the
+        // receiver's element type (retty is unit for `write`).
+        char* p;
+        char* v;
+        int et;
+        et = ty_elem(ll_node_ty(callee->a));
+        if (et == 0) { et = TY_U8; }
+        p = ll_expr(callee->a);
+        v = ll_expr(args->items[0]);
+        ll_store_value(p, et, v);
+        g_expr_ty = TY_UNIT;
+        return "0";
+    }
+    if (n->ival == 6 || n->ival == 7) {
+        // p.plus(n) / p.minus(n): element-wise pointer arithmetic. GEP with a
+        // signed element index; `minus` negates.
+        char* p;
+        char* idx;
+        int et;
+        char* r;
+        et = ty_elem(ll_node_ty(callee->a));
+        if (et == 0) { et = TY_U8; }
+        p = ll_expr(callee->a);
+        idx = ll_expr(args->items[0]);
+        idx = ll_widen_index(idx);   // to i64 so negative offsets work
+        if (n->ival == 7) {
+            char* neg;
+            neg = ll_new_reg();
+            ll_out_str("  ");
+            ll_out_str(neg);
+            ll_out_str(" = sub i64 0, ");
+            ll_out_str(idx);
+            ll_out_nl();
+            idx = neg;
+        }
+        r = ll_new_reg();
+        ll_out_str("  ");
+        ll_out_str(r);
+        ll_out_str(" = getelementptr inbounds ");
+        ll_out_str(ll_type_name(et));
+        ll_out_str(", ptr ");
+        ll_out_str(p);
+        ll_out_str(", i64 ");
+        ll_out_str(idx);
+        ll_out_nl();
+        g_expr_ty = retty;
+        return r;
+    }
+    // `v.get_unchecked(i)` (§13.5): an unchecked index, yielding a pointer to
+    // the element (`&T`). No bounds check.
+    if (n->ival == 13) {
+        int et;
+        char* baseaddr;
+        char* idx;
+        et = ty_elem(ll_node_ty(callee->a));
+        if (et == 0) { et = TY_I32; }
+        baseaddr = ll_expr(callee->a);
+        idx = ll_expr(args->items[0]);
+        idx = ll_widen_index(idx);
+        g_expr_ty = retty;
+        return ll_array_gep_i64(baseaddr, et, idx);
     }
 
     rt = callee->a->ty;
@@ -2323,6 +2531,33 @@ char* ll_expr_cast(struct AstNode* n) {
     }
     if (ty_is_integer(from) && ll_is_float_ty(to)) { return ll_fp_convert(v, from, to, 0); }
     if (ll_is_float_ty(from) && ll_is_float_ty(to)) { return ll_fp_convert(v, from, to, 1); }
+    // Raw pointer <-> integer (§13.5): a bitcast through `i64`/`ptr`. LLVM
+    // `ptrtoint`/`inttoptr` keep the address exactly.
+    if (ty_is_ptr(from) && ty_is_integer(to)) {
+        char* r;
+        r = ll_new_reg();
+        ll_out_str("  ");
+        ll_out_str(r);
+        ll_out_str(" = ptrtoint ptr ");
+        ll_out_str(v);
+        ll_out_str(" to ");
+        ll_out_str(ll_type_name(to));
+        ll_out_nl();
+        return ll_int_convert(r, TY_I64, to);
+    }
+    if (ty_is_integer(from) && ty_is_ptr(to)) {
+        char* wide;
+        char* r;
+        wide = ll_int_convert(v, from, TY_I64);
+        r = ll_new_reg();
+        ll_out_str("  ");
+        ll_out_str(r);
+        ll_out_str(" = inttoptr i64 ");
+        ll_out_str(wide);
+        ll_out_str(" to ptr\n");
+        return r;
+    }
+    if (ty_is_ptr(from) && ty_is_ptr(to)) { return v; }
     return v;
 }
 
@@ -2337,6 +2572,26 @@ char* ll_convert_instr(char* op, char* v, int from, int to) {
     ll_out_str(" = ");
     ll_out_str(op);
     ll_out_str(" ");
+    ll_out_str(ll_type_name(from));
+    ll_out_str(" ");
+    ll_out_str(v);
+    ll_out_str(" to ");
+    ll_out_str(ll_type_name(to));
+    ll_out_nl();
+    return r;
+}
+
+// Bit reinterpretation of a same-width scalar (int/float/char/bool). LLVM's
+// `bitcast` covers same-size int<->int and int<->float, but not bool (`i1`)
+// against wider types, so a bool path zero-extends first. Used by
+// `reinterpret<T, U>` (§13.5).
+char* ll_reinterpret_cast(char* v, int from, int to) {
+    char* r;
+    if (ty_is_bool(from) || ty_is_bool(to)) { return v; }
+    r = ll_new_reg();
+    ll_out_str("  ");
+    ll_out_str(r);
+    ll_out_str(" = bitcast ");
     ll_out_str(ll_type_name(from));
     ll_out_str(" ");
     ll_out_str(v);

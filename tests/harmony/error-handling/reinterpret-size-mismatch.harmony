@@ -1,0 +1,11 @@
+// WANT: TYPE-01
+// `reinterpret<T, U>` requires the two types to have the same size (§13.5):
+// `u8` is one byte, `u32` is four, so the bit reinterpretation is ill-defined
+// and must be rejected (use `as` for value conversions).
+fn main() -> i32 {
+    let mut x: u32 = 0;
+    unchecked("same-size reinterpretation only; this pair is a size mismatch") {
+        x = reinterpret<u8, u32>(1);
+    }
+    return x as i32;
+}

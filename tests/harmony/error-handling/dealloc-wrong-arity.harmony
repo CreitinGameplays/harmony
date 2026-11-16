@@ -1,0 +1,9 @@
+// WANT: TYPE-04
+// `dealloc<T>` needs both the pointer and the count; calling it with one
+// argument is an arity error. The compiler must reject it and never crash.
+fn main() -> i32 {
+    let mut p: raw mut i32 = Raw::null<i32>();
+    unchecked("allocate room for four") { p = alloc<i32>(4); }
+    unchecked("free needs the pointer and the count") { dealloc<i32>(p); }
+    return 0;
+}

@@ -489,24 +489,37 @@ wrong exit code, or ICE) with a repro.
 
 #### Blocking for a self-hosted allocator (M6, workaround-able)
 
-- [ ] **No runtime-sized allocation.** `alloc<T>(n)`/`dealloc` are unimplemented
-      (`SYN-05`), and only `heap(x)` exists — `lc_alloc(sizeof(T))`, a fixed
-      size, no `realloc`, no `free` (`bootstrap/runtime/rt.c` `lc_alloc` is a
-      bump allocator with a 1 MiB min mmap chunk). A growable buffer must be
-      hand-rolled as "allocate a bigger fixed `Heap<[T; N]>`, copy, keep the
-      new one" (verified working), or reached through an extern. Workaround-
-      able, so not a hard blocker, but the rewrite will want a real allocator
-      early.
-- [ ] **Raw pointer toolbox (§13.5) — only `raw(&x)` exists.** `p[i]`,
-      `p.read()`, `p.write(v)`, `p.plus(n)`/`p.minus(n)`, `p.is_null()`,
-      `Raw::null<T>()`, and `raw`↔integer casts are all unimplemented
-      (`TYPE-02`/`SYN-05`/`TYPE-01`). `*p` (deref, read and write) **does**
-      work, and a `raw T` may cross an `extern` boundary, so a compiler can
-      reach OS memory through `extern "C" fn lc_alloc(n: i64) -> raw u8;`
-      (verified: allocate, write through `*p`, read it back = 42). Pointer
-      arithmetic is the real gap: without `p.plus(n)`/`p[i]`, walking a buffer
-      needs a hand-written wrapper extern. Left for M6 as before; now with a
-      recorded workaround (allocate, deref, call an extern for arithmetic).
+- [x] **The §13.5 raw pointer toolbox is implemented.** *(FIXED.)* The whole
+      toolbox now works end to end, each operation gated by `unchecked`
+      (UNCK-01) exactly where §13.2 says, and safe operations usable outside it:
+      - `raw(&x)` / `raw(&mut x)` (already existed), `*p` read/write (existed),
+        and now `p.read()`, `p.write(v)`, `p.plus(n)`, `p.minus(n)`, `p[i]`,
+        `p.is_null()`, `p == q`, `Raw::null<T>()`, `raw`↔integer casts,
+        `alloc<T>(n)`, `dealloc<T>(p, n)`, `reinterpret<T, U>(x)`,
+        `Heap::into_raw(h)`/`Heap::from_raw(p)`, `v.get_unchecked(i)`.
+      - Safe outside `unchecked`: creating (`raw`, `Raw::null<T>()`),
+        `is_null`, comparison, and `Heap::into_raw` only-if-you-leak — all
+        match the §13.5 table.
+      - `Raw::null<T>()` yields `raw mut T` (the stronger form), and a new
+        `raw mut T` → `raw T` coercion (discarding write capability is sound)
+        lets it stand wherever a shared `raw T` is wanted, exactly as §17.8's
+        `MiniVec` writes `MiniVec { .ptr = Raw::null(), ... }`.
+      - The allocator hooks lower to `lc_alloc`/`lc_dealloc`; `reinterpret`
+        requires equal sizes (`TYPE-01`) and lowers to a same-width bitcast or
+        `ptrtoint`/`inttoptr`. `p.write`/`p[i]` through a `raw mut T` are
+        allowed (the pointer's capability), like `*p = v`.
+      - Tests: `codegen/raw-toolbox.harmony` (every operation, end to end) and
+        error-handling cases `raw-read-outside-unchecked`,
+        `raw-ops-outside-unchecked` (read/plus/index/cast all UNCK-01),
+        `alloc-outside-unchecked`, `alloc-wrong-arity`, `dealloc-wrong-arity`,
+        `reinterpret-size-mismatch`, `reinterpret-wrong-targs`.
+- [x] **No runtime-sized allocation.** *(FIXED with the toolbox above.)*
+      `alloc<T>(n) -> raw mut T` and `dealloc<T>(p, n)` now work: the count is
+      scaled by `sizeof(T)` and lowered to `lc_alloc`/`lc_dealloc`. `lc_dealloc`
+      is a no-op for the M1 bump allocator (`bootstrap/runtime/rt.c`; the OS
+      reclaims at exit) and becomes real with the std allocator (§19.8.4). A
+      growable buffer can now allocate a runtime-sized block instead of a fixed
+      `Heap<[T; N]>`.
 
 #### Not a gap (verified working — the rewrite's core can be written today)
 
@@ -538,10 +551,20 @@ $HB run /tmp/ca.harmony; echo "rc=$? (bug: traps; IR has `getelementptr ... ptr 
 # 2. arena cap: ~150 branch-heavy fns (IR > 1 MB) -> ICE-01 at the default 16 MiB
 #    (a generator printing 150 structs + 150 fns with 8 `if`s each)
 # 3. 1024-fn cap: main past the cap -> 'define void @harmony_main()' + clang reject
-# 4/5/6: generic struct / `for (x : ...)` / `alloc<T>(n)` -> STOP (see probes)
+# 4/5/6: generic struct / `for (x : ...)` -> STOP (see probes)
 
 ### Cross-cutting
 
+- [x] **Diagnostic codes `TYPE-03`/`TYPE-04` realigned to the catalogue.**
+      `docs/harmony.md` §16.10 reserves `TYPE-03` for "condition is not
+      `bool`" and `TYPE-04` for "wrong argument count or type", but the code
+      emitted `TYPE-03` for arity and a generic `TYPE-01` for conditions —
+      so the catalogue's condition diagnosis never fired. Now `ck_err_arity`
+      and `ck_err_not_callable` emit `TYPE-04`, and a new `ck_err_condition`
+      emits `TYPE-03` at every condition site (`if`/`while`/`for`, `assert`).
+      Tests updated (`checker.sh`, `arity-simple`, `enum-construct-arity`,
+      `generic-bad-targ-count`, `trap-no-arg`, `assert-non-bool`) and a new
+      `error-handling/condition-not-bool.harmony`.
 - [x] **c2x-seed migrated from NASM to flat assembler (FASM).** NASM spends
       ~26 s assembling the ~89k lines c2x-seed emits for `harmony-base` (the
       entire bootstrap), while FASM does it in ~0.15 s — a ~120× speedup that

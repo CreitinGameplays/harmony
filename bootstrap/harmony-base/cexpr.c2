@@ -43,6 +43,15 @@ int ck_expr_raw(struct AstNode* n);
 int ck_expr_heap(struct AstNode* n);
 int ck_expr_sizeof(struct AstNode* n);
 
+// A raw-pointer operation that is unlocked only inside `unchecked` (§13.2/13.4,
+// UNCK-01). Shared by the §13.5 toolbox intrinsics (`p.read`, `p.write`,
+// `p.plus`/`p.minus`, `p[i]`).
+void ck_raw_needs_unchecked(struct AstNode* at, char* what) {
+    if (!ck_in_unchecked()) {
+        ck_err_needs_unchecked(at, what);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Compatibility: does `got` fit where `want` is expected? Untyped literals
 // adapt within their class (§5.9); everything else is structural equality.
@@ -61,6 +70,11 @@ int ck_coercible(int want, int got) {
     // argument is address-represented, so the borrow is free and sound.
     if (ty_is_thin_ref(want) && ck_is_aggregate(got)) {
         if (ty_eq(ty_elem(want), got)) { return 1; }
+    }
+    // `raw mut T` coerces to `raw T`: discarding write capability is always
+    // sound (§13.5). The reverse is not allowed — that would add a power.
+    if (ty_kind(want) == CTY_PTR && ty_kind(got) == CTY_MUTPTR) {
+        if (ty_eq(ty_elem(want), ty_elem(got))) { return 1; }
     }
     // Widening integer conversions are explicit-only (§5.8): no implicit
     // widening, no implicit sign change. Only the untyped-literal rules above
@@ -532,8 +546,21 @@ int ck_expr_index(struct AstNode* n) {
             return ty_elem(inner);
         }
     }
+    // A raw pointer is indexed like an array (§13.5): `p[i]` is `*(p + i)`.
+    // This is an unlocked operation (UNCK-01). `n->ival` marks it so the
+    // backend lowers it as a GEP.
+    if (ty_is_ptr(base)) {
+        ck_raw_needs_unchecked(n, "indexing through a raw pointer");
+        if (!ty_is_integer(it) && !ty_is_untyped_lit(it)) {
+            ck_err_type_mismatch(n->b, TY_USIZE, it, "index");
+            return TY_INVALID;
+        }
+        ck_stamp_lits(n->b, TY_USIZE);
+        n->ival = 9;
+        return ty_elem(base);
+    }
     diag_stop("TYPE-02", "cannot index this type",
-              "Only arrays, slices, and &str can be indexed.",
+              "Only arrays, slices, &str, and raw pointers can be indexed.",
               diag_file(n->a->file), n->a->start, n->a->end);
     return TY_INVALID;
 }
@@ -864,6 +891,127 @@ int ck_expr_generic_call(struct AstNode* n) {
     int np;
     int na;
 
+    // `Raw::null<T>()` (§13.5): a null `raw T`, safe outside `unchecked`
+    // (creating a null raw pointer is not itself an unlocked operation). It is
+    // not a generic function template, so it is recognized here by name; the
+    // backend synthesizes an LLVM `null` (`n->ival = 8`).
+    if (str_eq(n->sval, "Raw::null")) {
+        int elem;
+        n->ival = 8;
+        if (n->kids2 == 0 || n->kids2->len != 1) {
+            ck_err_arity(n, "Raw::null", 1, ast_list_len(n->kids2));
+            n->ty = ty_new(CTY_PTR, "raw ?", TY_U8, 0);
+            return n->ty;
+        }
+        elem = ck_resolve_type(n->kids2->items[0]);
+        if (elem == TY_INVALID) { elem = TY_U8; }
+        // A null raw pointer is `raw mut T` (the stronger form); the
+        // `raw mut T` -> `raw T` coercion (in `ck_coercible`) lets it stand
+        // wherever a shared `raw T` is wanted (§13.5).
+        n->ty = ty_new(CTY_MUTPTR, ck_ref_name("raw mut", elem), elem, 0);
+        return n->ty;
+    }
+
+    // `alloc<T>(n)` / `dealloc<T>(p, n)` (§13.5): the raw allocator. Both are
+    // unlocked (UNCK-01). `alloc` yields `raw mut T`; `dealloc` is unit. The
+    // backend lowers them to the `lc_alloc`/`lc_dealloc` runtime hooks, scaling
+    // the element count by `sizeof(T)`.
+    if (str_eq(n->sval, "alloc") || str_eq(n->sval, "dealloc")) {
+        int is_alloc;
+        int elem;
+        is_alloc = str_eq(n->sval, "alloc");
+        if (is_alloc) { n->ival = 10; } else { n->ival = 11; }
+        elem = TY_U8;
+        if (n->kids2 == 0 || n->kids2->len != 1) {
+            ck_err_arity(n, n->sval, 1, ast_list_len(n->kids2));
+        } else {
+            elem = ck_resolve_type(n->kids2->items[0]);
+            if (elem == TY_INVALID) { elem = TY_U8; }
+        }
+        if (is_alloc) {
+            ck_raw_needs_unchecked(n, "calling `alloc`");
+        } else {
+            ck_raw_needs_unchecked(n, "calling `dealloc`");
+        }
+        // Argument shapes (§13.5): `alloc<T>(n)` — one count; `dealloc<T>(p,
+        // n)` — pointer then count. The count is the last argument.
+        {
+            int want;
+            int countidx;
+            if (is_alloc) { want = 1; countidx = 0; } else { want = 2; countidx = 1; }
+            if (n->kids != 0 && n->kids->len == want) {
+                // `dealloc`'s first argument is the pointer.
+                if (!is_alloc) {
+                    int pt;
+                    pt = ck_expr(n->kids->items[0]);
+                    if (pt != TY_INVALID && !ty_is_ptr(pt)) {
+                        ck_err_type_mismatch(n->kids->items[0],
+                                             ty_new(CTY_MUTPTR, "raw mut T", elem, 0),
+                                             pt, "`dealloc` pointer");
+                    }
+                }
+                {
+                    int ct;
+                    ct = ck_expr(n->kids->items[countidx]);
+                    if (ct != TY_INVALID && !ty_is_integer(ct) && !ty_is_untyped_lit(ct)) {
+                        ck_err_type_mismatch(n->kids->items[countidx], TY_USIZE, ct, "`alloc`/`dealloc` count");
+                    }
+                    ck_stamp_lits(n->kids->items[countidx], TY_USIZE);
+                }
+            } else {
+                ck_err_arity(n, n->sval, want, ast_list_len(n->kids));
+            }
+        }
+        // Record the element type so the backend can scale by its size.
+        if (is_alloc) {
+            n->ty = ty_new(CTY_MUTPTR, ck_ref_name("raw mut", elem), elem, 0);
+        } else {
+            n->ty = TY_UNIT;
+        }
+        n->b = ast_node_new(AST_TYPE_NAME);
+        n->b->ty = elem;
+        return n->ty;
+    }
+
+    // `reinterpret<T, U>(x)` (§13.5): bit-reinterpret `x: T` as `U` (same
+    // size). Unlocked. `x` must be a scalar or a raw pointer of the same
+    // width; the backend is a plain `bitcast`-equivalent (values already share
+    // a register width for same-size scalars/pointers).
+    if (str_eq(n->sval, "reinterpret")) {
+        int from;
+        int to;
+        n->ival = 12;
+        if (n->kids2 == 0 || n->kids2->len != 2) {
+            ck_err_arity(n, "reinterpret", 2, ast_list_len(n->kids2));
+            n->ty = TY_U8;
+            return n->ty;
+        }
+        from = ck_resolve_type(n->kids2->items[0]);
+        to = ck_resolve_type(n->kids2->items[1]);
+        if (from == TY_INVALID || to == TY_INVALID) { n->ty = TY_U8; return n->ty; }
+        ck_raw_needs_unchecked(n, "calling `reinterpret`");
+        if (n->kids != 0 && n->kids->len >= 1) {
+            int at;
+            at = ck_expr(n->kids->items[0]);
+            if (at != TY_INVALID && !ty_eq(at, from) && !ck_coercible(from, at)) {
+                ck_err_type_mismatch(n->kids->items[0], from, at, "`reinterpret` value");
+            }
+        } else {
+            ck_err_arity(n, "reinterpret", 1, ast_list_len(n->kids));
+        }
+        if (ty_size(from) != ty_size(to)) {
+            diag_stop("TYPE-01", "`reinterpret` sizes must match",
+                      "Both types must have the same size; use `as` for value conversions.",
+                      diag_file(n->file), n->start, n->end);
+        }
+        // Stash both type ids on the node for the backend.
+        n->b = ast_node_new(AST_TYPE_NAME);
+        n->b->ty = to;
+        n->b->ival = from;
+        n->ty = to;
+        return to;
+    }
+
     idx = ck_instantiate(n, n->sval, n->kids2);
     if (idx < 0) { return TY_INVALID; }
     inst = g_fn_decl[idx];
@@ -934,6 +1082,69 @@ int ck_expr_method_call(struct AstNode* n, struct AstNode* callee, struct AstLis
         && ty_kind(recv) == CTY_STRREF) {
         n->ival = 2;
         return ck_slice_ty(TY_U8);
+    }
+    // ---- Raw pointer toolbox (§13.5) ----
+    // Each of these is an intrinsic on a `raw T` receiver. The checker marks
+    // the call node (`n->ival`) so the backend lowers it directly, sets the
+    // result type, and gates the ones that need `unchecked` (UNCK-01).
+    if (ty_is_ptr(recv)) {
+        int elem;
+        elem = ty_elem(recv);
+        // `p.is_null()` -> bool, no `unchecked` (comparison is always safe).
+        if (str_eq(callee->sval, "is_null") && (args == 0 || args->len == 0)) {
+            n->ival = 3;
+            return TY_BOOL;
+        }
+        // `p.read()` -> T. Moves a value out of the pointed-to slot.
+        if (str_eq(callee->sval, "read") && (args == 0 || args->len == 0)) {
+            ck_raw_needs_unchecked(n, "reading through a raw pointer");
+            n->ival = 4;
+            return elem;
+        }
+        // `p.write(v: T)` -> unit. Moves a value into the slot.
+        if (str_eq(callee->sval, "write") && args != 0 && args->len == 1) {
+            int vt;
+            ck_raw_needs_unchecked(n, "writing through a raw pointer");
+            vt = ck_expr(args->items[0]);
+            if (!ck_coercible(elem, vt)) {
+                ck_err_type_mismatch(args->items[0], elem, vt, "`p.write` value");
+            }
+            ck_stamp_lits(args->items[0], elem);
+            n->ival = 5;
+            return TY_UNIT;
+        }
+        // `p.plus(n: usize)` / `p.minus(n: usize)` -> the same raw pointer,
+        // offset by n elements.
+        if ((str_eq(callee->sval, "plus") || str_eq(callee->sval, "minus"))
+            && args != 0 && args->len == 1) {
+            int at;
+            ck_raw_needs_unchecked(n, "raw pointer arithmetic");
+            at = ck_expr(args->items[0]);
+            if (!ck_coercible(TY_USIZE, at)) {
+                ck_err_type_mismatch(args->items[0], TY_USIZE, at, "pointer offset");
+            }
+            ck_stamp_lits(args->items[0], TY_USIZE);
+            if (str_eq(callee->sval, "plus")) { n->ival = 6; } else { n->ival = 7; }
+            return recv;
+        }
+    }
+    // `v.get_unchecked(i)` (§13.5): a bounds-check-free index into an array or
+    // slice. Unlocked (UNCK-01); yields `&T` (a pointer to the element).
+    if (str_eq(callee->sval, "get_unchecked") && args != 0 && args->len == 1) {
+        int base;
+        base = recv;
+        while (ty_is_ref(base) || ty_is_heap(base)) { base = ty_elem(base); }
+        if (ty_is_array(base) || ty_kind(base) == CTY_SLICE) {
+            int at;
+            ck_raw_needs_unchecked(n, "`get_unchecked`");
+            at = ck_expr(args->items[0]);
+            if (!ty_is_integer(at) && !ty_is_untyped_lit(at)) {
+                ck_err_type_mismatch(args->items[0], TY_USIZE, at, "index");
+            }
+            ck_stamp_lits(args->items[0], TY_USIZE);
+            n->ival = 13;
+            return ty_new(CTY_REF, ck_ref_name("&", ty_elem(base)), ty_elem(base), 0);
+        }
     }
     rt = recv;
     while (ty_is_ref(rt) || ty_is_heap(rt)) { rt = ty_elem(rt); }
@@ -1081,6 +1292,45 @@ int ck_expr_assoc_call(struct AstNode* n, struct AstNode* callee, struct AstList
     cut = str_rfind(callee->sval, "::");
     tname = str_prefix(callee->sval, cut);
     mname = callee->sval + cut + 2;
+
+    // `Heap::from_raw(p)` / `Heap::into_raw(h)` (§13.5). `Heap` is a
+    // compiler-recognized type, not a registered one, so these are matched by
+    // name. `into_raw` yields the box's pointer (safe: it only stops
+    // tracking); `from_raw` re-takes ownership (unlocked).
+    if (str_eq(tname, "Heap")) {
+        if (str_eq(mname, "into_raw") && args != 0 && args->len == 1) {
+            int at;
+            at = ck_expr(args->items[0]);
+            if (!ty_is_heap(at)) {
+                ck_err_type_mismatch(args->items[0], ty_new(CTY_HEAP, "Heap<T>", TY_U8, 0), at, "`Heap::into_raw` value");
+            }
+            {
+                int elem;
+                elem = TY_U8;
+                if (ty_is_heap(at)) { elem = ty_elem(at); }
+                n->ival = 14;
+                n->ty = ty_new(CTY_MUTPTR, ck_ref_name("raw mut", elem), elem, 0);
+                return n->ty;
+            }
+        }
+        if (str_eq(mname, "from_raw") && args != 0 && args->len == 1) {
+            int at;
+            ck_raw_needs_unchecked(n, "`Heap::from_raw`");
+            at = ck_expr(args->items[0]);
+            if (!ty_is_ptr(at)) {
+                ck_err_type_mismatch(args->items[0], ty_new(CTY_MUTPTR, "raw mut T", TY_U8, 0), at, "`Heap::from_raw` value");
+            }
+            {
+                int elem;
+                elem = TY_U8;
+                if (ty_is_ptr(at)) { elem = ty_elem(at); }
+                n->ival = 15;
+                n->ty = ty_new(CTY_HEAP, ck_ref_name("heap", elem), elem, 0);
+                return n->ty;
+            }
+        }
+    }
+
     sym = ck_lookup(tname);
     if (sym < 0 || g_sym_kind[sym] != SK_TYPE) {
         ck_err_unknown_name(tname, callee, "the name before `::` must be a type");
@@ -1146,6 +1396,17 @@ int ck_expr_as(struct AstNode* n) {
     if (ty_is_integer(from) && ty_is_float(to)) { return to; }
     if (ty_is_float(from) && ty_is_integer(to)) { return to; }
     if (ty_is_ref(from) && ty_is_ptr(to)) { return to; }   // unchecked-gated in M6
+    // Raw pointer <-> integer (§13.5, §5.10): reaching an address as a number
+    // (or turning an integer back into an address) is an unlocked operation.
+    if (ty_is_ptr(from) && ty_is_integer(to)) {
+        ck_raw_needs_unchecked(n, "casting a raw pointer to an integer");
+        return to;
+    }
+    if (ty_is_integer(from) && ty_is_ptr(to)) {
+        ck_raw_needs_unchecked(n, "casting an integer to a raw pointer");
+        return to;
+    }
+    if (ty_is_ptr(from) && ty_is_ptr(to)) { return to; }   // unchecked-gated below
     diag_stop("TYPE-05", "unsupported cast",
               "These types have no `as` conversion.",
               diag_file(n->file), n->start, n->end);

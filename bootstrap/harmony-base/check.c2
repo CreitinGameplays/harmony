@@ -37,6 +37,7 @@ void ck_err_unknown_name(char* name, struct AstNode* at, char* what);
 void ck_err_unknown_type(char* name, struct AstNode* at);
 void ck_err_type_mismatch(struct AstNode* at, int want, int got, char* what);
 void ck_err_arity(struct AstNode* at, char* name, int want, int got);
+void ck_err_condition(struct AstNode* at, int got, char* what);
 void ck_err_not_callable(struct AstNode* at, int ty);
 void ck_err_no_field(struct AstNode* at, int ty, char* field);
 void ck_err_not_mut(struct AstNode* at, char* name);
@@ -429,6 +430,8 @@ void ck_err_type_mismatch(struct AstNode* at, int want, int got, char* what) {
               diag_file(at->file), at->start, at->end);
 }
 
+// TYPE-04: "wrong argument count or type" (§16.10). Arity and not-callable
+// both land here.
 void ck_err_arity(struct AstNode* at, char* name, int want, int got) {
     lexbuf_reset();
     lexbuf_push_str("`");
@@ -437,7 +440,7 @@ void ck_err_arity(struct AstNode* at, char* name, int want, int got) {
     lexbuf_push_int(want);
     lexbuf_push_str(" argument(s), got ");
     lexbuf_push_int(got);
-    diag_stop("TYPE-03", "wrong number of arguments", lexbuf_finish(),
+    diag_stop("TYPE-04", "wrong number of arguments", lexbuf_finish(),
               diag_file(at->file), at->start, at->end);
 }
 
@@ -447,6 +450,18 @@ void ck_err_not_callable(struct AstNode* at, int ty) {
     lexbuf_push_str(ty_display(ty));
     lexbuf_push_str("` is not callable");
     diag_stop("TYPE-04", "not callable", lexbuf_finish(),
+              diag_file(at->file), at->start, at->end);
+}
+
+// TYPE-03: a condition that is not `bool` (§16.10). Separate from the generic
+// type-mismatch (TYPE-01) so the catalogue's condition diagnosis is precise.
+void ck_err_condition(struct AstNode* at, int got, char* what) {
+    lexbuf_reset();
+    lexbuf_push_str(what);
+    lexbuf_push_str(" must be `bool`, found `");
+    lexbuf_push_str(ty_display(got));
+    lexbuf_push_str("`");
+    diag_stop("TYPE-03", "condition is not `bool`", lexbuf_finish(),
               diag_file(at->file), at->start, at->end);
 }
 
@@ -830,7 +845,7 @@ int ck_builtin_assert(struct AstNode* n, struct AstList* args) {
         int at;
         at = ck_expr(args->items[0]);
         if (at != TY_INVALID && at != TY_BOOL) {
-            ck_err_type_mismatch(args->items[0], TY_BOOL, at, "assert condition");
+            ck_err_condition(args->items[0], at, "assert condition");
         }
     }
     if (na == 2) {
@@ -1826,7 +1841,7 @@ void ck_stmt_let(struct AstNode* n) {
             ty = n->b->ty;
             if (ty == TY_UINT_LIT) { ty = TY_I32; }
             if (ty == TY_FLOAT_LIT) { ty = TY_F64; }
-        } else if (!ty_eq(ty, n->b->ty)) {
+        } else if (!ck_coercible(ty, n->b->ty)) {
             ck_err_type_mismatch(n, ty, n->b->ty, "`let` initializer");
         }
         // Adopt the concrete type on untyped literals (§5.9) so the backend
@@ -1885,6 +1900,13 @@ void ck_check_place_mut(struct AstNode* n) {
         // so it is allowed regardless of the binding's own mutability — the
         // same rule that makes `*r` writable for `r: &mut T` (§5.2, §10).
         if (ty_slice_is_mut(n->a->ty)) { return; }
+        // Writing through a `raw mut` pointer is the pointer's capability
+        // (§13.5): `p[i] = v` on a `raw mut T` is allowed; a `raw T` is not.
+        if (ty_kind(n->a->ty) == CTY_MUTPTR) { return; }
+        if (ty_kind(n->a->ty) == CTY_PTR) {
+            ck_err_not_mut(n, n->a->sval);
+            return;
+        }
         ck_check_place_mut(n->a);
         return;
     }
@@ -1922,7 +1944,7 @@ void ck_stmt_if(struct AstNode* n) {
     int ct;
     ct = ck_expr(n->a);
     if (ct != TY_INVALID && !ty_eq(ct, TY_BOOL)) {
-        ck_err_type_mismatch(n->a, TY_BOOL, ct, "`if` condition");
+        ck_err_condition(n->a, ct, "`if` condition");
     }
     ck_stmt_block(n->b);
     if (n->c != 0) {
@@ -1939,7 +1961,7 @@ void ck_stmt_while(struct AstNode* n) {
     int ct;
     ct = ck_expr(n->a);
     if (ct != TY_INVALID && !ty_eq(ct, TY_BOOL)) {
-        ck_err_type_mismatch(n->a, TY_BOOL, ct, "`while` condition");
+        ck_err_condition(n->a, ct, "`while` condition");
     }
     g_loop_depth = g_loop_depth + 1;
     ck_stmt_block(n->b);
@@ -1955,7 +1977,7 @@ void ck_stmt_for(struct AstNode* n) {
         int ct;
         ct = ck_expr(n->b);
         if (ct != TY_INVALID && !ty_eq(ct, TY_BOOL)) {
-            ck_err_type_mismatch(n->b, TY_BOOL, ct, "`for` condition");
+            ck_err_condition(n->b, ct, "`for` condition");
         }
     }
     if (n->c != 0) { ck_stmt(n->c); }

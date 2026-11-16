@@ -522,6 +522,7 @@ int ll_is_predeclared(char* name) {
         || str_eq(name, "lc_check_boundary")
         || str_eq(name, "lc_slice_eq")
         || str_eq(name, "lc_alloc")
+        || str_eq(name, "lc_dealloc")
         || str_eq(name, "lc_set_fd")
         || str_eq(name, "lc_flush")
         || str_eq(name, "lc_put_str")
@@ -563,6 +564,7 @@ void ll_emit_module(struct AstNode* prog) {
     ll_out_str("declare void @lc_check_boundary(ptr, i64, i64, i64, i64)\n");
     ll_out_str("declare i64 @lc_slice_eq(ptr, i64, ptr, i64)\n");
     ll_out_str("declare ptr @lc_alloc(i64)\n");
+    ll_out_str("declare void @lc_dealloc(ptr, i64)\n");
     // Formatting hooks (§15.1): the compiler lowers print/println/eprintln to
     // these; the bodies live in the library (§19.8.6).
     ll_out_str("declare void @lc_set_fd(i64)\n");

@@ -1,0 +1,8 @@
+// WANT: UNCK-01 UNCK-01
+// The allocator hooks are unlocked operations (§13.5): `alloc<T>(n)` and
+// `dealloc<T>(p, n)` each need their own `unchecked` block.
+fn main() -> i32 {
+    let p = alloc<i32>(4);
+    dealloc<i32>(p, 4);
+    return 0;
+}

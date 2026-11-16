@@ -105,13 +105,13 @@ write 'fn main() -> i32 { let x: i32 = "hi"; return 0; }\n'
 reject_case "string into i32" "TYPE-01"
 
 write 'fn main() -> i32 {\n  let n = 1;\n  if (n) { return 1; }\n  return 0;\n}\n'
-reject_case "non-bool condition" "TYPE-01"
+reject_case "non-bool condition" "TYPE-03"
 
 write 'fn main() -> i32 {\n  let a: i32 = 1;\n  let b: i64 = 2;\n  return a + b;\n}\n'
 reject_case "mixed-type arithmetic" "TYPE-01"
 
 write 'fn add(a: i32, b: i32) -> i32 { return a + b; }\nfn main() -> i32 { return add(1); }\n'
-reject_case "wrong arity" "TYPE-03"
+reject_case "wrong arity" "TYPE-04"
 
 write 'struct P { x: i32; }\nfn main() -> i32 { let p = P { .x = 1 }; return p.y; }\n'
 reject_case "unknown field" "TYPE-02"

@@ -1,0 +1,15 @@
+// WANT: UNCK-01 UNCK-01 UNCK-01
+// Three unlocked raw-pointer operations outside any `unchecked` block:
+//   - `p.plus(1)` (pointer arithmetic),
+//   - `p[0]` (indexing through a raw pointer),
+//   - `p as i64` (casting a pointer to an integer).
+// Each needs its own promise (§13.2/§13.5). The compiler must report all three
+// and never crash.
+fn main() -> i32 {
+    let b: u8 = 0;
+    let p: raw u8 = raw(&b);
+    let q = p.plus(1);
+    let x = p[0];
+    let n = p as i64;
+    return x as i32 + n as i32;
+}

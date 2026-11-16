@@ -571,6 +571,15 @@ void *lc_alloc(usize_t n) {
     }
 }
 
+// lc_dealloc(p, n) — release `n` bytes at `p` (§13.5). The M1 allocator is a
+// bump allocator, so this is a no-op (the OS reclaims everything at exit). It
+// exists so `dealloc<T>(p, n)` lowers and links; a real free arrives with the
+// std allocator (§19.8.4), where `drop` calls through this hook.
+void lc_dealloc(void *p, usize_t n) {
+    (void) p;
+    (void) n;
+}
+
 // ---------------------------------------------------------------------------
 // FFI hook (library code): a raw three-argument Linux syscall. The future
 // `sys` module is built on this; `extern fn` programs can reach the kernel

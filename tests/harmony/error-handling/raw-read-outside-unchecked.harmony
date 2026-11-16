@@ -1,0 +1,10 @@
+// WANT: UNCK-01
+// `p.read()` on a raw pointer is an unlocked operation (§13.2, §13.5): the
+// compiler cannot know the pointer is valid, so it must be inside
+// `unchecked`. Outside a block, UNCK-01.
+fn main() -> i32 {
+    let b: u8 = 0;
+    let p: raw u8 = raw(&b);
+    let v = p.read();
+    return v as i32;
+}

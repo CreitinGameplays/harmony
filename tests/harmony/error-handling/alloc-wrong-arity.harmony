@@ -1,0 +1,9 @@
+// WANT: TYPE-04
+// `alloc<T>()` needs the element count; a bare zero-argument call is an arity
+// error (the catalogue's "wrong argument count" code today). The compiler must
+// reject it and never crash.
+fn main() -> i32 {
+    let mut p: raw mut i32 = Raw::null<i32>();
+    unchecked("allocate some elements") { p = alloc<i32>(); }
+    return 0;
+}

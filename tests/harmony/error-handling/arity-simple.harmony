@@ -1,4 +1,4 @@
-// WANT: TYPE-03
+// WANT: TYPE-04
 // Simple: a call with the wrong number of arguments.
 fn add(a: i32, b: i32) -> i32 {
     return a + b;

@@ -1,0 +1,84 @@
+// EXPECT: 91
+// The §13.5 raw pointer toolbox, end to end, all behind `unchecked`:
+//   raw(&x) creation, `*p` deref, `p.read()`/`p.write(v)`, `p.plus`/`p.minus`
+//   offsets, `p[i]` indexing, `p.is_null()`, `Raw::null<T>()`, `raw`<->integer
+//   casts, `alloc<T>(n)`/`dealloc<T>(p, n)`, `reinterpret<T, U>(x)`,
+//   `Heap::into_raw`/`Heap::from_raw`, and `v.get_unchecked(i)`.
+fn main() -> i32 {
+    let mut acc = 0;
+
+    // --- a heap byte buffer we walk with raw pointers ---
+    let mut buf = heap([0u8; 16]);
+    let base: raw mut u8 = raw(&mut buf[0]);
+
+    unchecked("buf has 16 bytes; index 0 is valid") { base.write(10); }
+
+    let mut p1: raw mut u8 = base;
+    unchecked("buf has 16 bytes; index 1 is valid") { p1 = base.plus(1); }
+    unchecked("write the second byte") { p1.write(20); }
+
+    let mut a: u8 = 0;
+    let mut b: u8 = 0;
+    unchecked("read both bytes back") { a = base.read(); b = p1.read(); }
+    acc = acc + a as i32 + b as i32;              // 30
+
+    // `p[i]`: write index 2, read it back, then step back with p.minus.
+    unchecked("index 2 is inside the buffer") { base[2] = 30; }
+    let mut c: u8 = 0;
+    unchecked("read index 2 back") { c = base[2]; }
+    acc = acc + c as i32;                          // 60
+    let mut back: raw mut u8 = p1;
+    unchecked("step back one element") { back = p1.minus(1); }
+    let mut d: u8 = 0;
+    unchecked("the wound-back pointer points at index 0") { d = back.read(); }
+    acc = acc + d as i32;                          // 70
+
+    // `is_null` is safe outside `unchecked`; a real pointer is not null.
+    if (base.is_null()) { return 99; }
+    if (p1 == base) { return 98; }                 // pointer comparison, safe
+
+    // `Raw::null<T>()` yields a null raw pointer, safe outside `unchecked`.
+    let nil: raw u8 = Raw::null<u8>();
+    if (!nil.is_null()) { return 97; }
+
+    // raw <-> integer round trip.
+    let mut addr: i64 = 0;
+    unchecked("take the address as an integer") { addr = base as i64; }
+    if (addr == 0) { return 96; }
+    let mut backp: raw mut u8 = base;
+    unchecked("turn the integer back into a pointer") { backp = addr as raw mut u8; }
+    let mut e: u8 = 0;
+    unchecked("the round-tripped pointer still reads the buffer") { e = backp.read(); }
+    acc = acc + e as i32;                          // 80
+
+    // alloc<T>(n) / dealloc<T>(p, n).
+    let mut ints: raw mut i32 = Raw::null<i32>();
+    unchecked("allocate room for 3 ints") { ints = alloc<i32>(3); }
+    unchecked("fill the allocation") { ints[0] = 7; ints[1] = 8; ints[2] = 9; }
+    let mut f: i32 = 0;
+    unchecked("read it back") { f = ints[0] + ints[2]; }
+    acc = acc + f;                                 // 96
+    unchecked("give the allocation back") { dealloc<i32>(ints, 3); }
+
+    // reinterpret<T, U>: same-size bit view. `7i32` viewed as `u32` is 7.
+    let mut u: u32 = 0;
+    unchecked("reinterpret an i32 as a u32 (same size)") { u = reinterpret<i32, u32>(7); }
+    acc = acc + u as i32;                          // 105
+
+    // Heap::into_raw then Heap::from_raw (re-take ownership).
+    let h = heap(40);
+    let mut hp: raw mut i32 = Raw::null<i32>();
+    { hp = Heap::into_raw(h); }
+    let mut h2 = heap(0);
+    unchecked("re-take ownership of the box") { h2 = Heap::from_raw(hp); }
+    acc = acc + *h2;                               // 145
+
+    // v.get_unchecked(i): a bounds-check-free element reference.
+    let arr = [1, 2, 3, 4];
+    let mut g: i32 = 0;
+    unchecked("index 3 is in bounds") { g = *arr.get_unchecked(3); }
+    acc = acc + g;                                 // 147
+
+    // 147 - 56 = 91, kept under 128 so the exit code is not read as a signal.
+    return acc - 56;
+}

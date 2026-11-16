@@ -1332,6 +1332,8 @@ It does not turn off type checking, move checking, borrow checking of ordinary r
 | `p.read() -> T` (moves a value out, leaving the slot logically empty) | yes |
 | `p.write(v: T)` (moves a value in without dropping what was there) | yes |
 | `p.plus(n: usize)`, `p.minus(n: usize)` | yes |
+| `p[i]` (index through a raw pointer; `p[i] = v` needs `raw mut T`) | yes |
+| `p as <integer>`, `<integer> as raw T` | yes |
 | `alloc<T>(n: usize) -> raw mut T` (uninitialized room for `n` Ts) | yes |
 | `dealloc<T>(p: raw mut T, n: usize)` | yes |
 | `reinterpret<T, U>(x: T) -> U` | yes |

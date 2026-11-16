@@ -1,0 +1,14 @@
+// WANT: TYPE-03
+// A condition must be `bool` (§16.10, TYPE-03). An integer is not a condition:
+// no implicit "non-zero is true" (unlike C). The dedicated condition code
+// (not the generic type mismatch) pinpoints the mistake.
+fn main() -> i32 {
+    let n: i32 = 1;
+    if (n) {
+        return 1;
+    }
+    while (n) {
+        break;
+    }
+    return 0;
+}

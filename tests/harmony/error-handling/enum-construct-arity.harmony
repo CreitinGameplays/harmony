@@ -1,4 +1,4 @@
-// WANT: TYPE-03
+// WANT: TYPE-04
 // A variant construction must pass exactly its payload fields (§6.5).
 enum Shape { Rect(i32, i32), Point }
 

@@ -1,4 +1,4 @@
-// WANT: TYPE-03
+// WANT: TYPE-04
 // `trap` needs exactly one message argument (§15.1).
 fn main() -> i32 {
     trap();

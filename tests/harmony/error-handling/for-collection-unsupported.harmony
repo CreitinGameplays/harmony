@@ -1,0 +1,12 @@
+// WANT: TYPE-05
+// `for (x : collection)` needs the iteration protocol (`fn next(&mut self) ->
+// Maybe<T>`, §8.5), which is not implemented yet, so a non-range iterable is
+// reported rather than silently miscompiled. The compiler must never crash.
+fn main() -> i32 {
+    let a = [1, 2, 3];
+    let mut s = 0;
+    for (x : a) {
+        s = s + x;
+    }
+    return s;
+}

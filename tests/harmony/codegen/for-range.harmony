@@ -1,0 +1,37 @@
+// EXPECT: 88
+// Range-based `for` (§8.5): `for (i : lo..hi)` and the inclusive
+// `for (i : lo..=hi)`. The bounds are evaluated once; the loop variable is a
+// fresh mutable binding. Nested loops, `break`, and `continue` all work, and
+// the loop variable's type follows the bounds (u8/i64/i32).
+fn main() -> i32 {
+    let mut s = 0;
+
+    // Half-open: 0+1+2+3+4 = 10.
+    for (i : 0..5) { s = s + i; }
+
+    // Inclusive: 1+2+3 = 6.
+    for (j : 1..=3) { s = s + j; }
+
+    // Empty half-open range runs zero times.
+    for (k : 0..0) { s = s + 1000; }
+
+    // Nested: 3 * 4 = 12 iterations, one point each.
+    for (a : 0..3) { for (b : 0..4) { s = s + 1; } }
+
+    // `break` out of a range.
+    for (c : 0..100) { if (c == 5) { break; } s = s + 1; }
+
+    // `continue`: count the odd values in 0..6 (1, 3, 5).
+    for (d : 0..6) { if (d - (d / 2) * 2 == 0) { continue; } s = s + 1; }
+
+    // A u8-typed range.
+    for (e : 0u8..5u8) { s = s + e as i32; }
+
+    // An i64-typed range with non-literal bounds.
+    let lo: i64 = 0;
+    let hi: i64 = 4;
+    for (f : lo..hi) { s = s + f as i32; }
+
+    // 10+6+12+5+3+10+6 = 52; 52 + 36 = 88.
+    return s + 36;
+}

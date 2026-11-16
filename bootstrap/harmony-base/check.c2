@@ -1972,6 +1972,65 @@ void ck_stmt_while(struct AstNode* n) {
 void ck_stmt_for(struct AstNode* n) {
     g_loop_depth = g_loop_depth + 1;
     ck_scope_push();
+    // Shape 2: `for (x : expr)` — `n->sval` is the binding, `n->a` the
+    // iterable. Ranges (`a..b`, `a..=b`) are supported here; a collection or a
+    // custom iterator is not yet (they need the iteration protocol, §8.5).
+    if (n->sval != 0) {
+        int it;
+        // A range is not a value the expression checker accepts on its own
+        // (`let r = 0..3` is `TYPE-05`), so recognize the shape first.
+        if (n->a != 0 && n->a->kind == AST_BINARY
+            && (str_eq(n->a->sval, "..") || str_eq(n->a->sval, "..="))) {
+            int et;
+            int lo;
+            int hi;
+            // A range's bounds must be integers (or untyped literals).
+            lo = ck_expr(n->a->a);
+            hi = ck_expr(n->a->b);
+            if (lo == TY_INVALID || hi == TY_INVALID) {
+                ck_scope_pop(); g_loop_depth = g_loop_depth - 1; n->ty = TY_UNIT; return;
+            }
+            if (!ty_is_integer(lo) && lo != TY_UINT_LIT) {
+                ck_err_type_mismatch(n->a->a, TY_ISIZE, lo, "range start");
+            }
+            if (!ty_is_integer(hi) && hi != TY_UINT_LIT) {
+                ck_err_type_mismatch(n->a->b, TY_ISIZE, hi, "range end");
+            }
+            // The binding takes the range's element type; untyped literals
+            // default to i32 (§5.9), and both bounds are stamped to it.
+            et = lo;
+            if (et == TY_UINT_LIT || et == TY_INVALID) { et = TY_I32; }
+            n->a->ty = et;         // the backend reads the element type here
+            ck_stamp_lits(n->a->a, et);
+            ck_stamp_lits(n->a->b, et);
+            {
+                int idx;
+                idx = ck_declare(n->sval, SK_LET, et, n, 1);
+                if (idx >= 0) { g_sym_init[idx] = 1; }
+            }
+            if (n->kids != 0) {
+                int i;
+                i = 0;
+                while (i < n->kids->len) {
+                    ck_stmt(n->kids->items[i]);
+                    i = i + 1;
+                }
+            }
+            ck_scope_pop();
+            g_loop_depth = g_loop_depth - 1;
+            n->ty = TY_UNIT;
+            return;
+        }
+        // Not a range: a collection or iterator needs `next(&mut self)` (§8.5),
+        // which is not implemented yet.
+        diag_stop("TYPE-05", "unsupported `for` iterable",
+                  "Only ranges (`for (i : 0..n)`) are implemented; collections and custom iterators need the iteration protocol (§8.5).",
+                  diag_file(n->a->file), n->a->start, n->a->end);
+        ck_scope_pop();
+        g_loop_depth = g_loop_depth - 1;
+        n->ty = TY_UNIT;
+        return;
+    }
     if (n->a != 0) { ck_stmt(n->a); }
     if (n->b != 0) {
         int ct;

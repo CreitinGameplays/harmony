@@ -1,0 +1,10 @@
+// WANT: TYPE-01
+// A range's bounds must be integers (§8.5). A float bound is a type mismatch:
+// `0..1.5` has no well-defined step. The compiler must reject it.
+fn main() -> i32 {
+    let mut s = 0;
+    for (i : 0..1.5) {
+        s = s + 1;
+    }
+    return s;
+}

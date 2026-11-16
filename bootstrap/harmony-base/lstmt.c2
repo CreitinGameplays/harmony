@@ -325,6 +325,140 @@ void ll_stmt_for(struct AstNode* n) {
     char* steplbl;
     char* endlbl;
     ll_env_scope_push();
+    // Shape 2: `for (x : a..b)` — a range loop (§8.5). The binding (`n->sval`)
+    // is a fresh mutable local; the bounds are evaluated once, before the loop.
+    // `a..=b` uses `<=` for the condition. Everything else is the C-style loop.
+    if (n->sval != 0) {
+        int ty;
+        char* esz;
+        char* islot;
+        char* lo;
+        char* hi;
+        int inclusive;
+        ty = ll_node_ty(n->a);
+        if (ty == 0) { ty = TY_I32; }
+        esz = ll_type_name(ty);
+        inclusive = str_eq(n->a->sval, "..=");
+        // Evaluate the bounds once, in written order (§7.5).
+        lo = ll_expr(n->a->a);
+        hi = ll_expr(n->a->b);
+        // The loop variable's slot, initialized to the lower bound.
+        islot = ll_new_reg();
+        ll_out_str("  ");
+        ll_out_str(islot);
+        ll_out_str(" = alloca ");
+        ll_out_str(esz);
+        ll_out_nl();
+        ll_out_str("  store ");
+        ll_out_str(esz);
+        ll_out_str(" ");
+        ll_out_str(lo);
+        ll_out_str(", ptr ");
+        ll_out_str(islot);
+        ll_out_nl();
+        ll_local_declare(n->sval, islot, ty);
+        // Spill the upper bound so the condition re-reads it after the body
+        // (the SSA name `hi` may not dominate the loop-back block).
+        {
+            char* hslot;
+            hslot = ll_new_reg();
+            ll_out_str("  ");
+            ll_out_str(hslot);
+            ll_out_str(" = alloca ");
+            ll_out_str(esz);
+            ll_out_nl();
+            ll_out_str("  store ");
+            ll_out_str(esz);
+            ll_out_str(" ");
+            ll_out_str(hi);
+            ll_out_str(", ptr ");
+            ll_out_str(hslot);
+            ll_out_nl();
+            hi = hslot;
+        }
+        condlbl = ll_new_label("for.cond");
+        bodylbl = ll_new_label("for.body");
+        steplbl = ll_new_label("for.step");
+        endlbl = ll_new_label("for.end");
+        ll_out_str("  br label %");
+        ll_out_str(condlbl);
+        ll_out_nl();
+        ll_label(condlbl);
+        {
+            char* cur;
+            char* hi2;
+            char* cmp;
+            char* op;
+            cur = ll_load(ty, islot);
+            hi2 = ll_load(ty, hi);      // reload from the slot
+            op = "slt";
+            if (inclusive) { op = "sle"; }
+            if (ty_is_unsigned(ty)) {
+                if (inclusive) { op = "ule"; } else { op = "ult"; }
+            }
+            cmp = ll_new_reg();
+            ll_out_str("  ");
+            ll_out_str(cmp);
+            ll_out_str(" = icmp ");
+            ll_out_str(op);
+            ll_out_str(" ");
+            ll_out_str(esz);
+            ll_out_str(" ");
+            ll_out_str(cur);
+            ll_out_str(", ");
+            ll_out_str(hi2);
+            ll_out_nl();
+            ll_out_str("  br i1 ");
+            ll_out_str(cmp);
+            ll_out_str(", label %");
+            ll_out_str(bodylbl);
+            ll_out_str(", label %");
+            ll_out_str(endlbl);
+            ll_out_nl();
+        }
+        ll_label(bodylbl);
+        ll_loop_push(endlbl, steplbl);
+        ll_set_terminated(0);
+        if (n->kids != 0 && n->kids->len > 0) {
+            ll_block(n->kids->items[0]);
+        }
+        ll_loop_pop();
+        if (!ll_get_terminated()) {
+            ll_out_str("  br label %");
+            ll_out_str(steplbl);
+            ll_out_nl();
+        }
+        ll_label(steplbl);
+        ll_set_terminated(0);
+        // i += 1
+        {
+            char* cur;
+            char* nxt;
+            cur = ll_load(ty, islot);
+            nxt = ll_new_reg();
+            ll_out_str("  ");
+            ll_out_str(nxt);
+            ll_out_str(" = add ");
+            ll_out_str(esz);
+            ll_out_str(" ");
+            ll_out_str(cur);
+            ll_out_str(", 1\n");
+            ll_out_str("  store ");
+            ll_out_str(esz);
+            ll_out_str(" ");
+            ll_out_str(nxt);
+            ll_out_str(", ptr ");
+            ll_out_str(islot);
+            ll_out_nl();
+        }
+        ll_out_str("  br label %");
+        ll_out_str(condlbl);
+        ll_out_nl();
+        ll_label(endlbl);
+        ll_set_terminated(0);
+        ll_env_scope_pop();
+        return;
+    }
     if (n->a != 0) { ll_stmt(n->a); }   // init, e.g. let i = 0;
     condlbl = ll_new_label("for.cond");
     bodylbl = ll_new_label("for.body");

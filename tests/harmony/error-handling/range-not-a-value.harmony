@@ -1,0 +1,8 @@
+// WANT: TYPE-05
+// A range is not a first-class value (§7.2): `let r = 0..3` has no type, so it
+// is rejected. Ranges exist only as `for` heads. The compiler must reject it
+// and never crash.
+fn main() -> i32 {
+    let r = 0..3;
+    return 0;
+}

@@ -129,17 +129,22 @@ methods String {
     // A `&str` view of the current contents. `self` is shared, so the view
     // cannot outlive a mutation by the borrow rules once they land (M3).
     export fn as_str(&self) -> &str {
+        // An empty String has no slot 0: reading through a null pointer would
+        // fault. Return a static empty slice instead. (A parsed empty string
+        // literal `""` reaches this path, so it is not a theoretical case.)
+        if (self.bytes.len() == 0) { return ""; }
         unchecked("the bytes are valid UTF-8 by construction (see push_byte)") {
             return str::from_parts(self.bytes.get_unchecked(0) as raw u8, self.bytes.len());
         }
     }
 
-    // Appends one ASCII byte. Only used for text the compiler knows is ASCII
-    // (mangled symbols, digits), so validity is preserved.
+    // Appends one byte. The `String` buffer is a raw byte vector, so all 256
+    // values are accepted: UTF-8 text is appended byte by byte (a caller that
+    // walks a &str gets the encoded bytes via as_bytes(), which are valid
+    // UTF-8 by construction). Restricting this to ASCII silently dropped
+    // non-ASCII text -- `json_escape("héllo")` lost the é.
     export fn push_byte(&mut self, b: u8) {
-        if (b < 128u8) {
-            self.bytes.push(b);
-        }
+        self.bytes.push(b);
     }
 
     export fn push(&mut self, s: &str) {

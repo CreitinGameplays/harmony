@@ -1,0 +1,91 @@
+// EXPECT: 42
+// A struct field whose type is a generic instance no longer steals the
+// instance's fields (2026-11).
+//
+// Members live in one flat table, and lookup assumes a type's members are
+// contiguous (`mstart + i`). `ck_fill_struct` used to resolve a field's type
+// and immediately add the member — but resolving `v: Vec<u32>` instantiates
+// Vec, which appends `ptr`, `len`, `cap` to the same table. Those landed
+// *between* `s` and `v`, so `S` looked up its second field at slot `mstart+1`
+// and found `ptr`: TYPE-02 "no such field". Any struct mixing a plain field
+// with a generic-typed field was unusable -- which is exactly what the
+// lexer's context (`src: &str; ...; toks: Vec<Token>`) needs.
+// The fix resolves all field types first, then adds all members.
+import "struct-mixed-fields-env.hr";
+
+struct Point { x: i32; y: i32; }
+
+// A struct whose fields include an imported generic instance.
+struct S {
+    label: &str;
+    items: struct_mixed_fields_env::Vec<i32>;
+    tail: u32;
+}
+
+fn use_s() -> i32 {
+    let mut s: S = S {
+        .label = "ok",
+        .items = struct_mixed_fields_env::Vec<i32>::make(),
+        .tail = 7,
+    };
+    if (s.label != "ok") { return 1; }
+    if (s.tail != 7) { return 2; }
+    s.items.push(11);
+    s.items.push(22);
+    if (s.items.len() != 2) { return 3; }
+    if (*s.items.get(0) != 11) { return 4; }
+    if (*s.items.get(1) != 22) { return 5; }
+    // The interleaving must not corrupt the fields either side of the Vec.
+    s.tail = 9;
+    if (s.tail != 9) { return 6; }
+    return 42;
+}
+
+// The same shape with *two* generic fields, and with a non-imported generic.
+struct Pair {
+    a: struct_mixed_fields_env::Vec<u8>;
+    name: &str;
+    b: struct_mixed_fields_env::Vec<u32>;
+}
+
+fn use_pair() -> i32 {
+    let mut p: Pair = Pair {
+        .a = struct_mixed_fields_env::Vec<u8>::make(),
+        .name = "pair",
+        .b = struct_mixed_fields_env::Vec<u32>::make(),
+    };
+    if (p.name != "pair") { return 1; }
+    p.a.push(5u8);
+    p.b.push(100u32);
+    if (*p.a.get(0) != 5u8) { return 2; }
+    if (*p.b.get(0) != 100u32) { return 3; }
+    return 42;
+}
+
+// A second plain field after the generic one, to check ordering both ways.
+struct Wrap {
+    inner: struct_mixed_fields_env::Vec<u8>;
+    tag: u32;
+}
+
+fn use_wrap() -> i32 {
+    let w: Wrap = Wrap {
+        .inner = struct_mixed_fields_env::Vec<u8>::make(),
+        .tag = 3,
+    };
+    if (w.tag != 3) { return 1; }
+    if (w.inner.len() != 0) { return 2; }
+    return 42;
+}
+
+fn main() -> i32 {
+    let r = use_s();
+    if (r != 42) { return 100 + r; }
+    let r2 = use_pair();
+    if (r2 != 42) { return 200 + r2; }
+    let r3 = use_wrap();
+    if (r3 != 42) { return 300 + r3; }
+    let p = Point { .x = 2, .y = 3 };
+    if (p.x + p.y != 5) { return 400; }
+    return 42;
+}

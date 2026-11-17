@@ -1231,16 +1231,33 @@ void ck_fill_struct(struct AstNode* n) {
     if (id == TY_INVALID) { return; }
     fields = n->kids2;
     if (fields == 0) { return; }
-    i = 0;
-    while (i < fields->len) {
-        struct AstNode* f;
-        int ft;
-        f = fields->items[i];
-        ft = ck_resolve_type(f->a);
-        if (ft == TY_INVALID) { ft = TY_I32; }   // keep going; the stop is reported
-        ty_add_member(id, f->sval, ft);
-        f->ty = ft;
-        i = i + 1;
+    // Resolve every field type *before* adding any members. Resolving a
+    // generic field type (`v: Vec<u8>`) instantiates it, and instantiation
+    // appends the instance's fields to the same flat member table. Doing that
+    // between our own `ty_add_member` calls interleaved the instance's fields
+    // with ours, but member lookup assumes a type's members are contiguous
+    // (`mstart + i`), so `S { s: &str; v: Vec<u32> }` looked up its second
+    // field at the instance's `ptr` instead of `v` -- NAME... TYPE-02 "no such
+    // field". Resolving first means every nested addition happens before ours.
+    {
+        int* fts;
+        fts = arena_alloc(fields->len * 8);
+        i = 0;
+        while (i < fields->len) {
+            struct AstNode* f;
+            f = fields->items[i];
+            fts[i] = ck_resolve_type(f->a);
+            if (fts[i] == TY_INVALID) { fts[i] = TY_I32; }
+            i = i + 1;
+        }
+        i = 0;
+        while (i < fields->len) {
+            struct AstNode* f;
+            f = fields->items[i];
+            ty_add_member(id, f->sval, fts[i]);
+            f->ty = fts[i];
+            i = i + 1;
+        }
     }
 }
 
@@ -1880,19 +1897,29 @@ int ck_instantiate_type(struct AstNode* at, char* base, struct AstList* targs) {
                     i = i + 1;
                 }
             } else {
-                i = 0;
-                while (i < fields->len) {
-                    // A struct field: substitute its declared type.
-                    struct AstNode* fld;
-                    int ft;
-                    struct AstNode* clone;
-                    fld = fields->items[i];
-                    clone = ast_clone(fld->a);
-                    ck_subst_type(clone, tmpl, targs, ntargs);
-                    ft = ck_resolve_type(clone);
-                    if (ft == TY_INVALID) { ft = TY_I32; }
-                    ty_add_member(id, fld->sval, ft);
-                    i = i + 1;
+                // Resolve all field types before adding any members: a nested
+                // generic field type instantiates and appends *its* members to
+                // the same flat table, which would interleave ours (see
+                // ck_fill_struct for the full explanation).
+                {
+                    int* fts;
+                    fts = arena_alloc(fields->len * 8);
+                    i = 0;
+                    while (i < fields->len) {
+                        struct AstNode* fld;
+                        struct AstNode* clone;
+                        fld = fields->items[i];
+                        clone = ast_clone(fld->a);
+                        ck_subst_type(clone, tmpl, targs, ntargs);
+                        fts[i] = ck_resolve_type(clone);
+                        if (fts[i] == TY_INVALID) { fts[i] = TY_I32; }
+                        i = i + 1;
+                    }
+                    i = 0;
+                    while (i < fields->len) {
+                        ty_add_member(id, fields->items[i]->sval, fts[i]);
+                        i = i + 1;
+                    }
                 }
             }
         }

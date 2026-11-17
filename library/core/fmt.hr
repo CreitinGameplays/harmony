@@ -1,0 +1,185 @@
+// library/core/fmt.hr — diagnostics as data, rendering as library code
+// (roadmap/harmony R1; docs/harmony.md §19.8.7).
+//
+// The compiler core records `(code, severity, span, arguments)`. It does not
+// decide how a diagnostic *looks*. That is this module's job, and it is
+// ordinary auditable library code rather than compiler code -- §19.8.7's rule
+// ("the compiler emits events only").
+//
+// Rendering must match harmony-base byte for byte: the rewrite's accept/reject
+// gate compares diagnostic codes, and the golden fixtures compare rendered
+// text. `render_line` and `render_json` therefore follow the existing formats
+// exactly, including punctuation and field order.
+import "str.hr";
+
+// Severities (§16.4). STOP stops the build, WARN only under --strict, and
+// HINT never does. The compiler sets these; this module renders them.
+copy enum Severity {
+    Stop,
+    Warn,
+    Hint,
+}
+
+// One diagnostic. A real checker attaches a story (time-ordered events,
+// §19.3) and fixes; those land with the analyses (R4/R5). The fields here are
+// the ones every stage needs, and they are enough for the lexer's LEX-01 and
+// the parser's SYN-*.
+copy struct Diag {
+    code: &str;       // stable code, e.g. "LEX-01"
+    severity: Severity;
+    title: &str;      // short, lowercase, no period
+    summary: &str;    // one or two plain-English sentences
+    file: &str;       // source path
+    line: u32;        // 1-based
+    col: u32;         // 0-based
+}
+
+// ---------------------------------------------------------------------------
+// Severity words and glyphs.
+// ---------------------------------------------------------------------------
+
+export fn severity_word(sev: Severity) -> &str {
+    switch (sev) {
+        case Stop: { return "STOP"; }
+        case Warn: { return "WARN"; }
+        case Hint: { return "HINT"; }
+    }
+    return "HINT";
+}
+
+export fn severity_word_lower(sev: Severity) -> &str {
+    switch (sev) {
+        case Stop: { return "stop"; }
+        case Warn: { return "warn"; }
+        case Hint: { return "hint"; }
+    }
+    return "hint";
+}
+
+// §16.3: glyphs and their --ascii fallbacks. Rendering a diagnostic never
+// relies on the glyph to carry meaning -- the words do -- so switching this
+// flag cannot change what a diagnostic says.
+export fn step_glyph(n: u32, ascii: bool) -> &str {
+    if (!ascii) {
+        switch (n) {
+            case 1: { return "\u{2460}"; }
+            case 2: { return "\u{2461}"; }
+            case 3: { return "\u{2462}"; }
+            case 4: { return "\u{2463}"; }
+            case 5: { return "\u{2464}"; }
+            default: { return "\u{2460}"; }
+        }
+    }
+    switch (n) {
+        case 1: { return "(1)"; }
+        case 2: { return "(2)"; }
+        case 3: { return "(3)"; }
+        case 4: { return "(4)"; }
+        case 5: { return "(5)"; }
+        default: { return "(1)"; }
+    }
+}
+
+export fn site_glyph(ascii: bool) -> &str {
+    if (ascii) { return ">"; }
+    return "\u{25b8}";
+}
+
+export fn here_glyph(ascii: bool) -> &str {
+    if (ascii) { return "<-- here"; }
+    return "\u{25c2} here";
+}
+
+// ---------------------------------------------------------------------------
+// JSON escaping. harmony-base's `out_json_str` escapes only `"` `\` `\n`
+// `\r` `\t`; everything else (including UTF-8 bytes) passes through. This
+// reproduces that exactly so the JSON golden files stay identical.
+// ---------------------------------------------------------------------------
+export fn json_escape(s: &str) -> str::String {
+    let mut out: str::String = str::String::make();
+    out.push("\"");
+    let b = s.as_bytes();
+    let mut i: usize = 0;
+    while (i < s.len()) {
+        let c = b[i];
+        if (c == 34u8) { out.push("\\\""); }
+        else if (c == 92u8) { out.push("\\\\"); }
+        else if (c == 10u8) { out.push("\\n"); }
+        else if (c == 13u8) { out.push("\\r"); }
+        else if (c == 9u8) { out.push("\\t"); }
+        else { out.push_byte(c); }
+        i += 1;
+    }
+    out.push("\"");
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Renderers. Each returns a String, so the caller decides where it goes
+// (stdout, a log, an editor's diagnostics channel).
+// ---------------------------------------------------------------------------
+
+// §16.7 `--format=line`:
+//
+//     <file>:<line>:<col>: <severity>[<code>]: <title>
+//
+// The header is always one line and is the first line of every format, which
+// is what makes diagnostics greppable and scriptable (§16.1 rule 5).
+export fn render_line(d: &Diag) -> str::String {
+    let mut out: str::String = str::String::make();
+    out.push(d.file);
+    out.push(":");
+    out.push_u64(d.line as u64);
+    out.push(":");
+    out.push_u64(d.col as u64);
+    out.push(": ");
+    out.push(severity_word_lower(d.severity));
+    out.push("[");
+    out.push(d.code);
+    out.push("]: ");
+    out.push(d.title);
+    out.push("\n");
+    return out;
+}
+
+// §16.7 `--format=json`: one compact object per diagnostic, with the same
+// field order and spacing as harmony-base's `diag_emit_json`.
+export fn render_json(d: &Diag) -> str::String {
+    let mut out: str::String = str::String::make();
+    out.push("{\"severity\": ");
+    let esc = json_escape(severity_word_lower(d.severity));
+    out.push(esc.as_str());
+    out.push(", \"code\": ");
+    let c = json_escape(d.code);
+    out.push(c.as_str());
+    out.push(", \"title\": ");
+    let t = json_escape(d.title);
+    out.push(t.as_str());
+    out.push(", \"summary\": ");
+    let s = json_escape(d.summary);
+    out.push(s.as_str());
+    out.push(", \"primary\": {\"file\": ");
+    let f = json_escape(d.file);
+    out.push(f.as_str());
+    out.push(", \"line\": ");
+    out.push_u64(d.line as u64);
+    out.push(", \"col\": ");
+    out.push_u64(d.col as u64);
+    out.push("}, \"story\": [], \"fixes\": []}\n");
+    return out;
+}
+
+// A constructor for the common "one site, no story yet" case, which is what
+// the lexer and parser emit.
+export fn diag(code: &str, severity: Severity, title: &str, summary: &str,
+              file: &str, line: u32, col: u32) -> Diag {
+    return Diag {
+        .code = code,
+        .severity = severity,
+        .title = title,
+        .summary = summary,
+        .file = file,
+        .line = line,
+        .col = col,
+    };
+}

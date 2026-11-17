@@ -110,3 +110,22 @@ export fn arena_str(a: &mut Arena, s: &str) -> &str {
     }
     return out;
 }
+
+// Copies a byte slice into the arena and returns it as a `&str`. Used for a
+// lexer's *cooked* literal bytes: a string literal's decoded value is not a
+// slice of the source (escapes expand), so it must outlive the scratch buffer
+// that decoded it.
+export fn arena_bytes(a: &mut Arena, bytes: &[u8]) -> &str {
+    let mut p: raw mut u8 = Raw::null<u8>();
+    unchecked("copy the decoded bytes into the arena") {
+        p = arena_raw(a, bytes.len());
+        for (i : 0..bytes.len()) {
+            p.plus(i).write(bytes[i]);
+        }
+    }
+    let mut out: &str = "?";
+    unchecked("the bytes came from a decoded UTF-8 literal") {
+        out = str::from_parts(p, bytes.len());
+    }
+    return out;
+}

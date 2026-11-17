@@ -1,0 +1,94 @@
+// harmony/lexer/ctx.hr — the lexer's shared state (roadmap/harmony R2).
+//
+// There are no top-level mutable globals in Harmony (§6.1, by design), so
+// every stage threads one `&mut Ctx`. The lexer's context owns the source
+// view, the cursor, the token stream, and the diagnostics accumulated so far.
+// It does *not* own the arena: cooked literals (strings with escapes) are
+// copied into a caller-provided arena, which lives for the whole compile.
+import "../../library/core/vec.hr";
+import "../../library/core/fmt.hr";
+import "../../library/core/mem.hr";
+import "token.hr";
+
+export struct Ctx {
+    src: &str;          // the whole source text
+    bytes: &[u8];       // its byte view (same length)
+    pos: usize;         // byte offset of the next byte
+    line: u32;          // 1-based, for the current position
+    col: u32;           // 0-based, for the current position
+    path: &str;         // source path (for diagnostics)
+    toks: vec::Vec<token::Token>;
+    diags: vec::Vec<fmt::Diag>;
+}
+
+export fn make(src: &str, path: &str) -> Ctx {
+    return Ctx {
+        .src = src,
+        .bytes = src.as_bytes(),
+        .pos = 0,
+        .line = 1,
+        .col = 0,
+        .path = path,
+        .toks = vec::Vec<token::Token>::make(),
+        .diags = vec::Vec<fmt::Diag>::make(),
+    };
+}
+
+// The byte at `pos + off`, or 0 at/after EOF. The lexer treats EOF as a
+// sentinel byte 0, which can never be an identifier start, digit, or
+// punctuation, so the loops terminate naturally.
+export fn at(c: &Ctx, off: usize) -> u8 {
+    let i = c.pos + off;
+    if (i >= c.bytes.len()) { return 0u8; }
+    return c.bytes[i];
+}
+
+// Consumes one byte and returns it (0 at EOF). Newlines advance the line and
+// reset the column; CRLF counts as one newline (the `\r` is skipped with the
+// `\n` and does not add a column).
+export fn bump(c: &mut Ctx) -> u8 {
+    let b = at(&*c, 0);
+    if (b == 0u8) { return b; }
+    c.pos += 1;
+    if (b == 10u8) {
+        c.line += 1;
+        c.col = 0;
+    } else {
+        c.col += 1;
+    }
+    return b;
+}
+
+// A slice of the *source* text. Only valid for spellings that are byte-for-
+// byte present in the source (identifiers, unpunctuated literals). Escaped
+// strings use the arena copy instead.
+export fn spelling(c: &Ctx, start: usize, end: usize) -> &str {
+    return &c.src[start..end];
+}
+
+// Appends one token.
+export fn push(c: &mut Ctx, kind: token::TokKind, text: &str,
+              start: usize, end: usize, line: u32, col: u32,
+              ival: i64, suffix: &str) {
+    c.toks.push(token::Token {
+        .kind = kind,
+        .text = text,
+        .start = start,
+        .end = end,
+        .line = line,
+        .col = col,
+        .ival = ival,
+        .suffix = suffix,
+    });
+}
+
+// Records a diagnostic at the current position. The lexer keeps scanning so
+// one bad byte does not hide the rest of the file; the driver decides whether
+// diagnostics stop the compile.
+export fn error(c: &mut Ctx, code: &str, title: &str, summary: &str) {
+    c.diags.push(fmt::diag(code, fmt::Severity::Stop, title, summary,
+                           c.path, c.line, c.col));
+}
+
+// The number of diagnostics recorded so far.
+export fn nerrors(c: &Ctx) -> usize { return c.diags.len(); }

@@ -438,6 +438,17 @@ int ty_size(int id) {
             if (ps > maxpay) { maxpay = ps; }
             i = i + 1;
         }
+        // Payload region: the emitter rounds up to an 8-byte stride and keeps
+        // one stride even when every variant is fieldless (`[8 x i8]`). §19.4
+        // spells the enum as `{ i32 tag, [4 x i8], [payload x i8] }`, so the
+        // tag region is 8 bytes and the payload region is at least 8.
+        //
+        // ty_size must agree with that, or a struct *containing* the enum is
+        // given the wrong size: with `Diag { code: &str; severity: Severity;
+        // ...; line: u32; col: u32 }` the checker computed 80 bytes and memcpy'd
+        // 80, while LLVM's type was 88 -- so the trailing fields were silently
+        // truncated and read back as zero.
+        if (maxpay == 0) { maxpay = 1; }
         g_types[id].size = align_up(4, 8) + align_up(maxpay, 8);
         g_types[id].align = 8;
     } else {
@@ -462,7 +473,14 @@ int ty_align(int id) {
     // two. The array alignment follows its element.
     if (g_types[id].kind == CTY_ARRAY) { return ty_align(g_types[id].a); }
     if (ty_is_ref(id) || ty_is_ptr(id) || ty_is_heap(id)
-        || g_types[id].kind == CTY_SLICE) {
+        || g_types[id].kind == CTY_SLICE
+        || g_types[id].kind == CTY_STRREF) {
+        // A slice and a `&str` are both a `{ ptr, i64 }` pair. Missing the
+        // `CTY_STRREF` case gave `&str` alignment 1, so a struct whose fields
+        // mixed `&str` with anything else laid its trailing fields out at the
+        // wrong offsets: `struct { code: &str; ...; line: u32; col: u32; }`
+        // was 80 bytes instead of 96, and the final fields read back as zero
+        // (found by library/core/fmt.hr's `Diag`).
         return 8;
     }
     // Structs/enum: trigger the size pass, which fills `align`.

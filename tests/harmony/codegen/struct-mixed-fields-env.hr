@@ -1,0 +1,36 @@
+// A tiny generic Vec for the struct-mixed-fields regression.
+export struct Vec<T> {
+    ptr: raw mut T;
+    len: usize;
+    cap: usize;
+}
+
+methods<T> Vec<T> {
+    export fn make() -> Vec<T> {
+        return Vec { .ptr = Raw::null(), .len = 0, .cap = 0 };
+    }
+    export fn len(&self) -> usize { return self.len; }
+    export fn get(&self, i: usize) -> &T {
+        unchecked("caller checked i < len") { return &*self.ptr.plus(i); }
+    }
+    export fn push(&mut self, v: T) {
+        if (self.len == self.cap) { self.grow(); }
+        unchecked("grow guarantees room at slot len") {
+            self.ptr.plus(self.len).write(v);
+        }
+        self.len += 1;
+    }
+    fn grow(&mut self) {
+        let mut nc: usize = 4;
+        if (self.cap > 0) { nc = self.cap * 2; }
+        unchecked("copy the live slots into a bigger block") {
+            let fresh: raw mut T = alloc<T>(nc);
+            for (i : 0..self.len) {
+                fresh.plus(i).write(self.ptr.plus(i).read());
+            }
+            if (self.cap > 0) { dealloc(self.ptr, self.cap); }
+            self.ptr = fresh;
+        }
+        self.cap = nc;
+    }
+}

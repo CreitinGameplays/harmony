@@ -5,7 +5,14 @@ File Extension: .harmony (default), .hr (secondary)
 - Read the project layout first.
 - **Read important parts of the harmony.md docs (but not everything at once)**.
 - **Never** hardcode "/opencode/" in any part of the source code.
-- DO proper tool calling.
+- **Final `harmony` and its future compiler updates will use Semantic Versioning 2.0.0 (and all of its rules) and**
+  **Rolling Support only (no bugfix backporting to previous branches)!**
+  MAJOR = breaking API changes (like major refactor/rewrites...).
+  MINOR = improvements, small additions, backwards compatible (e.g, `1.8` still must compile `1.0`/`1.1` era-code).
+  PATCH = bug fixes.
+  Root dir `VERSION` file must be auto re-generated: `MAJOR.MINOR.PATCH-dev/beta/stable.number+<short-commit-sha>`.
+  Example: `1.0.0-dev.1+130fa507`. Branches names should be as follows (just an example): `1.0`, `1.1`, `2.0`, and so on.
+  `1.0` will only come once the final `harmony` language is fully implemented.
 - Use c2x-seed to write the harmony language:
   harmony-base: basic implementation with few features, written in c2x-seed.
   harmony: full rewrite in harmony-base itself.
@@ -21,6 +28,8 @@ File Extension: .harmony (default), .hr (secondary)
   **1. LLVM IR integrated directly into the compiler binary.**
   **2. Support to multi-core compilation by default.**
   **3. Be freestanding capable (defines custom _start entry with extern and only core lib support).**
+- **`harmony-base` must be as optimized as possible for single-core comp.,**
+  **and final language should prioritize multi-core optimizations.**
 - If the information in the documentation contradicts the actual implementation, reconsider and **choose the safer long-term option** (updating either the code or the documentation).
 - Split big source files into smaller, organized files (they can be inside subdirs in the source 
   code for better organization) instead of huge single files (only exception is c2x-seed src).
@@ -30,6 +39,7 @@ File Extension: .harmony (default), .hr (secondary)
   **as well as fuzzing/aggressive and more importantly, error-handling tests, put them all to make test!**
 - **Critical: it's very important to have as many edge cases/error tests as possible here! Never forget it.**
 - **ALWAYS** use your edit tool to edit source files *instead of shell scripts (including python)*.
+- Always measure the speed of your manual shell fuzz tests.
 - Never guess at bugs (harmony/c2x-seed), always reproduce:
   use any available debugger in the system (such as gdb, valgrind, strace, etc) to find the bug and fix them.
 - NEVER workaround a fix on harmony-base source code to hide a genuine bug in c2x-seed.
@@ -56,6 +66,7 @@ harmony/... <- (*.hr) the real core of the language. No std library features her
 ├── lexer/...
 ├── parser/...
 ├── ast/...
+├── cache/... <- Cache related code.
 ├── codegen/... <- Backend (LLVM IR, C11...)
 ├── ir/... <- CFG IR
 ├── sema/... <- Semantic analysis

@@ -40,7 +40,9 @@ fi
 
 # The script must be deterministic: computing the version twice gives the
 # same string. `--print` never writes the file, so this test leaves the
-# working tree alone.
+# working tree alone. The *file* may legitimately trail HEAD by one commit
+# (it records the sha it was stamped at, and a build refreshes it), so the
+# test does not require the two to be equal.
 P1="$(bash "$ROOT/tools/version.sh" --print 2>/dev/null)"
 P2="$(bash "$ROOT/tools/version.sh" --print 2>/dev/null)"
 if [ -n "$P1" ] && [ "$P1" = "$P2" ]; then

@@ -49,15 +49,17 @@ $(SEED): $(SEED_SRC) build.sh
 # is preserved from the existing file; the channel, the counter, and the sha
 # come from the repository state.
 #
-# It is refreshed *explicitly*, not by every build: the file carries the sha
-# it was stamped at, so rewriting it on each build would leave the working
-# tree dirty after every `make` for no benefit. Run `make version` when the
-# version should move (a release, or after a commit that changed it).
+# AGENTS.md requires the file to always be up to date, so `make harmony-base`
+# refreshes it after building (below) and `make version` does it on demand.
+# The file is committed as part of the tree it describes; a build that moves
+# the sha leaves a one-line diff, which is the point: the stamp names the
+# commit it was built from.
 version:
 	bash tools/version.sh
 
 harmony-base: $(SEED) $(HB_SRC)
 	$(SEED) -o $(HB_OUT) $(HB_SRC)
+	@bash tools/version.sh >/dev/null 2>&1 || true
 
 # Full test target: c2x-seed regression corpus + harmony-base driver tests.
 test: test-seed harmony-base

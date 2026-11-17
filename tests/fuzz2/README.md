@@ -129,10 +129,20 @@ Historical record (kept so a regression is noticeable):
   receiver). Regression:
   `tests/harmony/codegen/method-name-collision.harmony`.
 - 2026-11: **sustained-campaign baseline** (the rewrite gate). Full sweep,
-  2 cores, seed 31, 496s wall:
-  `--engines specials,gen,mut,valgrind,afl --iterations 3000 --run-generated
-  --vg-sample 120 --afl-seconds 180`
-  → 3,000 generated + 3,000 mutants + 27 specials, 240 valgrind runs, 126,204
+  2 cores, seed 4240783976, 711s wall:
+  `--engines gen,mut,specials,valgrind,afl --iterations 4000 --run-generated
+  --vg-sample 80 --afl-seconds 120`
+  → 4,000 generated + 4,000 mutants + 27 specials, 160 valgrind runs, 81,604
   AFL executions, **0 findings**. Re-run this (and vary `--seed`) before
   trusting any later change; a regression here means the rewrite would
   inherit an unstable front end.
+- 2026-11: the grammar sampler was rewritten to emit *resolvable* programs
+  (it used to invent dangling names). Measured with callgrind, the sampler
+  now reaches **316** distinct compiler functions against 227 before, and
+  25/25 programs pass `check` against 2/25. The 115 newly-reached
+  functions are exactly the semantic stage (`ck_expr_call`,
+  `ck_instantiate_type`, `ck_enum_construct_ty`, ...). Four real checker
+  bugs fell out of it — the expected type was known but not passed down for
+  an assignment, a call argument, and a generic call, and a method's bare
+  name was bound globally so two types could not share a method name.
+  `tests/harmony/coverage.sh` guards the property on every `make test`.

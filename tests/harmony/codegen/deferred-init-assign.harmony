@@ -1,0 +1,51 @@
+// EXPECT: 42
+// Deferred bindings are initialized by plain assignment (2026-11).
+//
+// INIT-01 fired in three places it should not:
+//   - `ck_expr_path` reported "use of uninitialized value" while checking the
+//     *assignment target* of `x = 1`, so `let mut x: i32; x = 1;` failed;
+//   - `ck_stmt_assign` never marked the target initialized, so the following
+//     read failed too;
+//   - the same two bugs made every arm of an exhaustive `switch` fail to
+//     initialize a binding declared before it.
+// A `g_in_place` flag now suppresses the read-side check while checking a
+// place, and assignment marks a simple-path target initialized.
+fn via_assign() -> i32 {
+    let mut y: i32;
+    y = 5;
+    return y;
+}
+
+fn via_switch(x: u8) -> i32 {
+    let mut k: i32;
+    switch (x) {
+        case 1: { k = 10; }
+        default: { k = 20; }
+    }
+    return k;
+}
+
+fn via_if(x: i32) -> i32 {
+    let mut k: i32;
+    if (x > 0) { k = 1; } else { k = 2; }
+    return k;
+}
+
+fn compound() -> i32 {
+    let mut n: i32;
+    n = 10;
+    n += 5;
+    return n;
+}
+
+fn main() -> i32 {
+    if (via_assign() != 5) { return 1; }
+    if (via_switch(1) != 10) { return 2; }
+    if (via_switch(9) != 20) { return 3; }
+    if (via_if(1) != 1) { return 4; }
+    if (via_if(-1) != 2) { return 5; }
+    if (compound() != 15) { return 6; }
+    // A genuinely uninitialized read must still be rejected -- this case is
+    // checked by error-handling/, not here.
+    return 42;
+}

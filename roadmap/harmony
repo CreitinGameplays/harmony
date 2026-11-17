@@ -123,17 +123,30 @@ is unit-tested on its own.
   allocator plumbing and the three `read`/`write` moves, each with a reason
   that is checkable by reading it.
 
-### R2 — Lexer [ ]
+### R2 — Lexer [/]
 
-- `harmony/lexer/token.hr`, `harmony/lexer/scan.hr`: the §4 surface —
-  identifiers, keywords (contextual `life`), every literal form in §4.3
-  (radix, `_`, suffixes, chars, bytes, strings, escapes), nested comments,
-  and §4.4 punctuation, including `>>`/`>=` splitting hints for the parser.
-- Tokens carry `(kind, text: &str, line, col)`; no allocation per token.
-- `harmony/lexer/dump.hr`: `--dump-tokens` for differential testing.
-- Gate: for every `.harmony` file in the repo, the token stream matches
-  harmony-base's lexer. harmony-base has no token dump yet, so R2 adds one
-  (a small, isolated `--dump-tokens` in `bootstrap/harmony-base`).
+- [x] `harmony/lexer/token.hr`: the token model, mirroring harmony-base's
+  `struct Token` field for field. A token's spelling is a `&str` slice of
+  the source, so the common path allocates nothing per token.
+- [x] `harmony/lexer/ctx.hr`: source view, cursor, token stream, and
+  diagnostics threaded through one `&mut Ctx` (no mutable globals, §6.1).
+- [x] `harmony/lexer/scan.hr`: identifiers, all §4.2 keywords (with `life`
+  left contextual), nested comments, and §4.4 punctuation (two- and
+  three-byte operators).
+- [x] `harmony/lexer/lit.hr`: integers (radix prefixes, `_`, suffixes),
+  floats (fraction and/or exponent), with exact harmony-base token shapes.
+- [x] `harmony/lexer/quoted.hr`: chars, bytes, and strings with all §4.3
+  escapes, including Unicode-scalar decoding into UTF-8.
+- [x] harmony-base gained `--dump-tokens` (tokdump.c2), the differential
+  oracle: one byte-deterministic line per token.
+- [x] `tests/harmony-final/difftest.py` compares the two token streams on
+  31 snippets covering every token class; both are normalized to
+  `(kind, text, value, suffix)`. Verified to fail when a two-byte operator
+  is dropped from the rewrite's scanner. Wired into `make test`.
+- [ ] Gate: extend the corpus to *every* `.harmony` file in the repo. The
+  driver currently embeds source as a string literal; reading files is a
+  std-library feature (R7). The 31 hand-written snippets cover every token
+  class but not every file.
 
 ### R3 — AST and parser [ ]
 

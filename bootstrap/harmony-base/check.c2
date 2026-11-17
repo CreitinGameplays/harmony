@@ -555,6 +555,9 @@ int g_array_elem_hint;
 // from the annotation: `let m: Maybe<i32> = Empty;`. Set around a `let`
 // initializer and a `return` value by their declared types.
 int g_expected_ty;   // expected-type hint for the next expression (0 = none)
+int g_in_place;      // 1 while checking an assignment target: a deferred
+                     // binding is *being* initialized, so reading its slot
+                     // here is not a use of an uninitialized value.
 
 // ---------------------------------------------------------------------------
 // Diagnostics helpers (§16). Every stop carries a `try:` fix where one is
@@ -2726,13 +2729,28 @@ void ck_stmt_assign(struct AstNode* n) {
     }
     // `x = 1` / `x += 1` with x: i64 adapts the literal to the place's type.
     ck_stamp_lits(n->b, lt);
+    // A deferred binding becomes initialized once it is assigned
+    // (§8.1: `let x: T; x = 1; return x;`). Only simple paths are tracked: a
+    // field/index assignment can initialize a whole binding, but that needs
+    // the place analysis (M2) to know which one. Before this, every deferred
+    // binding that was written before its first read was a spurious INIT-01,
+    // including every arm of an exhaustive `switch`.
+    if (n->a != 0 && n->a->kind == AST_PATH && n->a->a == 0) {
+        int idx;
+        idx = ck_lookup(n->a->sval);
+        if (idx >= 0) { g_sym_init[idx] = 1; }
+    }
 }
 
 // Checks an lvalue (assignment target): returns its type, or TY_INVALID.
 // Rejects assignment to non-`mut` bindings (MUT-01) and to immutable places.
 int ck_place(struct AstNode* n) {
     int ty;
+    int saved;
+    saved = g_in_place;
+    g_in_place = 1;
     ty = ck_expr(n);
+    g_in_place = saved;
     if (ty == TY_INVALID) { return TY_INVALID; }
     ck_check_place_mut(n);
     return ty;

@@ -41,6 +41,15 @@ methods<T> Vec<T> {
     export fn cap(&self) -> usize { return self.cap; }
     export fn is_empty(&self) -> bool { return self.len == 0; }
 
+    // A borrowed view of the live elements. The pointer is null for an empty
+    // Vec, so the caller should check `len` before indexing the slice; an
+    // empty slice with a null base is still valid as long as nobody reads it.
+    export fn as_slice(&self) -> &[T] {
+        unchecked("slots 0..len are initialized and owned by this Vec") {
+            return &(*self.ptr)[0..self.len];
+        }
+    }
+
     // Bounds-checked read. The caller must have checked `i < len`: the
     // language has no slice view over the block yet, so the check lives in
     // the `get`/`set` callers through `T-INDEX`-style traps when they need it.

@@ -1,0 +1,145 @@
+// harmony/lexer/lit.hr — literal scanners (roadmap/harmony R2, §4.3).
+//
+// Each scanner is called with the cursor already at the first byte of the
+// literal (a digit, a quote, or `b'`). It consumes the whole literal and
+// pushes one token. Cooked string/char values are decoded into an arena copy
+// so they outlive the scratch buffer; plain numbers keep a source slice.
+//
+// These mirror harmony-base's lexlit.c2 *behavior*, including the two bugs
+// fixed while writing the R2 corpus: a fraction and exponent may coexist
+// (`1.5e3`), and a float's `len` is the spelling's length (no suffix).
+import "../../library/core/vec.hr";
+import "../../library/core/str.hr";
+import "../../library/core/fmt.hr";
+import "../../library/core/mem.hr";
+import "token.hr";
+import "ctx.hr";
+
+// A known type suffix (§4.3) or "" for an unsuffixed literal.
+fn is_suffix(s: &str) -> bool {
+    if (s == "u8") { return true; }
+    if (s == "u16") { return true; }
+    if (s == "u32") { return true; }
+    if (s == "u64") { return true; }
+    if (s == "usize") { return true; }
+    if (s == "i8") { return true; }
+    if (s == "i16") { return true; }
+    if (s == "i32") { return true; }
+    if (s == "i64") { return true; }
+    if (s == "isize") { return true; }
+    if (s == "f32") { return true; }
+    if (s == "f64") { return true; }
+    return false;
+}
+
+// Is `c` a digit in `radix`?
+fn digit_in(c: u8, radix: u8) -> bool {
+    if (c >= 48u8 && c <= 57u8) { return (c - 48u8) < radix; }
+    if (c >= 97u8 && c <= 102u8) { return c - 87u8 < radix; }
+    if (c >= 65u8 && c <= 70u8) { return c - 55u8 < radix; }
+    return false;
+}
+
+fn digit_val(c: u8) -> u8 {
+    if (c >= 48u8 && c <= 57u8) { return c - 48u8; }
+    if (c >= 97u8 && c <= 102u8) { return c - 87u8; }
+    return c - 55u8;
+}
+
+// Numbers: integers (with radix prefixes and `_` separators) and floats
+// (a fraction and/or an exponent, plus an optional known suffix).
+export fn number(c: &mut ctx::Ctx) {
+    let start = c.pos;
+    let line = c.line;
+    let col = c.col;
+    let mut radix: u8 = 10u8;
+    let mut val: i64 = 0;
+    let mut is_float = false;
+    let mut suffix_at: usize = 0;
+    // Radix prefix, consumed only when a digit of that radix follows, so a
+    // bare `0x` stays integer `0` + identifier `x` (the parser reports it).
+    if (ctx::at(&*c, 0) == 48u8) {
+        let n = ctx::at(&*c, 1);
+        let mut r: u8 = 10u8;
+        if (n == 120u8) { r = 16u8; }        // x
+        else if (n == 111u8) { r = 8u8; }    // o
+        else if (n == 98u8) { r = 2u8; }     // b
+        if (r != 10u8 && digit_in(ctx::at(&*c, 2), r)) {
+            radix = r;
+            ctx::bump(c);
+            ctx::bump(c);
+        }
+    }
+    // Digits with `_` separators (only between two digits).
+    while (digit_in(ctx::at(&*c, 0), radix)) {
+        val = val * (radix as i64) + (digit_val(ctx::at(&*c, 0)) as i64);
+        ctx::bump(c);
+    }
+    if (ctx::at(&*c, 0) == 95u8 && digit_in(ctx::at(&*c, 1), radix)) {
+        while (ctx::at(&*c, 0) == 95u8 && digit_in(ctx::at(&*c, 1), radix)) {
+            ctx::bump(c);
+            while (digit_in(ctx::at(&*c, 0), radix)) {
+                val = val * (radix as i64) + (digit_val(ctx::at(&*c, 0)) as i64);
+                ctx::bump(c);
+            }
+        }
+    }
+    // A fraction: `.` followed by a digit. Otherwise `.` is a range/field
+    // token and stays for the driver.
+    if (radix == 10u8 && ctx::at(&*c, 0) == 46u8
+        && ctx::at(&*c, 1) >= 48u8 && ctx::at(&*c, 1) <= 57u8) {
+        is_float = true;
+        ctx::bump(c);
+        while (str::is_digit(ctx::at(&*c, 0)) || ctx::at(&*c, 0) == 95u8) {
+            ctx::bump(c);
+        }
+    }
+    // An exponent: e|E [+|-] digit+. It must be checked for a fractional
+    // number too: `1.5e3` is one token. The guard used to be `!is_float`,
+    // which rejected every float written with both a fraction and an
+    // exponent.
+    if (radix == 10u8 && (ctx::at(&*c, 0) == 101u8 || ctx::at(&*c, 0) == 69u8)) {
+        let mut q = c.pos + 1;
+        if (q < c.bytes.len() && (c.bytes[q] == 43u8 || c.bytes[q] == 45u8)) {
+            q += 1;
+        }
+        if (q < c.bytes.len() && c.bytes[q] >= 48u8 && c.bytes[q] <= 57u8) {
+            is_float = true;
+            ctx::bump(c);
+            if (ctx::at(&*c, 0) == 43u8 || ctx::at(&*c, 0) == 45u8) {
+                ctx::bump(c);
+            }
+            while (str::is_digit(ctx::at(&*c, 0)) || ctx::at(&*c, 0) == 95u8) {
+                ctx::bump(c);
+            }
+        }
+    }
+    suffix_at = c.pos;
+    // A suffix is an identifier run directly after the digits.
+    if (str::is_ident_start(ctx::at(&*c, 0))) {
+        let ss = c.pos;
+        while (str::is_ident_cont(ctx::at(&*c, 0))) { ctx::bump(c); }
+        let s = ctx::spelling(&*c, ss, c.pos);
+        if (!is_suffix(s)) {
+            ctx::error(c, "LEX-01", "unknown numeric suffix",
+                       "Numeric suffixes are the primitive types.");
+        } else {
+            suffix_at = ss;
+        }
+    } else {
+        suffix_at = c.pos;
+    }
+    // harmony-base keeps the whole spelling (suffix included) as an int
+    // token's text and stores the suffix separately in `sval`; a float's
+    // text *excludes* the suffix. Mirror that exactly for the diff.
+    let text = ctx::spelling(&*c, start, c.pos);
+    let ttext = ctx::spelling(&*c, start, suffix_at);
+    let suffix = ctx::spelling(&*c, suffix_at, c.pos);
+    let k = token::TokKind::Int;
+    if (is_float) {
+        ctx::push(c, token::TokKind::Float, ttext, start, c.pos,
+                  line, col, 0, suffix);
+    } else {
+        ctx::push(c, k, text, start, c.pos, line, col, val, suffix);
+    }
+}

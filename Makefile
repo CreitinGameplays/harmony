@@ -77,6 +77,7 @@ test: test-seed harmony-base
 	bash tests/harmony/version.sh
 	bash tests/harmony/lisp.sh
 	bash tests/harmony-final/run.sh
+	python3 tests/harmony-final/difftest.py
 
 # c2x-seed regression corpus (guards the compiler bugs fixed during bring-up).
 test-seed: seed
@@ -96,6 +97,7 @@ test-lisp: harmony-base
 # gates in roadmap/harmony. `make test` runs this too.
 test-final: harmony-base
 	bash tests/harmony-final/run.sh
+	python3 tests/harmony-final/difftest.py
 
 test-fuzz: harmony-base
 	bash tests/harmony/fuzz.sh

@@ -1,0 +1,155 @@
+// harmony/lexer/quoted.hr — char, byte, and string literals (§4.3).
+//
+// A `'` always starts a char literal: lifetimes use `life(...)`, so there is
+// no ambiguity (§4.3). A byte literal `b'x'` is a single byte (0..255); a
+// char literal is one Unicode scalar value. Strings are UTF-8 with escapes
+// `\n \r \t \\ \" \0 \u{...}`; a string's cooked bytes are copied into the
+// arena so the resulting `&str` outlives the decode scratch buffer.
+import "../../library/core/str.hr";
+import "../../library/core/mem.hr";
+import "../../library/core/vec.hr";
+import "token.hr";
+import "ctx.hr";
+
+// Decode one escape at the cursor (which points at `\`). Appends the decoded
+// bytes to `out` and returns true on success. A Unicode scalar is UTF-8
+// encoded; a byte literal caps it at 255.
+fn escape(c: &mut ctx::Ctx, arena: &mut mem::Arena,
+          out: &mut str::String, byte_ctx: bool) -> bool {
+    ctx::bump(c);   // the backslash
+    let e = ctx::at(&*c, 0);
+    if (e == 110u8) { out.push_byte(10u8); ctx::bump(c); return true; }   // n
+    if (e == 114u8) { out.push_byte(13u8); ctx::bump(c); return true; }   // r
+    if (e == 116u8) { out.push_byte(9u8); ctx::bump(c); return true; }    // t
+    if (e == 92u8) { out.push_byte(92u8); ctx::bump(c); return true; }    // backslash
+    if (e == 34u8) { out.push_byte(34u8); ctx::bump(c); return true; }    // "
+    if (e == 39u8) { out.push_byte(39u8); ctx::bump(c); return true; }    // '
+    if (e == 48u8) { out.push_byte(0u8); ctx::bump(c); return true; }     // 0
+    if (e == 117u8 && ctx::at(&*c, 1) == 123u8) {                    // u{
+        ctx::bump(c);
+        ctx::bump(c);
+        let mut v: u32 = 0u32;
+        let mut n: u32 = 0u32;
+        while (str::is_hex(ctx::at(&*c, 0)) && n < 6u32) {
+            v = v * 16u32 + (str::hex_value(ctx::at(&*c, 0)) as u32);
+            ctx::bump(c);
+            n += 1u32;
+        }
+        if (ctx::at(&*c, 0) != 125u8 || n == 0u32) {
+            ctx::error(c, "LEX-01", "malformed unicode escape",
+                       "A \\u{...} escape has 1..6 hex digits and a closing brace.");
+            return false;
+        }
+        ctx::bump(c);   // }
+        if (byte_ctx && v > 255u32) {
+            ctx::error(c, "LEX-01", "byte literal out of range",
+                       "A byte literal holds exactly one byte (0..255).");
+            return false;
+        }
+        // Encode `v` as UTF-8 (1..4 bytes).
+        if (v < 128u32) {
+            out.push_byte((v & 127u32) as u8);
+        } else if (v < 2048u32) {
+            out.push_byte((192u32 + (v / 64u32)) as u8);
+            out.push_byte((128u32 + (v & 63u32)) as u8);
+        } else if (v < 65536u32) {
+            out.push_byte((224u32 + (v / 4096u32)) as u8);
+            out.push_byte((128u32 + ((v / 64u32) & 63u32)) as u8);
+            out.push_byte((128u32 + (v & 63u32)) as u8);
+        } else {
+            out.push_byte((240u32 + (v / 262144u32)) as u8);
+            out.push_byte((128u32 + ((v / 4096u32) & 63u32)) as u8);
+            out.push_byte((128u32 + ((v / 64u32) & 63u32)) as u8);
+            out.push_byte((128u32 + (v & 63u32)) as u8);
+        }
+        return true;
+    }
+    ctx::error(c, "LEX-01", "unknown escape",
+               "Escapes are \\n \\r \\t \\\\ \\\" \\0 and \\u{...}.");
+    ctx::bump(c);
+    return true;
+}
+
+// A char or byte literal. Cursor is at `'` (char) or at `b` (byte).
+export fn quoted_char(c: &mut ctx::Ctx, arena: &mut mem::Arena, is_byte: bool) {
+    let start = c.pos;
+    let line = c.line;
+    let col = c.col;
+    if (is_byte) { ctx::bump(c); }   // the leading `b`
+    ctx::bump(c);                    // the opening quote
+    let mut buf: str::String = str::String::make();
+    while (ctx::at(&*c, 0) != 0u8 && ctx::at(&*c, 0) != 39u8) {
+        if (ctx::at(&*c, 0) == 92u8) {
+            escape(c, arena, &mut buf, is_byte);
+        } else {
+            buf.push_byte(ctx::at(&*c, 0));
+            ctx::bump(c);
+        }
+    }
+    if (ctx::at(&*c, 0) != 39u8) {
+        ctx::error(c, "LEX-01", "unclosed char literal",
+                   "A char literal must close with a single quote.");
+    } else {
+        ctx::bump(c);
+    }
+    // A char holds exactly one Unicode scalar. Decode the leading code point
+    // from the UTF-8 bytes; a byte literal holds the raw byte value.
+    let mut ival: i64 = 0;
+    if (is_byte) {
+        if (buf.len() != 1) {
+            ctx::error(c, "LEX-01", "byte literal needs one byte",
+                       "A b'...' literal holds exactly one byte.");
+        } else {
+            ival = buf.byte_at(0) as i64;
+        }
+    } else {
+        if (buf.len() > 0) {
+            let b = buf.byte_at(0);
+            if (b < 128u8) {
+                ival = b as i64;
+            } else if ((b & 224u8) == 192u8 && buf.len() >= 2) {
+                ival = ((b & 31u8) as i64) * 64 + ((buf.byte_at(1) & 63u8) as i64);
+            } else if ((b & 240u8) == 224u8 && buf.len() >= 3) {
+                ival = ((b & 15u8) as i64) * 4096
+                     + ((buf.byte_at(1) & 63u8) as i64) * 64
+                     + ((buf.byte_at(2) & 63u8) as i64);
+            } else if (buf.len() >= 4) {
+                ival = ((b & 7u8) as i64) * 262144
+                     + ((buf.byte_at(1) & 63u8) as i64) * 4096
+                     + ((buf.byte_at(2) & 63u8) as i64) * 64
+                     + ((buf.byte_at(3) & 63u8) as i64);
+            }
+        }
+    }
+    let text = ctx::spelling(&*c, start, c.pos);
+    let mut k: token::TokKind = token::TokKind::Char;
+    if (is_byte) { k = token::TokKind::Byte; }
+    ctx::push(c, k, text, start, c.pos, line, col, ival, "");
+}
+
+// A string literal. The token's text is the *cooked* value (escapes decoded),
+// matching harmony-base's `--dump-tokens`.
+export fn quoted_string(c: &mut ctx::Ctx, arena: &mut mem::Arena) {
+    let start = c.pos;
+    let line = c.line;
+    let col = c.col;
+    ctx::bump(c);   // opening quote
+    let mut buf: str::String = str::String::make();
+    while (ctx::at(&*c, 0) != 0u8 && ctx::at(&*c, 0) != 34u8) {
+        if (ctx::at(&*c, 0) == 92u8) {
+            escape(c, arena, &mut buf, false);
+        } else {
+            buf.push_byte(ctx::at(&*c, 0));
+            ctx::bump(c);
+        }
+    }
+    if (ctx::at(&*c, 0) != 34u8) {
+        ctx::error(c, "LEX-01", "unclosed string literal",
+                   "A string literal must close with a double quote.");
+    } else {
+        ctx::bump(c);
+    }
+    let text = buf.as_str();
+    ctx::push(c, token::TokKind::Str, text, start, c.pos, line, col,
+              buf.len() as i64, "");
+}

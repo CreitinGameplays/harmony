@@ -123,6 +123,7 @@ methods String {
 
     export fn len(&self) -> usize { return self.bytes.len(); }
     export fn is_empty(&self) -> bool { return self.bytes.len() == 0; }
+    export fn byte_at(&self, i: usize) -> u8 { return *self.bytes.get(i); }
     export fn clear(&mut self) { self.bytes.clear(); }
     export fn release(&mut self) { self.bytes.release(); }
 

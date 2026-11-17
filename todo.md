@@ -736,9 +736,14 @@ directly into its binary and (b) support **multi-core compilation by default**.
   architecture decisions, and gates live in **`roadmap/harmony`** (read it
   first). Started 2026-11:
   - `library/core/` has its substrate: `mem.hr` (chunked arena),
-    `vec.hr` (`Vec<T>`), `str.hr` (byte classification, `&str` queries, a
-    growable `String`). Unit-tested by `tests/harmony-final/` (in
-    `make test`).
+    `vec.hr` (`Vec<T>`), `str.hr` (`String`, byte helpers), `fmt.hr`
+    (diagnostics as data + line/json renderers). Unit-tested by
+    `tests/harmony-final/` (in `make test`).
+  - `harmony/lexer/` has a working scanner (`token.hr`, `ctx.hr`, `scan.hr`,
+    `lit.hr`, `quoted.hr`). `tests/harmony-final/difftest.py` diffs its token
+    stream against harmony-base's `--dump-tokens` on 31 snippets covering
+    every token class; 0 mismatches. R2 is partial (the corpus is hand-written
+    rather than every file in the repo).
   - Nine `harmony-base` gaps found and fixed while writing it (see
     `roadmap/harmony` "What harmony-base must still grow"): `for`-range
     element typing, `dealloc`/`Raw::null()`/`alloc` without `<T>`,

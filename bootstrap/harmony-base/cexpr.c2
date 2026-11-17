@@ -242,7 +242,7 @@ int ck_expr_path(struct AstNode* n) {
         if (sym >= 0 && (g_sym_kind[sym] == SK_CONST || g_sym_kind[sym] == SK_LET
                          || g_sym_kind[sym] == SK_PARAM)) {
             if ((g_sym_kind[sym] == SK_LET || g_sym_kind[sym] == SK_PARAM)
-                && !g_sym_init[sym]) {
+                && !g_sym_init[sym] && !g_in_place) {
                 ck_err_uninit(n, n->sval);
             }
             return g_sym_ty[sym];
@@ -259,7 +259,7 @@ int ck_expr_path(struct AstNode* n) {
     if (g_sym_kind[sym] == SK_CONST || g_sym_kind[sym] == SK_LET
         || g_sym_kind[sym] == SK_PARAM) {
         if ((g_sym_kind[sym] == SK_LET || g_sym_kind[sym] == SK_PARAM)
-            && !g_sym_init[sym]) {
+            && !g_sym_init[sym] && !g_in_place) {
             ck_err_uninit(n, n->sval);
         }
         return g_sym_ty[sym];

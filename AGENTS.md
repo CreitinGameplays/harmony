@@ -20,6 +20,7 @@ File Extension: .harmony (default), .hr (secondary)
   Milestone: harmony is byte deterministic.
 - Fix any c2x-seed bug if you find any there (don't suppress).
 - Keep source code files and subdirs well organized.
+- Temp files must go outside repo dir (use `/tmp` instead).
 - Also fix any other bug before reporting success.
 - *PRIORITIZE writing LLVM backend!! C backend comes later*
 - *PREFER things to be auto resizable when possible instead of a fixed value!*

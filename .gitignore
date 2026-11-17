@@ -2,6 +2,5 @@ build/**
 env/**
 venv/**
 .opencode/**
-cache/
 language-extension/**/grammars/**
 **/__pycache__/**

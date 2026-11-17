@@ -1,0 +1,38 @@
+// EXPECT: 6
+// Regression for a `for` range whose bounds had different literal-ness
+// (2026-11). The loop element type used to be taken from the *lower* bound
+// only, so `for (i : 0..n)` with `n: usize` made the loop variable `i32`
+// while the upper bound stayed `i64`: the emitted IR compared/loaded i32
+// against i64 and clang rejected it ("'%3' defined with type 'i64' but
+// expected 'i32'"). A typed bound now wins over an untyped literal on the
+// other side, and two *different* concrete integer types are a TYPE-01 stop
+// instead of a silent pick.
+fn sum_upto(n: usize) -> usize {
+    let mut total: usize = 0;
+    // Untyped lower bound, `usize` upper bound -> a `usize` loop.
+    for (i : 0..n) {
+        total += i;
+    }
+    return total;
+}
+
+fn main() -> i32 {
+    // 0 + 1 + 2 + 3 = 6
+    let a = sum_upto(4);
+    // Both bounds typed `usize`.
+    let lo: usize = 0;
+    let hi: usize = 4;
+    let mut total: usize = 0;
+    for (i : lo..hi) {
+        total += i;
+    }
+    if (a != total) { return 99; }
+    // The loop variable is genuinely `usize`: no cast needed to index.
+    let buf: [u8; 4] = [1u8, 2u8, 3u8, 4u8];
+    let mut acc: usize = 0;
+    for (i : 0..buf.len()) {
+        acc += buf[i] as usize;
+    }
+    if (acc != 10) { return 98; }
+    return a as i32;
+}

@@ -217,7 +217,16 @@ char* ll_expr(struct AstNode* n) {
         } else {
             g_expr_ty = TY_I32;
         }
-        ll_int_into(r, n->ival);
+        // An unsigned literal prints its unsigned decimal: the lexer stores
+        // the value in a signed `int`, so `18446744073709551615u64` is the
+        // wrapped negative there. LLVM reads the same bits either way, but
+        // emitting the negative spelling for a `u64` is misleading and was
+        // how a 20-digit literal first showed up as an empty operand.
+        if (ty_is_unsigned(g_expr_ty)) {
+            ll_uint_into(r, n->ival);
+        } else {
+            ll_int_into(r, n->ival);
+        }
         return r;
     }
     if (n->kind == AST_FLOAT_LIT) {
@@ -283,6 +292,14 @@ char* ll_expr_path(struct AstNode* n) {
     char* slot;
     int ty;
     struct AstNode* cd;
+    // A constant is inlined at every use (§6.2) — and a *module-qualified*
+    // constant (`geometry::MAX`, renamed by the loader) arrives here with a
+    // `::` in its name, so the constant test must come before the qualified
+    // path dispatch. The checker has already resolved the symbol.
+    cd = ck_sym_decl_node(n->sval);
+    if (cd != 0 && cd->kind == AST_CONST && cd->b != 0) {
+        return ll_expr(cd->b);
+    }
     // A qualified path (`Enum::Variant`, `Type::assoc`) is not a local.
     if (str_contains(n->sval, "::")) {
         return ll_expr_variant(n);
@@ -295,14 +312,6 @@ char* ll_expr_path(struct AstNode* n) {
             return slot;
         }
         return ll_load(ty, slot);
-    }
-    // A name that is not a local may be a `const` (§6.2). Constants are
-    // inlined: lower the (already checked and stamped) initializer in place, so
-    // the use site sees the value rather than a zero. `ll_expr` sets
-    // `g_expr_ty`, which is the constant's declared type.
-    cd = ck_sym_decl_node(n->sval);
-    if (cd != 0 && cd->kind == AST_CONST && cd->b != 0) {
-        return ll_expr(cd->b);
     }
     // An unqualified *variant* (`Empty`, `Has`) has no local slot: build the
     // tagged enum value (§6.5). The checker resolved the enum type onto the
@@ -621,7 +630,14 @@ char* ll_div_checked(int ty, struct AstNode* n, char* l, char* r, int is_rem) {
     ll_out_str(oklbl);
     ll_out_str(":\n");
     g_expr_ty = ty;
-    if (is_rem) { return ll_bin("srem", ty, l, r); }
+    // An unsigned type divides and takes the remainder *unsigned*: `srem` on a
+    // `u64` reads 18446744073709551615 as -1, so `x % 1000` was -1 instead of
+    // 615. `udiv` was already handled; `srem` was not, so every unsigned `%`
+    // was silently wrong (no diagnostic — the IR was well formed).
+    if (is_rem) {
+        if (ty_is_unsigned(ty)) { return ll_bin("urem", ty, l, r); }
+        return ll_bin("srem", ty, l, r);
+    }
     if (ty_is_unsigned(ty)) { return ll_bin("udiv", ty, l, r); }
     return ll_bin("sdiv", ty, l, r);
 }
@@ -1986,10 +2002,57 @@ char* ll_expr_call(struct AstNode* n) {
     callee = n->a;
     args = n->kids;
 
-    if (callee == 0) {
+    // `str::from_parts(p, len)` — the `str` lang item (§19.8.9). Build the
+    // `{ ptr, i64 }` pair the same way a string literal does: an alloca of
+    // `%slice` with the two halves stored, which is the in-memory form every
+    // `&str` already has.
+    if (n->ival == 17) {
+        char* p;
+        char* l;
+        char* slot;
+        char* f0;
+        char* f1;
+        p = ll_expr(args->items[0]);
+        l = ll_expr(args->items[1]);
+        l = ll_widen_index(l);
+        slot = ll_new_reg();
+        ll_out_str("  ");
+        ll_out_str(slot);
+        ll_out_str(" = alloca %slice\n");
+        f0 = ll_new_reg();
+        ll_out_str("  ");
+        ll_out_str(f0);
+        ll_out_str(" = getelementptr inbounds %slice, ptr ");
+        ll_out_str(slot);
+        ll_out_str(", i32 0, i32 0\n");
+        ll_out_str("  store ptr ");
+        ll_out_str(p);
+        ll_out_str(", ptr ");
+        ll_out_str(f0);
+        ll_out_nl();
+        f1 = ll_new_reg();
+        ll_out_str("  ");
+        ll_out_str(f1);
+        ll_out_str(" = getelementptr inbounds %slice, ptr ");
+        ll_out_str(slot);
+        ll_out_str(", i32 0, i32 1\n");
+        ll_out_str("  store i64 ");
+        ll_out_str(l);
+        ll_out_str(", ptr ");
+        ll_out_str(f1);
+        ll_out_nl();
+        g_expr_ty = retty;
+        return slot;
+    }
+
+    if (callee == 0 || n->ival == 16 || n->ival == 10 || n->ival == 11) {
+        // `Raw::null`/`alloc`/`dealloc` reach here from either spelling: the
+        // explicit `<T>` form (no callee) and the inferred form (a real callee
+        // path). `ival` marks the builtin, so the shared lowering serves both.
+
         // `Raw::null<T>()` (§13.5): a null `raw T`. The checker types the node
         // `raw T`; lower to an LLVM `null` pointer.
-        if (n->ival == 8 && str_eq(n->sval, "Raw::null")) {
+        if (n->ival == 16) {
             g_expr_ty = retty;
             return "null";
         }

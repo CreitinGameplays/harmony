@@ -1,0 +1,11 @@
+// A module whose exported function reads its own constants — the shape that
+// used to break the whole import (see ../module-const.harmony).
+export const LIMIT: usize = 8;
+
+// Derived from another constant in the same module.
+export const WIDTH: usize = 5;
+export const AREA: usize = LIMIT * WIDTH;
+
+export fn twice() -> usize {
+    return LIMIT * 2;
+}

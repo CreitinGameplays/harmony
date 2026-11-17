@@ -1,0 +1,16 @@
+// EXPECT: 249
+// An untyped literal in a `const` initializer adopts the declared type
+// (§5.9). This used to be a TYPE-01 stop for every const whose type was not
+// `i32`: the checker defaulted the literal to `i32` *before* asking whether it
+// was coercible, so `const A: usize = 8;` reported "expected `usize`, found
+// `i32`" even though an untyped literal is exactly what §5.9 says adapts.
+const A: usize = 8;
+const B: u8 = 200;
+const C: i64 = 9;
+const D: usize = 8 * 4;          // arithmetic on literals
+
+fn main() -> i32 {
+    // 8 + 200 + 9 + 32 = 249
+    let total: usize = A + (B as usize) + (C as usize) + D;
+    return total as i32;
+}

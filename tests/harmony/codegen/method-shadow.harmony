@@ -1,0 +1,30 @@
+// EXPECT: 42
+// A free function and a method of the same name in one module (2026-11).
+//
+// The module loader renamed every `AST_FN` whose bare name was in the
+// module's top-level name set — including the fn nodes *inside* a `methods`
+// block, because it reaches them by walking `kids2`. A method's bare name is
+// not a module-level name: its identity is `(receiver type, name)`, and the
+// backend mangles it per receiver (`Type__method`). So when a module also
+// declared a free function with the same name, the method was registered
+// under `mod::name` and could no longer be found — a TYPE-02 "no such field".
+//
+// This is what made `library/core/str.hr` unusable: it has free `len(&str)`
+// and `String::len`.
+import "method-shadow/env.hr";
+
+fn main() -> i32 {
+    // The free function and the method coexist.
+    if (env::scale(3) != 9) { return 1; }
+    let mut a: env::Acc = env::Acc::make();
+    a.add(10);
+    a.add(20);
+    if (a.total() != 30) { return 2; }
+    // Same-named pair on a second type in the same module.
+    let mut b: env::Counter = env::Counter::make();
+    b.add(5);
+    b.add(6);
+    if (b.total() != 11) { return 3; }
+    if (env::total(1) != 100) { return 4; }
+    return 42;
+}

@@ -26,6 +26,8 @@ int ck_expr_field(struct AstNode* n);
 int ck_expr_index(struct AstNode* n);
 int ck_expr_call(struct AstNode* n);
 int ck_expr_generic_call(struct AstNode* n);
+int ck_builtin_alloc_call(struct AstNode* n, char* name, struct AstList* targs,
+                          struct AstList* args);
 int ck_infer_generic_call(struct AstNode* n, struct AstNode* callee, struct AstList* args);
 int ck_unify(struct AstNode* tn, int ty);
 int ck_expr_method_call(struct AstNode* n, struct AstNode* callee, struct AstList* args);
@@ -229,6 +231,22 @@ int ck_expr_path(struct AstNode* n) {
         return base;
     }
     if (str_contains(n->sval, "::")) {
+        // A flattened `::` name can be three things: a module's exported
+        // constant (`geometry::MAX`), an enum variant (`Shape::Circle`), or a
+        // generic-case path. The symbol table is the authority, because the
+        // module loader renamed a const to its module-qualified spelling —
+        // so look the *whole* name up first. Jumping straight to the enum
+        // path made every imported constant a NAME-01 "the name before `::`
+        // must be an enum or module", blaming the module name.
+        sym = ck_lookup(n->sval);
+        if (sym >= 0 && (g_sym_kind[sym] == SK_CONST || g_sym_kind[sym] == SK_LET
+                         || g_sym_kind[sym] == SK_PARAM)) {
+            if ((g_sym_kind[sym] == SK_LET || g_sym_kind[sym] == SK_PARAM)
+                && !g_sym_init[sym]) {
+                ck_err_uninit(n, n->sval);
+            }
+            return g_sym_ty[sym];
+        }
         return ck_expr_enum_path(n);
     }
     sym = ck_lookup(n->sval);
@@ -818,6 +836,88 @@ int ck_infer_generic_call(struct AstNode* n, struct AstNode* callee, struct AstL
 }
 
 // Calls: free functions, methods, generic calls, and (later) function values.
+// `alloc<T>(n)` / `dealloc<T>(p, n)` (§13.5). Recognized by *name*, not
+// through the symbol table, so both spellings reach it:
+//
+//   alloc<u8>(16)      explicit — type arguments in `targs`
+//   dealloc(p, 16)     implicit — `dealloc` infers T from its pointer
+//
+// `alloc` cannot infer: only the result type names the element, so a plain
+// `alloc(n)` is a stop asking for `<T>` (before this, it fell through to name
+// resolution and said "no `alloc` in scope", which blamed the wrong thing).
+int ck_builtin_alloc_call(struct AstNode* n, char* name, struct AstList* targs,
+                          struct AstList* args) {
+    int is_alloc;
+    int elem;
+    int want;
+    int countidx;
+    is_alloc = str_eq(name, "alloc");
+    if (is_alloc) { n->ival = 10; } else { n->ival = 11; }
+    elem = TY_U8;
+    if (is_alloc) {
+        ck_raw_needs_unchecked(n, "calling `alloc`");
+    } else {
+        ck_raw_needs_unchecked(n, "calling `dealloc`");
+    }
+    // Argument shapes (§13.5): `alloc<T>(n)` — one count; `dealloc<T>(p, n)`
+    // — pointer then count. The count is the last argument.
+    want = 3;
+    countidx = 0;
+    if (is_alloc) { want = 1; } else { want = 2; countidx = 1; }
+    if (args == 0 || args->len != want) {
+        ck_err_arity(n, name, want, ast_list_len(args));
+        n->ty = TY_UNIT;
+        if (is_alloc) { n->ty = ty_new(CTY_MUTPTR, "raw mut ?", TY_U8, 0); }
+        return n->ty;
+    }
+    if (!is_alloc) {
+        // `dealloc`'s first argument is the pointer. Its element type is what
+        // the count scales by, so `dealloc(p, n)` needs no `<T>`: the pointer
+        // already says it.
+        int pt;
+        pt = ck_expr(args->items[0]);
+        if (pt != TY_INVALID && !ty_is_ptr(pt)) {
+            ck_err_type_mismatch(args->items[0],
+                                 ty_new(CTY_MUTPTR, "raw mut T", elem, 0),
+                                 pt, "`dealloc` pointer");
+        } else if (targs == 0 || targs->len != 1) {
+            if (pt != TY_INVALID) { elem = ty_elem(pt); }
+            if (elem == 0) { elem = TY_U8; }
+        }
+    }
+    if (targs != 0) {
+        if (targs->len != 1) {
+            ck_err_arity(n, name, 1, targs->len);
+        } else {
+            elem = ck_resolve_type(targs->items[0]);
+            if (elem == TY_INVALID) { elem = TY_U8; }
+        }
+    } else if (is_alloc) {
+        // No pointer to infer from: the caller must name the element type.
+        diag_stop("TYPE-01", "`alloc` needs its element type",
+                  "Write `alloc<T>(n)` — e.g. `alloc<u8>(16)`.",
+                  diag_file(n->file), n->start, n->end);
+    }
+    {
+        int ct;
+        ct = ck_expr(args->items[countidx]);
+        if (ct != TY_INVALID && !ty_is_integer(ct) && !ty_is_untyped_lit(ct)) {
+            ck_err_type_mismatch(args->items[countidx], TY_USIZE, ct,
+                                 "`alloc`/`dealloc` count");
+        }
+        ck_stamp_lits(args->items[countidx], TY_USIZE);
+    }
+    // Record the element type so the backend can scale by its size.
+    if (is_alloc) {
+        n->ty = ty_new(CTY_MUTPTR, ck_ref_name("raw mut", elem), elem, 0);
+    } else {
+        n->ty = TY_UNIT;
+    }
+    n->b = ast_node_new(AST_TYPE_NAME);
+    n->b->ty = elem;
+    return n->ty;
+}
+
 int ck_expr_call(struct AstNode* n) {
     struct AstNode* callee;
     struct AstList* args;
@@ -840,6 +940,68 @@ int ck_expr_call(struct AstNode* n) {
         if (ct == TY_INVALID) { ct = TY_UNIT; }
         ck_err_not_callable(callee, ct);
         return TY_INVALID;
+    }
+    // `str::from_parts(p, len)` — the `str` lang item (§19.8.9): build a `&str`
+    // from an owned byte buffer plus its length. The compiler synthesizes
+    // names, formatted numbers and rendered diagnostics, so it needs a way to
+    // turn bytes it owns into the `&str` the rest of the language speaks.
+    // Unlocked (the raw pointer can point anywhere), so it needs `unchecked`.
+    if (str_eq(callee->sval, "str::from_parts")) {
+        n->ival = 17;
+        n->ty = ty_new(CTY_STRREF, "&str", TY_U8, 0);
+        if (args == 0 || args->len != 2) {
+            ck_err_arity(n, "str::from_parts", 2, ast_list_len(args));
+            return n->ty;
+        }
+        ck_raw_needs_unchecked(n, "calling `str::from_parts`");
+        {
+            int pt;
+            pt = ck_expr(args->items[0]);
+            if (pt != TY_INVALID && !ty_is_ptr(pt)) {
+                ck_err_type_mismatch(args->items[0],
+                                     ty_new(CTY_PTR, "raw u8", TY_U8, 0), pt,
+                                     "`str::from_parts` pointer");
+            }
+        }
+        {
+            int lt;
+            lt = ck_expr(args->items[1]);
+            if (lt != TY_INVALID && !ty_is_integer(lt) && !ty_is_untyped_lit(lt)) {
+                ck_err_type_mismatch(args->items[1], TY_USIZE, lt,
+                                     "`str::from_parts` length");
+            }
+            ck_stamp_lits(args->items[1], TY_USIZE);
+        }
+        return n->ty;
+    }
+    // Builtins keyed by name are recognized before name resolution: without
+    // this, `dealloc(p, n)` (the form §17.8's MiniVec uses) resolved `dealloc`
+    // as a variable and reported "no `dealloc` in scope".
+    if (str_eq(callee->sval, "alloc") || str_eq(callee->sval, "dealloc")) {
+        return ck_builtin_alloc_call(n, callee->sval, 0, args);
+    }
+    // `Raw::null()` without `<T>`: infer the pointee from the expected type.
+    // §17.8's MiniVec writes `Raw::null()` in a struct literal, where the
+    // field's type is exactly what names T. (With `<T>` the generic-call path
+    // handles it.) Before this, the plain form was resolved as a name and
+    // reported "no `Raw` in scope".
+    if (str_eq(callee->sval, "Raw::null")) {
+        int elem;
+        // ival 16, not 8: 8 is `args()` (a *different* builtin in the same
+        // ival space), and the backend's null lowering must not shadow it.
+        n->ival = 16;
+        elem = TY_U8;
+        if (g_expected_ty != 0 && ty_is_ptr(g_expected_ty)) {
+            elem = ty_elem(g_expected_ty);
+        }
+        if (elem == 0) { elem = TY_U8; }
+        if (g_expected_ty == 0 || !ty_is_ptr(g_expected_ty)) {
+            diag_stop("TYPE-01", "`Raw::null` needs its element type",
+                      "Write `Raw::null<T>()`, or use it where the pointer type is known (a `let` annotation, a field, a parameter).",
+                      diag_file(n->file), n->start, n->end);
+        }
+        n->ty = ty_new(CTY_MUTPTR, ck_ref_name("raw mut", elem), elem, 0);
+        return n->ty;
     }
     {
         int sym;
@@ -1026,10 +1188,10 @@ int ck_expr_generic_call(struct AstNode* n) {
     // `Raw::null<T>()` (§13.5): a null `raw T`, safe outside `unchecked`
     // (creating a null raw pointer is not itself an unlocked operation). It is
     // not a generic function template, so it is recognized here by name; the
-    // backend synthesizes an LLVM `null` (`n->ival = 8`).
+    // backend synthesizes an LLVM `null` (`n->ival = 16`; 8 is `args()`).
     if (str_eq(n->sval, "Raw::null")) {
         int elem;
-        n->ival = 8;
+        n->ival = 16;
         if (n->kids2 == 0 || n->kids2->len != 1) {
             ck_err_arity(n, "Raw::null", 1, ast_list_len(n->kids2));
             n->ty = ty_new(CTY_PTR, "raw ?", TY_U8, 0);
@@ -1047,62 +1209,10 @@ int ck_expr_generic_call(struct AstNode* n) {
     // `alloc<T>(n)` / `dealloc<T>(p, n)` (§13.5): the raw allocator. Both are
     // unlocked (UNCK-01). `alloc` yields `raw mut T`; `dealloc` is unit. The
     // backend lowers them to the `lc_alloc`/`lc_dealloc` runtime hooks, scaling
-    // the element count by `sizeof(T)`.
+    // the element count by `sizeof(T)`. The same function serves the plain
+    // call form (`ck_expr_call`), where `dealloc` infers `T` from its pointer.
     if (str_eq(n->sval, "alloc") || str_eq(n->sval, "dealloc")) {
-        int is_alloc;
-        int elem;
-        is_alloc = str_eq(n->sval, "alloc");
-        if (is_alloc) { n->ival = 10; } else { n->ival = 11; }
-        elem = TY_U8;
-        if (n->kids2 == 0 || n->kids2->len != 1) {
-            ck_err_arity(n, n->sval, 1, ast_list_len(n->kids2));
-        } else {
-            elem = ck_resolve_type(n->kids2->items[0]);
-            if (elem == TY_INVALID) { elem = TY_U8; }
-        }
-        if (is_alloc) {
-            ck_raw_needs_unchecked(n, "calling `alloc`");
-        } else {
-            ck_raw_needs_unchecked(n, "calling `dealloc`");
-        }
-        // Argument shapes (§13.5): `alloc<T>(n)` — one count; `dealloc<T>(p,
-        // n)` — pointer then count. The count is the last argument.
-        {
-            int want;
-            int countidx;
-            if (is_alloc) { want = 1; countidx = 0; } else { want = 2; countidx = 1; }
-            if (n->kids != 0 && n->kids->len == want) {
-                // `dealloc`'s first argument is the pointer.
-                if (!is_alloc) {
-                    int pt;
-                    pt = ck_expr(n->kids->items[0]);
-                    if (pt != TY_INVALID && !ty_is_ptr(pt)) {
-                        ck_err_type_mismatch(n->kids->items[0],
-                                             ty_new(CTY_MUTPTR, "raw mut T", elem, 0),
-                                             pt, "`dealloc` pointer");
-                    }
-                }
-                {
-                    int ct;
-                    ct = ck_expr(n->kids->items[countidx]);
-                    if (ct != TY_INVALID && !ty_is_integer(ct) && !ty_is_untyped_lit(ct)) {
-                        ck_err_type_mismatch(n->kids->items[countidx], TY_USIZE, ct, "`alloc`/`dealloc` count");
-                    }
-                    ck_stamp_lits(n->kids->items[countidx], TY_USIZE);
-                }
-            } else {
-                ck_err_arity(n, n->sval, want, ast_list_len(n->kids));
-            }
-        }
-        // Record the element type so the backend can scale by its size.
-        if (is_alloc) {
-            n->ty = ty_new(CTY_MUTPTR, ck_ref_name("raw mut", elem), elem, 0);
-        } else {
-            n->ty = TY_UNIT;
-        }
-        n->b = ast_node_new(AST_TYPE_NAME);
-        n->b->ty = elem;
-        return n->ty;
+        return ck_builtin_alloc_call(n, n->sval, n->kids2, n->kids);
     }
 
     // `reinterpret<T, U>(x)` (§13.5): bit-reinterpret `x: T` as `U` (same
@@ -1632,9 +1742,19 @@ int ck_expr_struct_init(struct AstNode* n) {
             struct AstNode* fi;
             int vt;
             int mi;
+            int saved_expected;
             fi = inits->items[i];
-            vt = ck_expr(fi->a);
+            // The field's type is known before the value is checked, so pass it
+            // down as the expected type: a bare `Raw::null()` or `Empty` in a
+            // field initializer should resolve from the field, exactly as it
+            // does in a `let` annotation (§8.5). Looking the member up first
+            // also lets an unknown field report the field error before the
+            // value's own diagnostics cascade.
             mi = ty_find_member(ty, fi->sval);
+            saved_expected = g_expected_ty;
+            if (mi >= 0) { g_expected_ty = ty_member_type(ty, mi); }
+            vt = ck_expr(fi->a);
+            g_expected_ty = saved_expected;
             if (mi < 0) {
                 ck_err_no_field(fi, ty, fi->sval);
             } else {

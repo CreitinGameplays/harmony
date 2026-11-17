@@ -1386,9 +1386,14 @@ void ck_register_const(struct AstNode* n) {
         ck_expr(n->b);
         g_array_elem_hint = 0;
         ity = n->b->ty;
-        if (ity == TY_UINT_LIT) { ity = TY_I32; }
-        if (ity == TY_FLOAT_LIT) { ity = TY_F64; }
+        // `ck_coercible` already admits an untyped literal wherever the
+        // declared type is numeric (§5.9), so the literal must be tested as
+        // *untyped*. Defaulting it to i32 first made `const A: usize = 8;` a
+        // TYPE-01 stop ("expected `usize`, found `i32`") — the default was
+        // applied before the coercion rule could see the literal.
         if (!ck_coercible(ty, ity)) {
+            if (ity == TY_UINT_LIT) { ity = TY_I32; }
+            if (ity == TY_FLOAT_LIT) { ity = TY_F64; }
             ck_err_type_mismatch(n, ty, ity, "`const` initializer");
         }
         // Adopt the concrete type on untyped literals (§5.9) so the backend
@@ -2778,9 +2783,22 @@ void ck_stmt_for(struct AstNode* n) {
             if (!ty_is_integer(hi) && hi != TY_UINT_LIT) {
                 ck_err_type_mismatch(n->a->b, TY_ISIZE, hi, "range end");
             }
-            // The binding takes the range's element type; untyped literals
-            // default to i32 (§5.9), and both bounds are stamped to it.
-            et = lo;
+            // The two bounds must agree. A typed bound wins over an untyped
+            // literal on the other side (`for (i : 0..n)` with `n: usize` is a
+            // `usize` loop, not an `i32` loop); only when *both* are untyped
+            // does the literal default apply (§5.9). Using `lo` alone made the
+            // loop variable `i32` while a `usize` upper bound stayed `i64`,
+            // emitting mixed-width IR that clang rejected.
+            if (lo == TY_UINT_LIT) { et = hi; }
+            else if (hi == TY_UINT_LIT) { et = lo; }
+            else if (lo == hi) { et = lo; }
+            else {
+                // Two different concrete integer types: the range has no
+                // single element type, so this is a real mistake, not a
+                // silent pick of one side.
+                ck_err_type_mismatch(n->a->b, lo, hi, "range end");
+                et = lo;
+            }
             if (et == TY_UINT_LIT || et == TY_INVALID) { et = TY_I32; }
             n->a->ty = et;         // the backend reads the element type here
             n->ival = 1;           // marks the range form (backend dispatch)

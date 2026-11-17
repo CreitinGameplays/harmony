@@ -1,0 +1,31 @@
+// EXPECT: 42
+// A constant exported from an imported module (2026-11).
+//
+// The module loader renames a module's items to `modname::name`, so an
+// imported `const LIMIT: usize = 8;` becomes the flat symbol `cfg::LIMIT`.
+// Two places assumed a `::` name was an *enum path*:
+//
+//   - the checker sent every `::` path to `ck_expr_enum_path`, which splits on
+//     the last `::` and demands the prefix be a *type*, so `cfg::LIMIT` was
+//     NAME-01 "the name before `::` must be an enum or module" — blaming the
+//     module name, which was perfectly fine;
+//   - the backend dispatched `::` paths to `ll_expr_variant` before the const
+//     branch, so the constant lowered as a zero/variant instead of its value.
+//
+// Both now consult the symbol table first: a `::` name that resolves to a
+// const is inlined, exactly like an unqualified one. Without a const in an
+// imported module, nothing else in that module could be imported either.
+import "module-const/dims.hr";
+
+fn main() -> i32 {
+    // Direct use of the imported constant.
+    let a = dims::LIMIT;
+    if (a != 8) { return 1; }
+    // Used *inside* the module's own exported function (the failing case).
+    let b = dims::twice();
+    if (b != 16) { return 2; }
+    // A module constant derived from another module constant.
+    let c = dims::AREA;
+    if (c != 40) { return 3; }
+    return 42;
+}

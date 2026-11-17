@@ -238,6 +238,10 @@ int mod_in_set(char* sval, char** names, int nnames) {
     return 0;
 }
 
+// True while `mod_rename_node` is walking inside a `methods` block, so a
+// method's own fn node is not renamed as if it were a module-level item.
+int g_mod_in_methods;
+
 // Renames `n` (an item, or a node inside one) into its module's namespace:
 // every *bare name this module declares top-level* becomes `modname::name`.
 // Qualified names rewrite only when their first segment is such a name.
@@ -278,7 +282,17 @@ void mod_rename_node(struct AstNode* n, char* pre, char** names, int nnames) {
          || n->kind == AST_METHODS || n->kind == AST_FN
          || n->kind == AST_EXTERN_FN)
         && n->sval != 0 && mod_in_set(n->sval, names, nnames)) {
-        n->sval = str_concat(pre, n->sval);
+        // A method's bare name is *not* a module-level name: its identity is
+        // `(receiver type, name)`, and the backend mangles it per receiver
+        // (`Type__method`). The loader reaches a method's `AST_FN` by walking
+        // into its `methods` block, so renaming it here would rewrite the
+        // string the method table is keyed by — and then a free function of
+        // the same name in the same module silently shadowed the method
+        // (`str::len` vs `String::len`), which was a TYPE-02 "no such field".
+        // `AST_METHODS` itself is a top-level item and does rename.
+        if (n->kind != AST_FN || !g_mod_in_methods) {
+            n->sval = str_concat(pre, n->sval);
+        }
     }
     if (n->kind == AST_CALL && n->a == 0 && n->sval != 0) {
         // `name(args)` — an inferred generic call or plain call: the callee
@@ -302,11 +316,15 @@ void mod_rename_node(struct AstNode* n, char* pre, char** names, int nnames) {
         }
     }
     if (n->kids2 != 0) {
+        int saved_in_methods;
+        saved_in_methods = g_mod_in_methods;
+        if (n->kind == AST_METHODS) { g_mod_in_methods = 1; }
         i = 0;
         while (i < n->kids2->len) {
             mod_rename_node(n->kids2->items[i], pre, names, nnames);
             i = i + 1;
         }
+        g_mod_in_methods = saved_in_methods;
     }
 }
 

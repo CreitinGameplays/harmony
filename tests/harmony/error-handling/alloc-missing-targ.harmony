@@ -1,0 +1,12 @@
+// WANT: TYPE-01
+// `alloc` cannot infer its element type: only the result's type names it, and
+// there is no result here to read. Before 2026-11 a plain `alloc(n)` fell
+// through to name resolution and reported "no `alloc` in scope" — blaming the
+// wrong thing (the builtin exists; the type argument is missing).
+fn main() -> i32 {
+    unchecked("allocate sixteen bytes") {
+        let p = alloc(16);
+        p.write(0u8);
+    }
+    return 0;
+}

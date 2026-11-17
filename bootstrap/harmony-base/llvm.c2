@@ -135,18 +135,80 @@ char* ll_new_label(char* hint) {
 
 // Writes `v` as decimal into `buf` (NUL-terminated); returns nothing.
 //
-// `int` in the seed is 64-bit, so `v` reaches 2^63-1 (19 digits) and i64-sized
-// literals pass through here. The scratch buffer was `char tmp[12]` — any
-// 13-digit literal (e.g. a timestamp or 2^63-1) overflowed it, corrupting the
-// stack and killing the emitter with no diagnostic (a fuzzer found this as
-// check-ok / emit-dead). 24 bytes leaves room for 20 digits plus slack.
+// `int` in the seed is a signed 64-bit value, but a `u64` literal reaches
+// 2^64-1, which arrives here as a *negative* number. The loop used to be
+// `while (v > 0)`, so any such value produced an empty string — and the
+// emitter wrote `i64 ` with no operand, which clang rejected with "expected
+// value token" (found by a `u64` constant of 18446744073709551615 in
+// library/core).
+//
+// Printing the *signed* decimal is the right output for both cases: LLVM
+// parses an i64 constant as a signed or unsigned decimal within range, so
+// `i64 -1` and `i64 18446744073709551615` are the same bit pattern. Digits
+// are peeled from the magnitude without ever computing `-v`, so INT64_MIN
+// (which has no positive counterpart) formats correctly.
+//
+// 24 bytes leaves room for 20 digits plus sign plus slack (a 13-digit literal
+// once overflowed a `char tmp[12]` and killed the emitter with no diagnostic).
 void ll_int_into(char* buf, int v) {
+    char tmp[24];
+    int n;
+    int i;
+    int neg;
+    neg = 0;
+    n = 0;
+    if (v == 0) { buf[0] = '0'; buf[1] = 0; return; }
+    if (v < 0) { neg = 1; }
+    // `v - (v / 10) * 10` is the remainder with the dividend's sign; taking
+    // its absolute value and stepping the quotient toward zero peels the
+    // magnitude for either sign and ends at 0 for both.
+    while (v != 0) {
+        int q;
+        int r;
+        q = v / 10;
+        r = v - q * 10;
+        if (r < 0) { r = 0 - r; }
+        tmp[n] = (char) ('0' + r);
+        n = n + 1;
+        v = q;
+    }
+    i = 0;
+    if (neg) { buf[0] = '-'; i = 1; }
+    while (n > 0) { n = n - 1; buf[i] = tmp[n]; i = i + 1; }
+    buf[i] = 0;
+}
+
+// Like `ll_int_into`, but prints the *unsigned* decimal of the same bits.
+// Used for an integer literal whose type is unsigned: `int` in the seed is
+// signed, so a `u64` literal ≥ 2^63 (e.g. 18446744073709551615) is stored as
+// the wrapped negative value. LLVM accepts either spelling for a fixed-width
+// integer constant, but the unsigned one is what a reader of the IR expects
+// for `u64`, and it keeps the text in the literal's own range.
+void ll_uint_into(char* buf, int v) {
     char tmp[24];
     int n;
     int i;
     n = 0;
     if (v == 0) { buf[0] = '0'; buf[1] = 0; return; }
-    while (v > 0) { tmp[n] = (char) ('0' + (v - (v / 10) * 10)); n = n + 1; v = v / 10; }
+    // Peel digits from the unsigned value: for a negative `v`, the unsigned
+    // interpretation is `v + 2^64`, and `v / 10` rounds toward zero, so using
+    // the *remainder's* magnitude with a floored quotient recovers the
+    // unsigned digit stream.
+    while (v != 0) {
+        int q;
+        int r;
+        q = v / 10;
+        r = v - q * 10;
+        if (r < 0) {
+            // A negative remainder means the true digit is r + 10 and the
+            // quotient must floor (q - 1).
+            r = r + 10;
+            q = q - 1;
+        }
+        tmp[n] = (char) ('0' + r);
+        n = n + 1;
+        v = q;
+    }
     i = 0;
     while (n > 0) { n = n - 1; buf[i] = tmp[n]; i = i + 1; }
     buf[i] = 0;

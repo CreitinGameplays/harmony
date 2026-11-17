@@ -1,0 +1,43 @@
+// EXPECT: 42
+// Inference from the *field's* type in a struct literal (2026-11).
+//
+// `ck_expr_struct_init` used to check the field value *before* looking the
+// field up, so the expected type was never passed down. That made the
+// documented MiniVec shape fail:
+//
+//   return Vec { .ptr = Raw::null(), .len = 0, .cap = 0 };
+//
+// was NAME-01 "no `Raw` in scope", even though the field's type (`raw mut T`)
+// is exactly what names the element. The same gap covered a bare `Empty` in a
+// field initializer. Both now resolve from the field's type, as they already
+// did from a `let` annotation (§8.5).
+struct MiniVec<T> {
+    ptr: raw mut T;
+    len: usize;
+    cap: usize;
+}
+
+struct Slot {
+    value: Maybe<i32>;
+}
+
+methods<T> MiniVec<T> {
+    export fn make() -> MiniVec<T> {
+        // No `<T>` on `Raw::null()`: inferred from `.ptr`'s type.
+        return MiniVec { .ptr = Raw::null(), .len = 0, .cap = 0 };
+    }
+}
+
+fn main() -> i32 {
+    let v: MiniVec<u8> = MiniVec<u8>::make();
+    if (!v.ptr.is_null()) { return 99; }
+    if (v.cap != 0) { return 98; }
+    // A bare prelude variant in a field initializer, inferred from the field.
+    let s = Slot { .value = Has(42) };
+    let mut out: i32 = 0;
+    switch (s.value) {
+        case Has(n): { out = n; }
+        case Empty:  { out = -1; }
+    }
+    return out;
+}

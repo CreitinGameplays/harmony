@@ -1,0 +1,20 @@
+// EXPECT: 49
+// `dealloc(p, n)` infers its element type from the pointer, which is the form
+// §17.8's MiniVec uses. Before 2026-11 only `dealloc<T>(p, n)` reached the
+// builtin; the inferred form was resolved as a variable and rejected with
+// NAME-01 "no `dealloc` in scope".
+fn main() -> i32 {
+    let mut p: raw mut u16 = Raw::null<u16>();
+    unchecked("allocate room for eight u16 values") {
+        p = alloc<u16>(8);
+    }
+    unchecked("write the first slot") {
+        p[0] = 300u16;
+    }
+    let mut v: u16 = 0;
+    unchecked("read the first slot back, then free the block") {
+        v = p[0];
+        dealloc(p, 8);
+    }
+    return v as i32 % 251;   // 300 % 251 = 49
+}

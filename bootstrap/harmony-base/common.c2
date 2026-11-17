@@ -697,6 +697,7 @@ void  ll_out_int(int v);
 void  ll_out_nl(void);
 char* ll_load(int ty, char* ptr);
 void  ll_int_into(char* buf, int v);
+void  ll_uint_into(char* buf, int v);
 void  ll_str_into(char* dst, char* src);
 int   ll_str_len(char* s);
 

@@ -1,0 +1,30 @@
+// EXPECT: 103
+// Two unsigned-integer bugs found writing library/core (2026-11).
+//
+// 1. A `u64` literal at the top of the range emitted *no operand*. The lexer
+//    accumulates digits into a signed 64-bit `int`, so 18446744073709551615
+//    wrapped to -1; the emitter's `ll_int_into` loop was `while (v > 0)`, so
+//    a negative value produced an empty string and the IR read `i64 ` with
+//    nothing after it. clang rejected it ("expected value token"). An
+//    unsigned literal now prints its unsigned decimal.
+//
+// 2. Unsigned `%` used `srem`. `udiv` was already selected for an unsigned
+//    type, but the remainder branch returned before the unsigned check, so
+//    `18446744073709551615 % 1000` was -1 (the *signed* reading of the same
+//    bits) instead of 615 — well-formed IR, wrong answer, no diagnostic.
+fn main() -> i32 {
+    let max: u64 = 18446744073709551615u64;
+    let m: u64 = 1000u64;
+    // 18446744073709551615 % 1000 = 615; 615 mod 256 = 103.
+    if (max % m != 615u64) { return 1; }
+    // Unsigned division of the same value: 1844674407370955161.
+    if (max / m != 18446744073709551u64) { return 2; }
+    // Unsigned comparison must treat the value as huge, not as -1.
+    if (!(max > m)) { return 3; }
+    if (!(max > 9223372036854775807u64)) { return 4; }
+    // A smaller unsigned remainder still works.
+    let a: u32 = 4000000000u32;
+    let b: u32 = 7u32;
+    if (a % b != 3u32) { return 5; }
+    return (max % m) as i32;   // 615 -> exit 103
+}

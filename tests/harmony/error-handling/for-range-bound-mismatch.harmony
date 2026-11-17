@@ -1,0 +1,12 @@
+// A range's two bounds must have the same integer type. Before 2026-11 the
+// loop element type was silently taken from the lower bound, so a mismatch
+// either miscompiled (mixed-width IR) or silently picked one side.
+fn main() -> i32 {
+    let a: i32 = 0;
+    let b: u64 = 4;
+    let mut total: i32 = 0;
+    for (i : a..b) {
+        total += 1;
+    }
+    return total;
+}

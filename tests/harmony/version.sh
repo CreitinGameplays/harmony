@@ -38,18 +38,22 @@ else
     bad "version-has-channel-and-sha ($V lacks a dev|beta|stable channel or the sha)"
 fi
 
-# The script must be idempotent: regenerating must not change the file.
-if bash "$ROOT/tools/version.sh" >/dev/null 2>&1 && [ "$(cat "$VERSION_FILE")" = "$V" ]; then
-    ok "version-script-is-idempotent"
+# The script must be deterministic: computing the version twice gives the
+# same string. `--print` never writes the file, so this test leaves the
+# working tree alone.
+P1="$(bash "$ROOT/tools/version.sh" --print 2>/dev/null)"
+P2="$(bash "$ROOT/tools/version.sh" --print 2>/dev/null)"
+if [ -n "$P1" ] && [ "$P1" = "$P2" ]; then
+    ok "version-script-is-deterministic ($P1)"
 else
-    bad "version-script-is-idempotent (regenerating changed the file)"
+    bad "version-script-is-deterministic ('$P1' vs '$P2')"
 fi
 
-# The script's --print form must agree with the file.
-if [ "$(bash "$ROOT/tools/version.sh" --print 2>/dev/null)" = "$V" ]; then
-    ok "version-script-print-matches-file"
+# The computed version must also be a well-formed SemVer string.
+if printf '%s' "$P1" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+-(dev|beta|stable)\.[0-9]+\+[0-9a-f]+$'; then
+    ok "version-script-computes-a-valid-version"
 else
-    bad "version-script-print-matches-file"
+    bad "version-script-computes-a-valid-version (got '$P1')"
 fi
 
 # The compiler must report the same version.

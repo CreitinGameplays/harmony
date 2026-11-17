@@ -1,0 +1,516 @@
+// harmony/parser/stmt.hr — statements, patterns, and blocks (R3, §18).
+//
+// Statements are what a function body holds: `let`, assignment, expression
+// statements, `return`/`break`/`continue`, the block statements (`if`,
+// `while`, `for`, `switch`, `unchecked`, a bare block), and the pattern
+// grammar `switch` uses.
+//
+// Recovery: a statement stop enters panic mode; `parse_block` calls
+// `pctx::sync` at the failure and steps one token if the cursor did not move,
+// so one mistake reports once and the rest of the block still parses.
+//
+// `AST_FOR` keeps its three parts in a/b/c and the body in `kids` (a = init,
+// b = cond, c = step). Using `b` for the body would clobber the C-style
+// condition, so the body is a child list of one.
+import "../../library/core/str.hr";
+import "../../harmony/lexer/token.hr";
+import "../../harmony/ast/node.hr";
+import "pctx.hr";
+import "parse.hr";
+
+
+// True when the cursor is on an assignment operator (§18 `assign_op`).
+export fn parse_assign_op(p: &pctx::Parser) -> bool {
+    let k = pctx::cur(p).kind;
+    if (k == token::TokKind::Assign) { return true; }
+    if (k == token::TokKind::PlusEq || k == token::TokKind::MinusEq) { return true; }
+    if (k == token::TokKind::StarEq || k == token::TokKind::SlashEq) { return true; }
+    if (k == token::TokKind::PercentEq || k == token::TokKind::AmpEq) { return true; }
+    if (k == token::TokKind::PipeEq || k == token::TokKind::CaretEq) { return true; }
+    if (k == token::TokKind::ShlEq || k == token::TokKind::ShrEq) { return true; }
+    return false;
+}
+
+// The operator spelling stored on an assignment node's `sval`.
+export fn assign_op_text(p: &pctx::Parser) -> &str {
+    let k = pctx::cur(p).kind;
+    if (k == token::TokKind::Assign) { return "="; }
+    if (k == token::TokKind::PlusEq) { return "+="; }
+    if (k == token::TokKind::MinusEq) { return "-="; }
+    if (k == token::TokKind::StarEq) { return "*="; }
+    if (k == token::TokKind::SlashEq) { return "/="; }
+    if (k == token::TokKind::PercentEq) { return "%="; }
+    if (k == token::TokKind::AmpEq) { return "&="; }
+    if (k == token::TokKind::PipeEq) { return "|="; }
+    if (k == token::TokKind::CaretEq) { return "^="; }
+    if (k == token::TokKind::ShlEq) { return "<<="; }
+    if (k == token::TokKind::ShrEq) { return ">>="; }
+    return "=";
+}
+
+// `unchecked` "(" STRING ")" — the reason is mandatory (§13.1).
+export fn parse_unck_head(p: &mut pctx::Parser) -> &str {
+    pctx::advance(p);   // unchecked
+    if (!pctx::expect(p, token::TokKind::LParen, "add `(` after `unchecked`")) {
+        return "";
+    }
+    if (!pctx::at(&*p, token::TokKind::Str)) {
+        pctx::syntax_stop(p, "SYN-05", "`unchecked` needs a reason",
+                         "Write `unchecked(\"why this is sound\") { ... }` (§13.1).");
+        return "";
+    }
+    let reason = pctx::cur(&*p).text;
+    pctx::advance(p);
+    pctx::expect(p, token::TokKind::RParen, "add `)` after the reason");
+    return reason;
+}
+
+// let [mut] name [: type] [= expr] ";"
+fn parse_let(p: &mut pctx::Parser) -> i32 {
+    let start = pctx::cur(&*p).start;
+    pctx::advance(p);   // let
+    let h = pctx::node_at(p, node::AST_LET, start);
+    if (pctx::at_kw(&*p, "mut")) {
+        pctx::advance(p);
+        node::set_ival(p.nodes, h, 1);
+    }
+    // `_` (a discard) is an identifier token, like any name.
+    if (!pctx::at(&*p, token::TokKind::Ident)) {
+        pctx::syntax_stop(p, "SYN-05", "`let` needs a name (or `_`)",
+                         "`let [mut] name: type = value;`");
+        return -1;
+    }
+    node::set_sval(p.nodes, h, pctx::cur_word(p));
+    pctx::advance(p);
+    if (pctx::eat(p, token::TokKind::Colon)) {
+        let t = parse::parse_type(p);
+        if (t < 0) { return -1; }
+        node::set_a(p.nodes, h, t);
+    }
+    if (pctx::eat(p, token::TokKind::Assign)) {
+        let e = parse::parse_expr(p);
+        if (e < 0) { return -1; }
+        node::set_b(p.nodes, h, e);
+    }
+    if (!pctx::expect_semi(p)) { return -1; }
+    pctx::end_at(p, h, pctx::prev(&*p).end);
+    return h;
+}
+
+// if "(" expr ")" block [ "else" ( if | block ) ]
+fn parse_if(p: &mut pctx::Parser) -> i32 {
+    let start = pctx::cur(&*p).start;
+    pctx::advance(p);   // if
+    let h = pctx::node_at(p, node::AST_IF, start);
+    if (!pctx::at(&*p, token::TokKind::LParen)) {
+        pctx::syntax_stop(p, "SYN-01", "the condition needs parentheses",
+                         "Conditions are parenthesized, C-style: if (n > 0) { ... } (§8.3).");
+        return -1;
+    }
+    pctx::advance(p);
+    let cond = parse::parse_expr(p);
+    if (cond < 0) { return -1; }
+    node::set_a(p.nodes, h, cond);
+    // SYN-03: assignment used as a condition (the grammar makes `=` a
+    // statement form, so the expression stops at it).
+    if (parse_assign_op(&*p)) {
+        pctx::syntax_stop(p, "SYN-03", "assignment used as a condition",
+                         "An assignment is a statement, not an expression; compare: if (x == 5) { ... }.");
+        return -1;
+    }
+    if (!pctx::expect(p, token::TokKind::RParen, "add `)` to close the condition")) {
+        return -1;
+    }
+    if (!pctx::at(&*p, token::TokKind::LBrace)) {
+        pctx::syntax_stop(p, "SYN-02", "the body needs braces",
+                         "Bodies are braced blocks: if (x) { ... } (§8.3).");
+        return -1;
+    }
+    let then_block = parse_block(p);
+    if (then_block < 0) { return -1; }
+    node::set_b(p.nodes, h, then_block);
+    if (pctx::eat_kw(p, "else")) {
+        if (pctx::at_kw(&*p, "if")) {
+            let chained = parse_if(p);   // else-if chain
+            if (chained < 0) { return -1; }
+            node::set_c(p.nodes, h, chained);
+        } else {
+            if (!pctx::at(&*p, token::TokKind::LBrace)) {
+                pctx::syntax_stop(p, "SYN-02", "the else body needs braces",
+                                 "else { ... } — bodies are braced blocks (§8.3).");
+                return -1;
+            }
+            let else_block = parse_block(p);
+            if (else_block < 0) { return -1; }
+            node::set_c(p.nodes, h, else_block);
+        }
+    }
+    pctx::end_at(p, h, pctx::prev(&*p).end);
+    return h;
+}
+
+// A loop body block, with the loop depth raised so `break`/`continue` are
+// allowed inside it.
+fn parse_loop_body(p: &mut pctx::Parser) -> i32 {
+    p.loop_depth += 1;
+    let b = parse_block(p);
+    p.loop_depth -= 1;
+    return b;
+}
+
+// while "(" expr ")" block
+fn parse_while(p: &mut pctx::Parser) -> i32 {
+    let start = pctx::cur(&*p).start;
+    pctx::advance(p);   // while
+    let h = pctx::node_at(p, node::AST_WHILE, start);
+    if (!pctx::at(&*p, token::TokKind::LParen)) {
+        pctx::syntax_stop(p, "SYN-01", "the condition needs parentheses",
+                         "Conditions are parenthesized, C-style: while (n > 0) { ... } (§8.4).");
+        return -1;
+    }
+    pctx::advance(p);
+    let cond = parse::parse_expr(p);
+    if (cond < 0) { return -1; }
+    node::set_a(p.nodes, h, cond);
+    if (parse_assign_op(&*p)) {
+        pctx::syntax_stop(p, "SYN-03", "assignment used as a condition",
+                         "An assignment is a statement, not an expression; compare: while (x == 5) { ... }.");
+        return -1;
+    }
+    if (!pctx::expect(p, token::TokKind::RParen, "add `)` to close the condition")) {
+        return -1;
+    }
+    if (!pctx::at(&*p, token::TokKind::LBrace)) {
+        pctx::syntax_stop(p, "SYN-02", "the body needs braces",
+                         "Bodies are braced blocks: while (x) { ... }.");
+        return -1;
+    }
+    let b = parse_loop_body(p);
+    if (b < 0) { return -1; }
+    node::set_b(p.nodes, h, b);
+    pctx::end_at(p, h, pctx::prev(&*p).end);
+    return h;
+}
+
+// for "(" head ")" block
+//   head = let_stmt expr ";" assign     (C-style)
+//        | ID ":" expr                  (range / collection / iterator)
+fn parse_for(p: &mut pctx::Parser) -> i32 {
+    let start = pctx::cur(&*p).start;
+    pctx::advance(p);   // for
+    let h = pctx::node_at(p, node::AST_FOR, start);
+    if (!pctx::expect(p, token::TokKind::LParen, "add `(` after `for`")) {
+        return -1;
+    }
+    if (pctx::at_kw(&*p, "let")) {
+        // Shape 1: C-style. `parse_let` consumes the `;`.
+        let init = parse_let(p);
+        if (init < 0) { return -1; }
+        node::set_a(p.nodes, h, init);
+        if (!pctx::at(&*p, token::TokKind::Semi)) {
+            let cond = parse::parse_expr(p);
+            if (cond < 0) { return -1; }
+            node::set_b(p.nodes, h, cond);
+        }
+        if (!pctx::expect(p, token::TokKind::Semi,
+                         "add the `;` separating condition and step")) {
+            return -1;
+        }
+        if (!pctx::at(&*p, token::TokKind::RParen)) {
+            // The step is an assignment: `place op expr`.
+            let e = parse::parse_expr(p);
+            if (e < 0) { return -1; }
+            if (!parse_assign_op(&*p)) {
+                pctx::syntax_stop(p, "SYN-05", "the for-step is an assignment",
+                                 "for (let i = 0; i < n; i += 1) — the step assigns to a place (§8.5).");
+                return -1;
+            }
+            let step = pctx::node_at(p, node::AST_ASSIGN, node::get(&*p.nodes, e).start);
+            node::set_a(p.nodes, step, e);
+            node::set_sval(p.nodes, step, assign_op_text(&*p));
+            pctx::advance(p);
+            let v = parse::parse_expr(p);
+            if (v < 0) { return -1; }
+            node::set_b(p.nodes, step, v);
+            pctx::end_at(p, step, pctx::prev(&*p).end);
+            node::set_c(p.nodes, h, step);
+        }
+    } else {
+        // Shape 2/3: `ID : expr`.
+        if (!pctx::at(&*p, token::TokKind::Ident)) {
+            pctx::syntax_stop(p, "SYN-05", "the for-head needs a name or a `let`",
+                             "`for (x : expr)` iterates; `for (let i = 0; ...)` is C-style (§8.5).");
+            return -1;
+        }
+        node::set_sval(p.nodes, h, pctx::cur_word(p));
+        pctx::advance(p);
+        if (!pctx::expect(p, token::TokKind::Colon,
+                         "add `:` between the binding and the sequence")) {
+            return -1;
+        }
+        let seq = parse::parse_expr(p);
+        if (seq < 0) { return -1; }
+        node::set_a(p.nodes, h, seq);
+    }
+    if (!pctx::expect(p, token::TokKind::RParen, "add `)` to close the for-head")) {
+        return -1;
+    }
+    if (!pctx::at(&*p, token::TokKind::LBrace)) {
+        pctx::syntax_stop(p, "SYN-02", "the body needs braces",
+                         "for (x : 0..10) { ... } — bodies are braced blocks (§8.5).");
+        return -1;
+    }
+    let body = parse_loop_body(p);
+    if (body < 0) { return -1; }
+    // The body goes in `kids`: `b` already holds the C-style condition.
+    node::push_kid(p.nodes, h, body);
+    pctx::end_at(p, h, pctx::prev(&*p).end);
+    return h;
+}
+
+// pattern (§18): "_" | [mut] ID | literal | literal "..=" literal
+//             | path [ "(" pattern { , pattern } ")" ]
+export fn parse_pattern(p: &mut pctx::Parser) -> i32 {
+    let start = pctx::cur(&*p).start;
+
+    // _
+    if (pctx::at(&*p, token::TokKind::Ident) && pctx::cur_word(p) == "_") {
+        let h = pctx::node_at(p, node::AST_PAT_WILD, start);
+        pctx::advance(p);
+        pctx::end_at(p, h, pctx::prev(&*p).end);
+        return h;
+    }
+
+    // `mut name` binding
+    if (pctx::at_kw(&*p, "mut")
+        && pctx::peek(&*p, 1).kind == token::TokKind::Ident) {
+        let h = pctx::node_at(p, node::AST_PAT_BIND, start);
+        node::set_ival(p.nodes, h, 1);
+        pctx::advance(p);
+        node::set_sval(p.nodes, h, pctx::cur_word(p));
+        pctx::advance(p);
+        pctx::end_at(p, h, pctx::prev(&*p).end);
+        return h;
+    }
+
+    // literal / range
+    if (parse::at_literal(&*p)) {
+        let lit = parse::parse_literal(p);
+        if (lit < 0) { return -1; }
+        if (pctx::at(&*p, token::TokKind::RangeInclusive)) {
+            pctx::advance(p);
+            let hi = parse::parse_literal(p);
+            if (hi < 0) { return -1; }
+            let h = pctx::node_at(p, node::AST_PAT_RANGE, start);
+            node::set_a(p.nodes, h, lit);
+            node::set_b(p.nodes, h, hi);
+            pctx::end_at(p, h, pctx::prev(&*p).end);
+            return h;
+        }
+        let h = pctx::node_at(p, node::AST_PAT_LIT, start);
+        node::set_a(p.nodes, h, lit);
+        pctx::end_at(p, h, pctx::prev(&*p).end);
+        return h;
+    }
+
+    // path / variant with sub-patterns / bare binding
+    if (pctx::at(&*p, token::TokKind::Ident)) {
+        let name = parse::parse_path_name(p);
+        if (name == "") { return -1; }
+        if (pctx::at(&*p, token::TokKind::LParen)) {
+            pctx::advance(p);
+            let h = pctx::node_at(p, node::AST_PAT_VARIANT, start);
+            node::set_sval(p.nodes, h, name);
+            while (true) {
+                let sub = parse_pattern(p);
+                if (sub < 0) { return -1; }
+                node::push_kid(p.nodes, h, sub);
+                if (!pctx::eat(p, token::TokKind::Comma)) { break; }
+            }
+            if (!pctx::expect(p, token::TokKind::RParen,
+                             "add `)` to close the pattern payload")) {
+                return -1;
+            }
+            pctx::end_at(p, h, pctx::prev(&*p).end);
+            return h;
+        }
+        // A plain identifier is a binding (or a unit variant, decided later).
+        let h = pctx::node_at(p, node::AST_PAT_BIND, start);
+        node::set_sval(p.nodes, h, name);
+        pctx::end_at(p, h, pctx::prev(&*p).end);
+        return h;
+    }
+
+    pctx::syntax_stop(p, "SYN-05", "expected a pattern",
+                     "Patterns are `_`, [mut] name, literals, `lo..=hi`, or Variant(sub, ...).");
+    return -1;
+}
+
+// switch "(" expr ")" "{" { case_arm } "}"
+fn parse_switch(p: &mut pctx::Parser) -> i32 {
+    let start = pctx::cur(&*p).start;
+    pctx::advance(p);   // switch
+    let h = pctx::node_at(p, node::AST_SWITCH, start);
+    if (!pctx::at(&*p, token::TokKind::LParen)) {
+        pctx::syntax_stop(p, "SYN-01", "the subject needs parentheses",
+                         "switch (x) { case P: { ... } } (§8.6).");
+        return -1;
+    }
+    pctx::advance(p);
+    let subject = parse::parse_expr(p);
+    if (subject < 0) { return -1; }
+    node::set_a(p.nodes, h, subject);
+    if (!pctx::expect(p, token::TokKind::RParen, "add `)` to close the subject")) {
+        return -1;
+    }
+    if (!pctx::expect(p, token::TokKind::LBrace, "add `{` to open the switch body")) {
+        return -1;
+    }
+    while (!pctx::at(&*p, token::TokKind::RBrace)
+           && !pctx::at(&*p, token::TokKind::Eof)) {
+        let arm = pctx::node_here(p, node::AST_ARM);
+        if (pctx::eat_kw(p, "case")) {
+            // pattern { "|" pattern }
+            while (true) {
+                let pat = parse_pattern(p);
+                if (pat < 0) { return -1; }
+                node::push_kid(p.nodes, arm, pat);
+                if (!pctx::eat(p, token::TokKind::Pipe)) { break; }
+            }
+        } else if (!pctx::eat_kw(p, "default")) {
+            pctx::syntax_stop(p, "SYN-05", "a switch arm starts with `case` or `default`",
+                             "Each arm is `case pattern: { ... }` or `default: { ... }` (§8.6).");
+            return -1;
+        }
+        if (!pctx::expect(p, token::TokKind::Colon, "add `:` after the pattern")) {
+            return -1;
+        }
+        if (!pctx::at(&*p, token::TokKind::LBrace)) {
+            pctx::syntax_stop(p, "SYN-02", "the arm body needs braces",
+                             "Each switch arm is its own braced block: `case P: { ... }` — no fallthrough (§8.6).");
+            return -1;
+        }
+        let body = parse_block(p);
+        if (body < 0) { return -1; }
+        node::set_b(p.nodes, arm, body);
+        pctx::end_at(p, arm, pctx::prev(&*p).end);
+        node::push_kid(p.nodes, h, arm);
+        p.panic = false;
+    }
+    if (!pctx::expect(p, token::TokKind::RBrace, "add `}` to close the switch")) {
+        return -1;
+    }
+    pctx::end_at(p, h, pctx::prev(&*p).end);
+    return h;
+}
+
+// block = "{" { stmt } "}"
+export fn parse_block(p: &mut pctx::Parser) -> i32 {
+    let h = pctx::node_here(p, node::AST_BLOCK);
+    if (!pctx::expect(p, token::TokKind::LBrace, "add `{` to open the block")) {
+        return -1;
+    }
+    while (!pctx::at(&*p, token::TokKind::RBrace)
+           && !pctx::at(&*p, token::TokKind::Eof)) {
+        let before = p.pos;
+        let s = parse_stmt(p);
+        if (s < 0) {
+            // Recovery: skip to the next `;` (consumed) or to this block's
+            // `}`/EOF, then keep going. If the cursor did not move, step one
+            // token to guarantee progress.
+            pctx::sync(p);
+            p.panic = false;
+            if (p.pos == before) { pctx::advance(p); }
+            continue;
+        }
+        node::push_kid(p.nodes, h, s);
+    }
+    if (!pctx::expect(p, token::TokKind::RBrace, "add `}` to close the block")) {
+        return -1;
+    }
+    pctx::end_at(p, h, pctx::prev(&*p).end);
+    return h;
+}
+
+fn parse_stmt_core(p: &mut pctx::Parser) -> i32 {
+    let start = pctx::cur(&*p).start;
+
+    if (pctx::at_kw(&*p, "let")) { return parse_let(p); }
+
+    if (pctx::at_kw(&*p, "return")) {
+        let h = pctx::node_at(p, node::AST_RETURN, start);
+        pctx::advance(p);
+        if (!pctx::at(&*p, token::TokKind::Semi)) {
+            let e = parse::parse_expr(p);
+            if (e < 0) { return -1; }
+            node::set_a(p.nodes, h, e);
+        }
+        if (!pctx::expect_semi(p)) { return -1; }
+        pctx::end_at(p, h, pctx::prev(&*p).end);
+        return h;
+    }
+    if (pctx::at_kw(&*p, "break") || pctx::at_kw(&*p, "continue")) {
+        let mut kind: i32 = node::AST_CONTINUE;
+        if (pctx::at_kw(&*p, "break")) { kind = node::AST_BREAK; }
+        let h = pctx::node_at(p, kind, start);
+        pctx::advance(p);
+        if (!pctx::expect_semi(p)) { return -1; }
+        pctx::end_at(p, h, pctx::prev(&*p).end);
+        return h;
+    }
+
+    if (pctx::at_kw(&*p, "if")) { return parse_if(p); }
+    if (pctx::at_kw(&*p, "while")) { return parse_while(p); }
+    if (pctx::at_kw(&*p, "for")) { return parse_for(p); }
+    if (pctx::at_kw(&*p, "switch")) { return parse_switch(p); }
+
+    if (pctx::at_kw(&*p, "unchecked")) {
+        let reason = parse_unck_head(p);
+        if (reason == "") { return -1; }
+        if (!pctx::at(&*p, token::TokKind::LBrace)) {
+            pctx::syntax_stop(p, "SYN-02", "the unchecked body needs braces",
+                             "unchecked(\"why\") { ... } — the promise covers one braced block (§13.2).");
+            return -1;
+        }
+        let h = pctx::node_at(p, node::AST_UNCHECKED, start);
+        node::set_sval(p.nodes, h, reason);
+        let body = parse_block(p);
+        if (body < 0) { return -1; }
+        node::set_a(p.nodes, h, body);
+        pctx::end_at(p, h, pctx::prev(&*p).end);
+        return h;
+    }
+
+    if (pctx::at(&*p, token::TokKind::LBrace)) { return parse_block(p); }
+
+    // Expression statement or assignment: parse the left side, then decide by
+    // what follows (`;` -> expression statement, an assign op -> assignment).
+    let e = parse::parse_expr(p);
+    if (e < 0) { return -1; }
+    if (parse_assign_op(&*p)) {
+        let h = pctx::node_at(p, node::AST_ASSIGN, node::get(&*p.nodes, e).start);
+        node::set_a(p.nodes, h, e);
+        node::set_sval(p.nodes, h, assign_op_text(&*p));
+        pctx::advance(p);
+        let v = parse::parse_expr(p);
+        if (v < 0) { return -1; }
+        node::set_b(p.nodes, h, v);
+        if (!pctx::expect_semi(p)) { return -1; }
+        pctx::end_at(p, h, pctx::prev(&*p).end);
+        return h;
+    }
+    let h = pctx::node_at(p, node::AST_EXPR_STMT, node::get(&*p.nodes, e).start);
+    node::set_a(p.nodes, h, e);
+    if (!pctx::expect_semi(p)) { return -1; }
+    pctx::end_at(p, h, pctx::prev(&*p).end);
+    return h;
+}
+
+// The depth-guarded statement entry point: nested blocks and nested
+// statements re-enter here, so adversarial nesting stops at the limit.
+export fn parse_stmt(p: &mut pctx::Parser) -> i32 {
+    if (!pctx::depth_enter(p)) { return -1; }
+    let h = parse_stmt_core(p);
+    pctx::depth_leave(p);
+    return h;
+}

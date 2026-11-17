@@ -436,6 +436,23 @@ char* ll_expr_binary(struct AstNode* n) {
     r = ll_expr(n->b);
     rt = g_expr_ty;
     if (ty_is_untyped_lit(lt)) { lt = rt; }
+    // An enum is address-represented (the aggregate itself), so `e1 == e2`
+    // must compare the *tags*, not the addresses. Without this the operands
+    // reached `ll_int_cmp` as pointers: the IR read
+    // `icmp eq %enum.T %addr, ...`, which clang rejects ("defined with type
+    // 'ptr' but expected '%enum.T'"). Equality of two enums of the same type
+    // is exactly tag equality, since the tag selects the variant.
+    if ((str_eq(op, "==") || str_eq(op, "!="))
+        && ty_kind(lt) == CTY_ENUM && ty_kind(rt) == CTY_ENUM) {
+        char* lt_tag;
+        char* rt_tag;
+        char* cmp;
+        lt_tag = ll_load(TY_I32, ll_struct_gep(l, lt, 0));
+        rt_tag = ll_load(TY_I32, ll_struct_gep(r, rt, 0));
+        if (str_eq(op, "==")) { cmp = "icmp eq"; } else { cmp = "icmp ne"; }
+        g_expr_ty = TY_BOOL;
+        return ll_cmp(cmp, TY_I32, lt_tag, rt_tag);
+    }
     return ll_checked_bin(op, lt, n, l, r);
 }
 

@@ -1,0 +1,50 @@
+// EXPECT: 42
+// Comparing enum values with `==` / `!=` (2026-11).
+//
+// An enum is address-represented in the backend (the expression yields the
+// address of the aggregate, not a scalar), but `ll_expr_binary` handed the
+// two addresses straight to `ll_int_cmp`. The emitted IR read
+// `icmp eq %enum.E %addr, ...`, which clang rejects with "'%x' defined with
+// type 'ptr' but expected '%enum.E'". Equality of two enums of the same type
+// is tag equality (the tag selects the variant), so both operands are now
+// loaded as the i32 tag before the compare.
+//
+// The rewrite's parser hits this everywhere (`kind == TokKind::X`), which is
+// how it was found.
+copy enum E { A, B, C }
+
+struct S { e: E; n: i32; }
+
+methods S {
+    fn is_a(&self) -> bool { return self.e == E::A; }
+}
+
+fn compare_param(e: E) -> bool { return e == E::B; }
+
+fn compare_field(e: E) -> bool {
+    let s = S { .e = e, .n = 0 };
+    return s.e == E::C;
+}
+
+fn main() -> i32 {
+    // Locals.
+    let x = E::B;
+    let y = E::B;
+    let z = E::A;
+    if (!(x == y)) { return 1; }
+    if (x == z) { return 2; }
+    if (x != y) { return 3; }
+    if (!(x != z)) { return 4; }
+    // A parameter.
+    if (!compare_param(E::B)) { return 5; }
+    if (compare_param(E::A)) { return 6; }
+    // A struct field.
+    if (!compare_field(E::C)) { return 7; }
+    if (compare_field(E::A)) { return 8; }
+    // Through a method on `&self`.
+    let s = S { .e = E::A, .n = 0 };
+    if (!s.is_a()) { return 9; }
+    let t = S { .e = E::B, .n = 0 };
+    if (t.is_a()) { return 10; }
+    return 42;
+}

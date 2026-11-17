@@ -1,0 +1,532 @@
+// harmony/parser/item.hr — items and the program entry (R3, §18).
+//
+//   item     = import | [export] fn | [export] const | [copy] struct
+//            | [copy] enum | methods | extern fn | unchecked("...") fn
+//   program  = { item } EOF
+//
+// `export` and `copy` may appear together and in either order before a
+// struct/enum (`export copy struct`, `copy export enum`), so one loop eats
+// both markers. The `export` flag is recorded the way the checker reads it:
+// `ival` bit 1 for items, plain `ival` for a `copy` struct/enum.
+import "../../library/core/str.hr";
+import "../../harmony/lexer/token.hr";
+import "../../harmony/ast/node.hr";
+import "pctx.hr";
+import "parse.hr";
+import "stmt.hr";
+
+// fn [generics] "(" params ")" [-> type] block
+export fn parse_fn(p: &mut pctx::Parser, start: usize) -> i32 {
+    pctx::advance(p);   // fn
+    if (!pctx::at(&*p, token::TokKind::Ident)) {
+        pctx::syntax_stop(p, "SYN-05", "a function needs a name",
+                         "`fn name(params) -> type { body }`");
+        return -1;
+    }
+    let h = pctx::node_at(p, node::AST_FN, start);
+    node::set_sval(p.nodes, h, pctx::cur_word(p));
+    pctx::advance(p);
+    if (pctx::at(&*p, token::TokKind::Lt)) {
+        if (!parse_generics(p, h)) { return -1; }
+    }
+    if (!pctx::expect(p, token::TokKind::LParen, "add `(` for the parameters")) {
+        return -1;
+    }
+    if (!parse_params(p, h)) { return -1; }
+    if (pctx::at(&*p, token::TokKind::Arrow)) {
+        pctx::advance(p);
+        let t = parse::parse_type(p);
+        if (t < 0) { return -1; }
+        node::set_a(p.nodes, h, t);
+    }
+    let body = stmt::parse_block(p);
+    if (body < 0) { return -1; }
+    node::set_b(p.nodes, h, body);
+    pctx::end_at(p, h, pctx::prev(&*p).end);
+    return h;
+}
+
+// `( params )`; the params become child nodes of `onto`. A `self` shape is
+// stored as the param's name (`self`, `mut self`, `&self`, `&mut self`).
+export fn parse_params(p: &mut pctx::Parser, onto: i32) -> bool {
+    if (pctx::eat(p, token::TokKind::RParen)) { return true; }   // ()
+    while (!pctx::at(&*p, token::TokKind::RParen)
+           && !pctx::at(&*p, token::TokKind::Eof)) {
+        let start = pctx::cur(&*p).start;
+        // self shapes: self | mut self | &self | &mut self
+        if (pctx::at_kw(&*p, "self")) {
+            let h = pctx::node_at(p, node::AST_PARAM, start);
+            node::set_sval(p.nodes, h, "self");
+            pctx::advance(p);
+            pctx::end_at(p, h, pctx::prev(&*p).end);
+            node::push_kid2(p.nodes, onto, h);
+        } else if (pctx::at_kw(&*p, "mut") && pctx::peek_kw(&*p, "self", 1)) {
+            let h = pctx::node_at(p, node::AST_PARAM, start);
+            node::set_sval(p.nodes, h, "mut self");
+            pctx::advance(p);
+            pctx::advance(p);
+            pctx::end_at(p, h, pctx::prev(&*p).end);
+            node::push_kid2(p.nodes, onto, h);
+        } else if (pctx::at(&*p, token::TokKind::Amp)) {
+            pctx::advance(p);
+            let h = pctx::node_at(p, node::AST_PARAM, start);
+            if (pctx::at_kw(&*p, "mut") && pctx::peek_kw(&*p, "self", 1)) {
+                pctx::advance(p);
+                pctx::advance(p);
+                node::set_sval(p.nodes, h, "&mut self");
+            } else if (pctx::at_kw(&*p, "self")) {
+                pctx::advance(p);
+                node::set_sval(p.nodes, h, "&self");
+            } else {
+                pctx::syntax_stop(p, "SYN-05", "a parameter needs a name",
+                                 "Parameters are `name: type` pairs; `&` here only introduces `&self` or `&mut self`.");
+                return false;
+            }
+            pctx::end_at(p, h, pctx::prev(&*p).end);
+            node::push_kid2(p.nodes, onto, h);
+        } else {
+            // Ordinary param: [mut] name ":" type
+            let mut is_mut: i64 = 0;
+            if (pctx::at_kw(&*p, "mut")) { pctx::advance(p); is_mut = 1; }
+            if (!pctx::at(&*p, token::TokKind::Ident)) {
+                pctx::syntax_stop(p, "SYN-05", "a parameter needs a name",
+                                 "Parameters are `name: type` pairs.");
+                return false;
+            }
+            let h = pctx::node_at(p, node::AST_PARAM, start);
+            node::set_sval(p.nodes, h, pctx::cur_word(p));
+            node::set_ival(p.nodes, h, is_mut);
+            pctx::advance(p);
+            if (!pctx::expect(p, token::TokKind::Colon,
+                             "add `: type` to the parameter")) {
+                return false;
+            }
+            let t = parse::parse_type(p);
+            if (t < 0) { return false; }
+            node::set_a(p.nodes, h, t);
+            pctx::end_at(p, h, pctx::prev(&*p).end);
+            node::push_kid2(p.nodes, onto, h);
+        }
+        if (!pctx::eat(p, token::TokKind::Comma)) { break; }
+    }
+    if (!pctx::expect(p, token::TokKind::RParen,
+                     "add `)` to close the parameter list")) {
+        return false;
+    }
+    return true;
+}
+
+// `<` gparam { "," gparam } `>`, where a parameter is `T[: bound [+ bound]]`
+// or `life a`. The parameters become child nodes of `onto` (its `kids`).
+export fn parse_generics(p: &mut pctx::Parser, onto: i32) -> bool {
+    pctx::advance(p);   // <
+    while (true) {
+        // `life a` — a contextual keyword inside a generic list (§4.2).
+        if (pctx::at(&*p, token::TokKind::Ident) && pctx::cur_word(p) == "life") {
+            pctx::advance(p);
+            if (!pctx::at(&*p, token::TokKind::Ident)) {
+                pctx::syntax_stop(p, "SYN-05", "a life parameter needs a name",
+                                 "`<life a>` declares a life parameter.");
+                return false;
+            }
+            let h = pctx::node_here(p, node::AST_PARAM);
+            node::set_sval(p.nodes, h, pctx::cur_word(p));
+            node::set_ival(p.nodes, h, 1);   // marks a life param
+            pctx::advance(p);
+            node::push_kid(p.nodes, onto, h);
+        } else {
+            if (!pctx::at(&*p, token::TokKind::Ident)) {
+                pctx::syntax_stop(p, "SYN-05", "a generic parameter needs a name",
+                                 "`<T: copy + eq>` declares a type parameter with optional bounds.");
+                return false;
+            }
+            let h = pctx::node_here(p, node::AST_PARAM);
+            let mut name: str::String = str::String::make();
+            name.push(pctx::cur_word(p));
+            pctx::advance(p);
+            if (pctx::eat(p, token::TokKind::Colon)) {
+                // Bounds are the compiler-known markers: `copy` (a keyword),
+                // `eq`/`ord` (plain identifiers, §5.8).
+                name.push(":");
+                let mut first = true;
+                while (true) {
+                    let is_bound = pctx::at_kw(&*p, "copy")
+                        || (pctx::at(&*p, token::TokKind::Ident)
+                            && (pctx::cur_word(p) == "eq" || pctx::cur_word(p) == "ord"));
+                    if (!is_bound) {
+                        pctx::syntax_stop(p, "SYN-05", "a bound must be copy, eq, or ord",
+                                         "Bounds are the compiler-known markers copy, eq, ord (§5.8).");
+                        return false;
+                    }
+                    if (!first) { name.push(" + "); }
+                    name.push(pctx::cur_word(p));
+                    first = false;
+                    pctx::advance(p);
+                    if (!pctx::eat(p, token::TokKind::Plus)) { break; }
+                }
+            }
+            node::set_sval(p.nodes, h, name.as_str());
+            node::push_kid(p.nodes, onto, h);
+        }
+        if (!pctx::eat(p, token::TokKind::Comma)) { break; }
+    }
+    if (!parse::eat_gt_split(p)) {
+        pctx::syntax_stop(p, "SYN-05", "expected `>` to close the generic parameter list",
+                         "Generic parameter lists close with `>`: <T, life a>.");
+        return false;
+    }
+    return true;
+}
+
+// [copy] struct ID [generics] { { field } }
+export fn parse_struct(p: &mut pctx::Parser, is_copy: i64, start: usize) -> i32 {
+    pctx::advance(p);   // struct
+    if (!pctx::at(&*p, token::TokKind::Ident)) {
+        pctx::syntax_stop(p, "SYN-05", "a struct needs a name",
+                         "`struct Name { field: type; }`");
+        return -1;
+    }
+    let h = pctx::node_at(p, node::AST_STRUCT, start);
+    node::set_sval(p.nodes, h, pctx::cur_word(p));
+    node::set_ival(p.nodes, h, is_copy);
+    pctx::advance(p);
+    if (pctx::at(&*p, token::TokKind::Lt)) {
+        if (!parse_generics(p, h)) { return -1; }
+    }
+    if (!pctx::expect(p, token::TokKind::LBrace, "add `{` to open the struct body")) {
+        return -1;
+    }
+    while (!pctx::at(&*p, token::TokKind::RBrace)
+           && !pctx::at(&*p, token::TokKind::Eof)) {
+        if (!pctx::at(&*p, token::TokKind::Ident)) {
+            pctx::syntax_stop(p, "SYN-05", "a field needs a name",
+                             "Fields are `name: type;` (§6.4).");
+            return -1;
+        }
+        let f = pctx::node_here(p, node::AST_FIELD);
+        node::set_sval(p.nodes, f, pctx::cur_word(p));
+        pctx::advance(p);
+        if (!pctx::expect(p, token::TokKind::Colon, "add `: type` to the field")) {
+            return -1;
+        }
+        let t = parse::parse_type(p);
+        if (t < 0) { return -1; }
+        node::set_a(p.nodes, f, t);
+        if (!pctx::expect_semi(p)) { return -1; }
+        pctx::end_at(p, f, pctx::prev(&*p).end);
+        node::push_kid2(p.nodes, h, f);
+    }
+    if (!pctx::expect(p, token::TokKind::RBrace, "add `}` to close the struct")) {
+        return -1;
+    }
+    pctx::end_at(p, h, pctx::prev(&*p).end);
+    return h;
+}
+
+// [copy] enum ID [generics] { variant { , variant } [ , ] }
+export fn parse_enum(p: &mut pctx::Parser, is_copy: i64, start: usize) -> i32 {
+    pctx::advance(p);   // enum
+    if (!pctx::at(&*p, token::TokKind::Ident)) {
+        pctx::syntax_stop(p, "SYN-05", "an enum needs a name",
+                         "`enum Name { Variant, ... }`");
+        return -1;
+    }
+    let h = pctx::node_at(p, node::AST_ENUM, start);
+    node::set_sval(p.nodes, h, pctx::cur_word(p));
+    node::set_ival(p.nodes, h, is_copy);
+    pctx::advance(p);
+    if (pctx::at(&*p, token::TokKind::Lt)) {
+        if (!parse_generics(p, h)) { return -1; }
+    }
+    if (!pctx::expect(p, token::TokKind::LBrace, "add `{` to open the enum body")) {
+        return -1;
+    }
+    while (!pctx::at(&*p, token::TokKind::RBrace)
+           && !pctx::at(&*p, token::TokKind::Eof)) {
+        if (!pctx::at(&*p, token::TokKind::Ident)) {
+            pctx::syntax_stop(p, "SYN-05", "a variant needs a name",
+                             "Variants are `Name` or `Name(type, ...)`.");
+            return -1;
+        }
+        let v = pctx::node_here(p, node::AST_VARIANT);
+        node::set_sval(p.nodes, v, pctx::cur_word(p));
+        pctx::advance(p);
+        if (pctx::eat(p, token::TokKind::LParen)) {
+            while (true) {
+                let pt = parse::parse_type(p);
+                if (pt < 0) { return -1; }
+                node::push_kid(p.nodes, v, pt);
+                if (!pctx::eat(p, token::TokKind::Comma)) { break; }
+                if (pctx::at(&*p, token::TokKind::RParen)) { break; }
+            }
+            if (!pctx::expect(p, token::TokKind::RParen,
+                             "add `)` to close the payload list")) {
+                return -1;
+            }
+        }
+        pctx::end_at(p, v, pctx::prev(&*p).end);
+        node::push_kid2(p.nodes, h, v);
+        if (!pctx::eat(p, token::TokKind::Comma)) { break; }
+    }
+    if (!pctx::expect(p, token::TokKind::RBrace, "add `}` to close the enum")) {
+        return -1;
+    }
+    pctx::end_at(p, h, pctx::prev(&*p).end);
+    return h;
+}
+
+// const NAME ":" type "=" expr ";"
+export fn parse_const(p: &mut pctx::Parser, is_export: i64, start: usize) -> i32 {
+    pctx::advance(p);   // const
+    if (!pctx::at(&*p, token::TokKind::Ident)) {
+        pctx::syntax_stop(p, "SYN-05", "a constant needs a name",
+                         "`const NAME: type = value;` (§6.2)");
+        return -1;
+    }
+    let h = pctx::node_at(p, node::AST_CONST, start);
+    node::set_sval(p.nodes, h, pctx::cur_word(p));
+    node::set_ival(p.nodes, h, is_export);
+    pctx::advance(p);
+    if (!pctx::expect(p, token::TokKind::Colon, "add `: type` to the constant")) {
+        return -1;
+    }
+    let t = parse::parse_type(p);
+    if (t < 0) { return -1; }
+    node::set_a(p.nodes, h, t);
+    if (!pctx::expect(p, token::TokKind::Assign, "add `= value` to the constant")) {
+        return -1;
+    }
+    let v = parse::parse_expr(p);
+    if (v < 0) { return -1; }
+    node::set_b(p.nodes, h, v);
+    if (!pctx::expect_semi(p)) { return -1; }
+    pctx::end_at(p, h, pctx::prev(&*p).end);
+    return h;
+}
+
+// methods [generics] Type [<targs>] { { [export] fn } }
+export fn parse_methods(p: &mut pctx::Parser) -> i32 {
+    let start = pctx::cur(&*p).start;
+    pctx::advance(p);   // methods
+    let h = pctx::node_at(p, node::AST_METHODS, start);
+    if (pctx::at(&*p, token::TokKind::Lt)) {
+        if (!parse_generics(p, h)) { return -1; }
+    }
+    if (!pctx::at(&*p, token::TokKind::Ident)) {
+        pctx::syntax_stop(p, "SYN-05", "`methods` needs a type name",
+                         "`methods Type { ... }` adds methods to a type in the same module (§6.6).");
+        return -1;
+    }
+    node::set_sval(p.nodes, h, parse::parse_path_name(p));
+    if (pctx::at(&*p, token::TokKind::Lt)) {
+        // The methods type header's own args (`methods<T> Stack<T>`) go in
+        // `kids3`, so they do not collide with the block's generics in `kids`.
+        pctx::advance(p);
+        while (true) {
+            let t = parse::parse_type(p);
+            if (t < 0) { return -1; }
+            node::push_kid3(p.nodes, h, t);
+            if (!pctx::eat(p, token::TokKind::Comma)) { break; }
+        }
+        if (!pctx::expect(p, token::TokKind::Gt,
+                         "add `>` to close the type arguments")) {
+            return -1;
+        }
+    }
+    if (!pctx::expect(p, token::TokKind::LBrace,
+                     "add `{` to open the methods block")) {
+        return -1;
+    }
+    while (!pctx::at(&*p, token::TokKind::RBrace)
+           && !pctx::at(&*p, token::TokKind::Eof)) {
+        let mut is_export: i64 = 0;
+        if (pctx::eat_kw(p, "export")) { is_export = 1; }
+        if (!pctx::at_kw(&*p, "fn")) {
+            pctx::syntax_stop(p, "SYN-05", "only `fn` declarations live in a methods block",
+                             "A methods block holds `[export] fn name(...) { ... }` (§6.6).");
+            return -1;
+        }
+        let f = parse_fn(p, pctx::cur(&*p).start);
+        if (f < 0) { return -1; }
+        node::set_ival(p.nodes, f, is_export);
+        node::push_kid2(p.nodes, h, f);
+    }
+    if (!pctx::expect(p, token::TokKind::RBrace,
+                     "add `}` to close the methods block")) {
+        return -1;
+    }
+    pctx::end_at(p, h, pctx::prev(&*p).end);
+    return h;
+}
+
+// extern STRING fn name(params) [-> type] ";"
+export fn parse_extern(p: &mut pctx::Parser) -> i32 {
+    let start = pctx::cur(&*p).start;
+    pctx::advance(p);   // extern
+    // The ABI is part of the declaration, never implicit (§6.8).
+    if (!pctx::at(&*p, token::TokKind::Str)) {
+        pctx::syntax_stop(p, "SYN-05", "a foreign function needs an ABI",
+                         "`extern` must name the calling convention: `extern \"C\" fn ...`.");
+        return -1;
+    }
+    let abi = pctx::cur(&*p).text;
+    let abi_start = pctx::cur(&*p).start;
+    pctx::advance(p);
+    if (!pctx::eat_kw(p, "fn")) {
+        pctx::syntax_stop(p, "SYN-05", "`extern \"C\" fn` declares a foreign function",
+                         "`extern \"C\" fn name(params) -> type;` — external declarations end with `;`, no body.");
+        return -1;
+    }
+    if (!pctx::at(&*p, token::TokKind::Ident)) {
+        pctx::syntax_stop(p, "SYN-05", "a foreign function needs a name",
+                         "`extern \"C\" fn name(params) -> type;`");
+        return -1;
+    }
+    let h = pctx::node_at(p, node::AST_EXTERN_FN, start);
+    node::set_sval(p.nodes, h, pctx::cur_word(p));
+    node::set_abi(p.nodes, h, abi);
+    // harmony-base records the ABI string's byte offset in `ival` (the dump
+    // prints it as `#N` and diagnostics point at it).
+    node::set_ival(p.nodes, h, abi_start as i64);
+    pctx::advance(p);
+    if (!pctx::expect(p, token::TokKind::LParen, "add `(` for the parameters")) {
+        return -1;
+    }
+    if (!parse_params(p, h)) { return -1; }
+    if (pctx::at(&*p, token::TokKind::Arrow)) {
+        pctx::advance(p);
+        let t = parse::parse_type(p);
+        if (t < 0) { return -1; }
+        node::set_a(p.nodes, h, t);
+    }
+    if (!pctx::expect_semi(p)) { return -1; }
+    pctx::end_at(p, h, pctx::prev(&*p).end);
+    return h;
+}
+
+// One item. `is_export` is 1 when the caller consumed `export`.
+fn parse_item(p: &mut pctx::Parser, is_export: i64) -> i32 {
+    let start = pctx::cur(&*p).start;
+
+    // import "path";
+    if (pctx::at_kw(&*p, "import")) {
+        pctx::advance(p);
+        if (!pctx::at(&*p, token::TokKind::Str)) {
+            pctx::syntax_stop(p, "SYN-05", "import needs a quoted path",
+                             "import \"geometry.harmony\"; — one file is one module (§6.7).");
+            return -1;
+        }
+        let h = pctx::node_at(p, node::AST_IMPORT, start);
+        node::set_sval(p.nodes, h, pctx::cur(&*p).text);
+        node::set_ival(p.nodes, h, is_export);
+        pctx::advance(p);
+        if (!pctx::expect_semi(p)) { return -1; }
+        pctx::end_at(p, h, pctx::prev(&*p).end);
+        return h;
+    }
+
+    // unchecked("reason") fn ... — an unchecked function (§13.1). The
+    // contract is stored on `c`, so `audit` and callers' diagnostics show it.
+    if (pctx::at_kw(&*p, "unchecked")
+        && pctx::peek(&*p, 1).kind == token::TokKind::LParen) {
+        let reason = stmt::parse_unck_head(p);
+        if (reason == "") { return -1; }
+        if (!pctx::at_kw(&*p, "fn")) {
+            pctx::syntax_stop(p, "SYN-05", "an `unchecked` contract attaches to a function",
+                             "Spell it `unchecked(\"why\") fn name(...) { ... }`; a bare block is `unchecked(\"why\") { ... }` (§13.1).");
+            return -1;
+        }
+        let f = parse_fn(p, pctx::cur(&*p).start);
+        if (f < 0) { return -1; }
+        let mut flags: i64 = 1;            // bit 0: an `unchecked fn`
+        if (is_export != 0) { flags = 3; } // bit 1: exported
+        node::set_ival(p.nodes, f, flags);
+        let c = pctx::node_here(p, node::AST_STRING_LIT);
+        node::set_sval(p.nodes, c, reason);
+        node::set_c(p.nodes, f, c);
+        return f;
+    }
+
+    if (pctx::at_kw(&*p, "fn")) {
+        let f = parse_fn(p, start);
+        if (f < 0) { return -1; }
+        if (is_export != 0) { node::set_ival(p.nodes, f, 2); }
+        return f;
+    }
+
+    if (pctx::at_kw(&*p, "const")) {
+        return parse_const(p, is_export, start);
+    }
+
+    // [copy] struct / [copy] enum, with `export` and `copy` in either order.
+    if (pctx::at_kw(&*p, "copy") || pctx::at_kw(&*p, "export")
+        || pctx::at_kw(&*p, "struct") || pctx::at_kw(&*p, "enum")) {
+        let mut is_copy: i64 = 0;
+        let mut exported: i64 = is_export;
+        while (pctx::at_kw(&*p, "copy") || pctx::at_kw(&*p, "export")) {
+            if (pctx::at_kw(&*p, "copy")) {
+                is_copy = 1;
+            } else {
+                exported = 1;
+            }
+            pctx::advance(p);
+            if (!(pctx::at_kw(&*p, "struct") || pctx::at_kw(&*p, "enum")
+                  || pctx::at_kw(&*p, "copy") || pctx::at_kw(&*p, "export"))) {
+                pctx::syntax_stop(p, "SYN-05", "expected `struct` or `enum` after the markers",
+                                 "Spell it `export copy struct Name { ... }` or `copy enum Name { ... }` (§6.1).");
+                return -1;
+            }
+        }
+        if (pctx::at_kw(&*p, "struct")) {
+            let n = parse_struct(p, is_copy, start);
+            if (n < 0) { return -1; }
+            if (exported != 0) {
+                let mut nn = node::get(&*p.nodes, n);
+                nn.ival = nn.ival | 2;
+                node::put(p.nodes, n, nn);
+            }
+            return n;
+        }
+        if (pctx::at_kw(&*p, "enum")) {
+            let n = parse_enum(p, is_copy, start);
+            if (n < 0) { return -1; }
+            if (exported != 0) {
+                let mut nn = node::get(&*p.nodes, n);
+                nn.ival = nn.ival | 2;
+                node::put(p.nodes, n, nn);
+            }
+            return n;
+        }
+    }
+
+    if (pctx::at_kw(&*p, "methods")) { return parse_methods(p); }
+    if (pctx::at_kw(&*p, "extern")) { return parse_extern(p); }
+
+    pctx::syntax_stop(p, "SYN-05", "expected an item",
+                     "Top level holds imports and items: fn, const, struct, enum, methods, extern fn (§6, §18).");
+    return -1;
+}
+
+// The program entry point: `{ item }` EOF. Returns the AST_PROGRAM handle,
+// or -1 after a stop that could not recover. Recovery mirrors the block: a
+// failed item skips to the next `;` (or `}`/EOF) and keeps going, so several
+// syntax errors are reported in one run.
+export fn parse_program(p: &mut pctx::Parser) -> i32 {
+    let h = pctx::node_here(p, node::AST_PROGRAM);
+    while (!pctx::at(&*p, token::TokKind::Eof)) {
+        let before = p.pos;
+        let mut is_export: i64 = 0;
+        if (pctx::eat_kw(p, "export")) { is_export = 1; }
+        let it = parse_item(p, is_export);
+        if (it < 0) {
+            pctx::sync(p);
+            p.panic = false;
+            if (p.pos == before) { pctx::advance(p); }
+            continue;
+        }
+        node::push_kid(p.nodes, h, it);
+        p.panic = false;
+    }
+    pctx::end_at(p, h, pctx::prev(&*p).end);
+    return h;
+}

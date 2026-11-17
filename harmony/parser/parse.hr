@@ -1,0 +1,1005 @@
+// harmony/parser/parse.hr — the recursive-descent core (roadmap/harmony R3).
+//
+// Types, expressions, and primaries are *mutually* recursive: an array length
+// is an expression, `sizeof` takes a type, and a primary may be a struct
+// literal whose field values are expressions. Harmony has no forward
+// declarations and rejects import cycles, so these three grammars live in one
+// module. The statement and item grammars import it one-way (stmt.hr,
+// item.hr), which keeps this file to the genuinely recursive part.
+//
+// The precedence chain, lowest to highest (§18):
+//   range -> or(||) -> and(&&) -> cmp(nonassoc) -> bor(|) -> bxor(^)
+//   -> band(&) -> shift(<< >>) -> add(+ -) -> mul(* / %) -> as-cast
+//   -> unary(- ! ~ * & &mut raw) -> postfix(call, index, field, generics).
+//
+// `*` and `&` are prefix or infix by position (§18); binary nodes carry the
+// operator spelling in `sval`. `x.narrow<u8>()` vs `a.b < c`: generic args
+// after a field name only when the matching `>` is followed by `(`, which is
+// the one extra token of lookahead the spec allows.
+import "../../library/core/str.hr";
+import "../../harmony/lexer/token.hr";
+import "../../harmony/ast/node.hr";
+import "pctx.hr";
+
+// ===========================================================================
+// Types (§18)
+//
+//   ref_type   = "&" [ "mut" ] [ life_use ] type       -> AST_TYPE_REF
+//   raw_type   = "raw" [ "mut" ] type                  -> AST_TYPE_RAW
+//   array_type = "[" type ";" expr "]"                 -> AST_TYPE_ARRAY
+//   slice_type = "[" type "]"                          -> AST_TYPE_SLICE
+//   path_type  = ID { "::" ID } [ "<" targ+ ">" ]      -> AST_TYPE_NAME
+//
+// `life` is contextual (§4.2): only a keyword inside a type or generic list,
+// so here it is a plain identifier followed by `(`.
+// ===========================================================================
+
+// `life` "(" ID|static ")" -> "life(a)". The cursor sits on the `life`
+// identifier. Returns the synthesized string, or "" after a stop.
+export fn parse_life_use(p: &mut pctx::Parser) -> &str {
+    let mut out: str::String = str::String::make();
+    out.push("life(");
+    pctx::advance(p);   // life
+    if (!pctx::expect(p, token::TokKind::LParen, "add `(` after `life`")) {
+        return "";
+    }
+    if (pctx::at(&*p, token::TokKind::Ident) || pctx::at_kw(&*p, "static")) {
+        out.push(pctx::cur_word(p));
+        pctx::advance(p);
+    } else {
+        pctx::syntax_stop(p, "SYN-05", "a life needs a name",
+                         "Write `life(a)`, or `life(static)` for the whole program.");
+        return "";
+    }
+    if (!pctx::expect(p, token::TokKind::RParen, "add `)` to close `life(...)`")) {
+        return "";
+    }
+    out.push(")");
+    return out.as_str();
+}
+
+// `ID { "::" ID }` joined into one string ("A::B"). The cursor sits on an
+// identifier (or a keyword, which the grammar allows as a path segment).
+export fn parse_path_name(p: &mut pctx::Parser) -> &str {
+    if (!pctx::at(&*p, token::TokKind::Ident) && !pctx::at(&*p, token::TokKind::Keyword)) {
+        pctx::syntax_stop(p, "SYN-05", "expected a name",
+                         "A path starts with an identifier here.");
+        return "";
+    }
+    let mut out: str::String = str::String::make();
+    out.push(pctx::cur_word(p));
+    pctx::advance(p);
+    while (pctx::at(&*p, token::TokKind::DColon)) {
+        pctx::advance(p);
+        if (!pctx::at(&*p, token::TokKind::Ident) && !pctx::at(&*p, token::TokKind::Keyword)) {
+            pctx::syntax_stop(p, "SYN-05", "expected a name after `::`",
+                             "Write the second half of the path: `A::B`.");
+            return "";
+        }
+        out.push("::");
+        out.push(pctx::cur_word(p));
+        pctx::advance(p);
+    }
+    return out.as_str();
+}
+
+// Consumes one `>` even when the lexer produced `>>` or `>=` (nested
+// generics: `Vec<Vec<i32>>`). Rewrites the current token in place to the
+// remaining half, matching harmony-base's split.
+export fn eat_gt_split(p: &mut pctx::Parser) -> bool {
+    if (pctx::at(&*p, token::TokKind::Gt)) { pctx::advance(p); return true; }
+    let t = pctx::cur(&*p);
+    if (t.kind == token::TokKind::Shr || t.kind == token::TokKind::Ge) {
+        let mut nt = t;
+        nt.kind = token::TokKind::Gt;
+        nt.text = ">";
+        nt.end = nt.start + 1;
+        p.toks.set(p.pos, nt);
+        return true;
+    }
+    return false;
+}
+
+// `<` targ+ `>` — the type arguments become child nodes of `onto`.
+export fn parse_generic_args(p: &mut pctx::Parser, onto: i32) -> bool {
+    if (!pctx::expect(p, token::TokKind::Lt, "add `<` to open the type arguments")) {
+        return false;
+    }
+    let mut count: usize = 0;
+    while (!pctx::at(&*p, token::TokKind::Gt) && !pctx::at(&*p, token::TokKind::Shr)) {
+        if (count > 0) {
+            if (!pctx::expect(p, token::TokKind::Comma, "add `,` between type arguments")) {
+                return false;
+            }
+            if (pctx::at(&*p, token::TokKind::Gt) || pctx::at(&*p, token::TokKind::Shr)) { break; }
+        }
+        // `<life a>` is a lifetime parameter, not a type.
+        if (pctx::at(&*p, token::TokKind::Ident) && pctx::cur_word(p) == "life"
+            && pctx::peek(&*p, 1).kind == token::TokKind::LParen) {
+            let h = pctx::node_here(p, node::AST_TYPE_NAME);
+            node::set_sval(p.nodes, h, parse_life_use(p));
+            node::set_ival(p.nodes, h, 1);
+            node::push_kid(p.nodes, onto, h);
+        } else {
+            let t = parse_type(p);
+            if (t < 0) { return false; }
+            node::push_kid(p.nodes, onto, t);
+        }
+        count += 1;
+        if (pctx::at(&*p, token::TokKind::Comma)) { continue; }
+        break;
+    }
+    if (!eat_gt_split(p)) {
+        pctx::syntax_stop(p, "SYN-05", "unclosed type arguments",
+                         "Add `>` to close the type arguments.");
+        return false;
+    }
+    return true;
+}
+
+// One type. Nested forms re-enter here, which is where the depth guard lives.
+export fn parse_type(p: &mut pctx::Parser) -> i32 {
+    if (!pctx::depth_enter(p)) { return -1; }
+    let h = parse_type_core(p);
+    pctx::depth_leave(p);
+    return h;
+}
+
+fn parse_type_core(p: &mut pctx::Parser) -> i32 {
+    let start = pctx::cur(&*p).start;
+
+    // Reference: `&` [mut] [life(...)] type
+    if (pctx::at(&*p, token::TokKind::Amp)) {
+        pctx::advance(p);
+        let mut is_mut: i64 = 0;
+        if (pctx::at_kw(&*p, "mut")) { pctx::advance(p); is_mut = 1; }
+        let h = pctx::node_at(p, node::AST_TYPE_REF, start);
+        node::set_ival(p.nodes, h, is_mut);
+        // `life` is contextual: an identifier followed by `(`.
+        if (pctx::at(&*p, token::TokKind::Ident) && pctx::cur_word(p) == "life"
+            && pctx::peek(&*p, 1).kind == token::TokKind::LParen) {
+            node::set_sval(p.nodes, h, parse_life_use(p));
+        }
+        let inner = parse_type(p);
+        if (inner < 0) { return -1; }
+        node::set_a(p.nodes, h, inner);
+        pctx::end_at(p, h, pctx::prev(&*p).end);
+        return h;
+    }
+
+    // Raw pointer: `raw` [mut] type
+    if (pctx::at_kw(&*p, "raw")) {
+        pctx::advance(p);
+        let mut is_mut: i64 = 0;
+        if (pctx::at_kw(&*p, "mut")) { pctx::advance(p); is_mut = 1; }
+        let h = pctx::node_at(p, node::AST_TYPE_RAW, start);
+        node::set_ival(p.nodes, h, is_mut);
+        let inner = parse_type(p);
+        if (inner < 0) { return -1; }
+        node::set_a(p.nodes, h, inner);
+        pctx::end_at(p, h, pctx::prev(&*p).end);
+        return h;
+    }
+
+    // Array `[T; N]` or slice `[T]`
+    if (pctx::at(&*p, token::TokKind::LBracket)) {
+        pctx::advance(p);
+        let h = pctx::node_at(p, node::AST_TYPE_SLICE, start);
+        let inner = parse_type(p);
+        if (inner < 0) { return -1; }
+        node::set_a(p.nodes, h, inner);
+        if (pctx::eat(p, token::TokKind::Semi)) {
+            let mut n = node::get(&*p.nodes, h);
+            n.kind = node::AST_TYPE_ARRAY;
+            node::put(p.nodes, h, n);
+            let len = parse_expr(p);
+            if (len < 0) { return -1; }
+            node::set_b(p.nodes, h, len);
+        }
+        if (!pctx::expect(p, token::TokKind::RBracket, "add `]` to close the type")) {
+            return -1;
+        }
+        pctx::end_at(p, h, pctx::prev(&*p).end);
+        return h;
+    }
+
+    // Path type: ID { :: ID } [ < targs > ]
+    let name = parse_path_name(p);
+    if (name == "") { return -1; }
+    let h = pctx::node_at(p, node::AST_TYPE_NAME, start);
+    node::set_sval(p.nodes, h, name);
+    if (pctx::at(&*p, token::TokKind::Lt)) {
+        // In type position `<` after a path is always type arguments.
+        if (!parse_generic_args(p, h)) { return -1; }
+    }
+    pctx::end_at(p, h, pctx::prev(&*p).end);
+    return h;
+}
+
+// ===========================================================================
+// Expressions (§18)
+// ===========================================================================
+
+// A binary node from `l op r`.
+fn binary(p: &mut pctx::Parser, op: &str, l: i32, r: i32) -> i32 {
+    let ln = node::get(&*p.nodes, l);
+    let h = pctx::node_at(p, node::AST_BINARY, ln.start);
+    node::set_sval(p.nodes, h, op);
+    node::set_a(p.nodes, h, l);
+    node::set_b(p.nodes, h, r);
+    pctx::end_at(p, h, pctx::prev(&*p).end);
+    return h;
+}
+
+fn next_is_lparen(p: &pctx::Parser, i: usize) -> bool {
+    if (i + 1 >= p.toks.len()) { return false; }
+    return p.toks.get(i + 1).kind == token::TokKind::LParen;
+}
+
+fn next_is_brace_or_path(p: &pctx::Parser, i: usize) -> bool {
+    if (i + 1 >= p.toks.len()) { return false; }
+    let k = p.toks.get(i + 1).kind;
+    return k == token::TokKind::LBrace || k == token::TokKind::DColon;
+}
+
+// The generic-call lookahead: is the `<` at the cursor the start of type
+// arguments whose matching `>` is followed by `(`? A `;`/`}`/EOF before the
+// match means it is a comparison, not generics.
+export fn looks_like_generic_call(p: &pctx::Parser) -> bool {
+    let mut depth: i32 = 0;
+    let mut i: usize = p.pos;
+    while (i < p.toks.len()) {
+        let k = p.toks.get(i).kind;
+        if (k == token::TokKind::Lt) {
+            depth += 1;
+        } else if (k == token::TokKind::Gt) {
+            depth -= 1;
+            if (depth == 0) { return next_is_lparen(p, i); }
+        } else if (k == token::TokKind::Shr) {
+            // `>>` closes two levels at once (`Vec<Vec<T>>`).
+            depth -= 2;
+            if (depth <= 0) { return next_is_lparen(p, i); }
+        } else if (k == token::TokKind::Semi || k == token::TokKind::Eof
+                   || k == token::TokKind::RBrace) {
+            return false;
+        }
+        i += 1;
+    }
+    return false;
+}
+
+// Is the `<...>` at the cursor a generic *type* use (matching `>` followed by
+// `{` or `::`)? `Box<i32> { ... }`, `Opt<i32>::Some(3)`. The §5.8 companion
+// to `looks_like_generic_call`.
+export fn looks_like_generic_type_use(p: &pctx::Parser) -> bool {
+    let mut depth: i32 = 0;
+    let mut i: usize = p.pos;
+    while (i < p.toks.len()) {
+        let k = p.toks.get(i).kind;
+        if (k == token::TokKind::Lt) {
+            depth += 1;
+        } else if (k == token::TokKind::Gt) {
+            depth -= 1;
+            if (depth == 0) { return next_is_brace_or_path(p, i); }
+        } else if (k == token::TokKind::Shr) {
+            depth -= 2;
+            if (depth <= 0) { return next_is_brace_or_path(p, i); }
+        } else if (k == token::TokKind::Semi || k == token::TokKind::Eof
+                   || k == token::TokKind::RBrace) {
+            return false;
+        }
+        i += 1;
+    }
+    return false;
+}
+
+// `(` [ expr { , expr } [ , ] ] `)`
+fn parse_call_args(p: &mut pctx::Parser) -> vec::Vec<i32> {
+    let args: vec::Vec<i32> = vec::Vec<i32>::make();
+    pctx::advance(p);   // (
+    if (pctx::eat(p, token::TokKind::RParen)) { return args; }
+    while (true) {
+        let e = parse_expr(p);
+        args.push(e);
+        if (e < 0) { break; }
+        if (!pctx::eat(p, token::TokKind::Comma)) { break; }
+        if (pctx::at(&*p, token::TokKind::RParen)) { break; }   // trailing comma
+    }
+    pctx::expect(p, token::TokKind::RParen, "add `)` to close the call");
+    return args;
+}
+
+// True when the token cannot start an expression, so a range bound is absent
+// (`a[..]`, `a[..3]`).
+fn at_mult_end(p: &pctx::Parser) -> bool {
+    let k = pctx::cur(p).kind;
+    if (k == token::TokKind::RParen || k == token::TokKind::RBracket) { return true; }
+    if (k == token::TokKind::Comma || k == token::TokKind::Semi) { return true; }
+    if (k == token::TokKind::Eof) { return true; }
+    return false;
+}
+
+// range_expr = [ or ] ( (".." | "..=") [ or ] ) | or
+//
+// An open start (`a[..3]`, `a[..]`) begins with the range operator itself, so
+// the node's `a` is empty; an open end (`a[3..]`) follows the same rule.
+export fn parse_range_expr(p: &mut pctx::Parser) -> i32 {
+    // An open-start range starts here, with no left operand.
+    if (pctx::at(&*p, token::TokKind::Range)
+        || pctx::at(&*p, token::TokKind::RangeInclusive)) {
+        let op = pctx::cur(&*p).text;
+        let start = pctx::cur(&*p).start;
+        pctx::advance(p);
+        let h = pctx::node_at(p, node::AST_BINARY, start);
+        node::set_sval(p.nodes, h, op);
+        if (!at_mult_end(&*p)) {
+            let r = parse_or(p);
+            if (r < 0) { return -1; }
+            node::set_b(p.nodes, h, r);
+        }
+        pctx::end_at(p, h, pctx::prev(&*p).end);
+        return h;
+    }
+    let l = parse_or(p);
+    if (l < 0) { return -1; }
+    if (pctx::at(&*p, token::TokKind::Range) || pctx::at(&*p, token::TokKind::RangeInclusive)) {
+        let op = pctx::cur(&*p).text;
+        let start = node::get(&*p.nodes, l).start;
+        pctx::advance(p);
+        let h = pctx::node_at(p, node::AST_BINARY, start);
+        node::set_sval(p.nodes, h, op);
+        node::set_a(p.nodes, h, l);
+        // An open end (`a[3..]`) has no right operand.
+        if (!at_mult_end(&*p)) {
+            let r = parse_or(p);
+            if (r < 0) { return -1; }
+            node::set_b(p.nodes, h, r);
+        }
+        pctx::end_at(p, h, pctx::prev(&*p).end);
+        return h;
+    }
+    return l;
+}
+
+// The expression entry point.
+export fn parse_expr(p: &mut pctx::Parser) -> i32 {
+    return parse_range_expr(p);
+}
+
+// or_expr = and { "||" and }
+fn parse_or(p: &mut pctx::Parser) -> i32 {
+    let mut l = parse_and(p);
+    if (l < 0) { return -1; }
+    while (pctx::at(&*p, token::TokKind::OrOr)) {
+        pctx::advance(p);
+        let r = parse_and(p);
+        if (r < 0) { return -1; }
+        l = binary(p, "||", l, r);
+    }
+    return l;
+}
+
+// and_expr = cmp { "&&" cmp }
+fn parse_and(p: &mut pctx::Parser) -> i32 {
+    let mut l = parse_cmp(p);
+    if (l < 0) { return -1; }
+    while (pctx::at(&*p, token::TokKind::AndAnd)) {
+        pctx::advance(p);
+        let r = parse_cmp(p);
+        if (r < 0) { return -1; }
+        l = binary(p, "&&", l, r);
+    }
+    return l;
+}
+
+fn is_cmp_op(k: token::TokKind) -> bool {
+    if (k == token::TokKind::EqEq || k == token::TokKind::Neq) { return true; }
+    if (k == token::TokKind::Lt || k == token::TokKind::Le) { return true; }
+    if (k == token::TokKind::Gt || k == token::TokKind::Ge) { return true; }
+    return false;
+}
+
+// cmp_expr = bor [ cmp_op bor ]   (non-associative: `a < b < c` is an error)
+fn parse_cmp(p: &mut pctx::Parser) -> i32 {
+    let l = parse_bor(p);
+    if (l < 0) { return -1; }
+    if (is_cmp_op(pctx::cur(&*p).kind)) {
+        let op = pctx::cur(&*p).text;
+        pctx::advance(p);
+        let r = parse_bor(p);
+        if (r < 0) { return -1; }
+        let h = binary(p, op, l, r);
+        if (is_cmp_op(pctx::cur(&*p).kind)) {
+            pctx::syntax_stop(p, "TYPE-01", "comparisons do not chain",
+                             "`a < b < c` has no meaning; write `a < b && b < c`.");
+        }
+        return h;
+    }
+    return l;
+}
+
+// bor_expr = bxor { "|" bxor }
+fn parse_bor(p: &mut pctx::Parser) -> i32 {
+    let mut l = parse_bxor(p);
+    if (l < 0) { return -1; }
+    while (pctx::at(&*p, token::TokKind::Pipe)) {
+        pctx::advance(p);
+        let r = parse_bxor(p);
+        if (r < 0) { return -1; }
+        l = binary(p, "|", l, r);
+    }
+    return l;
+}
+
+// bxor_expr = band { "^" band }
+fn parse_bxor(p: &mut pctx::Parser) -> i32 {
+    let mut l = parse_band(p);
+    if (l < 0) { return -1; }
+    while (pctx::at(&*p, token::TokKind::Caret)) {
+        pctx::advance(p);
+        let r = parse_band(p);
+        if (r < 0) { return -1; }
+        l = binary(p, "^", l, r);
+    }
+    return l;
+}
+
+// band_expr = shift { "&" shift }
+fn parse_band(p: &mut pctx::Parser) -> i32 {
+    let mut l = parse_shift(p);
+    if (l < 0) { return -1; }
+    while (pctx::at(&*p, token::TokKind::Amp)) {
+        pctx::advance(p);
+        let r = parse_shift(p);
+        if (r < 0) { return -1; }
+        l = binary(p, "&", l, r);
+    }
+    return l;
+}
+
+// shift_expr = add { ("<<" | ">>") add }
+fn parse_shift(p: &mut pctx::Parser) -> i32 {
+    let mut l = parse_add(p);
+    if (l < 0) { return -1; }
+    while (pctx::at(&*p, token::TokKind::Shl) || pctx::at(&*p, token::TokKind::Shr)) {
+        let op = pctx::cur(&*p).text;
+        pctx::advance(p);
+        let r = parse_add(p);
+        if (r < 0) { return -1; }
+        l = binary(p, op, l, r);
+    }
+    return l;
+}
+
+// add_expr = mul { ("+" | "-") mul }
+fn parse_add(p: &mut pctx::Parser) -> i32 {
+    let mut l = parse_mul(p);
+    if (l < 0) { return -1; }
+    while (pctx::at(&*p, token::TokKind::Plus) || pctx::at(&*p, token::TokKind::Minus)) {
+        let op = pctx::cur(&*p).text;
+        pctx::advance(p);
+        let r = parse_mul(p);
+        if (r < 0) { return -1; }
+        l = binary(p, op, l, r);
+    }
+    return l;
+}
+
+// mul_expr = cast { ("*" | "/" | "%") cast }
+fn parse_mul(p: &mut pctx::Parser) -> i32 {
+    let mut l = parse_cast(p);
+    if (l < 0) { return -1; }
+    while (pctx::at(&*p, token::TokKind::Star) || pctx::at(&*p, token::TokKind::Slash)
+           || pctx::at(&*p, token::TokKind::Percent)) {
+        let op = pctx::cur(&*p).text;
+        pctx::advance(p);
+        let r = parse_cast(p);
+        if (r < 0) { return -1; }
+        l = binary(p, op, l, r);
+    }
+    return l;
+}
+
+// cast_expr = unary { "as" type }
+fn parse_cast(p: &mut pctx::Parser) -> i32 {
+    let mut e = parse_unary(p);
+    if (e < 0) { return -1; }
+    while (pctx::at_kw(&*p, "as")) {
+        pctx::advance(p);
+        let t = parse_type(p);
+        if (t < 0) { return -1; }
+        let ln = node::get(&*p.nodes, e);
+        let h = pctx::node_at(p, node::AST_AS, ln.start);
+        node::set_a(p.nodes, h, e);
+        node::set_b(p.nodes, h, t);
+        pctx::end_at(p, h, pctx::prev(&*p).end);
+        e = h;
+    }
+    return e;
+}
+
+// unary_expr = (- | ! | ~ | * | & [mut] | raw) unary | postfix
+fn parse_unary(p: &mut pctx::Parser) -> i32 {
+    let start = pctx::cur(&*p).start;
+    let k = pctx::cur(&*p).kind;
+    if (k == token::TokKind::Minus || k == token::TokKind::Not
+        || k == token::TokKind::Tilde) {
+        let op = pctx::cur(&*p).text;
+        pctx::advance(p);
+        let operand = parse_unary(p);
+        if (operand < 0) { return -1; }
+        let h = pctx::node_at(p, node::AST_UNARY, start);
+        node::set_sval(p.nodes, h, op);
+        node::set_a(p.nodes, h, operand);
+        pctx::end_at(p, h, pctx::prev(&*p).end);
+        return h;
+    }
+    if (k == token::TokKind::Star) {
+        pctx::advance(p);
+        let operand = parse_unary(p);
+        if (operand < 0) { return -1; }
+        let h = pctx::node_at(p, node::AST_DEREF, start);
+        node::set_a(p.nodes, h, operand);
+        pctx::end_at(p, h, pctx::prev(&*p).end);
+        return h;
+    }
+    if (k == token::TokKind::Amp) {
+        pctx::advance(p);
+        let mut is_mut: i64 = 0;
+        if (pctx::at_kw(&*p, "mut")) { pctx::advance(p); is_mut = 1; }
+        let operand = parse_unary(p);
+        if (operand < 0) { return -1; }
+        let h = pctx::node_at(p, node::AST_BORROW, start);
+        node::set_ival(p.nodes, h, is_mut);
+        node::set_a(p.nodes, h, operand);
+        pctx::end_at(p, h, pctx::prev(&*p).end);
+        return h;
+    }
+    // `raw(&x)` / `raw(&mut x)` — a raw-pointer cast (§13.5). Only when the
+    // next token is `(`; a bare `raw` is a type keyword, not an expression.
+    if (pctx::at_kw(&*p, "raw") && pctx::peek(&*p, 1).kind == token::TokKind::LParen) {
+        pctx::advance(p);   // raw
+        pctx::advance(p);   // (
+        let operand = parse_expr(p);
+        if (operand < 0) { return -1; }
+        pctx::expect(p, token::TokKind::RParen, "add `)` to close `raw(...)`");
+        let h = pctx::node_at(p, node::AST_RAW_EXPR, start);
+        node::set_a(p.nodes, h, operand);
+        pctx::end_at(p, h, pctx::prev(&*p).end);
+        return h;
+    }
+    return parse_postfix(p);
+}
+
+// postfix: primary { call args | [expr] | .ID[(args)] | .ID<targs>(args) }
+fn parse_postfix(p: &mut pctx::Parser) -> i32 {
+    let mut e = parse_primary(p);
+    if (e < 0) { return -1; }
+    while (true) {
+        if (pctx::at(&*p, token::TokKind::LParen)) {
+            let en = node::get(&*p.nodes, e);
+            let start = en.start;
+            let args = parse_call_args(p);
+            let h = pctx::node_at(p, node::AST_CALL, start);
+            node::set_a(p.nodes, h, e);
+            let mut i: usize = 0;
+            while (i < args.len()) {
+                node::push_kid(p.nodes, h, *args.get(i));
+                i += 1;
+            }
+            pctx::end_at(p, h, pctx::prev(&*p).end);
+            e = h;
+            continue;
+        }
+        if (pctx::at(&*p, token::TokKind::LBracket)) {
+            let en = node::get(&*p.nodes, e);
+            let start = en.start;
+            pctx::advance(p);
+            let idx = parse_expr(p);
+            if (idx < 0) { return -1; }
+            pctx::expect(p, token::TokKind::RBracket, "add `]` to close the index");
+            let h = pctx::node_at(p, node::AST_INDEX, start);
+            node::set_a(p.nodes, h, e);
+            node::set_b(p.nodes, h, idx);
+            pctx::end_at(p, h, pctx::prev(&*p).end);
+            e = h;
+            continue;
+        }
+        if (pctx::at(&*p, token::TokKind::Dot)) {
+            let en = node::get(&*p.nodes, e);
+            let start = en.start;
+            pctx::advance(p);
+            if (!pctx::at(&*p, token::TokKind::Ident)) {
+                pctx::syntax_stop(p, "SYN-05", "a field access needs a name",
+                                 "After `.` comes a field or a method name (§18).");
+                return -1;
+            }
+            let fname = pctx::cur_word(p);
+            pctx::advance(p);
+            let h = pctx::node_at(p, node::AST_FIELD_ACC, start);
+            node::set_a(p.nodes, h, e);
+            node::set_sval(p.nodes, h, fname);
+            // Generic method call `.name<targs>(...)`: only when the matching
+            // `>` is followed by `(` (the §18 lookahead rule).
+            if (pctx::at(&*p, token::TokKind::Lt) && looks_like_generic_call(&*p)) {
+                let marker = node::new_node(p.nodes, node::AST_TYPE_NAME);
+                node::set_sval(p.nodes, marker, "");
+                if (parse_generic_args(p, marker)) {
+                    let m = node::get(&*p.nodes, marker);
+                    let mut i: usize = 0;
+                    while (i < m.kids.len()) {
+                        node::push_kid2(p.nodes, h, *m.kids.get(i));
+                        i += 1;
+                    }
+                }
+            }
+            pctx::end_at(p, h, pctx::prev(&*p).end);
+            e = h;
+            continue;
+        }
+        break;
+    }
+    return e;
+}
+
+// ===========================================================================
+// Primaries and literals
+// ===========================================================================
+
+// Does the token start a literal?
+export fn at_literal(p: &pctx::Parser) -> bool {
+    let k = pctx::cur(p).kind;
+    if (k == token::TokKind::Int || k == token::TokKind::Float) { return true; }
+    if (k == token::TokKind::Str || k == token::TokKind::Char) { return true; }
+    if (k == token::TokKind::Byte) { return true; }
+    if (pctx::at_kw(p, "true") || pctx::at_kw(p, "false")) { return true; }
+    return false;
+}
+
+// A literal token becomes its node. `true`/`false` map to AST_BOOL_LIT;
+// integer and char/byte tokens carry their decoded value in `ival`.
+export fn parse_literal(p: &mut pctx::Parser) -> i32 {
+    let t = pctx::cur(&*p);
+    let h = pctx::node_here(p, node::AST_INT_LIT);
+    if (t.kind == token::TokKind::Float) {
+        let mut n = node::get(&*p.nodes, h);
+        n.kind = node::AST_FLOAT_LIT;
+        n.sval = t.text;
+        n.sfx = t.suffix;
+        node::put(p.nodes, h, n);
+        pctx::advance(p);
+        return h;
+    }
+    if (t.kind == token::TokKind::Str) {
+        let mut n = node::get(&*p.nodes, h);
+        n.kind = node::AST_STRING_LIT;
+        n.sval = t.text;
+        n.ival = t.ival;
+        node::put(p.nodes, h, n);
+        pctx::advance(p);
+        return h;
+    }
+    if (t.kind == token::TokKind::Char) {
+        let mut n = node::get(&*p.nodes, h);
+        n.kind = node::AST_CHAR_LIT;
+        n.ival = t.ival;
+        node::put(p.nodes, h, n);
+        pctx::advance(p);
+        return h;
+    }
+    if (t.kind == token::TokKind::Byte) {
+        // A byte literal is a `u8` integer, not a `char` (§4.3): the AST
+        // carries it as AST_INT_LIT with the `u8` suffix, matching
+        // harmony-base.
+        let mut n = node::get(&*p.nodes, h);
+        n.ival = t.ival;
+        n.sfx = "u8";
+        n.sval = "u8";
+        node::put(p.nodes, h, n);
+        pctx::advance(p);
+        return h;
+    }
+    if (t.kind == token::TokKind::Int) {
+        // harmony-base keeps the suffix in `sval` (the AST dump prints that),
+        // so an `int` node reads `int u8`. `sfx` carries it too for the
+        // checker, which is what a later stage reads.
+        let mut n = node::get(&*p.nodes, h);
+        n.ival = t.ival;
+        n.sfx = t.suffix;
+        n.sval = t.suffix;
+        node::put(p.nodes, h, n);
+        pctx::advance(p);
+        return h;
+    }
+    // true / false
+    let mut n = node::get(&*p.nodes, h);
+    n.kind = node::AST_BOOL_LIT;
+    n.ival = 1;
+    if (t.text == "false") { n.ival = 0; }
+    node::put(p.nodes, h, n);
+    pctx::advance(p);
+    return h;
+}
+
+// `Path { .field = value, ... }` — a struct literal. Named fields only; a
+// trailing comma is allowed (§4.4).
+fn parse_struct_init(p: &mut pctx::Parser, name: &str, tyargs: vec::Vec<i32>,
+                     start: usize) -> i32 {
+    let h = pctx::node_at(p, node::AST_STRUCT_INIT, start);
+    node::set_sval(p.nodes, h, name);
+    let mut i: usize = 0;
+    while (i < tyargs.len()) {
+        node::push_kid2(p.nodes, h, *tyargs.get(i));
+        i += 1;
+    }
+    pctx::advance(p);   // {
+    if (pctx::eat(p, token::TokKind::RBrace)) {
+        pctx::end_at(p, h, pctx::prev(&*p).end);
+        return h;
+    }
+    while (true) {
+        if (!pctx::eat(p, token::TokKind::Dot)) {
+            pctx::syntax_stop(p, "SYN-05", "a struct literal names its fields",
+                             "Write `.field = value` — every field is named (§6.4).");
+            return -1;
+        }
+        if (!pctx::at(&*p, token::TokKind::Ident)) {
+            pctx::syntax_stop(p, "SYN-05", "expected a field name",
+                             "After `.` comes the field name.");
+            return -1;
+        }
+        let fname = pctx::cur_word(p);
+        pctx::advance(p);
+        let fi = pctx::node_at(p, node::AST_FIELD_INIT, pctx::cur(&*p).start);
+        node::set_sval(p.nodes, fi, fname);
+        if (!pctx::expect(p, token::TokKind::Assign, "add `=` after the field name")) {
+            return -1;
+        }
+        let v = parse_expr(p);
+        if (v < 0) { return -1; }
+        node::set_a(p.nodes, fi, v);
+        pctx::end_at(p, fi, pctx::prev(&*p).end);
+        node::push_kid(p.nodes, h, fi);
+        if (!pctx::eat(p, token::TokKind::Comma)) { break; }
+        if (pctx::at(&*p, token::TokKind::RBrace)) { break; }   // trailing comma
+    }
+    if (!pctx::expect(p, token::TokKind::RBrace, "add `}` to close the struct literal")) {
+        return -1;
+    }
+    pctx::end_at(p, h, pctx::prev(&*p).end);
+    return h;
+}
+
+// A path-led expression: a plain value, a call, a generic call, a generic
+// enum/associated path, or a struct literal. This is the one place the
+// ambiguous `<` lookaheads are decided.
+fn parse_path_expr(p: &mut pctx::Parser) -> i32 {
+    let start = pctx::cur(&*p).start;
+    let name = parse_path_name(p);
+    if (name == "") { return -1; }
+    let tyargs: vec::Vec<i32> = vec::Vec<i32>::make();
+
+    if (pctx::at(&*p, token::TokKind::Lt)) {
+        // Three-way split, checked in this order:
+        //   1. `<...> {`  or `<...> ::`  -> a generic type use;
+        //   2. `<...> (`                  -> a generic call;
+        //   3. otherwise `<` is a comparison, so this path alone is the operand.
+        let use_ty = looks_like_generic_type_use(&*p);
+        let use_call = looks_like_generic_call(&*p);
+        if (use_ty || use_call) {
+            let marker = node::new_node(p.nodes, node::AST_TYPE_NAME);
+            node::set_sval(p.nodes, marker, "");
+            if (!parse_generic_args(p, marker)) { return -1; }
+            let m = node::get(&*p.nodes, marker);
+            let mut i: usize = 0;
+            while (i < m.kids.len()) {
+                tyargs.push(*m.kids.get(i));
+                i += 1;
+            }
+            if (use_ty && pctx::at(&*p, token::TokKind::LBrace)) {
+                return parse_struct_init(p, name, tyargs, start);
+            }
+            // `Opt<i32>::Some(3)` / `Box<i32>::make(...)`: the type arguments
+            // attach to the *path*, and the path continues with `::segment`.
+            // harmony-base builds a PATH whose sval is the full name and
+            // whose kids are the type args, then a CALL in the `(...)` case.
+            if (use_ty && pctx::at(&*p, token::TokKind::DColon)) {
+                let mut full: str::String = str::String::make();
+                full.push(name);
+                while (pctx::at(&*p, token::TokKind::DColon)) {
+                    pctx::advance(p);
+                    if (!pctx::at(&*p, token::TokKind::Ident)) {
+                        pctx::syntax_stop(p, "SYN-05", "expected a name after `::`",
+                                          "Write the second half of the path: `A::B`.");
+                        return -1;
+                    }
+                    full.push("::");
+                    full.push(pctx::cur_word(p));
+                    pctx::advance(p);
+                }
+                if (pctx::at(&*p, token::TokKind::LParen)) {
+                    let args = parse_call_args(p);
+                    let h = pctx::node_at(p, node::AST_CALL, start);
+                    let callee = pctx::node_at(p, node::AST_PATH, start);
+                    node::set_sval(p.nodes, callee, full.as_str());
+                    let mut i: usize = 0;
+                    while (i < tyargs.len()) {
+                        node::push_kid(p.nodes, callee, *tyargs.get(i));
+                        i += 1;
+                    }
+                    pctx::end_at(p, callee, pctx::prev(&*p).end);
+                    node::set_a(p.nodes, h, callee);
+                    i = 0;
+                    while (i < args.len()) {
+                        node::push_kid(p.nodes, h, *args.get(i));
+                        i += 1;
+                    }
+                    pctx::end_at(p, h, pctx::prev(&*p).end);
+                    return h;
+                }
+                // A bare generic variant (`Opt<i32>::None`).
+                let h = pctx::node_at(p, node::AST_PATH, start);
+                node::set_sval(p.nodes, h, full.as_str());
+                let mut i: usize = 0;
+                while (i < tyargs.len()) {
+                    node::push_kid(p.nodes, h, *tyargs.get(i));
+                    i += 1;
+                }
+                pctx::end_at(p, h, pctx::prev(&*p).end);
+                return h;
+            }
+        }
+    }
+
+    // `Name {` (no type arguments) is a struct literal too.
+    if (pctx::at(&*p, token::TokKind::LBrace)) {
+        return parse_struct_init(p, name, tyargs, start);
+    }
+
+    // A call: plain `name(args)` or generic `name<targs>(args)`.
+    if (pctx::at(&*p, token::TokKind::LParen)) {
+        let args = parse_call_args(p);
+        let h = pctx::node_at(p, node::AST_CALL, start);
+        if (tyargs.len() > 0) {
+            // The generic form puts the callee name in sval and the type
+            // arguments in kids2 (the checker instantiates and records the
+            // instance there), matching harmony-base.
+            node::set_sval(p.nodes, h, name);
+            let mut i: usize = 0;
+            while (i < tyargs.len()) {
+                node::push_kid2(p.nodes, h, *tyargs.get(i));
+                i += 1;
+            }
+        } else {
+            let callee = pctx::node_at(p, node::AST_PATH, start);
+            node::set_sval(p.nodes, callee, name);
+            pctx::end_at(p, callee, pctx::prev(&*p).end);
+            node::set_a(p.nodes, h, callee);
+        }
+        let mut i: usize = 0;
+        while (i < args.len()) {
+            node::push_kid(p.nodes, h, *args.get(i));
+            i += 1;
+        }
+        pctx::end_at(p, h, pctx::prev(&*p).end);
+        return h;
+    }
+
+    // A path that carries type arguments but no body or call is a generic
+    // variant / associated path (`Opt<i32>::None`): keep the args on the path.
+    let h = pctx::node_at(p, node::AST_PATH, start);
+    node::set_sval(p.nodes, h, name);
+    if (tyargs.len() > 0) {
+        let mut i: usize = 0;
+        while (i < tyargs.len()) {
+            node::push_kid(p.nodes, h, *tyargs.get(i));
+            i += 1;
+        }
+    }
+    pctx::end_at(p, h, pctx::prev(&*p).end);
+    return h;
+}
+
+// ( expr ) — including the `()` unit literal.
+fn parse_paren(p: &mut pctx::Parser) -> i32 {
+    let start = pctx::cur(&*p).start;
+    pctx::advance(p);   // (
+    if (pctx::at(&*p, token::TokKind::RParen)) {
+        pctx::advance(p);
+        let h = pctx::node_at(p, node::AST_UNIT_LIT, start);
+        pctx::end_at(p, h, pctx::prev(&*p).end);
+        return h;
+    }
+    let e = parse_expr(p);
+    if (e < 0) { return -1; }
+    if (!pctx::expect(p, token::TokKind::RParen, "add `)` to close the expression")) {
+        return -1;
+    }
+    pctx::end_at(p, e, pctx::prev(&*p).end);
+    return e;
+}
+
+// [a, b, c] or [v; n]; an empty `[]` is an empty array literal.
+fn parse_array_lit(p: &mut pctx::Parser) -> i32 {
+    let start = pctx::cur(&*p).start;
+    pctx::advance(p);   // [
+    let h = pctx::node_at(p, node::AST_ARRAY_LIT, start);
+    if (pctx::eat(p, token::TokKind::RBracket)) {
+        pctx::end_at(p, h, pctx::prev(&*p).end);
+        return h;
+    }
+    let first = parse_expr(p);
+    if (first < 0) { return -1; }
+    if (pctx::eat(p, token::TokKind::Semi)) {
+        let cnt = parse_expr(p);
+        if (cnt < 0) { return -1; }
+        node::set_a(p.nodes, h, first);
+        node::set_b(p.nodes, h, cnt);
+        pctx::expect(p, token::TokKind::RBracket, "add `]` to close the array");
+        pctx::end_at(p, h, pctx::prev(&*p).end);
+        return h;
+    }
+    node::push_kid(p.nodes, h, first);
+    while (pctx::eat(p, token::TokKind::Comma)) {
+        if (pctx::at(&*p, token::TokKind::RBracket)) { break; }   // trailing comma
+        let el = parse_expr(p);
+        if (el < 0) { return -1; }
+        node::push_kid(p.nodes, h, el);
+    }
+    pctx::expect(p, token::TokKind::RBracket, "add `]` to close the array");
+    pctx::end_at(p, h, pctx::prev(&*p).end);
+    return h;
+}
+
+export fn parse_primary(p: &mut pctx::Parser) -> i32 {
+    let start = pctx::cur(&*p).start;
+
+    if (at_literal(&*p)) { return parse_literal(p); }
+
+    // sizeof(T) — an expression yielding usize.
+    if (pctx::at_kw(&*p, "sizeof")) {
+        pctx::advance(p);
+        pctx::expect(p, token::TokKind::LParen, "add `(` after `sizeof`");
+        let h = pctx::node_at(p, node::AST_SIZEOF, start);
+        let t = parse_type(p);
+        if (t < 0) { return -1; }
+        node::set_a(p.nodes, h, t);
+        pctx::expect(p, token::TokKind::RParen, "add `)` to close `sizeof`");
+        pctx::end_at(p, h, pctx::prev(&*p).end);
+        return h;
+    }
+
+    // heap(expr) — the heap-allocation form (§12.2), styled after sizeof.
+    if (pctx::at_kw(&*p, "heap")) {
+        pctx::advance(p);
+        pctx::expect(p, token::TokKind::LParen, "add `(` after `heap`");
+        let h = pctx::node_at(p, node::AST_HEAP, start);
+        let e = parse_expr(p);
+        if (e < 0) { return -1; }
+        node::set_a(p.nodes, h, e);
+        pctx::expect(p, token::TokKind::RParen, "add `)` to close `heap(...)`");
+        pctx::end_at(p, h, pctx::prev(&*p).end);
+        return h;
+    }
+
+    if (pctx::at(&*p, token::TokKind::LParen)) { return parse_paren(p); }
+    if (pctx::at(&*p, token::TokKind::LBracket)) { return parse_array_lit(p); }
+
+    // `self` as a value (method receiver; §6.6).
+    if (pctx::at_kw(&*p, "self")) {
+        let h = pctx::node_at(p, node::AST_PATH, start);
+        node::set_sval(p.nodes, h, "self");
+        pctx::advance(p);
+        pctx::end_at(p, h, pctx::prev(&*p).end);
+        return h;
+    }
+
+    // A path-led form (value, call, struct literal, generic variant).
+    if (pctx::at(&*p, token::TokKind::Ident) || pctx::at(&*p, token::TokKind::Keyword)) {
+        return parse_path_expr(p);
+    }
+
+    pctx::syntax_stop(p, "SYN-05", "expected an expression",
+                     "An expression starts with a literal, a name, `(`, `[`, `sizeof(T)`, or `raw(...)` (§18).");
+    return -1;
+}

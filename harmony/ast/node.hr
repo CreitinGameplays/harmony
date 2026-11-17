@@ -83,11 +83,14 @@ struct Node {
     end: usize;
     ival: i64;
     sval: &str;
+    sfx: &str;       // literal type suffix (`42u8` -> "u8"), else ""
+    abi: &str;       // extern fn ABI string ("C"), else ""
     a: i32;          // -1 = no child
     b: i32;
     c: i32;
     kids: vec::Vec<i32>;
     kids2: vec::Vec<i32>;
+    kids3: vec::Vec<i32>;   // methods-block type args (`methods<T> Stack<T>`)
 }
 
 // The node table: a resizable `Vec<Node>` of nodes; handles are indices.
@@ -111,11 +114,14 @@ export fn new_node(ns: &mut Nodes, kind: i32) -> i32 {
         .end = 0,
         .ival = 0,
         .sval = "",
+        .sfx = "",
+        .abi = "",
         .a = -1,
         .b = -1,
         .c = -1,
         .kids = vec::Vec<i32>::make(),
         .kids2 = vec::Vec<i32>::make(),
+        .kids3 = vec::Vec<i32>::make(),
     });
     return ns.items.len() as i32 - 1;
 }
@@ -127,6 +133,11 @@ export fn put(ns: &mut Nodes, h: i32, n: Node) { ns.items.set(h as usize, n); }
 export fn set_sval(ns: &mut Nodes, h: i32, s: &str) {
     let mut n = get(&*ns, h);
     n.sval = s;
+    put(ns, h, n);
+}
+export fn set_abi(ns: &mut Nodes, h: i32, s: &str) {
+    let mut n = get(&*ns, h);
+    n.abi = s;
     put(ns, h, n);
 }
 export fn set_ival(ns: &mut Nodes, h: i32, v: i64) {
@@ -163,6 +174,11 @@ export fn push_kid(ns: &mut Nodes, h: i32, child: i32) {
 export fn push_kid2(ns: &mut Nodes, h: i32, child: i32) {
     let mut n = get(&*ns, h);
     n.kids2.push(child);
+    put(ns, h, n);
+}
+export fn push_kid3(ns: &mut Nodes, h: i32, child: i32) {
+    let mut n = get(&*ns, h);
+    n.kids3.push(child);
     put(ns, h, n);
 }
 
@@ -219,7 +235,7 @@ export fn kind_name(kind: i32) -> &str {
     if (kind == AST_DEREF) { return "deref"; }
     if (kind == AST_HEAP) { return "heap"; }
     if (kind == AST_SIZEOF) { return "sizeof"; }
-    if (kind == AST_RAW_EXPR) { return "raw"; }
+    if (kind == AST_RAW_EXPR) { return "raw-expr"; }
     if (kind == AST_PAT_WILD) { return "pat-wild"; }
     if (kind == AST_PAT_LIT) { return "pat-lit"; }
     if (kind == AST_PAT_BIND) { return "pat-bind"; }

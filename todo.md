@@ -746,8 +746,12 @@ directly into its binary and (b) support **multi-core compilation by default**.
     rather than every file in the repo).
   - `harmony/ast/node.hr` + `harmony/ast/print.hr`: the flat node model and a
     byte-identical `--dump-ast` printer, tested on the exact tree harmony-base
-    prints for `fn main() -> i32 { return 42; }`. R3 is partial (the parser is
-    not started).
+    prints for `fn main() -> i32 { return 42; }`. R3 is partial (the corpus is
+    hand-written rather than every file in the repo).
+  - `harmony/parser/` implements the whole grammar (`pctx`, `parse`, `stmt`,
+    `item`). `tests/harmony-final/parsediff.py` diffs `--dump-ast` against
+    harmony-base on 61 accept programs (byte-identical) and checks 15 reject
+    programs report the same `SYN-*` code: 76 cases, 0 mismatches.
   - Eleven `harmony-base` gaps found and fixed while writing it (see
     `roadmap/harmony` "What harmony-base must still grow"): `for`-range
     element typing, `dealloc`/`Raw::null()`/`alloc` without `<T>`,
@@ -756,10 +760,11 @@ directly into its binary and (b) support **multi-core compilation by default**.
     ≥ 2^63, unsigned `%`, struct-member interleaving with generic fields,
     enum-size/Layout mismatch, and deferred-init on assignment. Each has a
     regression test.
-  - Two more found while building the AST: the loader skipping type args on
-    bare generic paths, and `ll_addr` dropping field access on a call result.
-    Both fixed with regressions; the rewrite uses `Vec<Node>` and by-value
-    reads again rather than working around them.
+  - Three more found while building the AST and parser: the loader skipping
+    type args on bare generic paths, `ll_addr` dropping field access on a call
+    result, and `==` on enums comparing addresses instead of tags. All fixed
+    with regressions; the rewrite uses the natural shapes rather than working
+    around them.
   - Added the `str` lang item (`str::from_parts`), which §19.8.9 reserves,
     so a compiler can build a `&str` from owned bytes.
 - [ ] Integrate LLVM IR emission directly into the compiler binary (AGENTS.md).

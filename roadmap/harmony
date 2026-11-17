@@ -160,22 +160,36 @@ is unit-tested on its own.
 - [x] `tests/harmony-final/ast-node.harmony` builds the exact tree
   harmony-base prints for `fn main() -> i32 { return 42; }` and diffs every
   byte; also exercises buffer growth and all kind names.
-- [ ] The parser (`harmony/parser/`) is not started.
-- [ ] Gate: `--dump-ast` byte-identical for the whole accept corpus.
+- [x] `harmony/parser/`: the full recursive-descent grammar.
+  - `pctx.hr`: token cursor, diagnostics, panic/sync recovery, depth guard,
+    node construction. (Named `pctx` because `lexer/ctx.hr` already owns the
+    `ctx::` namespace; two modules cannot share a name.)
+  - `parse.hr`: types, expressions, primaries, literals — the mutually
+    recursive core. They must live in ONE module: Harmony has no forward
+    declarations and rejects import cycles, and `[T; N]` needs a type inside
+    an expression inside a type.
+  - `stmt.hr`: `let`, assignment, `return`/`break`/`continue`, `if`/`while`/
+    `for`/`switch`/`unchecked`/block, and the pattern grammar.
+  - `item.hr`: `import`, fn, const, struct, enum, methods, `extern "C" fn`,
+    `unchecked fn`, and the program entry.
+- [x] `tests/harmony-final/parsediff.py` (in `make test`): 61 accept programs
+  must produce a **byte-identical** `--dump-ast`, and 15 reject programs must
+  produce the same `SYN-*` code. 76 cases, 0 mismatches. Verified to fail when
+  the precedence chain is deliberately broken.
+- [ ] Gate: extend to *every* `.harmony` file in the repo (the driver embeds
+  source as a string literal; file IO is R7).
 
-- [x] The two harmony-base bugs found here were **fixed, not worked around**:
+- [x] The two harmony-base bugs found in R3 were **fixed, not worked around**:
   the module loader now renames type arguments on bare generic paths
   (`module-generic-path` regression), and `ll_addr` handles a field access on
   a call result (`field-call-result` regression). The node table is therefore
   a plain `Vec<Node>` and the printer reads nodes by value.
-
-
-- `harmony/ast/node.hr`: the flat node model + arena-backed lists.
-- `harmony/ast/print.hr`: `--dump-ast`, byte-identical to harmony-base's.
-- `harmony/parser/items.hr`, `stmts.hr`, `expr.hr`, `types.hr`: recursive
-  descent, the same one-token lookahead, recovery at `;`/`}`, `SYN-01..05`.
-- Gate: `--dump-ast` is byte-identical for the whole accept corpus; the
-  reject corpus produces the same `SYN-*` codes.
+- [x] A third: **comparing enum values with `==`/`!=` emitted broken IR**.
+  An enum is address-represented, but the operands went to `ll_int_cmp` as
+  addresses (`icmp eq %enum.E %addr, ...`), which clang rejects. Enum
+  equality is tag equality, so both sides are now loaded as the i32 tag
+  first. The rewrite's parser compares token kinds on every check, which is
+  how it surfaced. Regression `enum-compare`.
 
 ### R4 — Modules and name resolution [ ]
 
@@ -271,3 +285,9 @@ starting the rewrite):
   test used to pass by accident); larger ones faulted. Aggregate-returning
   calls now lower through `ll_expr` and yield the sret result address.
   Regression `field-call-result`.
+- Comparing two enum values with `==`/`!=` emitted invalid IR: an enum is
+  address-represented, so the operands reached the integer compare as
+  `ptr`/address values (`icmp eq %enum.E %addr, ...`), which clang rejects.
+  Equality is tag equality; both sides are now loaded as the i32 tag first.
+  Found because the rewrite's parser compares token kinds everywhere.
+  Regression `enum-compare`.

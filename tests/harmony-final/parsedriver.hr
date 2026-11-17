@@ -1,0 +1,33 @@
+// A harmony AST dumper for the R3 differential test: scans and parses an
+// embedded source string, then prints the tree in harmony-base's `--dump-ast`
+// format.
+import "../../library/core/vec.hr";
+import "../../library/core/str.hr";
+import "../../library/core/fmt.hr";
+import "../../library/core/mem.hr";
+import "../../harmony/lexer/token.hr";
+import "../../harmony/lexer/ctx.hr";
+import "../../harmony/lexer/scan.hr";
+import "../../harmony/ast/node.hr";
+import "../../harmony/ast/print.hr";
+import "../../harmony/parser/pctx.hr";
+import "../../harmony/parser/parse.hr";
+import "../../harmony/parser/stmt.hr";
+import "../../harmony/parser/item.hr";
+
+fn run(src: &str) -> i32 {
+    let mut arena: mem::Arena = mem::Arena { .cur = Raw::null() };
+    let mut lx: ctx::Ctx = ctx::make(src, "snippet.harmony");
+    scan::scan(&mut lx, &mut arena);
+    let mut ns: node::Nodes = node::nodes_make();
+    let mut p: pctx::Parser = pctx::make(&mut ns, lx.toks, "snippet.harmony");
+    let root = item::parse_program(&mut p);
+    if (root < 0) { return 1; }
+    let s = print::dump(&ns, root);
+    println("{}", s.as_str());
+    return 0;
+}
+
+fn main() -> i32 {
+    return run("fn main() -> i32 { return 42; }");
+}

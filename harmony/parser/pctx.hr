@@ -1,0 +1,196 @@
+// harmony/parser/ctx.hr — the parser's shared state (roadmap/harmony R3).
+//
+// One `&mut Parser` threads the token stream, the cursor, the node table, and
+// the diagnostics (no mutable globals, §6.1). The parser reads tokens the
+// lexer produced, so it never looks at the source bytes directly: line/col
+// and spans come from the token.
+//
+// Recovery policy matches harmony-base: a stop enters panic mode, and
+// `sync` skips to just after the next `;` or up to the enclosing `}`, so one
+// mistake reports once instead of cascading.
+import "../../library/core/vec.hr";
+import "../../library/core/str.hr";
+import "../../library/core/fmt.hr";
+import "../../harmony/lexer/token.hr";
+import "../../harmony/ast/node.hr";
+
+// Recursion guard: the grammar is recursive descent, so adversarial nesting
+// (a thousand `((((...`) must stop with one diagnostic rather than overflow
+// the native stack.
+const DEPTH_LIMIT: i32 = 2000;
+
+struct Parser {
+    toks: vec::Vec<token::Token>;
+    pos: usize;
+    nodes: &mut node::Nodes;      // borrowed: the caller owns the table
+    diags: vec::Vec<fmt::Diag>;
+    path: &str;                   // source path for diagnostics
+    stops: i32;                   // syntax stops reported
+    panic: bool;                  // recovery mode until the next boundary
+    depth: i32;                   // current recursion depth
+    loop_depth: i32;              // for `break`/`continue` placement checks
+}
+
+export fn make(nodes: &mut node::Nodes, toks: vec::Vec<token::Token>,
+               path: &str) -> Parser {
+    return Parser {
+        .toks = toks,
+        .pos = 0,
+        .nodes = nodes,
+        .diags = vec::Vec<fmt::Diag>::make(),
+        .path = path,
+        .stops = 0,
+        .panic = false,
+        .depth = 0,
+        .loop_depth = 0,
+    };
+}
+
+// ---- cursor --------------------------------------------------------------
+
+// The current token (the stream always ends with EOF, so this is safe).
+export fn cur(p: &Parser) -> token::Token { return *p.toks.get(p.pos); }
+
+// `n` tokens ahead, clamped to EOF.
+export fn peek(p: &Parser, n: usize) -> token::Token {
+    let i = p.pos + n;
+    if (i >= p.toks.len()) { return *p.toks.get(p.toks.len() - 1); }
+    return *p.toks.get(i);
+}
+
+// The last consumed token (EOF-safe at the start).
+export fn prev(p: &Parser) -> token::Token {
+    if (p.pos == 0) { return cur(p); }
+    return *p.toks.get(p.pos - 1);
+}
+
+export fn advance(p: &mut Parser) {
+    if (p.pos < p.toks.len() - 1) { p.pos += 1; }
+}
+
+export fn at(p: &Parser, k: token::TokKind) -> bool { return cur(p).kind == k; }
+
+// True when the current token is the keyword spelled `kw`.
+export fn at_kw(p: &Parser, kw: &str) -> bool {
+    let t = cur(p);
+    if (t.kind != token::TokKind::Keyword) { return false; }
+    return t.text == kw;
+}
+
+export fn peek_kw(p: &Parser, kw: &str, n: usize) -> bool {
+    let t = peek(p, n);
+    if (t.kind != token::TokKind::Keyword) { return false; }
+    return t.text == kw;
+}
+
+export fn eat(p: &mut Parser, k: token::TokKind) -> bool {
+    if (at(&*p, k)) { advance(p); return true; }
+    return false;
+}
+
+export fn eat_kw(p: &mut Parser, kw: &str) -> bool {
+    if (at_kw(&*p, kw)) { advance(p); return true; }
+    return false;
+}
+
+// ---- diagnostics ---------------------------------------------------------
+
+// Reports a syntax stop and enters panic mode. Returns nothing; the caller
+// decides how to recover.
+export fn syntax_stop(p: &mut Parser, code: &str, title: &str, summary: &str) {
+    let t = cur(&*p);
+    p.diags.push(fmt::Diag {
+        .code = code,
+        .severity = fmt::Severity::Stop,
+        .title = title,
+        .summary = summary,
+        .file = p.path,
+        .line = t.line,
+        .col = t.col,
+    });
+    p.stops += 1;
+    p.panic = true;
+}
+
+// Consumes `k`, or reports SYN-05 with `what` as the fix hint.
+export fn expect(p: &mut Parser, k: token::TokKind, what: &str) -> bool {
+    if (at(&*p, k)) { advance(p); return true; }
+    syntax_stop(p, "SYN-05", "unexpected token", what);
+    return false;
+}
+
+// The §4.4 semicolon rule: simple statements end with `;`. A missing `;`
+// right before `}` or EOF is the classic forgotten case, so it points at the
+// previous token (where the `;` belongs) instead of the closing brace.
+export fn expect_semi(p: &mut Parser) -> bool {
+    if (at(&*p, token::TokKind::Semi)) { advance(p); return true; }
+    if (at(&*p, token::TokKind::RBrace) || at(&*p, token::TokKind::Eof)) {
+        syntax_stop(p, "SYN-04", "missing `;`",
+                    "Simple statements end with `;` (4.4). This statement has no `;` before the closing brace or the end of the file.");
+        return false;
+    }
+    syntax_stop(p, "SYN-04", "missing `;`",
+                "Simple statements end with `;` (4.4). The token after this statement cannot follow it.");
+    return false;
+}
+
+export fn expect_kw(p: &mut Parser, kw: &str) -> bool {
+    if (at_kw(&*p, kw)) { advance(p); return true; }
+    syntax_stop(p, "SYN-05", "unexpected token", "add the keyword");
+    return false;
+}
+
+// Recovery: skip to just after the next `;`, or up to (not past) the
+// enclosing `}` / EOF. Panic mode ends at the boundary.
+export fn sync(p: &mut Parser) {
+    while (!at(&*p, token::TokKind::Eof)) {
+        if (at(&*p, token::TokKind::Semi)) { advance(p); p.panic = false; return; }
+        if (at(&*p, token::TokKind::RBrace)) { p.panic = false; return; }
+        advance(p);
+    }
+    p.panic = false;
+}
+
+// ---- recursion guard -----------------------------------------------------
+
+// Enters one level of recursion: true when allowed, false after reporting one
+// SYN-05 at the limit (so the caller recovers without descending further).
+export fn depth_enter(p: &mut Parser) -> bool {
+    if (p.depth >= DEPTH_LIMIT) {
+        syntax_stop(p, "SYN-05", "nesting is too deep",
+                    "This expression or type nests deeper than the parser allows; simplify it.");
+        return false;
+    }
+    p.depth += 1;
+    return true;
+}
+
+export fn depth_leave(p: &mut Parser) { p.depth -= 1; }
+
+// ---- node construction ---------------------------------------------------
+
+// A fresh node whose span starts at the current token.
+export fn node_here(p: &mut Parser, kind: i32) -> i32 {
+    let t = cur(&*p);
+    let h = node::new_node(p.nodes, kind);
+    node::set_span(p.nodes, h, t.start, t.end);
+    return h;
+}
+
+// A fresh node with an explicit start (used when the span began earlier).
+export fn node_at(p: &mut Parser, kind: i32, start: usize) -> i32 {
+    let h = node::new_node(p.nodes, kind);
+    node::set_span(p.nodes, h, start, start);
+    return h;
+}
+
+// Widens a node's end to the last consumed token.
+export fn end_at(p: &mut Parser, h: i32, end: usize) {
+    let n = node::get(&*p.nodes, h);
+    if (end > n.end) { node::set_span(p.nodes, h, n.start, end); }
+}
+
+// Copies the current token's spelling into the arena, so the node keeps it
+// after the token stream is dropped. (Token text points into the source,
+// which also lives for the compile, but synthesizing a name needs a copy.)
+export fn cur_word(p: &mut Parser) -> &str { return cur(&*p).text; }

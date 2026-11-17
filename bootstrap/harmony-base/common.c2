@@ -217,6 +217,7 @@ const int CMD_EMIT_LLVM = 3;
 const int CMD_EMIT_C = 4;
 const int CMD_EXPLAIN = 5;
 const int CMD_AUDIT = 6;
+const int CMD_VERSION = 7;
 
 // Output format (docs/harmony.md §16.7): --format=pretty|line|json.
 const int FORMAT_PRETTY = 0;
@@ -723,6 +724,9 @@ struct AstNode* ck_sym_decl_node(char* name);  // the symbol's declaring node (0
 // ---------------------------------------------------------------------------
 // Writes `text` to `path`. Returns 0, or a negative errno.
 int emit_write_file(char* path, char* text, int len);
+// Reads a file into an arena buffer (NUL-terminated). Returns an empty
+// string when the file cannot be opened.
+char* emit_read_file(char* path, int max);
 // Forks and execs argv[0] with the given arguments (argv NULL-terminated).
 // Returns the child's exit code, or -1 on spawn failure.
 int sys_spawn(char** argv);

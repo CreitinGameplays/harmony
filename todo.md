@@ -723,11 +723,15 @@ directly into its binary and (b) support **multi-core compilation by default**.
 
 - [ ] **Fuzzer gate before the rewrite**: `tests/fuzz2/fuzz.py` (5 engines,
       5 oracles, parallel) must run clean for a sustained campaign. It has
-      already found and driven fixes for 7 real defects (13-digit literal
+      already found and driven fixes for 10 real defects (13-digit literal
       stack overflow, exponential generic resolution, concurrent temp-path
-      clobbering, SIGSEGV mislabeled `T-STACK`, parser depth SIGSEGV, name
-      truncation, quadratic instantiation). `make test-fuzz2` is the fast
-      gate; `make fuzz2-deep` a real campaign.
+      clobbering, SIGSEGV mislabeled `T-STACK`, uninitialized `dump_ast`,
+      broken valgrind oracle, parser depth SIGSEGV, name truncation, quadratic
+      instantiation, expected-type gaps in assignment/call/generic-call, and
+      the method-name collision). `make test-fuzz2` is the fast gate;
+      `make fuzz2-deep` a real campaign; `tests/harmony/coverage.sh` (in
+      `make test`) guards that the grammar sampler keeps reaching the
+      compiler's semantic stage.
 - [ ] Rewrite the compiler in harmony-base (`harmony/`).
 - [ ] Integrate LLVM IR emission directly into the compiler binary (AGENTS.md).
 - [ ] Multi-core compilation by default (AGENTS.md).

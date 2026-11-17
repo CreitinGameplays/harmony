@@ -88,7 +88,30 @@ class Gen:
     random, weighted so programs stay small but may spike in any dimension
     (depth, width, weird literals). A `spec` string forces one adversarial
     shape and is what the "specials" list builds on.
+
+    **Names are tracked, not invented.** An earlier version emitted dangling
+    references on purpose (`Maybe-51`, `f%d` calls, `let v19: T = Empty` with
+    no `T` in scope, `methods M0` with no `M0`), and measurement with
+    callgrind showed the cost: 95% of programs died in `check` with NAME-01 /
+    SYN-05 / TYPE-02 before ever reaching the checker's real work, so the
+    engine that reaches the most compiler functions (218 of 219) was spending
+    almost all of its budget on error paths it had already covered.
+
+    The fix is to emit *resolvable* programs: types come from a list that is
+    actually in scope, calls name a real function, enum variants belong to a
+    declared enum, and literals match their declared type. Malformed shapes
+    are still valuable and are still covered — but by the tools that own that
+    job (`mut` for token damage, `afl` for byte corruption, `specials` for
+    hand-derived adversarial inputs), not by the grammar sampler.
     """
+
+    # Types always in scope, with a zero value of that type. `T` is
+    # deliberately absent: it only exists inside a generic item, so emitting
+    # it in `main` (or in a non-generic fn) was a guaranteed rejection.
+    SCALARS = [
+        ("i32", "0"), ("i64", "0i64"), ("u8", "0u8"), ("bool", "false"),
+        ("f64", "0.0"), ("()", "()"),
+    ]
 
     def __init__(self, rng):
         self.rng = rng
@@ -96,193 +119,620 @@ class Gen:
         # past the parser's own limit (that path is tested explicitly by the
         # deep-nest special, not blindly).
         self.budget = 30
+        # What the current program declares, so references can resolve.
+        self.fns = []        # [(name, arity, is_generic)]
+        self.structs = []    # [(name, [(field, type)])]
+        self.enums = []      # [(name, [variant, ...])]
+        self.consts = []     # [(name, type)]
+        self.mut_locals = [] # locals visible in the current body
+        self.param_types = []  # parameter types of the current fn
+        # 1 while generating inside a generic item, where `T` is in scope.
+        self.in_generic = 0
+        # Monotonic counters for declared names. Random `f%d`/`S%d`/`v%d`
+        # names collide (two `f64`s in one file is NAME-03 "name already in
+        # use"), which is a generator artifact, not a compiler finding.
+        self.n = {"fn": 0, "struct": 0, "enum": 0, "const": 0, "local": 0,
+                  "ext": 0}
+        # Structs that already have a `methods` block (a second one is
+        # NAME-03).
+        self.meth_done = set()
+
+    def fresh(self, kind, prefix):
+        self.n[kind] += 1
+        return "%s%d" % (prefix, self.n[kind])
 
     # ---- entry ----
     def program(self):
+        # `main` first so later functions can call it, and so its body is
+        # generated when the fewest names are in scope (fewer chances to
+        # reference something declared below it — order does not matter for
+        # resolution here, but keeping `main` simple keeps programs small).
         items = []
-        n = self.rng.randint(1, 8)
-        for _ in range(n):
+        # A program always gets `main`: without it the checker stops with
+        # NAME-02 and nothing else is exercised.
+        for _ in range(self.rng.randint(0, 6)):
             items.append(self.item())
-        # `main` last so the program is sometimes runnable.
-        if self.rng.random() < 0.7:
-            items.append("fn main() -> i32 { return %s; }" % self.expr())
+        items.append("fn main() -> i32 { return %s; }" % self.expr_int())
         return "\n".join(items) + "\n"
 
     def item(self):
         r = self.rng
         pick = r.random()
-        if pick < 0.30:
+        if pick < 0.32:
             return self.fn()
         if pick < 0.50:
             return self.struct()
-        if pick < 0.62:
+        if pick < 0.64:
             return self.enum_()
-        if pick < 0.72:
+        if pick < 0.74:
             return self.const_()
-        if pick < 0.80:
+        if pick < 0.84:
             return self.methods()
-        if pick < 0.86:
+        if pick < 0.90:
             return self.extern_()
         return self.fn()   # more functions
 
     def fn(self):
         r = self.rng
-        name = "f%d" % r.randint(0, 999)
-        if r.random() < 0.15:
-            params = "<T>"
-        else:
-            params = ""
+        name = self.fresh("fn", "f")
+        generic = r.random() < 0.15
+        params = "<T>" if generic else ""
         args = []
+        ptypes = []
         for i in range(r.randint(0, 3)):
-            t = r.choice(["i32", "i64", "u8", "bool", "f64", "&str",
-                          "raw u8", "Maybe<i32>"])
+            t = "T" if (generic and r.random() < 0.4) else r.choice(
+                ["i32", "i64", "u8", "bool", "f64", "&str", "raw u8",
+                 "Maybe<i32>"])
             args.append("x%d: %s" % (i, t))
-        ret = r.choice(["i32", "i32", "i64", "u8", "bool", "()", "Maybe<i32>"])
+            ptypes.append(t)
+        ret = r.choice(["i32", "i32", "i32", "i64", "u8", "bool", "unit"])
+        if ret == "unit":
+            # The unit return is written by *omitting* the arrow: `-> ()` is
+            # SYN-05 "expected a name". This alone was ~20% of rejections.
+            ret_sig = ""
+            ret_ty = "()"
+        else:
+            ret_sig = " -> " + ret
+            ret_ty = ret
+        saved_locals = self.mut_locals
+        saved_params = self.param_types
+        self.mut_locals = []
+        self.param_types = ptypes
+        if generic:
+            self.in_generic += 1
         body = []
         for _ in range(r.randint(1, 6)):
             body.append(self.stmt())
-        body.append("return %s;" % self.expr())
-        return "fn %s%s(%s) -> %s {\n%s\n}" % (
-            name, params, ", ".join(args), ret, "\n".join(body))
+        if ret_ty == "()":
+            body.append("return;")
+        else:
+            body.append("return %s;" % self.expr_for(ret_ty))
+        if generic:
+            self.in_generic -= 1
+        self.mut_locals = saved_locals
+        self.param_types = saved_params
+        # Declared *before* the body is generated? No: the body may call an
+        # earlier function, but never itself, which keeps every call's return
+        # type finite and avoids recursion in the sampler.
+        self.fns.append((name, ptypes, generic))
+        return "fn %s%s(%s)%s {\n%s\n}" % (
+            name, params, ", ".join(args), ret_sig, "\n".join(body))
 
     def struct(self):
         r = self.rng
-        name = "S%d" % r.randint(0, 999)
-        gen = "<T>" if r.random() < 0.3 else ""
+        name = self.fresh("struct", "S")
+        generic = r.random() < 0.3
         fields = []
-        for i in range(r.randint(0, 4)):
-            fields.append("f%d: %s;" % (i, self.typestr()))
-        return "struct %s%s { %s }" % (name, gen, " ".join(fields))
+        for i in range(r.randint(1, 4)):
+            if generic and r.random() < 0.4:
+                t = "T"
+            else:
+                t = r.choice(["i32", "i64", "u8", "bool", "f64", "&i32"])
+            fields.append(("f%d" % i, t))
+        body = " ".join("%s: %s;" % f for f in fields)
+        self.structs.append((name, fields, generic))
+        return "struct %s%s { %s }" % (name, "<T>" if generic else "", body)
 
     def enum_(self):
         r = self.rng
-        name = "E%d" % r.randint(0, 999)
-        gen = "<T>" if r.random() < 0.25 else ""
+        name = self.fresh("enum", "E")
+        generic = r.random() < 0.25
         vs = []
         for i in range(r.randint(1, 4)):
+            vname = "V%d" % i
             if r.random() < 0.4:
-                vs.append("V%d(%s)" % (i, self.typestr()))
+                t = "T" if (generic and r.random() < 0.5) else r.choice(
+                    ["i32", "i64", "u8", "bool"])
+                vs.append((vname, [t]))
             else:
-                vs.append("V%d" % i)
-        return "enum %s%s { %s }" % (name, gen, ", ".join(vs))
+                vs.append((vname, []))
+        body = ", ".join(
+            v if not payload else "%s(%s)" % (v, ", ".join(payload))
+            for v, payload in vs)
+        self.enums.append((name, vs))
+        return "enum %s%s { %s }" % (name, "<T>" if generic else "", body)
 
     def const_(self):
         r = self.rng
-        name = "C%d" % r.randint(0, 999)
-        return "const %s: i32 = %d;" % (name, r.randint(-2**31, 2**31 - 1))
+        name = self.fresh("const", "C")
+        ty, val = r.choice(self.SCALARS[:4])
+        if ty == "bool":
+            val = r.choice(["true", "false"])
+        elif ty == "i64":
+            val = "%d" % r.randint(-2**40, 2**40) + "i64"
+        self.consts.append((name, ty))
+        return "const %s: %s = %s;" % (name, ty, val)
 
     def methods(self):
-        return ("methods M0 {\n"
+        """`methods <Type> { ... }` for a declared struct or enum.
+
+        The old version hardcoded `methods M0` with no `M0` declared, which
+        was an immediate NAME-01. A method need not be *called* to be
+        valuable: declaring one exercises method registration, receiver-type
+        resolution, and `&self`/`&mut self` checking.
+        """
+        r = self.rng
+        if not self.structs:
+            return self.struct()      # nothing to attach a method to yet
+        # One `methods` block per type: a second one is NAME-03 ("the name `m`
+        # is already used in this scope"), a generator artifact.
+        candidates = [s for s in self.structs if s[0] not in self.meth_done]
+        if not candidates:
+            return self.fn()
+        # A generic template's `methods` block must repeat the parameter
+        # (`methods<T> Box<T>`), otherwise the name is unknown (NAME-01).
+        name, fields, generic = r.choice(candidates)
+        self.meth_done.add(name)
+        if generic:
+            return ("methods<T> %s<T> {\n"
+                    "  export fn m(&self) -> i32 { return 0; }\n"
+                    "}" % name)
+        return ("methods %s {\n"
                 "  export fn m(&self) -> i32 { return 0; }\n"
-                "}")
+                "}" % name)
 
     def extern_(self):
-        return 'extern "C" fn e() -> i32;'
+        r = self.rng
+        name = self.fresh("ext", "ext")
+        ret = r.choice(["i32", "i64", "u8", ""])
+        if ret:
+            return 'extern "C" fn %s() -> %s;' % (name, ret)
+        return 'extern "C" fn %s();' % name
 
     # ---- types ----
     def typestr(self):
+        """A type that is in scope here.
+
+        `T` only appears inside a generic item; elsewhere it is a rejection.
+        """
         r = self.rng
         self.budget -= 1
         if self.budget < 0:
             return "i32"
         pick = r.random()
-        if pick < 0.35:
+        if pick < 0.40:
             return "i32"
-        if pick < 0.45:
+        if pick < 0.52 and self.in_generic:
             return "T"
-        if pick < 0.55:
-            return "&" * r.randint(1, 2) + " " * 0 + self.typestr()
-        if pick < 0.65:
-            return "[%s; %d]" % (self.typestr(), r.randint(0, 100))
-        if pick < 0.72:
-            return "&[%s]" % self.typestr()
-        if pick < 0.80:
-            return "Heap<%s>" % self.typestr()
-        if pick < 0.88:
-            return "Maybe<%s>" % self.typestr()
-        return self.typestr()
-
-    # ---- statements ----
-    def stmt(self):
-        r = self.rng
-        self.budget -= 1
-        if self.budget < 0:
-            return "let x = 0;"
-        pick = r.random()
-        if pick < 0.25:
-            return "let %s%s = %s;" % (
-                "mut " if r.random() < 0.5 else "",
-                "v%d" % r.randint(0, 99), self.expr())
-        if pick < 0.35:
-            return "let mut v%d: %s = %s;" % (
-                r.randint(0, 99), self.typestr(), self.zero_of())
-        if pick < 0.45:
-            return "if (%s) { %s }" % (self.expr(), self.stmt())
-        if pick < 0.52:
-            return "while (%s) { break; }" % self.boolexpr()
         if pick < 0.60:
-            lo = r.randint(-10, 10)
-            hi = lo + r.randint(0, 10)
-            rng_kind = r.choice(["..", "..="])
-            return "for (i : %d%s%d) { %s }" % (lo, rng_kind, hi, self.stmt())
+            return "&" + self.typestr_scalar()
         if pick < 0.68:
-            return "switch (%s) { case Has(v): { %s } default: { } }" % (
-                "Has(%s)" % self.expr(), self.stmt())
-        if pick < 0.74:
-            return ('unchecked("long enough reason") { %s }' % self.unchecked_body())
-        if pick < 0.80:
-            return "{ %s }" % self.stmt()
-        return "%s;" % self.expr()
+            return "[%s; %d]" % (self.typestr_scalar(), r.randint(1, 8))
+        if pick < 0.76:
+            return "&[%s]" % self.typestr_scalar()
+        if pick < 0.84:
+            return "Heap<%s>" % self.typestr_scalar()
+        if pick < 0.92:
+            return "Maybe<%s>" % self.typestr_scalar()
+        # A declared struct, instantiated when it is generic.
+        if self.structs:
+            name, fields, generic = r.choice(self.structs)
+            return name + ("<i32>" if generic else "")
+        return "i32"
 
-    def zero_of(self):
-        return self.rng.choice(["0", "0u8", "false", "Empty", "0.0", '""'])
-
-    def unchecked_body(self):
-        r = self.rng
-        return r.choice([
-            "let mut p: raw mut i32 = alloc<i32>(%d);" % r.randint(0, 100),
-            "let q = Raw::null<u8>();",
-            "let mut n: i64 = 0; n = p__undefined__;",
-        ])
+    def typestr_scalar(self):
+        """A scalar type — the only thing allowed as a reference/array element
+        in most positions, so nesting cannot produce `&&&T` noise."""
+        return self.rng.choice(["i32", "i64", "u8", "bool", "f64"])
 
     # ---- expressions ----
+    def expr_for(self, ty):
+        """An expression of the requested type (best effort).
+
+        Returning a *matching* expression is what keeps `fn f() -> i64`
+        honest: a bare `return 0;` against `-> i64` used to be fine (untyped
+        literals adapt) but `return "s";` was not. Structured returns also
+        exercise the coercion sites the checker owns.
+        """
+        r = self.rng
+        if ty == "()":
+            return "()"
+        if ty == "bool":
+            return self.boolexpr()
+        if ty == "f64":
+            return r.choice(["0.0", "%d.5" % r.randint(-100, 100),
+                             "1.0e3", "2.5"])
+        if ty == "u8":
+            return r.choice(["0u8", "%du8" % r.randint(0, 255), "7u8"])
+        if ty == "i64":
+            return r.choice(["0i64", "%di64" % r.randint(-2**40, 2**40)])
+        # i32: the interesting case, so allow real computation.
+        return self.expr_int()
+
+    def expr_int(self):
+        """An `i32` expression.
+
+        Must be genuinely numeric: `expr()` can return a string or a struct
+        literal, and using that where a number is required ("arithmetic needs
+        numbers", "type mismatch") was the largest remaining rejection class.
+        """
+        return self.expr_num()
+
     def expr(self):
         r = self.rng
         self.budget -= 1
         if self.budget < 0:
             return str(r.randint(0, 100))
         pick = r.random()
-        if pick < 0.30:
-            return str(r.randint(-2**40, 2**40))
-        if pick < 0.40:
-            return "%s %s %s" % (self.expr(), r.choice(
-                ["+", "-", "*", "/", "%", "<<", ">>", "&", "|", "^"]), self.expr())
-        if pick < 0.48:
-            return "-%s" % self.expr()
-        if pick < 0.56:
+        if pick < 0.22:
+            return str(r.randint(-2**31, 2**31 - 1))
+        if pick < 0.32:
+            # Arithmetic, with numeric operands only: a string or struct
+            # operand is "arithmetic needs numbers" (TYPE-01), which the old
+            # generator produced constantly because `expr()` could return any
+            # shape. Division/modulo/shift get literal right-hand sides so the
+            # program can actually run under -O levels instead of trapping.
+            op = r.choice(["+", "-", "*", "+", "-", "*", "/", "%", "<<", ">>",
+                           "&", "|", "^"])
+            if op in ("/", "%"):
+                return "(%s %s %s)" % (self.expr_num(), op,
+                                       r.randint(1, 99))
+            if op in ("<<", ">>"):
+                return "(%s %s %s)" % (self.expr_num(), op,
+                                       r.randint(0, 31))
+            return "(%s %s %s)" % (self.expr_num(), op, self.expr_num())
+        if pick < 0.38:
+            return "-%s" % self.expr_atom()
+        if pick < 0.46:
             return "(%s)" % self.expr()
-        if pick < 0.62:
-            return "%s(%s)" % (
-                r.choice(["sizeof", "raw", "heap"]),
-                self.expr() if r.random() < 0.5 else "i32")
+        # Calls: only to functions that exist, with the declared arity *and*
+        # declared parameter types (`f(x0: bool)` called with `7` is TYPE-01).
+        if pick < 0.58 and self.fns:
+            name, params, generic = r.choice(self.fns)
+            # A call argument resolves a bare `Empty`/`Has` from the
+            # parameter's declared type (§8.5; the checker supplies that
+            # hint), so the natural value is used here.
+            args = ", ".join(self.value_for(t) for t in params)
+            if generic:
+                return "%s<i32>(%s)" % (name, args)
+            return "%s(%s)" % (name, args)
+        if pick < 0.64 and self.consts:
+            name, ty = r.choice(self.consts)
+            if ty in ("i32", "i64", "u8"):
+                return name
+            # `bool as i32` is an unsupported cast (TYPE-05): a bool is not a
+            # number, and the language has no bool->int coercion (§5.9).
+            return self.expr_atom()
         if pick < 0.70:
-            return "Maybe-%s" % r.randint(0, 99)   # an unbound name
+            return self.expr_atom()
+        if pick < 0.76:
+            # Struct literal for a declared struct. Every field gets a value
+            # of *its* declared type: the old version reused one generic
+            # expression for all fields, so `f0: bool` got `402` (TYPE-01).
+            if self.structs:
+                name, fields, generic = r.choice(self.structs)
+                parts = []
+                for fname, ftype in fields:
+                    parts.append(".%s = %s" % (fname, self.value_for(ftype)))
+                head = name + ("<i32>" if generic else "")
+                return "%s { %s }" % (head, ", ".join(parts))
+            return self.expr_atom()
+        if pick < 0.82:
+            # `Empty`/`Has` only resolve where a `Maybe<T>` is expected
+            # (`g_expected_ty`, §8.5). As a bare `i32` expression they are
+            # NAME-01, which is what the old generator produced. A cast-free
+            # `Maybe` use needs a typed binding, so this position emits a
+            # plain integer instead and the `Maybe` surface is covered by
+            # `stmt`'s typed `let` and by `specials`.
+            return self.expr_atom()
+        if pick < 0.88:
+            return '"%s"' % "".join(
+                r.choice(["a", "b", "{", "}", " ", "\\n", "\\t", "\\\\",
+                          "\\\"", "{?}"]) for _ in range(r.randint(0, 10)))
+        if pick < 0.94:
+            return "%s as i32" % self.expr_num()
+        # `raw(x)` takes a *place* (`raw(&v)`), not a type: `raw(u8)` is
+        # TYPE-05 "a type is not a value". `sizeof(T)` is the one builtin that
+        # legitimately takes a type; it yields `usize`, so cast it for i32 use.
+        return "(sizeof(%s) as i32)" % r.choice(["i32", "i64", "u8", "bool"])
+
+    def expr_num(self):
+        """A numeric expression: literals, arithmetic, numeric locals/calls.
+
+        Arithmetic, negation, shifts, and casts need a number on both sides.
+        `expr()` can return a string, a struct literal, or `sizeof(...)`, so
+        using it as an operand produced "arithmetic needs numbers" stops. This
+        narrower sampler keeps arithmetic well typed while still nesting.
+        """
+        r = self.rng
+        self.budget -= 1
+        if self.budget < 0:
+            return str(r.randint(0, 100))
+        pick = r.random()
+        if pick < 0.40:
+            return str(r.randint(-2**31, 2**31 - 1))
+        if pick < 0.60:
+            return self.expr_atom()
+        if pick < 0.70:
+            return "(%s)" % self.expr_num()
         if pick < 0.78:
-            return '"%s"' % "".join(r.choice("ab{}\\\"\n\t") for _ in range(r.randint(0, 10)))
-        if pick < 0.84:
-            return "%s as %s" % (self.expr(), r.choice(
-                ["i32", "i64", "u8", "f64", "bool", "raw u8"]))
-        if pick < 0.92:
-            return "%s.%s()" % (self.expr(), r.choice(
-                ["read", "write", "plus", "minus", "is_null", "len", "next"]))
-        return "%s.%s" % (self.expr(), r.choice(["v", "len", "cap", "x", "y"]))
+            # Negation keeps the operand numeric, but `-(x)` on an i64 is
+            # i64: negate a literal (whose type is still i32 by default) or a
+            # parenthesised numeric expression.
+            return "-%s" % self.expr_atom()
+        if pick < 0.88:
+            op = r.choice(["+", "-", "*"])
+            return "(%s %s %s)" % (self.expr_num(), op, self.expr_num())
+        # `sizeof(...)` yields `usize`, not `i32`: returning it where an i32 is
+        # expected is TYPE-01 ("expected i32, found usize"). It stays in the
+        # generator via an explicit cast, which is itself a coercion site.
+        return "(sizeof(%s) as i32)" % r.choice(["i32", "i64", "u8", "bool"])
+
+    def expr_atom(self, want="i32"):
+        """A numeric primary expression of type `want`.
+
+        Only *scalar* locals of the wanted type are offered. Referencing an
+        aggregate local copies or moves it (`let v4 = v2;` for an `[i32; 5]`
+        is a move of a non-`copy` type), and an `i64` const in an `i32`
+        position is TYPE-01 — names carry their declared type.
+
+        Literals are written in `want`'s domain: an untyped `let` binds the
+        literal's default type (`i32`, §5.9), so staying in i32 for `want ==
+        "i32"` keeps the generator's ledger honest.
+        """
+        r = self.rng
+        if want == "i64":
+            lit = "%di64" % r.randint(-2**40, 2**40)
+        elif want == "u8":
+            lit = "%du8" % r.randint(0, 255)
+        else:
+            lit = str(r.randint(-2**31, 2**31 - 1))
+        opts = [lit]
+        numeric_locals = [l[0] for l in self.mut_locals
+                          if len(l) < 3 or l[2] == want]
+        if numeric_locals:
+            opts.append(r.choice(numeric_locals))
+        # Parameters of the current function are in scope and are the only
+        # way the generator ever exercises "read a parameter".
+        numeric_params = ["x%d" % i for i, t in enumerate(self.param_types)
+                          if t == want]
+        if numeric_params:
+            opts.append(r.choice(numeric_params))
+        if self.consts:
+            opts.append(r.choice([n for n, t in self.consts
+                                  if t == want] or [lit]))
+        return r.choice(opts)
+
+    def expr_arg(self):
+        """A call argument: an expression kept shallow so arguments do not
+        explode into deeply nested calls (the budget already bounds depth, but
+        struct literals multiply it by field count)."""
+        return self.expr_atom() if self.rng.random() < 0.5 else self.expr()
+
+    # ---- statements ----
+    def stmt(self):
+        r = self.rng
+        self.budget -= 1
+        if self.budget < 0:
+            return "%s;" % self.expr_atom()
+        pick = r.random()
+        if pick < 0.26:
+            name = self.fresh("local", "v")
+            # Register *after* building the initializer: `let v57 = v57;`
+            # refers to an undeclared name (NAME-01) and was 15% of all
+            # rejections. An untyped `let` is immutable, so it is recorded as
+            # such — assigning to it later is MUT-01.
+            init = self.expr_int()
+            self.mut_locals.append((name, False, "i32"))
+            return "let %s = %s;" % (name, init)
+        if pick < 0.36:
+            name = self.fresh("local", "v")
+            ty = self.typestr()
+            init = self.zero_of(ty)
+            # Record the *type* too: an assignment must produce a value of it
+            # (`v3 = -80;` against a `Maybe<i64>` is TYPE-01).
+            self.mut_locals.append((name, True, ty))
+            return "let mut %s: %s = %s;" % (name, ty, init)
+        if pick < 0.46:
+            # `if` takes a bool; the old generator passed an arbitrary
+            # expression, which is a TYPE error unless it happens to be bool.
+            return "if (%s) { %s }" % (self.boolexpr(), self.block())
+        if pick < 0.53:
+            return "while (%s) { break; }" % self.boolexpr()
+        if pick < 0.62:
+            lo = r.randint(-10, 10)
+            hi = lo + r.randint(0, 10)
+            rng_kind = r.choice(["..", "..="])
+            # The loop variable `i` is in scope inside the body only.
+            saved = self.mut_locals
+            self.mut_locals = list(saved) + [("i", True, "i32")]
+            inner = self.stmt()
+            self.mut_locals = saved
+            return "for (i : %d%s%d) { %s }" % (lo, rng_kind, hi, inner)
+        if pick < 0.70:
+            # `switch` on a scalar with a `default` is exhaustive, which the
+            # checker requires. The old version switched on `Has(expr)` — a
+            # Maybe value — and only provided a `default` arm.
+            return ("switch (%s) {\n  case 0: { %s }\n  default: { %s }\n}"
+                    % (self.expr_int(), self.block(), self.block()))
+        if pick < 0.76:
+            return ('unchecked("long enough reason") { %s }'
+                    % self.unchecked_body())
+        if pick < 0.82:
+            return "{\n%s\n}" % self.block()
+        # An assignment to a live mutable local is a whole statement class the
+        # generator never produced before.
+        targets = [l for l in self.mut_locals if l[1]]
+        if pick < 0.90 and targets:
+            tgt = r.choice(targets)
+            # The checker supplies the place's type as the expected type, so a
+            # bare `Empty`/`Has` resolves here too (see ck_stmt_assign).
+            return "%s = %s;" % (tgt[0], self.value_for(tgt[2]))
+        return "%s;" % self.expr()
+
+    def value_for(self, ty):
+        """A value of type `ty`, using only names in scope.
+
+        This is the single place that knows the mapping from a declared type
+        to an expression that satisfies it, so struct fields, `let`
+        initializers, arguments, and returns cannot drift from their
+        declarations.
+        """
+        r = self.rng
+        if ty == "T":
+            # Inside a generic item `T` could be anything, so only a literal
+            # that adapts is safe. Keep it to a plain integer: when the caller
+            # pins `T` explicitly (`f<i32>(...)`) the argument must match that
+            # instantiation, and `0` adapts to every numeric `T` whereas
+            # `0u8`/`false` do not.
+            return str(self.rng.randint(0, 9))
+        if ty == "i32":
+            return self.expr_int()
+        if ty == "i64":
+            return self.expr_atom("i64")
+        if ty == "u8":
+            return self.expr_atom("u8")
+        if ty == "bool":
+            return self.boolexpr()
+        if ty == "f64":
+            return r.choice(["0.0", "2.5", "%d.5" % r.randint(-100, 100)])
+        if ty == "()":
+            return "()"
+        if ty.startswith("&["):
+            # A slice is built from an array (`&a[..]`), never from a literal:
+            # `&[1, 2, 3]` has type `&[i32; 3]`, which is not `&[i32]` (§5.2).
+            # This branch must come *before* the plain `&` case, which would
+            # otherwise read `&[i32]` as "reference to `[i32]`" and emit
+            # `&(0)` (TYPE-01).
+            inner = ty[2:-1]
+            n = self.rng.randint(1, 4)
+            elems = ", ".join(self.value_for(inner) for _ in range(n))
+            return "&([%s][..])" % elems
+        if ty.startswith("&"):
+            inner = ty[1:].strip()
+            if inner in ("str",):
+                return '"%s"' % r.choice(["a", "bb", ""])
+            return "&(%s)" % self.value_for(inner)
+        if ty.startswith("Heap<"):
+            return "heap(%s)" % self.value_for(ty[5:-1])
+        if ty.startswith("raw "):
+            # `raw u8` / `raw mut i32`: the only always-available value is the
+            # null pointer (`Raw::null<T>()`, §13.5) — and creating one is
+            # safe outside `unchecked`.
+            inner = ty[4:].strip()
+            mutable = ""
+            if inner.startswith("mut "):
+                mutable = "mut "
+                inner = inner[4:].strip()
+            return "Raw::null<%s>()" % inner
+        if ty.startswith("Maybe<"):
+            return r.choice(["Empty", "Has(%s)" % self.value_for(ty[6:-1])])
+        if ty.startswith("[") and ";" in ty:
+            inner = ty[1:ty.index(";")].strip()
+            # The declared length must match the element count, or it is a
+            # TYPE-01 (`expected [u8; 1], found [u8; 2]`).
+            n = ty[ty.index(";") + 1:-1].strip()
+            try:
+                count = max(1, min(8, int(n)))
+            except ValueError:
+                count = 1
+            vals = ", ".join(self.value_for(inner) for _ in range(count))
+            return "[%s]" % vals
+        # A declared struct type (possibly generic).
+        base = ty.split("<")[0]
+        for name, fields, _g in self.structs:
+            if name == base:
+                parts = [".%s = %s" % (f, self.value_for(ft))
+                         for f, ft in fields]
+                return "%s { %s }" % (ty, ", ".join(parts))
+        return "0"
+
+    def block(self):
+        """One statement inside `{ }`, with block scoping respected.
+
+        A `let` inside a block is *not* visible after it. The old generator
+        appended every local to one flat list, so a name declared inside a
+        `switch` arm was referenced after the switch — a NAME-01 the checker
+        correctly reported.
+        """
+        saved = self.mut_locals
+        self.mut_locals = list(saved)
+        s = self.stmt()
+        self.mut_locals = saved
+        return s
+
+    def zero_of(self, ty=None):
+        """A zero value for `ty` (or a random one when `ty` is omitted).
+
+        Must match the declared type: `let mut v: bool = 0;` was a TYPE-02,
+        and `let mut v: i32 = Mixed;` did not even name a value. All the
+        per-type knowledge lives in `value_for`, so a `let mut` initializer
+        and a struct field cannot disagree about what `Heap<i32>` looks like.
+        """
+        if ty is None:
+            ty = self.rng.choice(["i32", "i64", "u8", "bool", "f64"])
+        if ty == "i32":
+            return "0"
+        if ty == "i64":
+            return "0i64"
+        if ty == "u8":
+            return "0u8"
+        if ty == "bool":
+            return "false"
+        if ty == "f64":
+            return "0.0"
+        if ty == "()":
+            return "()"
+        if ty == "T":
+            return self.rng.choice(["0", "0i64", "0u8", "false"])
+        return self.value_for(ty)
+
+    def unchecked_body(self):
+        """A body using the unlocked operations from §13.2.
+
+        The old version included `n = p__undefined__;`, a guaranteed NAME-01:
+        it tested the name resolver, not the unchecked gate. These forms all
+        type-check and exercise allocation, raw pointers, and the gate itself.
+        """
+        r = self.rng
+        return r.choice([
+            "let mut p: raw mut i32 = alloc<i32>(%d);" % r.randint(0, 100),
+            "let q = Raw::null<u8>();",
+            "let mut p: raw mut i32 = Raw::null<i32>();",
+            "let mut n: i64 = 0;\n  n = %s as i64;" % self.expr_atom(),
+            "let mut n: i64 = 0;\n  n = %s as i64;" % self.expr_atom(),
+        ])
 
     def boolexpr(self):
-        return self.rng.choice([
-            "true", "false",
-            "%s %s %s" % (self.expr(), self.rng.choice(["==", "!=", "<", ">", "<=", ">="]),
-                          self.expr()),
-        ])
+        """A `bool` expression.
+
+        The old version emitted `expr < expr`, which is a `bool` only when
+        both sides are comparable; with a string or struct operand it was a
+        TYPE-02. Comparing two *integer* expressions is always well typed and
+        still exercises comparisons, coercions, and the branch lowering.
+        """
+        r = self.rng
+        pick = r.random()
+        if pick < 0.25:
+            return r.choice(["true", "false"])
+        if pick < 0.75:
+            return "%s %s %s" % (self.expr_int(), r.choice(
+                ["==", "!=", "<", ">", "<=", ">="]), self.expr_int())
+        # `&&`/`||`/`!` are part of the surface the checker owns.
+        if pick < 0.88:
+            return "(%s %s %s)" % (self.boolexpr(), r.choice(["&&", "||"]),
+                                   self.boolexpr())
+        return "!(%s)" % self.boolexpr()
 
 
 # --------------------------------------------------------------------------
@@ -648,10 +1098,11 @@ def _worker_count(args):
 _W = {}
 
 
-def _worker_init(seed, tmpdir, run_generated):
+def _worker_init(seed, tmpdir, run_generated, o4_stride=1):
     _W["rng"] = random.Random(seed)
     _W["tmpdir"] = tmpdir
     _W["run_generated"] = run_generated
+    _W["o4_stride"] = o4_stride
     _W["tag"] = os.getpid()
 
 
@@ -665,7 +1116,16 @@ def _task_gen(job):
     path = os.path.join(_W["tmpdir"], "gen_%d_%d.harmony" % (_W["tag"], idx))
     with open(path, "w") as f:
         f.write(src)
-    fnd = check_oracles(path, do_run=_W["run_generated"])
+    # O4 (run the program at three opt levels) costs three clang invocations
+    # — ~2s, against ~5ms for the other four oracles. Now that the sampler
+    # emits programs that actually compile, running it on *every* program
+    # would make a campaign 400x slower for no extra miscompile coverage: a
+    # miscompile shows up on a fraction of the programs, so a deterministic
+    # sample of them is enough. The stride keeps the sample reproducible from
+    # `--seed` regardless of core count.
+    stride = _W["o4_stride"]
+    do_run = _W["run_generated"] and (idx % stride == 0)
+    fnd = check_oracles(path, do_run=do_run)
     if fnd is None:
         try:
             os.unlink(path)
@@ -702,7 +1162,7 @@ def run_pool(tasks, worker_fn, seed, args, tmpdir):
     `args.max_findings` is reached (the pool is terminated cleanly)."""
     jobs = _worker_count(args)
     if not HAVE_MP or jobs <= 1:
-        _worker_init(seed, tmpdir, args.run_generated)
+        _worker_init(seed, tmpdir, args.run_generated, args.o4_stride)
         got = 0
         for t in tasks:
             r = worker_fn(t)
@@ -714,7 +1174,7 @@ def run_pool(tasks, worker_fn, seed, args, tmpdir):
         return
     ctx = mp.get_context("fork") if hasattr(mp, "get_context") else mp
     pool = ctx.Pool(jobs, initializer=_worker_init,
-                    initargs=(seed, tmpdir, args.run_generated))
+                    initargs=(seed, tmpdir, args.run_generated, args.o4_stride))
     try:
         got = 0
         for r in pool.imap_unordered(worker_fn, tasks, chunksize=4):
@@ -1069,6 +1529,12 @@ def main():
     ap.add_argument("--run-generated", dest="run_generated",
                     action="store_true",
                     help="also run generated programs (O4 opt-level oracle)")
+    ap.add_argument("--o4-stride", dest="o4_stride", type=int, default=8,
+                    help="run the O4 opt-level oracle on every Nth generated "
+                         "program (1 = all). O4 costs three clang invocations, "
+                         "~2s, against ~5ms for the other four oracles, so a "
+                         "campaign that runs it on everything is 400x slower "
+                         "for no extra miscompile coverage. Default 8.")
     ap.add_argument("--out", default=None, help="findings directory")
     ap.add_argument("--keep", action="store_true",
                     help="keep the scratch dir (temp files)")

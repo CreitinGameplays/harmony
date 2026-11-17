@@ -1,0 +1,23 @@
+// EXPECT: 30
+// Regression for a checker bug the fuzzer found (2026-11): a method's *bare*
+// name was also bound as a global symbol, so two types could not declare a
+// method with the same name. `methods A { fn m }` followed by `methods B { fn
+// m }` was NAME-03 "the name `m` is already used in this scope", even though
+// `A::m` and `B::m` are distinct functions (the backend mangles them per
+// receiver: `A__m`, `B__m`).
+struct A { x: i32; }
+struct B { y: i32; }
+
+methods A {
+    export fn m(&self) -> i32 { return self.x; }
+}
+
+methods B {
+    export fn m(&self) -> i32 { return self.y; }
+}
+
+fn main() -> i32 {
+    let a = A { .x = 10 };
+    let b = B { .y = 20 };
+    return a.m() + b.m();   // 10 + 20 = 30
+}

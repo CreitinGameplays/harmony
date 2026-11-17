@@ -78,6 +78,7 @@ int ck_find_gtmeth(char* base, char* name);
 void ck_subst_ctor_args(struct AstNode* n, char* base, struct AstList* targs);
 void ck_register_const(struct AstNode* n);
 void ck_register_fn(struct AstNode* n);
+void ck_register_method_fn(struct AstNode* n);
 void ck_register_extern(struct AstNode* n);
 void ck_register_methods(struct AstNode* n);
 void ck_check_bodies(void);
@@ -1465,6 +1466,20 @@ void ck_register_fn(struct AstNode* n) {
     }
 }
 
+// Registers a *method* body without binding its bare name as a global
+// symbol. Methods are reached through the method table (`g_meth_ty` +
+// `g_meth_name`) and lowered under a per-receiver mangled symbol
+// (`Type__method`), so the bare name is not the method's identity.
+//
+// Binding it globally made two types unable to declare a method with the same
+// name: `methods A { fn m }` followed by `methods B { fn m }` was NAME-03
+// "the name `m` is already used in this scope", even though `A::m` and `B::m`
+// are distinct functions. Found by the fuzzer (it generates one `methods`
+// block per struct, all with `m`).
+void ck_register_method_fn(struct AstNode* n) {
+    ck_fn_register_node(n);
+}
+
 // Looks up a generic template by name (index, or -1).
 int ck_find_template(char* name) {
     int i;
@@ -2175,7 +2190,7 @@ void ck_register_methods(struct AstNode* n) {
         g_meth_name[g_nmeth] = f->sval;
         g_meth_fn[g_nmeth] = g_nfn;
         g_nmeth = g_nmeth + 1;
-        ck_register_fn(f);
+        ck_register_method_fn(f);
         // Record the receiver type on the (just-registered) function, and
         // give its `self` parameter the right reference shape.
         if (g_nfn > 0) { g_fn_self_ty[g_nfn - 1] = recv; }
@@ -2625,8 +2640,17 @@ void ck_stmt_let(struct AstNode* n) {
 void ck_stmt_assign(struct AstNode* n) {
     int lt;
     int rt;
+    int saved_expected;
     lt = ck_place(n->a);
+    // A bare constructor (`x = Empty;`, `x = Has(3);`) resolves its
+    // instantiation from the expected type, exactly like `let x: T = Empty;`
+    // (§8.5). Without this hint the RHS was NAME-01 "no `Has` in scope" even
+    // though the target's type was known — found by the fuzzer, which
+    // generates `v3 = Has(3);` against a `Maybe<i64>`.
+    saved_expected = g_expected_ty;
+    g_expected_ty = lt;
     ck_expr(n->b);
+    g_expected_ty = saved_expected;
     rt = n->b->ty;
     n->ty = TY_UNIT;
     if (lt == TY_INVALID || rt == TY_INVALID) { return; }

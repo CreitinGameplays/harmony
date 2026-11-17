@@ -8,11 +8,41 @@ the `.harmony` (or `.hr`) extension.
 The design lives in [`docs/harmony.md`](docs/harmony.md). This repository is a
 working compiler for it.
 
+## Versioning
+
+[Semantic Versioning 2.0.0](https://semver.org/), with **rolling support
+only**: no bugfix backports to previous branches. The current version is in
+the root `VERSION` file:
+
+```
+MAJOR.MINOR.PATCH-dev|beta|stable.NUMBER+<short-commit-sha>
+```
+
+It is **auto-regenerated** by `tools/version.sh` (run by `make version`, and
+by the build), never hand-edited:
+
+- **base** — `MAJOR.MINOR.PATCH`. Preserved from the existing file, except on
+  a release branch (`1.0`, `1.1`, ...) where the branch name gives the
+  major/minor.
+- **channel** — `stable` when HEAD carries a release tag, `beta` on a release
+  branch, `dev` otherwise.
+- **NUMBER** — commits since the last release tag.
+- **sha** — the short commit sha of HEAD, as SemVer build metadata.
+
+`1.0` is reserved: it comes only when the final `harmony` language is fully
+implemented.
+
+```bash
+make version            # regenerate the VERSION file
+./build/harmony-base --version
+```
+
 ## Toolchain (debian)
 ```bash
 sudo apt update
-sudo apt install make gcc clang file python3 python-is-python3 linux-perf xxd nano gdb valgrind strace nasm fasm git ripgrep llvm -y 
+sudo apt install make gcc clang file python3 qemu-system-x86 python-is-python3 afl++ linux-perf xxd nano gdb valgrind strace nasm fasm git ripgrep llvm -y 
 ```
+Also install (for fuzzing tests): https://github.com/google/honggfuzz
 
 ## Layout
 

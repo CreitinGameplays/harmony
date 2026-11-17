@@ -1,0 +1,43 @@
+// EXPECT: 42
+// Regression for three checker gaps the fuzzer found while its grammar
+// sampler was rewritten to emit resolvable programs (2026-11). Each was a
+// case where the compiler knew the expected type but did not use it.
+//
+//   1. An *assignment* did not supply the place's type as the expected type,
+//      so `v = Empty;` was NAME-01 "no `Empty` in scope" even though `v` was
+//      a `Maybe<i64>`. (`let v: Maybe<i64> = Empty;` always worked.)
+//   2. A call *argument* did not supply the parameter's type either, so
+//      `g(9, Empty)` failed where `g` takes a `Maybe<i32>`.
+//   3. The same gap in a generic call: `g<i32>(9, Empty)`.
+//
+// The constructor resolves its instantiation from the expected type (§8.5), so
+// all three spellings must agree.
+fn take(m: Maybe<i32>) -> i32 {
+    switch (m) {
+        case Has(v): { return v; }
+        case Empty: { return 0; }
+    }
+    return -1;
+}
+
+fn take_generic<T>(x: T, m: Maybe<i32>) -> i32 {
+    return take(m);
+}
+
+fn main() -> i32 {
+    // (1) assignment: the place's type is the hint.
+    let mut v: Maybe<i64> = Empty;
+    v = Has(7);
+    // (2) call argument: the parameter's type is the hint.
+    let a = take(Has(20));
+    // (3) generic call: the instantiated parameter's type is the hint.
+    let b = take_generic<i32>(1, Has(15));
+    // `take` on a `Maybe<i64>` is a different instantiation, so the values are
+    // counted directly.
+    let mut total: i32 = 0;
+    switch (v) {
+        case Has(w): { total = total + (w as i32); }
+        case Empty: { }
+    }
+    return total + a + b;   // 7 + 20 + 15 = 42
+}

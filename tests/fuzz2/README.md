@@ -11,7 +11,7 @@ rewrite.
 | Engine | Class it owns |
 |---|---|
 | `specials` | Adversarial *shapes* hand-derived from the real failure modes found so far: parser-depth walls, name-length truncation, lexical boundaries, unbalanced structure, unicode, self-referential types. Deterministic — a fixed regression list. |
-| `gen` | Grammar-sampled *valid-ish* programs. Reaches deep checker/backend states (generic nests, `unchecked` + raw pointers, switch exhaustiveness, casts) that byte mutators never produce because they destroy syntax first. |
+| `gen` | Grammar-sampled *valid-ish* programs. Reaches deep checker/backend states (generic nests, `unchecked` + raw pointers, switch exhaustiveness, casts) that byte mutators never produce because they destroy syntax first. **The sampler tracks the names it declares** so references resolve; that is what makes it the engine that reaches the most compiler code (see below). |
 | `mut` | Token-level mutation of the **real test corpus** (the `tests/harmony` suite, ~150 programs): splice, span-duplicate, adversarial-token insert, identifier swap, overlong token. Walks real syntax much farther than byte flips. |
 | `afl` | AFL++ dumb-mode (the binary is FASM-built: no compile-time instrumentation exists; QEMU/FRIDA absent in this environment). Beats the channel for *corruption* the structured engines won't emit (bytes inside cooked strings, radical splices). Dumb mode has no coverage feedback, so the queue stays at the seed set — its value is raw execution volume, and the engine reports its real exec count so a broken launch cannot read as "clean". |
 | `valgrind` | The only oracle for uninitialised reads / invalid heap access (this build class showed up during the design probing). Runs `check` and `emit-llvm` over a corpus+generated sample; too slow for the hot loop. |
@@ -22,6 +22,36 @@ confidence. The valgrind engine once passed a nonexistent flag
 (`--exit-code-first`) and spent an unknown number of campaigns reporting a
 false clean; it now counts completed runs and errors out at zero, and the AFL
 engine reports its execution count. Any new engine needs the same property.
+
+## Which engine actually reaches the compiler
+
+Measured with callgrind (function-level attribution, resolved through the
+binary's symbol table), 25 programs per engine, over the same `check` +
+`emit-llvm` path the fuzzer uses:
+
+| Engine | check-clean | distinct compiler functions reached |
+|---|---|---|
+| `gen` (current) | **25/25** | **316** |
+| `gen` (previous) | 2/25 | 227 |
+| `mut` | 28/30 | 60 |
+
+So `gen` is the engine that matters, and the number that matters is *how many
+programs reach the checker at all*: the previous sampler emitted dangling
+references on purpose (`Maybe-51`, `methods M0` with no `M0` declared,
+`let v = v;`), so 95% of programs died in `check` with NAME-01/SYN-05/TYPE-02
+before reaching the semantic stage. The 115 functions the current sampler
+reaches and the old one did not are exactly that stage
+(`ck_expr_call`, `ck_instantiate_type`, `ck_enum_construct_ty`, ...).
+
+This is a property of the *sampler*, so it can silently regress.
+`tests/harmony/coverage.sh` measures it on every `make test` and fails if the
+count drops below a floor — the check that a weaker sampler is caught rather
+than shipped.
+
+**Deliberately broken input still has an owner.** The sampler now emits
+resolvable programs, but malformed *bytes* and token damage are still covered
+— by `mut` (token splicing) and `afl` (byte corruption), which is what those
+engines are for. The sampler owns *structure*, not entropy.
 
 ## The five oracles (a crash alone is a weak bar for a compiler)
 
@@ -83,6 +113,21 @@ Historical record (kept so a regression is noticeable):
 - 2026-11: two oracle *false positives* fixed (they were the fuzzer's bug, not
   the compiler's): exit values ≥128 are legitimate (`main` mod 256), and O4
   must skip `unchecked` programs because their UB may differ per opt level.
+- 2026-11: rewriting the grammar sampler to emit *resolvable* programs (it
+  used to invent dangling names) exposed three real checker gaps, all the
+  same shape — the compiler knew the expected type but did not pass it down:
+  - an **assignment** did not supply the place's type, so `v = Empty;` was
+    NAME-01 "no `Empty` in scope" though `v: Maybe<i64>`;
+  - a **call argument** did not supply the parameter's type, so
+    `g(9, Empty)` failed though `g` takes a `Maybe<i32>`;
+  - the same in a **generic call**, `g<i32>(9, Empty)`.
+  All three now pass the expected type as the hint (§8.5).
+  Regression: `tests/harmony/codegen/expected-type-hint.harmony`.
+- 2026-11: a method's *bare* name was also bound as a global symbol, so two
+  types could not declare a method with the same name (`methods A { fn m }`
+  then `methods B { fn m }` was NAME-03, though the backend mangles them per
+  receiver). Regression:
+  `tests/harmony/codegen/method-name-collision.harmony`.
 - 2026-11: **sustained-campaign baseline** (the rewrite gate). Full sweep,
   2 cores, seed 31, 496s wall:
   `--engines specials,gen,mut,valgrind,afl --iterations 3000 --run-generated

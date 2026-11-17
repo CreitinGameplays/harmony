@@ -35,7 +35,7 @@ HB_SRC    := \
 	bootstrap/harmony-base/main.c2
 SEED_SRC  := $(wildcard bootstrap/c2x-seed/*.asm)
 
-.PHONY: all clean test test-fuzz test-fuzz2 fuzz2-deep test-seed test-lisp seed harmony-base lisp
+.PHONY: all clean test test-fuzz test-fuzz2 fuzz2-deep test-seed test-lisp seed harmony-base lisp version
 
 all: harmony-base
 
@@ -44,8 +44,16 @@ seed: $(SEED)
 $(SEED): $(SEED_SRC) build.sh
 	bash build.sh
 
+# The root VERSION file is auto-regenerated (AGENTS.md: SemVer 2.0.0, rolling
+# support): MAJOR.MINOR.PATCH-dev|beta|stable.N+<short-commit-sha>. The base
+# is preserved from the existing file; the channel, the counter, and the sha
+# come from the repository state.
+version:
+	bash tools/version.sh
+
 harmony-base: $(SEED) $(HB_SRC)
 	$(SEED) -o $(HB_OUT) $(HB_SRC)
+	@bash tools/version.sh >/dev/null 2>&1 || true
 
 # Full test target: c2x-seed regression corpus + harmony-base driver tests.
 test: test-seed harmony-base
@@ -58,6 +66,8 @@ test: test-seed harmony-base
 	bash tests/harmony/scale.sh
 	bash tests/harmony/golden.sh
 	bash tests/harmony/determinism.sh
+	bash tests/harmony/coverage.sh
+	bash tests/harmony/version.sh
 	bash tests/harmony/lisp.sh
 
 # c2x-seed regression corpus (guards the compiler bugs fixed during bring-up).

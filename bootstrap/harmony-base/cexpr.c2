@@ -675,6 +675,37 @@ int ck_unify(struct AstNode* tn, int ty) {
 
 // `name(args)` where `name` is a generic template: infer the type arguments
 // from the argument types, instantiate, and check the call (§18).
+// True when a type node mentions one of the enclosing template's parameters
+// (`T`, `U`, ...). Used during generic-call inference: a parameter typed `T`
+// cannot supply an expected type (that is exactly what the pass infers), and
+// resolving it would emit "no type named `T`" — a diagnostic about a type
+// that is perfectly legal in that position.
+int ck_type_mentions_template_param(struct AstNode* n) {
+    int i;
+    if (n == 0) { return 0; }
+    if (n->kind == AST_TYPE_NAME && n->sval != 0) {
+        i = 0;
+        while (i < g_infer_n) {
+            if (g_infer_names[i] != 0 && str_eq(n->sval, g_infer_names[i])) {
+                return 1;
+            }
+            i = i + 1;
+        }
+        return 0;
+    }
+    if (ck_type_mentions_template_param(n->a)) { return 1; }
+    if (ck_type_mentions_template_param(n->b)) { return 1; }
+    if (ck_type_mentions_template_param(n->c)) { return 1; }
+    if (n->kids != 0) {
+        i = 0;
+        while (i < n->kids->len) {
+            if (ck_type_mentions_template_param(n->kids->items[i])) { return 1; }
+            i = i + 1;
+        }
+    }
+    return 0;
+}
+
 int ck_infer_generic_call(struct AstNode* n, struct AstNode* callee, struct AstList* args) {
     int ti;
     struct AstNode* tmpl;
@@ -714,7 +745,27 @@ int ck_infer_generic_call(struct AstNode* n, struct AstNode* callee, struct AstL
     i = 0;
     while (i < na) {
         int at;
+        int saved_expected;
+        // A parameter whose type is already concrete (`Maybe<i32>`) can
+        // supply the expected type for a bare constructor argument
+        // (`g(9, Empty)`); a `T`-typed one cannot, because `T` is exactly what
+        // this pass is inferring. Setting the hint only for concrete params
+        // keeps inference intact.
+        saved_expected = g_expected_ty;
+        // Only a parameter whose declared type is written *without* a
+        // template parameter can supply a hint. Inspecting it textually avoids
+        // resolving `T` (which would emit "no type named `T`" during
+        // inference — the very pass that is meant to discover it).
+        if (params->items[i]->a != 0
+            && !ck_type_mentions_template_param(params->items[i]->a)) {
+            int pt;
+            pt = ck_resolve_type_nocache(params->items[i]->a);
+            if (pt != TY_INVALID && !ty_is_untyped_lit(pt)) {
+                g_expected_ty = pt;
+            }
+        }
         at = ck_expr(args->items[i]);
+        g_expected_ty = saved_expected;
         if (at == TY_UINT_LIT) { ck_stamp_lits(args->items[i], TY_I32); at = TY_I32; }
         else if (at == TY_FLOAT_LIT) { ck_stamp_lits(args->items[i], TY_F64); at = TY_F64; }
         if (at != TY_INVALID) { ck_unify(params->items[i]->a, at); }
@@ -937,7 +988,16 @@ int ck_expr_call(struct AstNode* n) {
             i = 0;
             while (i < na) {
                 int at;
+                int saved_expected;
+                // A bare constructor argument (`g(Has(3))` where `g` takes a
+                // `Maybe<i32>`) resolves its instantiation from the expected
+                // parameter type, exactly like `let m: Maybe<i32> = Has(3)`
+                // (§8.5). Without the hint it was NAME-01 "no `Has` in
+                // scope" even though the signature said which type it was.
+                saved_expected = g_expected_ty;
+                g_expected_ty = params->items[i]->ty;
                 at = ck_expr(args->items[i]);
+                g_expected_ty = saved_expected;
                 if (at != TY_INVALID && params->items[i]->ty != TY_INVALID
                     && !ck_coercible(params->items[i]->ty, at)) {
                     ck_err_type_mismatch(args->items[i], params->items[i]->ty, at,
@@ -1107,7 +1167,15 @@ int ck_expr_generic_call(struct AstNode* n) {
     i = 0;
     while (i < na) {
         int at;
+        int saved_expected;
+        // Same expected-type hint as a non-generic call: after instantiation
+        // `params` are the concrete parameter types, so a bare `Empty`/`Has`
+        // argument resolves from them (§8.5). Without it, `g<i32>(9, Empty)`
+        // was NAME-01 "no `Empty` in scope".
+        saved_expected = g_expected_ty;
+        g_expected_ty = params->items[i]->ty;
         at = ck_expr(args->items[i]);
+        g_expected_ty = saved_expected;
         if (at != TY_INVALID && params->items[i]->ty != TY_INVALID
             && !ck_coercible(params->items[i]->ty, at)) {
             ck_err_type_mismatch(args->items[i], params->items[i]->ty, at,

@@ -152,8 +152,9 @@ is unit-tested on its own.
 
 - [x] `harmony/ast/node.hr`: the flat node model (kind, span, a/b/c,
   kids/kids2, sval/ival) with the same kind numbers and names as
-  harmony-base, so `--dump-ast` can be byte-identical. Nodes live in a raw
-  growable buffer (handles are indices); the child lists are `Vec<i32>`.
+  harmony-base, so `--dump-ast` can be byte-identical. Nodes live in a
+  resizable `Vec<Node>` (handles are indices); the child lists are
+  `Vec<i32>`.
 - [x] `harmony/ast/print.hr`: the byte-identical recursive dumper (a/b/c,
   then kids, then kids2; sval then `#ival`).
 - [x] `tests/harmony-final/ast-node.harmony` builds the exact tree
@@ -162,16 +163,11 @@ is unit-tested on its own.
 - [ ] The parser (`harmony/parser/`) is not started.
 - [ ] Gate: `--dump-ast` byte-identical for the whole accept corpus.
 
-Two harmony-base limits shaped this design and are recorded for the rewrite:
-
-  - `Vec<T>` instantiated with a type defined in the *same* module fails when
-    that module is imported: `ck_instance_name` resolves the type argument as
-    unqualified (`N` instead of `mod::N`), producing NAME-01 "no type named
-    `N`" and a `Vec__X` instance. The node table therefore uses a raw growable
-    buffer instead of `Vec<Node>`.
-  - Returning a struct that contains `Vec` fields by value and then
-    field-accessing the result at the call site mis-lowers to a GEP on `null`.
-    The printer reads nodes through a `&Node` accessor instead.
+- [x] The two harmony-base bugs found here were **fixed, not worked around**:
+  the module loader now renames type arguments on bare generic paths
+  (`module-generic-path` regression), and `ll_addr` handles a field access on
+  a call result (`field-call-result` regression). The node table is therefore
+  a plain `Vec<Node>` and the printer reads nodes by value.
 
 
 - `harmony/ast/node.hr`: the flat node model + arena-backed lists.
@@ -262,3 +258,16 @@ starting the rewrite):
   symbol name or a formatted number. `str::from_parts(p, len)` is now a
   builtin (`unchecked`, since the pointer is unchecked). It is what
   `library/core/str.hr`'s `String::as_str` uses.
+- The module loader skipped type arguments on a bare generic path
+  (`Vec<N>::make` stores `N` in the path's `kids`): an unconditional early
+  return for `AST_PATH` left the argument unqualified, so importing a module
+  that used one of its own types as a generic argument produced NAME-01 "no
+  type named `N`" and a `Vec__X` instance. Bare paths now walk their kids
+  (qualified paths still leave their segments alone). Regression
+  `module-generic-path`.
+- `ll_addr` had no `AST_CALL` case, so a field access on a call result
+  (`make(x).field`) emitted a GEP on `null` -- the call itself was omitted.
+  Small structs were silently UB that clang folded into a constant (the
+  test used to pass by accident); larger ones faulted. Aggregate-returning
+  calls now lower through `ll_expr` and yield the sret result address.
+  Regression `field-call-result`.

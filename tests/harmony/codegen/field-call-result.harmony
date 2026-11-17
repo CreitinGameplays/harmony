@@ -1,0 +1,35 @@
+// EXPECT: 42
+// Field access directly on a call result that returns a struct (2026-11).
+//
+// `ll_addr` handled PATH, DEREF, FIELD_ACC and INDEX, but not CALL. So a
+// field access whose base was a call (`make(5).kind`, or an imported
+// `node::get(&ns, h).kind`) fell through to the literal address `"null"`,
+// and the field GEP was emitted on a null pointer. With a small struct clang
+// folded the UB into a constant (hiding the bug -- this test used to pass by
+// accident with `make(5).kind == 5`); with a struct carrying Vec fields the
+// read could fault. The call was not even emitted: the IR had no `call` at
+// all, just `getelementptr inbounds %struct.Node, ptr null`.
+//
+// An aggregate-returning call uses sret and `ll_expr_call` returns the
+// address of its result alloca, so `ll_addr(AST_CALL)` now lowers the call
+// and returns that address.
+struct Node { kind: i32; payload: i64; }
+
+fn make(k: i32) -> Node {
+    return Node { .kind = k, .payload = 1000 };
+}
+
+// A struct with a Vec field makes the wrong address land off-page.
+import "field-call-result-env.hr";
+
+fn main() -> i32 {
+    // Direct field access on a call result.
+    if (make(5).kind != 5) { return 1; }
+    if (make(9).payload != 1000) { return 2; }
+    // Several accesses in one expression: each must emit its own call.
+    if (make(3).kind + make(4).kind != 7) { return 3; }
+    // Through an imported function returning a Vec-bearing struct.
+    let b = field_call_result_env::big(7).kind;
+    if (b != 7) { return 4; }
+    return 42;
+}

@@ -748,12 +748,18 @@ directly into its binary and (b) support **multi-core compilation by default**.
     byte-identical `--dump-ast` printer, tested on the exact tree harmony-base
     prints for `fn main() -> i32 { return 42; }`. R3 is partial (the parser is
     not started).
-  - Nine `harmony-base` gaps found and fixed while writing it (see
+  - Eleven `harmony-base` gaps found and fixed while writing it (see
     `roadmap/harmony` "What harmony-base must still grow"): `for`-range
     element typing, `dealloc`/`Raw::null()`/`alloc` without `<T>`,
     struct-field expected types, `const` literal adoption, imported
     constants, method-name shadowing in the module loader, `u64` literals
-    ≥ 2^63, and unsigned `%`. Each has a regression test.
+    ≥ 2^63, unsigned `%`, struct-member interleaving with generic fields,
+    enum-size/Layout mismatch, and deferred-init on assignment. Each has a
+    regression test.
+  - Two more found while building the AST: the loader skipping type args on
+    bare generic paths, and `ll_addr` dropping field access on a call result.
+    Both fixed with regressions; the rewrite uses `Vec<Node>` and by-value
+    reads again rather than working around them.
   - Added the `str` lang item (`str::from_parts`), which §19.8.9 reserves,
     so a compiler can build a `&str` from owned bytes.
 - [ ] Integrate LLVM IR emission directly into the compiler binary (AGENTS.md).

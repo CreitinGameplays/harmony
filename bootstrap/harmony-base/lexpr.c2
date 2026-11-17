@@ -820,6 +820,16 @@ char* ll_addr(struct AstNode* n) {
         }
         return ll_index_addr(n);
     }
+    if (n->kind == AST_CALL) {
+        // A field access (or index) directly on a call result, e.g.
+        // `make(x).field`. An aggregate-returning call uses the sret
+        // convention: `ll_expr_call` emits the call and returns the address
+        // of its result alloca. Without this case, `ll_addr` fell through to
+        // `"null"` and the field GEP was emitted on a null pointer -- silent
+        // UB that clang folded into garbage (or crashed when the struct was
+        // large enough to touch a real page).
+        return ll_expr(n);
+    }
     return "null";
 }
 

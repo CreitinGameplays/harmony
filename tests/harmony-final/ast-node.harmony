@@ -17,14 +17,10 @@
 //           return
 //             int #42
 //
-// The node table is a raw growable buffer rather than `Vec<Node>`: a
-// generic instantiated with a type defined in the same module fails when
-// that module is imported (the type argument resolves as unqualified inside
-// the instance-name construction). `Vec<i32>` for the child lists is fine.
-//
-// Read nodes through `ref` (a borrowed node), not `get` (which returns a
-// `Node` by value): a struct carrying `Vec` fields mis-lowers when returned
-// by value and then field-accessed at the call site (a GEP on null).
+// The node table is a resizable `Vec<Node>`; handles are indices into it.
+// `Vec<i32>` for the child lists. Reading a node by value (`get`) or by
+// reference (`ref`) both work now that harmony-base handles a field access
+// directly on a call result (regression: field-call-result).
 import "../../harmony/ast/node.hr";
 import "../../harmony/ast/print.hr";
 
@@ -68,9 +64,9 @@ fn main() -> i32 {
     // Growth path: 40 nodes exceeds the initial 16-slot buffer. Earlier
     // nodes must still be readable after the reallocation.
     let last = build_many(&mut ns);
-    if (node::ref(&ns, last).ival != 39) { return 2; }
-    if (node::ref(&ns, prog).kind != node::AST_PROGRAM) { return 3; }
-    let n = node::ref(&ns, f);
+    if (node::get(&ns, last).ival != 39) { return 2; }
+    if (node::get(&ns, prog).kind != node::AST_PROGRAM) { return 3; }
+    let n = node::get(&ns, f);
     if (n.sval != "main") { return 4; }
 
     // Every kind has a stable name (no "?").

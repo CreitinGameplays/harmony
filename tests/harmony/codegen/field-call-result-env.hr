@@ -1,0 +1,13 @@
+// A struct carrying a Vec field, for the field-call-result regression.
+import "field-call-result-env/vec.hr";
+
+export struct Big {
+    kind: i32;
+    data: vec::Vec<u8>;
+}
+
+export fn big(k: i32) -> Big {
+    let mut v: vec::Vec<u8> = vec::Vec<u8>::make();
+    v.push(1u8);
+    return Big { .kind = k, .data = v };
+}

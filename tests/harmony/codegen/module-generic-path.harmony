@@ -1,0 +1,26 @@
+import "module-generic-path/vec.hr";
+// EXPECT: 42
+// A generic type argument on a bare path is renamed when its module is
+// imported (2026-11).
+//
+// `Vec<N>::make()` parses as an AST_PATH whose `kids` hold the type
+// argument `N`. The module loader's `mod_rename_node` returned early for
+// every AST_PATH (to leave the path's *segments* alone), which also skipped
+// those type arguments. So inside an imported module, `N` stayed bare and
+// the checker instantiated `Vec__X` instead of `mod::N` -- NAME-01 "no type
+// named `N`" and TYPE-01 on any use of the module's generic type.
+//
+// The fix walks a bare path's kids (there is no base, so they are type
+// arguments, not path segments), while still leaving a qualified path's
+// segments untouched.
+import "module-generic-path/mgp.hr";
+
+fn main() -> i32 {
+    let h: mgp::Holder = mgp::make_holder();
+    if (h.items.len() != 2) { return 1; }
+    let a = h.items.get(0);
+    let b = h.items.get(1);
+    if (a.n != 10) { return 2; }
+    if (b.n != 32) { return 3; }
+    return 42;
+}

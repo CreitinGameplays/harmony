@@ -90,69 +90,39 @@ struct Node {
     kids2: vec::Vec<i32>;
 }
 
-// The node table: a growable raw buffer of nodes. This is deliberately NOT
-// `Vec<Node>`: instantiating a generic with a type defined in the *same*
-// module that is later imported hits a checker bug (the type argument is
-// resolved as unqualified `Node` during instance-name construction). A raw
-// buffer avoids that shape -- `Vec<i32>` for the kids lists is fine, since
-// `i32` is a primitive.
+// The node table: a resizable `Vec<Node>` of nodes; handles are indices.
+// `Vec<i32>` for the child lists. Both are now usable across modules --
+// the module loader used to skip the type argument on a bare generic path,
+// and `ll_addr` used to drop a field access on a call result; both fixed in
+// harmony-base (regressions: module-generic-path, field-call-result).
 struct Nodes {
-    items: raw mut Node;
-    len: usize;
-    cap: usize;
+    items: vec::Vec<Node>;
 }
 
 export fn nodes_make() -> Nodes {
-    return Nodes { .items = Raw::null<Node>(), .len = 0, .cap = 0 };
+    return Nodes { .items = vec::Vec<Node>::make() };
 }
 
 // Creates a node and returns its handle.
 export fn new_node(ns: &mut Nodes, kind: i32) -> i32 {
-    if (ns.len == ns.cap) {
-        let mut nc: usize = 16;
-        if (ns.cap > 0) { nc = ns.cap * 2; }
-        unchecked("grow doubles capacity; copy len live nodes, then free the old block") {
-            let fresh: raw mut Node = alloc<Node>(nc);
-            let mut i: usize = 0;
-            while (i < ns.len) {
-                fresh.plus(i).write(ns.items.plus(i).read());
-                i += 1;
-            }
-            if (ns.cap > 0) { dealloc(ns.items, ns.cap); }
-            ns.items = fresh;
-        }
-        ns.cap = nc;
-    }
-    unchecked("len < cap after grow, so slot len is inside the block") {
-        ns.items.plus(ns.len).write(Node {
-            .kind = kind,
-            .start = 0,
-            .end = 0,
-            .ival = 0,
-            .sval = "",
-            .a = -1,
-            .b = -1,
-            .c = -1,
-            .kids = vec::Vec<i32>::make(),
-            .kids2 = vec::Vec<i32>::make(),
-        });
-    }
-    let h: i32 = ns.len as i32;
-    ns.len += 1;
-    return h;
+    ns.items.push(Node {
+        .kind = kind,
+        .start = 0,
+        .end = 0,
+        .ival = 0,
+        .sval = "",
+        .a = -1,
+        .b = -1,
+        .c = -1,
+        .kids = vec::Vec<i32>::make(),
+        .kids2 = vec::Vec<i32>::make(),
+    });
+    return ns.items.len() as i32 - 1;
 }
 
-// Accessors. The buffer is copied in/out by raw read/write, not by struct
-// assignment (which would copy the whole Vec-bearing node).
-export fn get(ns: &Nodes, h: i32) -> Node {
-    unchecked("caller passes a handle from new_node") { return ns.items.plus(h as usize).read(); }
-}
-export fn ref(ns: &Nodes, h: i32) -> &Node {
-    unchecked("caller passes a handle from new_node") { return &*ns.items.plus(h as usize); }
-}
-export fn put(ns: &mut Nodes, h: i32, n: Node) {
-    unchecked("caller passes a handle from new_node") { ns.items.plus(h as usize).write(n); }
-}
+export fn get(ns: &Nodes, h: i32) -> Node { return *ns.items.get(h as usize); }
+export fn ref(ns: &Nodes, h: i32) -> &Node { return ns.items.get(h as usize); }
+export fn put(ns: &mut Nodes, h: i32, n: Node) { ns.items.set(h as usize, n); }
 
 export fn set_sval(ns: &mut Nodes, h: i32, s: &str) {
     let mut n = get(&*ns, h);

@@ -275,6 +275,22 @@ void mod_rename_node(struct AstNode* n, char* pre, char** names, int nnames) {
             // A path's segment list pins the final segment (a variant or a
             // field name): never rewrite segments, only the base if any.
             mod_rename_node(n->a, pre, names, nnames);
+            // EXCEPT when there is no base: a bare generic path like
+            // `Vec<N>::make` stores its type arguments in `kids` (set by
+            // parse_expr's `tyargs` branch). Those arguments are types this
+            // module may declare, so they must be renamed too. The old
+            // unconditional `return` skipped them: inside a module, the
+            // `N` in `vec::Vec<N>::make()` stayed bare, so importing the
+            // module produced a `Vec__X` instance and NAME-01 "no type
+            // named `N`". With a base, `kids` are the path's segments,
+            // which must stay untouched.
+            if (n->a == 0 && n->kids != 0) {
+                i = 0;
+                while (i < n->kids->len) {
+                    mod_rename_node(n->kids->items[i], pre, names, nnames);
+                    i = i + 1;
+                }
+            }
             return;
         }
     }

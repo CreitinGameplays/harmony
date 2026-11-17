@@ -1,0 +1,14 @@
+// A module that uses one of its own types as a generic argument on a bare
+// path -- the shape that used to skip the type argument during renaming.
+import "vec.hr";
+
+export struct Item { n: i32; }
+
+export struct Holder { items: vec::Vec<Item>; }
+
+export fn make_holder() -> Holder {
+    let mut v: vec::Vec<Item> = vec::Vec<Item>::make();
+    v.push(Item { .n = 10 });
+    v.push(Item { .n = 32 });
+    return Holder { .items = v };
+}

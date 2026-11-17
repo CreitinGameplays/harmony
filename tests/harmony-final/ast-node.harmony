@@ -1,0 +1,82 @@
+// EXPECT: 42
+// harmony/ast/{node,print}.hr — a byte-identical AST dumper (R3).
+//
+// The node model is flat and mirrors harmony-base's `struct AstNode`: a kind,
+// a span, up to three direct children, two child lists, and sval/ival
+// payloads. That is deliberate -- `--dump-ast` is a pure function of the
+// tree, so the two compilers can be diffed on any file instead of trusting
+// that a second parser "looks right".
+//
+// This test builds the exact tree that harmony-base's `--dump-ast` prints
+// for `fn main() -> i32 { return 42; }` and checks every byte of the dump:
+//
+//     program
+//       fn main
+//         type-name i32
+//         block
+//           return
+//             int #42
+//
+// The node table is a raw growable buffer rather than `Vec<Node>`: a
+// generic instantiated with a type defined in the same module fails when
+// that module is imported (the type argument resolves as unqualified inside
+// the instance-name construction). `Vec<i32>` for the child lists is fine.
+//
+// Read nodes through `ref` (a borrowed node), not `get` (which returns a
+// `Node` by value): a struct carrying `Vec` fields mis-lowers when returned
+// by value and then field-accessed at the call site (a GEP on null).
+import "../../harmony/ast/node.hr";
+import "../../harmony/ast/print.hr";
+
+// Build enough nodes to force the raw buffer to grow past its first chunk.
+fn build_many(ns: &mut node::Nodes) -> i32 {
+    let mut last: i32 = -1;
+    let mut i: usize = 0;
+    while (i < 40) {
+        last = node::new_node(ns, node::AST_INT_LIT);
+        node::set_ival(ns, last, i as i64);
+        i += 1;
+    }
+    return last;
+}
+
+fn main() -> i32 {
+    let mut ns: node::Nodes = node::nodes_make();
+
+    let prog = node::new_node(&mut ns, node::AST_PROGRAM);
+    let f = node::new_node(&mut ns, node::AST_FN);
+    node::set_sval(&mut ns, f, "main");
+    let ret_ty = node::new_node(&mut ns, node::AST_TYPE_NAME);
+    node::set_sval(&mut ns, ret_ty, "i32");
+    let blk = node::new_node(&mut ns, node::AST_BLOCK);
+    let ret = node::new_node(&mut ns, node::AST_RETURN);
+    let lit = node::new_node(&mut ns, node::AST_INT_LIT);
+    node::set_ival(&mut ns, lit, 42);
+    node::set_a(&mut ns, ret, lit);
+    node::push_kid(&mut ns, blk, ret);
+    node::set_a(&mut ns, f, ret_ty);
+    node::set_b(&mut ns, f, blk);
+    node::push_kid(&mut ns, prog, f);
+
+    let s = print::dump(&ns, prog);
+    let want = "program\n  fn main\n    type-name i32\n    block\n      return\n        int #42\n";
+    if (s.as_str() != want) {
+        println("got: [{}]", s.as_str());
+        return 1;
+    }
+
+    // Growth path: 40 nodes exceeds the initial 16-slot buffer. Earlier
+    // nodes must still be readable after the reallocation.
+    let last = build_many(&mut ns);
+    if (node::ref(&ns, last).ival != 39) { return 2; }
+    if (node::ref(&ns, prog).kind != node::AST_PROGRAM) { return 3; }
+    let n = node::ref(&ns, f);
+    if (n.sval != "main") { return 4; }
+
+    // Every kind has a stable name (no "?").
+    if (node::kind_name(node::AST_PROGRAM) != "program") { return 5; }
+    if (node::kind_name(node::AST_FIELD_INIT) != "field-init") { return 6; }
+    if (node::kind_name(node::AST_PAT_VARIANT) != "pat-variant") { return 7; }
+    if (node::kind_name(9999) != "?") { return 8; }
+    return 42;
+}

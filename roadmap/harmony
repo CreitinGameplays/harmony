@@ -148,7 +148,31 @@ is unit-tested on its own.
   std-library feature (R7). The 31 hand-written snippets cover every token
   class but not every file.
 
-### R3 — AST and parser [ ]
+### R3 — AST and parser [/]
+
+- [x] `harmony/ast/node.hr`: the flat node model (kind, span, a/b/c,
+  kids/kids2, sval/ival) with the same kind numbers and names as
+  harmony-base, so `--dump-ast` can be byte-identical. Nodes live in a raw
+  growable buffer (handles are indices); the child lists are `Vec<i32>`.
+- [x] `harmony/ast/print.hr`: the byte-identical recursive dumper (a/b/c,
+  then kids, then kids2; sval then `#ival`).
+- [x] `tests/harmony-final/ast-node.harmony` builds the exact tree
+  harmony-base prints for `fn main() -> i32 { return 42; }` and diffs every
+  byte; also exercises buffer growth and all kind names.
+- [ ] The parser (`harmony/parser/`) is not started.
+- [ ] Gate: `--dump-ast` byte-identical for the whole accept corpus.
+
+Two harmony-base limits shaped this design and are recorded for the rewrite:
+
+  - `Vec<T>` instantiated with a type defined in the *same* module fails when
+    that module is imported: `ck_instance_name` resolves the type argument as
+    unqualified (`N` instead of `mod::N`), producing NAME-01 "no type named
+    `N`" and a `Vec__X` instance. The node table therefore uses a raw growable
+    buffer instead of `Vec<Node>`.
+  - Returning a struct that contains `Vec` fields by value and then
+    field-accessing the result at the call site mis-lowers to a GEP on `null`.
+    The printer reads nodes through a `&Node` accessor instead.
+
 
 - `harmony/ast/node.hr`: the flat node model + arena-backed lists.
 - `harmony/ast/print.hr`: `--dump-ast`, byte-identical to harmony-base's.

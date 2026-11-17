@@ -1,0 +1,49 @@
+// harmony/ast/print.hr — byte-identical AST dumper (roadmap/harmony R3).
+import "../../library/core/str.hr";
+//
+// Prints one node per line, children indented two spaces per level, in the
+// order a/b/c/kids/kids2. The node's tail is `sval` (when set) followed by
+// `#ival` (when nonzero), exactly like harmony-base's `pastout.c2`. There
+// are no addresses or spans in the output, so two compilers parsing the same
+// file must produce the same bytes.
+import "node.hr";
+
+fn indent(out: str::String, depth: usize) {
+    let mut i: usize = 0;
+    while (i < depth) { out.push("  "); i += 1; }
+}
+
+fn print_node(ns: &node::Nodes, out: &mut str::String, h: i32, depth: usize) {
+    if (h < 0) { return; }
+    let n = node::ref(ns, h);
+    indent(*out, depth);
+    out.push(node::kind_name(n.kind));
+    if (n.sval != "") {
+        out.push(" ");
+        out.push(n.sval);
+    }
+    if (n.ival != 0) {
+        out.push(" #");
+        out.push_i64(n.ival);
+    }
+    out.push("\n");
+    print_node(ns, out, n.a, depth + 1);
+    print_node(ns, out, n.b, depth + 1);
+    print_node(ns, out, n.c, depth + 1);
+    let mut i: usize = 0;
+    while (i < n.kids.len()) {
+        print_node(ns, out, *n.kids.get(i), depth + 1);
+        i += 1;
+    }
+    i = 0;
+    while (i < n.kids2.len()) {
+        print_node(ns, out, *n.kids2.get(i), depth + 1);
+        i += 1;
+    }
+}
+
+export fn dump(ns: &node::Nodes, root: i32) -> str::String {
+    let mut out: str::String = str::String::make();
+    print_node(ns, &mut out, root, 0);
+    return out;
+}

@@ -744,6 +744,10 @@ directly into its binary and (b) support **multi-core compilation by default**.
     stream against harmony-base's `--dump-tokens` on 31 snippets covering
     every token class; 0 mismatches. R2 is partial (the corpus is hand-written
     rather than every file in the repo).
+  - `harmony/ast/node.hr` + `harmony/ast/print.hr`: the flat node model and a
+    byte-identical `--dump-ast` printer, tested on the exact tree harmony-base
+    prints for `fn main() -> i32 { return 42; }`. R3 is partial (the parser is
+    not started).
   - Nine `harmony-base` gaps found and fixed while writing it (see
     `roadmap/harmony` "What harmony-base must still grow"): `for`-range
     element typing, `dealloc`/`Raw::null()`/`alloc` without `<T>`,

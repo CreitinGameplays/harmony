@@ -84,6 +84,8 @@ make clean
 ```bash
 harmony-base check main.harmony              # analyses only, no codegen
 harmony-base check --dump-ast main.harmony   # print the parse tree (M0)
+harmony-base --dump-tokens main.harmony      # print the token stream (differential oracle)
+harmony-base --version                       # SemVer 2.0.0 stamp from VERSION
 harmony-base build main.harmony -o hello     # compile to an executable
 harmony-base run main.harmony                # build and run
 harmony-base emit-llvm main.harmony           # print the generated LLVM IR

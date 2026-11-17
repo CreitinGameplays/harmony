@@ -1,0 +1,58 @@
+// A file that exercises every token class, for the --dump-tokens oracle.
+const LIMIT: usize = 4_000;
+
+copy enum Shape { Dot, Rect(f64, f64) }
+
+struct P { x: i32; y: i32; }
+
+methods P {
+    export fn make() -> P { return P { .x = 0, .y = 0 }; }
+    fn len2(&self) -> i32 { return self.x * self.x + self.y * self.y; }
+}
+
+fn id<T>(x: T) -> T { return x; }
+
+fn main() -> i32 {
+    let a: u8 = 200u8;
+    let b = 0xFF;
+    let c = 0b1010;
+    let d = 0o777;
+    let e = 1.5e-3;
+    let f = 2.5f32;
+    let g = 'A';
+    let h = b'z';
+    let s = "hi\n\t\"q\" \u{1F600}";
+    let t = '\n';
+    let mut i: usize = 0;
+    // a line comment
+    /* a block /* nested */ comment */
+    for (i : 0..LIMIT) { if (i >= 2) { break; } }
+    while (i < 3) { i += 1; }
+    i = i << 1;
+    i = i >> 1;
+    i = i & 7 | 1 ^ 2;
+    let neg = -i;
+    let not = !true;
+    let tilde = ~i;
+    let cmp = (a == b) && (a != b) || (a <= b) && (a >= b);
+    let p = P::make();
+    let n = p.len2();
+    let z = id<i32>(n);
+    let r = &mut i;
+    let rr = &p;
+    let sl: &[u8] = &([0u8; 4][..]);
+    let hl = heap([0u8; 8]);
+    let sz = sizeof(P);
+    unchecked("i is a valid mutable integer here") { *r = 5; }
+    let v = match_none();
+    return z + sz as i32 + v;
+}
+
+fn match_none() -> i32 {
+    let m: Maybe<i32> = Empty;
+    switch (m) {
+        case Has(x): { return x; }
+        case Empty: { return 0; }
+        default: { return -1; }
+    }
+}

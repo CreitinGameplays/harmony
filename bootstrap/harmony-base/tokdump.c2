@@ -1,0 +1,130 @@
+// harmony-base — token stream dumper (`--dump-tokens`).
+//
+// One line per token, byte-deterministic, no spans or addresses:
+//
+//   <kind> <text>
+//
+// The kind is the parser's vocabulary (`ident`, `kw`, `int`, `punct:..`,
+// `str`, …), not the human diagnostic wording in `tok_kind_name`. The text
+// field is escaped so a literal's exact bytes are visible (`str "a\nb"`),
+// and an integer/char carries its decoded value in a trailing `=`.
+//
+// This exists for differential testing: the self-hosted `harmony` lexer must
+// produce the same stream as this one, byte for byte (roadmap/harmony R2), so
+// the two compilers can be compared on any file instead of trusting that the
+// second lexer "looks right".
+
+// The source text of a punctuation token (the lexer gives it a span only).
+char* dump_punct_text(struct SourceFile* sf, struct Token* t) {
+    char* p;
+    int n;
+    int i;
+    n = t->end - t->start;
+    if (n < 0) { n = 0; }
+    p = arena_alloc(n + 1);
+    i = 0;
+    while (i < n) { p[i] = sf->data[t->start + i]; i = i + 1; }
+    p[n] = 0;
+    return p;
+}
+
+// One byte as two lowercase hex digits.
+void tokdump_hex_byte(int c) {
+    char* digits;
+    digits = "0123456789abcdef";
+    out_char(digits[(c / 16) & 15]);
+    out_char(digits[c & 15]);
+}
+
+// Prints `s` with C-style escapes so the exact bytes survive the round trip.
+void tokdump_escaped(char* s, int n) {
+    int i;
+    int c;
+    out_str("\"");
+    i = 0;
+    while (i < n) {
+        c = s[i] & 255;
+        if (c == 10) { out_str("\\n"); }
+        else if (c == 13) { out_str("\\r"); }
+        else if (c == 9) { out_str("\\t"); }
+        else if (c == 92) { out_str("\\\\"); }
+        else if (c == 34) { out_str("\\\""); }
+        else if (c < 32 || c == 127) {
+            out_str("\\x");
+            tokdump_hex_byte(c);
+        } else if (c >= 128) {
+            // UTF-8 payload: escape each byte so a non-ASCII identifier reads
+            // the same on any terminal.
+            out_str("\\x");
+            tokdump_hex_byte(c);
+        } else {
+            out_char((char) c);
+        }
+        i = i + 1;
+    }
+    out_str("\"");
+}
+
+// The short, stable kind name (the dump's own vocabulary).
+char* tokdump_kind(int kind) {
+    if (kind == TOK_EOF) { return "eof"; }
+    if (kind == TOK_IDENT) { return "ident"; }
+    if (kind == TOK_KEYWORD) { return "kw"; }
+    if (kind == TOK_INT) { return "int"; }
+    if (kind == TOK_FLOAT) { return "float"; }
+    if (kind == TOK_STRING) { return "str"; }
+    if (kind == TOK_CHAR) { return "char"; }
+    if (kind == TOK_BYTE) { return "byte"; }
+    return "punct";
+}
+
+// Is this token a punctuation/operator kind? (Everything that is not a word,
+// a literal, or EOF is spelled by its source text.)
+int tokdump_is_punct(int kind) {
+    return kind >= TOK_LPAREN;
+}
+
+void tokdump_run(struct SourceFile* sf, struct Token* toks, int n) {
+    int i;
+    struct Token* t;
+    i = 0;
+    while (i < n) {
+        t = toks[i];
+        out_str(tokdump_kind(t->kind));
+        // Punctuation prints its exact spelling; the parser splits `>>`/`>=`
+        // on demand, but the *stream* keeps what the source said.
+        out_str(" ");
+        if (t->kind == TOK_EOF) {
+            out_str("<eof>");
+        } else if (t->kind == TOK_STRING) {
+            tokdump_escaped(t->sval, t->len);
+        } else if (tokdump_is_punct(t->kind)) {
+            // The lexer stores punctuation as a span, not a text pointer, so
+            // the exact spelling comes from the source bytes. That is also
+            // what makes the dump a faithful record: `>>` and `>=` appear as
+            // written, even though the parser splits them on demand.
+            out_str("'");
+            out_str(dump_punct_text(sf, t));
+            out_str("'");
+        } else {
+            tokdump_escaped(t->text, t->len);
+        }
+        // A decoded value is part of the token's meaning: `999` and `1_0` are
+        // the same integer, and `'A'` and `'\x41'` are the same char.
+        if (t->kind == TOK_INT || t->kind == TOK_CHAR || t->kind == TOK_BYTE) {
+            out_str(" =");
+            out_int(t->ival);
+        }
+        if ((t->kind == TOK_INT || t->kind == TOK_FLOAT)
+            && t->sval != 0 && t->sval[0] != 0) {
+            out_str(" sfx=");
+            out_str(t->sval);
+        }
+        if (t->kind == TOK_KEYWORD) {
+            out_str(" kw=");
+            out_str(t->sval);
+        }
+        out_nl();
+        i = i + 1;
+    }
+}

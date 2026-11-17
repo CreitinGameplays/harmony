@@ -1,0 +1,71 @@
+// EXPECT: 42
+// A `switch` whose every arm returns ends the function (2026-11).
+//
+// `ck_block_ends_in_return` handled a final `return`, a `never`-typed
+// expression, a nested block, an `unchecked` block, and an `if` with both
+// arms returning — but not a `switch`. Since `switch` is exhaustive (CASE-01
+// enforces it), "return from every arm" *is* "control never reaches the end",
+// and the idiomatic decode shape was rejected with RET-01 unless the author
+// added an unreachable trailing `return`. The standard library is full of
+// this shape, so it blocked the rewrite.
+copy enum Tok {
+    Word(&str),
+    Num(i64),
+    Punct(u8),
+}
+
+// Every arm returns; no trailing return needed.
+fn classify(t: Tok) -> i32 {
+    switch (t) {
+        case Word(s): { return s.len() as i32; }
+        case Num(n):  { return (n % 100) as i32; }
+        case Punct(c): { return c as i32; }
+    }
+}
+
+// A `default` arm also counts.
+fn kind_id(t: Tok) -> i32 {
+    switch (t) {
+        case Num(n): { return 1; }
+        default: { return 2; }
+    }
+}
+
+// A nested `if` inside an arm, still returning on every path.
+fn deep(t: Tok) -> i32 {
+    switch (t) {
+        case Word(s): {
+            if (s.len() > 2) { return 3; }
+            else { return 4; }
+        }
+        case Num(n):  { return 5; }
+        case Punct(c): { return 6; }
+    }
+}
+
+// An arm that does *not* return must still be caught: this function needs its
+// trailing return, and RET-01 would fire without it.
+fn partial(t: Tok) -> i32 {
+    switch (t) {
+        case Num(n): { return 7; }
+        case Word(s): { }
+        case Punct(c): { }
+    }
+    return 8;
+}
+
+fn main() -> i32 {
+    if (classify(Tok::Word("abcd")) != 4) { return 1; }
+    if (classify(Tok::Num(1234)) != 34) { return 2; }
+    if (classify(Tok::Punct(9u8)) != 9) { return 3; }
+    if (kind_id(Tok::Num(0)) != 1) { return 4; }
+    if (kind_id(Tok::Punct(0u8)) != 2) { return 5; }
+    if (deep(Tok::Word("abc")) != 3) { return 6; }
+    if (deep(Tok::Word("a")) != 4) { return 7; }
+    if (deep(Tok::Num(0)) != 5) { return 8; }
+    if (deep(Tok::Punct(0u8)) != 6) { return 9; }
+    if (partial(Tok::Num(0)) != 7) { return 10; }
+    if (partial(Tok::Word("x")) != 8) { return 11; }
+    // 4 + 34 + 9 + 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 = 83; return 42 regardless.
+    return 42;
+}

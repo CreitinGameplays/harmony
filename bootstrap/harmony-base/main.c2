@@ -45,6 +45,7 @@ int parse_options(int argc, char** argv, struct Options* opts) {
     opts->strict = 0;
     opts->deny_unchecked = 0;
     opts->dump_ast = 0;
+    opts->dump_tokens = 0;
     opts->explain_code = 0;
     opts->ascii = 0;
     opts->no_color = 0;
@@ -95,6 +96,7 @@ int parse_options(int argc, char** argv, struct Options* opts) {
         if (str_eq(a, "--strict"))         { opts->strict = 1;         i = i + 1; continue; }
         if (str_eq(a, "--deny-unchecked")) { opts->deny_unchecked = 1; i = i + 1; continue; }
         if (str_eq(a, "--dump-ast")) { opts->dump_ast = 1; i = i + 1; continue; }
+        if (str_eq(a, "--dump-tokens")) { opts->dump_tokens = 1; i = i + 1; continue; }
         if (str_eq(a, "--version"))     { opts->cmd = CMD_VERSION;    i = i + 1; continue; }
         if (str_eq(a, "--ascii"))          { opts->ascii = 1;          i = i + 1; continue; }
         if (str_eq(a, "--no-color"))       { opts->no_color = 1;       i = i + 1; continue; }

@@ -1,0 +1,176 @@
+// harmony/lexer/token.hr — the token model (roadmap/harmony R2).
+//
+// Mirrors harmony-base's `struct Token` field for field, because the two
+// compilers are diffed against each other (`--dump-tokens`): the *stream* must
+// be identical, and it is far easier to prove that when the representations
+// agree.
+//
+// One difference is deliberate. harmony-base stores `text` as an arena copy
+// and keeps spans; here a token's spelling is a `&str` slice of the loaded
+// source, which lives for the whole compile. Nothing is allocated per token,
+// so lexing a file costs one `Vec` of tokens and no arena traffic at all.
+//
+// Every literal's *decoded* value is carried on the token (`ival` / `text`),
+// and `sval` holds the type suffix when one was written (`42u8`, `2.5f32`).
+import "../../library/core/vec.hr";
+
+// Token kinds. The numeric values are private to this compiler (harmony-base's
+// `TOK_*` constants are a different enum and are not compared numerically —
+// only the `--dump-tokens` text is).
+copy enum TokKind {
+    // End and words
+    Eof,
+    Ident,
+    Keyword,
+    // Literals
+    Int,
+    Float,
+    Str,
+    Char,
+    Byte,
+    // Brackets and separators
+    LParen,
+    RParen,
+    LBrace,
+    RBrace,
+    LBracket,
+    RBracket,
+    Comma,
+    Colon,
+    Semi,
+    Arrow,
+    FatArrow,
+    Dot,
+    DColon,
+    Range,
+    RangeInclusive,
+    // Arithmetic
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Percent,
+    // Bitwise
+    Amp,
+    Pipe,
+    Caret,
+    Tilde,
+    Shl,
+    Shr,
+    // Logical
+    Not,
+    AndAnd,
+    OrOr,
+    // Comparison
+    EqEq,
+    Neq,
+    Le,
+    Ge,
+    Lt,
+    Gt,
+    // Assignment
+    Assign,
+    PlusEq,
+    MinusEq,
+    StarEq,
+    SlashEq,
+    PercentEq,
+    AmpEq,
+    PipeEq,
+    CaretEq,
+    ShlEq,
+    ShrEq,
+}
+
+// One token. `text` is the spelling *as written* (for a literal, without its
+// suffix), and `span_start`/`span_end` are byte offsets into the source, so a
+// diagnostic can point at the exact bytes.
+copy struct Token {
+    kind: TokKind;
+    text: &str;      // the spelling (a slice of the source)
+    start: usize;    // byte offset (inclusive)
+    end: usize;      // byte offset (exclusive)
+    line: u32;       // 1-based
+    col: u32;        // 0-based
+    ival: i64;       // Int/Char/Byte: the decoded value
+    suffix: &str;    // Int/Float: the type suffix, or "" when absent
+}
+
+// The stable short name used by `--dump-tokens`. This must match
+// harmony-base's `tokdump_kind`, because the dump is diffed between the two
+// compilers.
+export fn kind_name(k: TokKind) -> &str {
+    switch (k) {
+        case Eof: { return "eof"; }
+        case Ident: { return "ident"; }
+        case Keyword: { return "kw"; }
+        case Int: { return "int"; }
+        case Float: { return "float"; }
+        case Str: { return "str"; }
+        case Char: { return "char"; }
+        case Byte: { return "byte"; }
+        case LParen: { return "punct"; }
+        case RParen: { return "punct"; }
+        case LBrace: { return "punct"; }
+        case RBrace: { return "punct"; }
+        case LBracket: { return "punct"; }
+        case RBracket: { return "punct"; }
+        case Comma: { return "punct"; }
+        case Colon: { return "punct"; }
+        case Semi: { return "punct"; }
+        case Arrow: { return "punct"; }
+        case FatArrow: { return "punct"; }
+        case Dot: { return "punct"; }
+        case DColon: { return "punct"; }
+        case Range: { return "punct"; }
+        case RangeInclusive: { return "punct"; }
+        case Plus: { return "punct"; }
+        case Minus: { return "punct"; }
+        case Star: { return "punct"; }
+        case Slash: { return "punct"; }
+        case Percent: { return "punct"; }
+        case Amp: { return "punct"; }
+        case Pipe: { return "punct"; }
+        case Caret: { return "punct"; }
+        case Tilde: { return "punct"; }
+        case Shl: { return "punct"; }
+        case Shr: { return "punct"; }
+        case Not: { return "punct"; }
+        case AndAnd: { return "punct"; }
+        case OrOr: { return "punct"; }
+        case EqEq: { return "punct"; }
+        case Neq: { return "punct"; }
+        case Le: { return "punct"; }
+        case Ge: { return "punct"; }
+        case Lt: { return "punct"; }
+        case Gt: { return "punct"; }
+        case Assign: { return "punct"; }
+        case PlusEq: { return "punct"; }
+        case MinusEq: { return "punct"; }
+        case StarEq: { return "punct"; }
+        case SlashEq: { return "punct"; }
+        case PercentEq: { return "punct"; }
+        case AmpEq: { return "punct"; }
+        case PipeEq: { return "punct"; }
+        case CaretEq: { return "punct"; }
+        case ShlEq: { return "punct"; }
+        case ShrEq: { return "punct"; }
+    }
+    return "punct";
+}
+
+// True for a token that is a word or literal (so the dump quotes its text
+// rather than its punctuation spelling).
+export fn is_word_or_literal(k: TokKind) -> bool {
+    switch (k) {
+        case Eof:     { return true; }
+        case Ident:   { return true; }
+        case Keyword: { return true; }
+        case Int:     { return true; }
+        case Float:   { return true; }
+        case Str:     { return true; }
+        case Char:    { return true; }
+        case Byte:    { return true; }
+        default:      { return false; }
+    }
+}

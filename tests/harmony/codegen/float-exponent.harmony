@@ -1,0 +1,34 @@
+// EXPECT-OUT: 1500.001500
+// EXPECT: 42
+// Every float spelling that pairs a fraction with an exponent (2026-11).
+//
+// Two lexer/emitter bugs hid each other:
+//   1. the exponent scan was guarded by `!is_float`, so once a `.` had been
+//      seen the `e3` in `1.5e3` was read as an identifier suffix and rejected
+//      with LEX-01 "unknown float suffix";
+//   2. with that fixed, the spelling was emitted verbatim, and LLVM's IR
+//      grammar requires a decimal point — `store double 1.5E3` is "integer
+//      constant must have integer type". `2e10` became `2.0e10`.
+fn main() -> i32 {
+    let a = 1.5e3;         // 1500
+    let b = 1.5e-3;        // 0.0015
+    let c = 1.5E3;
+    let d = 1.5E+3;
+    let tail = 10.0e2;     // 1000
+    // Print with six decimals so the exact sum is visible.
+    println("{:.6}", a + b);
+    if (a != c) { return 1; }
+    if (a != d) { return 2; }
+    if (a != 1500.0) { return 3; }
+    if (tail != 1000.0) { return 4; }
+    // A large exponent.
+    let big = 2.0e10;
+    if (big != 20000000000.0) { return 5; }
+    // An exponent with no fraction at all still needs its `.0`.
+    let e2 = 2e3;
+    if (e2 != 2000.0) { return 6; }
+    // And an f32 suffix alongside an exponent.
+    let f = 1.5e2f32;
+    if ((f as f64) != 150.0) { return 7; }
+    return 42;
+}

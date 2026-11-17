@@ -30,6 +30,7 @@ HB_SRC    := \
 	bootstrap/harmony-base/pstmts.c2 \
 	bootstrap/harmony-base/pexpr.c2 \
 	bootstrap/harmony-base/pastout.c2 \
+	bootstrap/harmony-base/tokdump.c2 \
 	bootstrap/harmony-base/audit.c2 \
 	bootstrap/harmony-base/pipeline.c2 \
 	bootstrap/harmony-base/main.c2

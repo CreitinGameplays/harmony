@@ -304,7 +304,13 @@ int lex_scan_number(struct SourceFile* sf, int* pos, struct Token* t) {
 
     // Exponent: e|E [+|-] digit+. `2e` alone is not an exponent — it lexes as
     // `2` then `e` (the parser reports the suffix), so only consume on digits.
-    if (!is_float && p < n && (d[p] == 'e' || d[p] == 'E')) {
+    //
+    // This must run for a *fractional* number too: `1.5e3` is one float
+    // literal. The guard used to be `!is_float`, so once a `.` had been seen
+    // the exponent was never scanned and the `e3` was read as an identifier
+    // suffix — LEX-01 "unknown float suffix" on every float written with both
+    // a fraction and an exponent.
+    if (radix == 10 && p < n && (d[p] == 'e' || d[p] == 'E')) {
         int q;
         q = p + 1;
         if (q < n && (d[q] == '+' || d[q] == '-')) { q = q + 1; }
@@ -382,6 +388,11 @@ int lex_scan_number(struct SourceFile* sf, int* pos, struct Token* t) {
         // Spelling without the suffix (the checker re-parses from this).
         if (suffix_start >= 0) {
             t->text = slice_dup(sf, start, suffix_start);
+            // `len` is also the *text's* length for a float: the dumper and
+            // the checker both read the spelling through it, and the suffix
+            // is a separate field (`sval`). Leaving it as the whole span made
+            // a suffixed float carry trailing NULs.
+            t->len = suffix_start - start;
         } else {
             t->text = slice_dup(sf, start, p);
         }

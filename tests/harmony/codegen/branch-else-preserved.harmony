@@ -1,0 +1,71 @@
+// EXPECT: 42
+// A branch that returns must not swallow the *other* branch (2026-11).
+//
+// `ll_stmt` skips any statement emitted while the "terminated" flag is set
+// (dead code after a `ret`). The flag stayed set across branches, so once the
+// then-arm emitted `return 3`, the else-arm's `return 4` was skipped as dead
+// code and the IR had an empty `if.else.N:` label. LLVM rejected the module
+// ("expected instruction opcode"), and a program whose arms both fell through
+// would have silently lost statements.
+//
+// `}` and `else` on separate lines was the trigger; the same-line spelling
+// happened to be parsed into a shape that hid it, which is why it survived
+// until the standard library (which puts `else` on its own line) needed it.
+fn next_line(x: i64) -> i32 {
+    if (x > 2) { return 3; }
+    else { return 4; }
+}
+
+fn same_line(x: i64) -> i32 {
+    if (x > 2) { return 3; } else { return 4; }
+}
+
+// An `else` block with several statements, the first of which returns.
+fn multi(x: i64) -> i32 {
+    if (x > 2) {
+        return 3;
+    } else {
+        let y = (x + 10) as i32;
+        return y;
+    }
+}
+
+// An `else if` chain where every arm returns.
+fn chain(x: i64) -> i32 {
+    if (x > 100) { return 1; }
+    else if (x > 10) { return 2; }
+    else { return 3; }
+}
+
+// A branch that does not return must still fall through correctly.
+fn fallthrough(x: i64) -> i32 {
+    let mut n = 0;
+    if (x > 2) {
+        n = 1;
+    } else {
+        n = 2;
+    }
+    return n + 100;
+}
+
+fn main() -> i32 {
+    if (next_line(5) != 3) { return 1; }
+    if (next_line(1) != 4) { return 2; }
+    if (same_line(5) != 3) { return 3; }
+    if (same_line(1) != 4) { return 4; }
+    if (multi(5) != 3) { return 5; }
+    if (multi(1) != 11) { return 6; }
+    if (chain(500) != 1) { return 7; }
+    if (chain(50) != 2) { return 8; }
+    if (chain(5) != 3) { return 9; }
+    if (fallthrough(5) != 101) { return 10; }
+    if (fallthrough(1) != 102) { return 11; }
+    // A loop whose body returns must not eat the code after the loop.
+    let mut i = 0;
+    while (i < 3) {
+        if (i == 1) { i += 1; continue; }
+        i += 1;
+    }
+    if (i != 3) { return 12; }
+    return 42;
+}

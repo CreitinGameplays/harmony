@@ -195,6 +195,53 @@ int ll_node_ty(struct AstNode* n) {
     return n->ty;
 }
 
+// Rewrites a float literal's spelling into the form LLVM's IR parser requires:
+// a mantissa with a decimal point, then an optional exponent.
+//
+// The source spelling cannot be copied verbatim. `1.5E3` and `2e10` are valid
+// Harmony literals but not valid LLVM constants (the IR grammar needs the
+// `.`), so the emitter wrote `store double 1.5E3` and clang rejected the file
+// with "integer constant must have integer type". `2` becomes `2.0`, `2e10`
+// becomes `2.0e10`, and `1.5E+3` keeps its (already valid) dot.
+char* ll_float_spelling(char* s) {
+    int n;
+    int i;
+    int has_dot;
+    int has_exp;
+    char* out;
+    n = ll_str_len(s);
+    has_dot = 0;
+    has_exp = 0;
+    i = 0;
+    while (i < n) {
+        if (s[i] == '.') { has_dot = 1; }
+        if (s[i] == 'e' || s[i] == 'E') { has_exp = 1; }
+        i = i + 1;
+    }
+    if (has_dot) { return s; }
+    // Insert ".0" before the exponent (or append it when there is none).
+    out = arena_alloc(n + 4);
+    if (!has_exp) {
+        i = 0;
+        while (i < n) { out[i] = s[i]; i = i + 1; }
+        out[n] = '.';
+        out[n + 1] = '0';
+        out[n + 2] = 0;
+        return out;
+    }
+    i = 0;
+    while (i < n && s[i] != 'e' && s[i] != 'E') { out[i] = s[i]; i = i + 1; }
+    out[i] = '.';
+    out[i + 1] = '0';
+    {
+        int j;
+        j = i;
+        while (j < n) { out[j + 2] = s[j]; j = j + 1; }
+        out[n + 2] = 0;
+    }
+    return out;
+}
+
 // ---------------------------------------------------------------------------
 // Expression entry point.
 // ---------------------------------------------------------------------------
@@ -246,11 +293,11 @@ char* ll_expr(struct AstNode* n) {
             ll_out_str("  ");
             ll_out_str(r);
             ll_out_str(" = fptrunc double ");
-            ll_out_str(n->sval);
+            ll_out_str(ll_float_spelling(n->sval));
             ll_out_str(" to float\n");
             return r;
         }
-        return n->sval;
+        return ll_float_spelling(n->sval);
     }
     if (n->kind == AST_CHAR_LIT) {
         char* r;

@@ -18,7 +18,7 @@ int pipeline_run(struct Options* opts) {
     // entirely (a fictional `import "std/io.src";` still parses — the check
     // that the file exists belongs to the compilation commands, not the
     // parse-tree dump).
-    if (opts->dump_ast) {
+    if (opts->dump_ast || opts->dump_tokens) {
         struct SourceFile* dsf;
         struct Token* toks;
         int ntoks;
@@ -32,6 +32,12 @@ int pipeline_run(struct Options* opts) {
         if (ntoks < 0) {
             diag_flush(opts->format, opts->all);
             return EXIT_STOP;
+        }
+        // `--dump-tokens` stops right here: it is the lexer's differential
+        // oracle, so it must not depend on the parser accepting the file.
+        if (opts->dump_tokens) {
+            tokdump_run(dsf, toks, ntoks);
+            return EXIT_OK;
         }
         root = parser_run(dsf, toks, ntoks);
         if (root == 0 || parser_stop_count() > 0) {

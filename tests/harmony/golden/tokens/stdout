@@ -1,0 +1,60 @@
+kw "const" kw=const
+ident "K"
+punct ':'
+ident "usize"
+punct '='
+int "4_000" =4000
+punct ';'
+kw "fn" kw=fn
+ident "main"
+punct '('
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "let" kw=let
+ident "a"
+punct '='
+int "0xFF" =255
+punct ';'
+kw "let" kw=let
+ident "f"
+punct '='
+float "2.5" sfx=f32
+punct ';'
+kw "let" kw=let
+ident "g"
+punct '='
+float "1.5e-3"
+punct ';'
+kw "let" kw=let
+ident "s"
+punct '='
+str "hi\n\t\"q\""
+punct ';'
+kw "let" kw=let
+ident "c"
+punct '='
+char "'A'" =65
+punct ';'
+kw "let" kw=let
+ident "b"
+punct '='
+byte "b'z'" =122
+punct ';'
+kw "if" kw=if
+punct '('
+ident "a"
+punct '>='
+int "255" =255
+punct ')'
+punct '{'
+kw "return" kw=return
+int "1" =1
+punct ';'
+punct '}'
+kw "return" kw=return
+int "0" =0
+punct ';'
+punct '}'
+eof <eof>

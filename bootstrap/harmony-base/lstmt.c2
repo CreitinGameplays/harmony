@@ -70,9 +70,20 @@ void ll_loop_push(char* brk, char* cont);
 void ll_loop_pop(void);
 
 // Emits a `label:` line.
+//
+// A label always begins a *reachable* block: control arrives from a `br`
+// somewhere, so whatever the previous block ended with (`ret`, `br`,
+// `unreachable`) no longer applies. Clearing the terminated flag here is what
+// makes a branch that returns in one arm still emit the other arm: without
+// it, `if (c) { return 3; }\nelse { return 4; }` emitted
+// `if.else.N:` with an empty body, because the `return 4` statement was
+// skipped as "dead code after ret" — the flag was set by the *then* arm.
+// (The same-line `} else {` spelling happened to be parsed into a different
+// node shape and hid the bug.)
 void ll_label(char* label) {
     ll_out_str(label);
     ll_out_str(":\n");
+    ll_set_terminated(0);
 }
 
 // ---------------------------------------------------------------------------

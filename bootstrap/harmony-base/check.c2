@@ -2504,6 +2504,19 @@ void ck_check_fn(struct AstNode* fn, int idx) {
 
 // True when the block's last statement is a `return` (M1 approximation of
 // "all paths return"; the CFG-based analysis arrives with lowering).
+// Does an `if`'s else-arm end in a `return`? The else arm is either a block
+// (`else { ... }`) or another `if` (`else if ...`), and only the second form
+// needs a different entry point: `ck_block_ends_in_return` handles blocks.
+int ck_arm_ends_in_return(struct AstNode* arm) {
+    if (arm == 0) { return 0; }
+    if (arm->kind == AST_IF) {
+        if (arm->c == 0) { return 0; }
+        if (!ck_block_ends_in_return(arm->b)) { return 0; }
+        return ck_arm_ends_in_return(arm->c);
+    }
+    return ck_block_ends_in_return(arm);
+}
+
 int ck_block_ends_in_return(struct AstNode* blk) {
     struct AstList* stmts;
     struct AstNode* last;
@@ -2527,9 +2540,31 @@ int ck_block_ends_in_return(struct AstNode* blk) {
         return ck_block_ends_in_return(last);
     }
     if (last->kind == AST_IF) {
-        // Both arms must be present and return.
+        // Both arms must be present and return. The else arm may itself be an
+        // `if` (the `else if` chain), which is checked by the same rule.
         if (last->c == 0) { return 0; }
-        return ck_block_ends_in_return(last->b) && ck_block_ends_in_return(last->c);
+        if (!ck_block_ends_in_return(last->b)) { return 0; }
+        return ck_arm_ends_in_return(last->c);
+    }
+    if (last->kind == AST_SWITCH) {
+        // A `switch` is exhaustive (CASE-01 enforces it), so if every arm
+        // returns, control cannot reach the end of the block. Without this,
+        // the idiomatic "decode with a switch, return from each case" — which
+        // the standard library is full of — tripped RET-01 unless the author
+        // added an unreachable trailing `return`.
+        if (last->kids == 0 || last->kids->len == 0) { return 0; }
+        {
+            int i;
+            i = 0;
+            while (i < last->kids->len) {
+                struct AstNode* arm;
+                arm = last->kids->items[i];
+                if (arm == 0 || arm->b == 0) { return 0; }
+                if (!ck_block_ends_in_return(arm->b)) { return 0; }
+                i = i + 1;
+            }
+        }
+        return 1;
     }
     return 0;
 }

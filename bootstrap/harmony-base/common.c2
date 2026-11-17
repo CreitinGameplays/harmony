@@ -240,6 +240,7 @@ struct Options {
     int   strict;       // --strict: a WARN also stops the build (§16.4)
     int   deny_unchecked;// --deny-unchecked: any unchecked is UNCK-05 (§13.4)
     int   dump_ast;      // --dump-ast: print the parse tree (M0 round-trip)
+    int   dump_tokens;   // --dump-tokens: print the token stream (differential)
     char* explain_code; // `lc explain <CODE>`: the requested code
     int   ascii;        // --ascii: (1)/(2)/> <-- here glyph fallbacks (§16.3)
     int   no_color;     // --no-color / NO_COLOR (§16.3)
@@ -350,6 +351,9 @@ int lexer_run(struct SourceFile* sf, struct Token** out_tokens);
 
 // A stable lowercase name for a token kind (test/verbose dumps, SYN-05 text).
 char* tok_kind_name(int kind);
+
+// Token stream dump for differential testing (`--dump-tokens`, tokdump.c2).
+void tokdump_run(struct SourceFile* sf, struct Token* toks, int n);
 
 // True when `t` is the keyword spelled `kw` (TOK_KEYWORD only).
 int tok_is_kw(struct Token* t, char* kw);

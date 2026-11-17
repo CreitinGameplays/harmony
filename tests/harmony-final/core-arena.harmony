@@ -1,0 +1,104 @@
+// EXPECT: 42
+// library/core tests — the self-hosted compiler's substrate.
+//
+// Each case imports the module under test, exercises it, and returns the
+// EXPECT value. The harness compiles+runs each with harmony-base.
+//
+// Imported names are namespaced by the module's stem (§6.7), so everything
+// from `library/core/mem.hr` is spelled `mem::`.
+import "../../library/core/mem.hr";
+
+// arena: bump, align, grow, and two live chunks at once.
+fn arena_basics() -> i32 {
+    let mut a: mem::Arena = mem::Arena { .cur = Raw::null() };
+    let p1: raw mut u64 = mem::arena_slot<u64>(&mut a);
+    unchecked("write the first slot") { p1.write(11); }
+    let p2: raw mut u64 = mem::arena_slot<u64>(&mut a);
+    unchecked("write the second slot") { p2.write(22); }
+    if (p1 == p2) { return 1; }
+    let mut v1: u64 = 0;
+    let mut v2: u64 = 0;
+    unchecked("read both back") { v1 = p1.read(); v2 = p2.read(); }
+    if (v1 != 11) { return 2; }
+    if (v2 != 22) { return 3; }
+    // An odd-size allocation must not break 8-alignment for the next one.
+    let p3: raw mut u8 = mem::arena_slot<u8>(&mut a);
+    unchecked("write a byte") { p3.write(7); }
+    let p4: raw mut u64 = mem::arena_slot<u64>(&mut a);
+    let mut addr: usize = 0;
+    unchecked("take the address as an integer to check alignment") {
+        addr = p4 as usize;
+    }
+    if (addr % 8 != 0) { return 4; }
+    // A huge request (> the 64 KiB default chunk) gets its own chunk.
+    let big: raw mut u8 = mem::arena_raw(&mut a, 200000);
+    unchecked("touch both ends of the big block") {
+        big.write(1u8);
+        big.plus(199999).write(2u8);
+    }
+    let mut b0: u8 = 0;
+    let mut b1: u8 = 0;
+    unchecked("read them back") { b0 = big.read(); b1 = big.plus(199999).read(); }
+    if (b0 != 1 || b1 != 2) { return 5; }
+    // The small slots still hold their values after the big chunk was added.
+    let mut s: u64 = 0;
+    unchecked("re-read slot 2") { s = p2.read(); }
+    if (s != 22) { return 6; }
+    return 42;
+}
+
+// arena_str: copied text, independent of the source buffer's lifetime.
+fn arena_strings() -> i32 {
+    let mut a: mem::Arena = mem::Arena { .cur = Raw::null() };
+    let s: &str = mem::arena_str(&mut a, "hello");
+    if (s.len() != 5) { return 1; }
+    if (s != "hello") { return 2; }
+    // An empty string works.
+    let e: &str = mem::arena_str(&mut a, "");
+    if (e.len() != 0) { return 3; }
+    // A long one.
+    let long: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let c: &str = mem::arena_str(&mut a, long);
+    if (c.len() != 64) { return 4; }
+    if (c != long) { return 5; }
+    return 42;
+}
+
+// Two arenas do not disturb each other.
+fn arena_isolation() -> i32 {
+    let mut a: mem::Arena = mem::Arena { .cur = Raw::null() };
+    let mut b: mem::Arena = mem::Arena { .cur = Raw::null() };
+    let p: raw mut u32 = mem::arena_slot<u32>(&mut a);
+    unchecked("write through arena a") { p.write(5); }
+    let q: raw mut u32 = mem::arena_slot<u32>(&mut b);
+    unchecked("write through arena b") { q.write(9); }
+    let mut x: u32 = 0;
+    let mut y: u32 = 0;
+    unchecked("both slots were just written") { x = p.read(); y = q.read(); }
+    if (x != 5) { return 1; }
+    if (y != 9) { return 2; }
+    return 42;
+}
+
+// align8 rounds up and never rounds down.
+fn aligning() -> i32 {
+    if (mem::align8(0) != 0) { return 1; }
+    if (mem::align8(1) != 8) { return 2; }
+    if (mem::align8(8) != 8) { return 3; }
+    if (mem::align8(9) != 16) { return 4; }
+    if (mem::align8(1000) != 1000) { return 5; }
+    if (mem::align8(1001) != 1008) { return 6; }
+    return 42;
+}
+
+fn main() -> i32 {
+    let r = arena_basics();
+    if (r != 42) { return 100 + r; }
+    let r2 = arena_strings();
+    if (r2 != 42) { return 200 + r2; }
+    let r3 = arena_isolation();
+    if (r3 != 42) { return 300 + r3; }
+    let r4 = aligning();
+    if (r4 != 42) { return 400 + r4; }
+    return 42;
+}

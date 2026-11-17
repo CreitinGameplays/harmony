@@ -56,8 +56,8 @@ Also install (for fuzzing tests): https://github.com/google/honggfuzz
 | `bootstrap/tools/` | Migration helpers (e.g. `nasm_to_fasm.py`). |
 | `bootstrap/harmony-base/` | First Harmony compiler, written in c2x-seed. |
 | `bootstrap/runtime/` | The freestanding runtime `harmony-base` links in. |
-| `harmony/` | Self-hosted rewrite (later, `*.hr`). |
-| `library/core/`, `library/alloc/`, `library/std/` | Standard library for the final language. |
+| `harmony/` | Self-hosted rewrite (`*.hr`); phase plan in `roadmap/harmony`. |
+| `library/core/`, `library/alloc/`, `library/std/` | Standard library for the final language. `core` (arena, `Vec`, `String`) is started. |
 | `tests/` | Test suites and fuzzing. |
 | `roadmap/` | Milestone checklists. |
 | `todo.md` | Detailed implementation checklist. |
@@ -71,6 +71,7 @@ make test          # seed corpus + driver + golden fixtures + determinism + lisp
 make test-seed     # c2x-seed regression corpus + determinism only
 make test-fuzz     # aggressive/fuzz tests for the harmony-base driver
 make test-lisp     # the harmony-base LISP interpreter suite
+make test-final    # the self-hosted compiler's library/ tests (tests/harmony-final)
 make lisp          # run the LISP interpreter demo (a multi-module program)
 make clean
 ```

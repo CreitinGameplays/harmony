@@ -1,0 +1,121 @@
+// EXPECT: 42
+// library/core/vec.hr — the growable array.
+import "../../library/core/vec.hr";
+
+// Growth past the first allocation, with the elements preserved.
+fn growth() -> i32 {
+    let mut v: vec::Vec<u32> = vec::Vec<u32>::make();
+    if (!v.is_empty()) { return 1; }
+    if (v.len() != 0) { return 2; }
+    let mut i: u32 = 0;
+    while (i < 100) {
+        v.push(i * 2u32);
+        i += 1;
+    }
+    if (v.len() != 100) { return 3; }
+    if (v.cap() < 100) { return 4; }
+    // Every element survived every reallocation, in order.
+    let mut j: usize = 0;
+    while (j < v.len()) {
+        if (*v.get(j) != (j as u32) * 2u32) { return 5; }
+        j += 1;
+    }
+    return 42;
+}
+
+// pop returns the last element and shrinks; clear resets without freeing.
+fn popping() -> i32 {
+    let mut v: vec::Vec<i64> = vec::Vec<i64>::make();
+    v.push(10);
+    v.push(20);
+    v.push(30);
+    if (v.pop() != 30) { return 1; }
+    if (v.len() != 2) { return 2; }
+    if (v.pop() != 20) { return 3; }
+    if (v.pop() != 10) { return 4; }
+    if (v.len() != 0) { return 5; }
+    if (!v.is_empty()) { return 6; }
+    let cap_before = v.cap();
+    if (cap_before == 0) { return 7; }
+    v.clear();
+    if (v.len() != 0) { return 8; }
+    // clear() keeps the allocation, so the capacity is unchanged.
+    if (v.cap() != cap_before) { return 9; }
+    // And it can be reused.
+    v.push(7);
+    if (*v.get(0) != 7) { return 10; }
+    return 42;
+}
+
+// set/get/get_unchecked, and reserve.
+fn writing() -> i32 {
+    let mut v: vec::Vec<u8> = vec::Vec<u8>::make();
+    v.push(1u8);
+    v.push(2u8);
+    v.set(0, 9u8);
+    if (*v.get(0) != 9u8) { return 1; }
+    if (*v.get_unchecked(1) != 2u8) { return 2; }
+    // reserve grows capacity without changing len.
+    v.reserve(50);
+    if (v.cap() < 50) { return 3; }
+    if (v.len() != 2) { return 4; }
+    if (*v.get(0) != 9u8) { return 5; }
+    if (*v.get(1) != 2u8) { return 6; }
+    return 42;
+}
+
+// A vector of structs (the AST's shape): by-value elements move correctly.
+struct Cell { id: u32; weight: u64; }
+
+fn structs() -> i32 {
+    let mut v: vec::Vec<Cell> = vec::Vec<Cell>::make();
+    let mut i: u32 = 0;
+    while (i < 40) {
+        v.push(Cell { .id = i, .weight = (i as u64) * 3u64 });
+        i += 1;
+    }
+    // Force several reallocations' worth, then verify all of them.
+    let mut j: usize = 0;
+    while (j < v.len()) {
+        let c = v.get(j);
+        if (c.id != j as u32) { return 1; }
+        if (c.weight != (j as u64) * 3u64) { return 2; }
+        j += 1;
+    }
+    return 42;
+}
+
+// filled() and release().
+fn filling() -> i32 {
+    let v: vec::Vec<u16> = vec::Vec<u16>::filled(5, 7u16);
+    if (v.len() != 5) { return 1; }
+    let mut i: usize = 0;
+    while (i < v.len()) {
+        if (*v.get(i) != 7u16) { return 2; }
+        i += 1;
+    }
+    let mut w: vec::Vec<u32> = vec::Vec<u32>::make();
+    w.push(1u32);
+    w.release();
+    if (w.len() != 0) { return 3; }
+    if (w.cap() != 0) { return 4; }
+    if (!w.is_empty()) { return 5; }
+    // Usable again after release.
+    w.push(5u32);
+    if (*w.get(0) != 5u32) { return 6; }
+    return 42;
+}
+
+fn main() -> i32 {
+    let r = growth();
+    if (r != 42) { return 100 + r; }
+    let r2 = popping();
+    if (r2 != 42) { return 200 + r2; }
+    let r3 = writing();
+    if (r3 != 42) { return 300 + r3; }
+    let r4 = structs();
+    if (r4 != 42) { return 400 + r4; }
+    let r5 = filling();
+    if (r5 != 42) { return 500 + r5; }
+    return 42;
+}

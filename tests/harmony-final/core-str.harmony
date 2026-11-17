@@ -1,0 +1,108 @@
+// EXPECT: 42
+// library/core/str.hr — text queries and the growable `String`.
+import "../../library/core/str.hr";
+
+fn classification() -> i32 {
+    if (!str::is_digit(48u8)) { return 1; }
+    if (str::is_digit(47u8)) { return 2; }
+    if (!str::is_alpha(122u8)) { return 3; }
+    if (str::is_alpha(48u8)) { return 4; }
+    if (!str::is_ident_start(95u8)) { return 5; }
+    if (str::is_ident_start(49u8)) { return 6; }
+    if (!str::is_ident_cont(49u8)) { return 7; }
+    if (!str::is_hex(102u8)) { return 8; }
+    if (!str::is_hex(70u8)) { return 9; }
+    if (str::is_hex(103u8)) { return 10; }
+    if (str::hex_value(102u8) != 15u8) { return 11; }
+    if (str::hex_value(57u8) != 9u8) { return 12; }
+    if (str::hex_value(65u8) != 10u8) { return 13; }
+    if (!str::is_space(10u8)) { return 14; }
+    if (str::is_space(65u8)) { return 15; }
+    return 42;
+}
+
+fn queries() -> i32 {
+    let s: &str = "hello, world";
+    if (str::len(s) != 12) { return 1; }
+    if (str::is_empty(s)) { return 2; }
+    if (str::byte_at(s, 0) != 104u8) { return 3; }
+    if (!str::starts_with(s, "hello")) { return 4; }
+    if (str::starts_with(s, "world")) { return 5; }
+    if (!str::ends_with(s, "world")) { return 6; }
+    if (str::ends_with(s, "hello")) { return 7; }
+    if (!str::contains(s, ", ")) { return 8; }
+    if (str::contains(s, "zzz")) { return 9; }
+    if (str::find(s, "world") != 7) { return 10; }
+    if (str::find(s, "zzz") != -1) { return 11; }
+    if (str::find_from(s, "l", 4) != 10) { return 12; }
+    if (!str::eq("abc", "abc")) { return 13; }
+    if (str::eq("abc", "abd")) { return 14; }
+    if (!str::starts_with(s, "")) { return 15; }
+    if (str::find(s, "") != 0) { return 16; }
+    let piece: &str = str::slice(s, 7, 12);
+    if (piece.len() != 5) { return 17; }
+    if (piece != "world") { return 18; }
+    return 42;
+}
+
+fn numbers() -> i32 {
+    let mut b: str::String = str::String::make();
+    b.push_i64(0);
+    if (b.as_str() != "0") { return 1; }
+    b.clear();
+    b.push_i64(1234);
+    if (b.as_str() != "1234") { return 2; }
+    b.clear();
+    b.push_i64(-987);
+    if (b.as_str() != "-987") { return 3; }
+    b.clear();
+    b.push_i64(-9223372036854775807);
+    if (b.as_str() != "-9223372036854775807") { return 4; }
+    b.clear();
+    b.push_u64(18446744073709551615u64);
+    if (b.as_str() != "18446744073709551615") { return 5; }
+    b.clear();
+    b.push_hex(255u64, 2);
+    if (b.as_str() != "ff") { return 6; }
+    b.clear();
+    b.push_hex(0u64, 4);
+    if (b.as_str() != "0000") { return 7; }
+    b.clear();
+    b.push_hex(48879u64, 0);
+    if (b.as_str() != "beef") { return 8; }
+    return 42;
+}
+
+fn building() -> i32 {
+    let mut b: str::String = str::String::make();
+    if (!b.is_empty()) { return 1; }
+    b.push("harmony");
+    if (b.len() != 7) { return 2; }
+    if (b.as_str() != "harmony") { return 3; }
+    b.push("__");
+    b.push_i64(42);
+    if (b.as_str() != "harmony__42") { return 4; }
+    b.clear();
+    if (b.len() != 0) { return 5; }
+    b.push("x");
+    if (b.as_str() != "x") { return 6; }
+    // A byte at a time.
+    b.clear();
+    b.push_byte(65u8);
+    b.push_byte(66u8);
+    b.push_byte(67u8);
+    if (b.as_str() != "ABC") { return 7; }
+    return 42;
+}
+
+fn main() -> i32 {
+    let r = classification();
+    if (r != 42) { return 100 + r; }
+    let r2 = queries();
+    if (r2 != 42) { return 200 + r2; }
+    let r3 = numbers();
+    if (r3 != 42) { return 300 + r3; }
+    let r4 = building();
+    if (r4 != 42) { return 400 + r4; }
+    return 42;
+}

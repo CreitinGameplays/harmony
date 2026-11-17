@@ -732,7 +732,21 @@ directly into its binary and (b) support **multi-core compilation by default**.
       `make fuzz2-deep` a real campaign; `tests/harmony/coverage.sh` (in
       `make test`) guards that the grammar sampler keeps reaching the
       compiler's semantic stage.
-- [ ] Rewrite the compiler in harmony-base (`harmony/`).
+- [/] **Rewrite the compiler in harmony-base (`harmony/`).** The phase plan,
+  architecture decisions, and gates live in **`roadmap/harmony`** (read it
+  first). Started 2026-11:
+  - `library/core/` has its substrate: `mem.hr` (chunked arena),
+    `vec.hr` (`Vec<T>`), `str.hr` (byte classification, `&str` queries, a
+    growable `String`). Unit-tested by `tests/harmony-final/` (in
+    `make test`).
+  - Nine `harmony-base` gaps found and fixed while writing it (see
+    `roadmap/harmony` "What harmony-base must still grow"): `for`-range
+    element typing, `dealloc`/`Raw::null()`/`alloc` without `<T>`,
+    struct-field expected types, `const` literal adoption, imported
+    constants, method-name shadowing in the module loader, `u64` literals
+    ≥ 2^63, and unsigned `%`. Each has a regression test.
+  - Added the `str` lang item (`str::from_parts`), which §19.8.9 reserves,
+    so a compiler can build a `&str` from owned bytes.
 - [ ] Integrate LLVM IR emission directly into the compiler binary (AGENTS.md).
 - [ ] Multi-core compilation by default (AGENTS.md).
 - [ ] Byte-deterministic self-hosting milestone.

@@ -1,0 +1,112 @@
+// library/core/mem.hr — the compiler's allocation substrate.
+//
+// `library/core` is the freestanding core (AGENTS.md): no OS, no allocator of
+// its own. The arena here is the shape `harmony` (the self-hosted compiler)
+// allocates *everything* through — tokens, AST nodes, IR buffers, strings —
+// because a compile is short-lived and nothing is individually freed: bump
+// chunks from `alloc<T>` (the §13.5 runtime hook), never released until exit.
+//
+// Design (mirrors harmony-base's arena in bootstrap/harmony-base/util.c2, but
+// chunk-list shaped so there is no fixed ceiling):
+//
+//   Arena -> first chunk -> ... -> last chunk (each: prev, cap, used)
+//   align 8, bump upward, spill to a double-size chunk when full.
+//
+// `library/alloc` provides the real allocator hook later; core only depends
+// on the `alloc<T>`/`dealloc<T>` intrinsics the compiler already provides.
+
+// ---------------------------------------------------------------------------
+// Arena.
+// ---------------------------------------------------------------------------
+export struct Chunk {
+    prev: raw mut Chunk;   // the older chunk (null for the first)
+    cap: usize;            // usable bytes in this chunk
+    used: usize;           // bytes handed out so far
+    // The chunk's bytes follow the header, 8-byte aligned.
+}
+
+export struct Arena {
+    cur: raw mut Chunk;    // the chunk being bumped (null = empty)
+}
+
+const ALIGN: usize = 8;
+
+// Rounds `n` up to the next multiple of 8.
+export fn align8(n: usize) -> usize {
+    // `~` is bitwise not (the `!` operator is logical, bool-only).
+    return (n + (ALIGN - 1)) & ~(ALIGN - 1);
+}
+
+// The byte area of `c` (just past the header).
+fn chunk_bytes(c: raw mut Chunk) -> raw mut u8 {
+    unchecked("the header is a fixed-size struct; the bytes follow it") {
+        return (c as usize + sizeof(Chunk)) as raw mut u8;
+    }
+}
+
+// Allocates a fresh chunk of `cap` usable bytes and links it as current.
+fn arena_grow(a: &mut Arena, cap: usize) {
+    let mut total: usize = 0;
+    let mut c: raw mut Chunk = Raw::null<Chunk>();
+    total = align8(sizeof(Chunk)) + cap;
+    unchecked("one block holds the header and the bytes") {
+        c = alloc<u8>(total) as raw mut Chunk;
+    }
+    unchecked("a fresh chunk is empty") {
+        (*c).prev = a.cur;
+        (*c).cap = cap;
+        (*c).used = 0;
+    }
+    a.cur = c;
+}
+
+// Bump-allocates `n` bytes (8-aligned) and returns them as `raw mut u8`.
+// `n` must not be 0.
+export fn arena_raw(a: &mut Arena, n: usize) -> raw mut u8 {
+    let mut want: usize = 0;
+    let mut c: raw mut Chunk = Raw::null<Chunk>();
+    want = align8(n);
+    c = a.cur;
+    // Grow when the current chunk cannot serve the request. A big request
+    // still fits: the new chunk is sized `want` when that exceeds the
+    // doubling default, so a single huge node does not need two chunks.
+    if (c.is_null() || (*c).cap - (*c).used < want) {
+        let mut nc: usize = 0;
+        nc = 65536;
+        if (want > nc) { nc = want; }
+        arena_grow(a, nc);
+        c = a.cur;
+    }
+    unchecked("the bump stays inside this chunk by construction") {
+        let p: raw mut u8 = chunk_bytes(c).plus((*c).used);
+        (*c).used += want;
+        return p;
+    }
+}
+
+// Bump-allocates one `T`. Returns the pointer; the caller writes it.
+export fn arena_slot<T>(a: &mut Arena) -> raw mut T {
+    unchecked("the arena bump provides the storage for one T") {
+        return arena_raw(a, sizeof(T)) as raw mut T;
+    }
+}
+
+// Copies `s` (NUL-terminated view into source bytes) into the arena and
+// returns it as a `&str`. The bytes are copied, so the source may be
+// temporary. The copied text is *not* NUL-terminated (a `&str` carries its
+// length; the bytes are a snapshot, not a C string).
+export fn arena_str(a: &mut Arena, s: &str) -> &str {
+    let mut p: raw mut u8 = Raw::null<u8>();
+    unchecked("copy the text bytes into the arena") {
+        p = arena_raw(a, s.len());
+        let src = s.as_bytes();
+        for (i : 0..s.len()) {
+            p.plus(i).write(src[i]);
+        }
+    }
+    let mut out: &str = "?";
+    unchecked("the copied bytes are exactly the source text") {
+        out = str::from_parts(p, s.len());
+    }
+    return out;
+}

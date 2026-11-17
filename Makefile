@@ -35,7 +35,7 @@ HB_SRC    := \
 	bootstrap/harmony-base/main.c2
 SEED_SRC  := $(wildcard bootstrap/c2x-seed/*.asm)
 
-.PHONY: all clean test test-fuzz test-fuzz2 fuzz2-deep test-seed test-lisp seed harmony-base lisp version
+.PHONY: all clean test test-final test-fuzz test-fuzz2 fuzz2-deep test-seed test-lisp seed harmony-base lisp version
 
 all: harmony-base
 
@@ -73,6 +73,7 @@ test: test-seed harmony-base
 	bash tests/harmony/coverage.sh
 	bash tests/harmony/version.sh
 	bash tests/harmony/lisp.sh
+	bash tests/harmony-final/run.sh
 
 # c2x-seed regression corpus (guards the compiler bugs fixed during bring-up).
 test-seed: seed
@@ -87,6 +88,11 @@ lisp: harmony-base
 
 test-lisp: harmony-base
 	bash tests/harmony/lisp.sh
+
+# The self-hosted compiler's own tests: library/core and, later, the phase
+# gates in roadmap/harmony. `make test` runs this too.
+test-final: harmony-base
+	bash tests/harmony-final/run.sh
 
 test-fuzz: harmony-base
 	bash tests/harmony/fuzz.sh

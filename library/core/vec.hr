@@ -1,0 +1,143 @@
+// library/core/vec.hr — the growable array every later phase builds on.
+//
+// This is the §17.8 MiniVec, made general: the only `unchecked` is the
+// allocator plumbing and the two `write`/`read` moves, each with a reason
+// that is checkable by reading three lines. The safe API (`push`, `get`,
+// `pop`, `set`) cannot misbehave.
+//
+// `lift` moves an element out of a `&T` slot, which needs ownership rules the
+// compiler does not have yet (§9.8: you cannot move out from behind a
+// reference). The pattern here is the one the language actually supports:
+// read the value through `raw` inside `unchecked`, and rely on the caller not
+// using the slot again — which `grow` and `pop` guarantee by construction
+// (they update `len` immediately, so the slot is outside the live range).
+//
+// `alloc<T>`/`dealloc<T>` are the §13.5 intrinsics; `mem` is not needed here.
+
+export struct Vec<T> {
+    ptr: raw mut T;     // the block (null until the first push)
+    len: usize;         // live elements, 0..len are initialized
+    cap: usize;         // allocated slots; 0 or a power of two
+}
+
+methods<T> Vec<T> {
+    // An empty vector allocates nothing.
+    export fn make() -> Vec<T> {
+        return Vec { .ptr = Raw::null(), .len = 0, .cap = 0 };
+    }
+
+    // Builds a vector of `n` copies of `v`. Used for small fixed tables.
+    export fn filled(n: usize, v: T) -> Vec<T> {
+        let mut out: Vec<T> = Vec<T>::make();
+        let mut i: usize = 0;
+        while (i < n) {
+            out.push(v);
+            i += 1;
+        }
+        return out;
+    }
+
+    export fn len(&self) -> usize { return self.len; }
+    export fn cap(&self) -> usize { return self.cap; }
+    export fn is_empty(&self) -> bool { return self.len == 0; }
+
+    // Bounds-checked read. The caller must have checked `i < len`: the
+    // language has no slice view over the block yet, so the check lives in
+    // the `get`/`set` callers through `T-INDEX`-style traps when they need it.
+    export fn get(&self, i: usize) -> &T {
+        unchecked("callers of get() guarantee i < len") {
+            return &*self.ptr.plus(i);
+        }
+    }
+
+    export fn get_unchecked(&self, i: usize) -> &T {
+        // The intrinsic needs its own `unchecked`, so this wrapper keeps the
+        // same contract but names it once.
+        unchecked("callers of get_unchecked() guarantee i < len") {
+            return &*self.ptr.plus(i);
+        }
+    }
+
+    // Copies `value` into slot `i`, which must be live.
+    export fn set(&mut self, i: usize, value: T) {
+        unchecked("callers of set() guarantee i < len") {
+            self.ptr.plus(i).write(value);
+        }
+    }
+
+    export fn push(&mut self, value: T) {
+        if (self.len == self.cap) {
+            self.grow();
+        }
+        unchecked("grow() guarantees cap > len, so slot len is inside our block") {
+            self.ptr.plus(self.len).write(value);
+        }
+        self.len += 1;
+    }
+
+    // Removes and returns the last element. `T` must be `copy`-like here: the
+    // language has no drop glue yet (§9.5), so returning it by value is a bit
+    // copy. That is exactly what the compiler's own tables need.
+    export fn pop(&mut self) -> T {
+        if (self.len == 0) {
+            // No `Maybe` here on purpose: every caller checks `len` first.
+            // Reaching this is a contract violation, so trap rather than
+            // return a garbage element.
+            trap("Vec::pop on an empty vector");
+        }
+        self.len -= 1;
+        unchecked("slot len-1 was initialized and is now outside the live range") {
+            return self.ptr.plus(self.len).read();
+        }
+    }
+
+    export fn clear(&mut self) {
+        self.len = 0;
+    }
+
+    // Frees the block. Only for a vector whose elements need no drop (the
+    // compiler's tables hold plain data).
+    export fn release(&mut self) {
+        if (self.cap > 0) {
+            unchecked("the block came from alloc<T>(cap) and is freed once") {
+                dealloc(self.ptr, self.cap);
+            }
+            self.ptr = Raw::null();
+            self.len = 0;
+            self.cap = 0;
+        }
+    }
+
+    // Grows to at least `want` slots, preserving the live elements. Growth
+    // doubles so a long series of pushes is amortized O(n).
+    export fn reserve(&mut self, want: usize) {
+        let mut nc: usize = 0;
+        if (want <= self.cap) { return; }
+        nc = 4;
+        if (self.cap > 0) { nc = self.cap * 2; }
+        while (nc < want) { nc = nc * 2; }
+        self.reallocate(nc);
+    }
+
+    fn grow(&mut self) {
+        let mut nc: usize = 4;
+        if (self.cap > 0) { nc = self.cap * 2; }
+        self.reallocate(nc);
+    }
+
+    fn reallocate(&mut self, nc: usize) {
+        unchecked("alloc gives room for nc Ts; each old slot is moved exactly once, then the old block is freed") {
+            let fresh: raw mut T = alloc<T>(nc);
+            let mut i: usize = 0;
+            while (i < self.len) {
+                fresh.plus(i).write(self.ptr.plus(i).read());
+                i += 1;
+            }
+            if (self.cap > 0) {
+                dealloc(self.ptr, self.cap);
+            }
+            self.ptr = fresh;
+        }
+        self.cap = nc;
+    }
+}

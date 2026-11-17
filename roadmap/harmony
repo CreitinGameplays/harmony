@@ -1,0 +1,227 @@
+# harmony — the self-hosted rewrite roadmap
+
+Legend: `[ ]` not started · `[/]` partial · `[x]` done.
+
+`harmony` is the **second-stage compiler**: the full language implementation,
+written in Harmony itself and built by `harmony-base` (which is written in
+c2x-seed). It is the compiler AGENTS.md calls the final `harmony`; the
+bootstrap under `bootstrap/` stays as the stage-0/1 toolchain that builds it.
+
+Target layout (AGENTS.md):
+
+```
+harmony/
+├── lexer/       tokens, byte scanner
+├── parser/      recursive descent -> AST
+├── ast/         node model, arena, printer
+├── cache/       incremental-compilation cache
+├── sema/        name resolution, type checking
+├── borrowck/    moves, init, loans, lives
+├── ir/          CFG IR
+├── codegen/     LLVM IR (primary), C11 (secondary)
+├── driver/      CLI, pipeline, diagnostics
+└── main.hr
+library/
+├── core/        freestanding: strings, Vec, slices, iterators, fmt
+├── alloc/       the allocator hook `heap(x)` uses
+└── std/         OS-facing: io, fs, net, process
+```
+
+## Non-negotiable gates
+
+These are the conditions that make the rewrite worth doing. Each is a test,
+not a goal statement.
+
+1. **Byte-identical LLVM IR.** For every program in the corpus,
+   `harmony emit-llvm` must equal `harmony-base emit-llvm` byte for byte.
+   This is the self-hosting determinism milestone; it also means the two
+   compilers can be diffed on any new bug.
+2. **Identical accept/reject decisions and diagnostic codes.** `harmony check`
+   must accept exactly what `harmony-base check` accepts, and reject with the
+   same code on the error corpus. Wording may differ (it is being moved to
+   the library per §19.8.7); codes may not.
+3. **Freestanding.** `harmony` links against `bootstrap/runtime/rt.c` only —
+   no libc, no std beyond `library/`. It reaches the OS through
+   `lc_syscall3`, exactly as harmony-base does.
+4. **Multi-core by default** in the final driver (AGENTS.md), while
+   `harmony-base` stays optimized for single-core.
+5. **In-memory LLVM IR**: the driver pipes IR to clang on stdin; no `.ll`
+   temp file by default.
+6. **Byte-deterministic self-host**: stage 2 (`harmony` built by `harmony`)
+   must produce a binary identical to stage 1 (`harmony` built by
+   `harmony-base`).
+
+## Architecture decisions
+
+**No mutable globals** (§6.1, by design). Every stage receives one
+`&mut Ctx` that owns the arena, the file table, the diagnostic list, and the
+per-stage state. This is the same context-threading shape harmony-base uses
+with its `g_*` globals, made explicit because the language forbids them.
+
+**Arena, not per-node free.** The compiler allocates from bump chunks (the
+same design as harmony-base's 16 MiB + spill, but chunk-list shaped so it
+never has a fixed ceiling). A compile is short-lived, so nothing is freed
+until exit. `library/core` provides the arena; `library/alloc` provides the
+chunk allocator so an embedded target can swap it.
+
+**Flat AST mirroring harmony-base.** Node = `kind`, byte span, up to three
+direct children, two child lists, string/integer payloads. The rewrite keeps
+that shape deliberately: the `--dump-ast` output and the IR depend on it, so
+mirroring it makes differential testing against harmony-base exact instead of
+approximate. Ergonomics are recovered with typed accessor helpers, not by
+changing the node layout.
+
+**Strings point into the source.** Token spellings are `&str` slices of the
+loaded file (which lives for the whole compile), so the lexer allocates
+nothing per token. Synthesized names (mangled symbols) are the only strings
+that allocate, through the arena.
+
+**Errors are data, wording is library.** The compiler records
+`(code, span, arguments)`; rendering (pretty/line/json) lives in
+`library/core/fmt` + `harmony/driver`. This is §19.8.7 applied from day one
+so it is not a later refactor.
+
+## Phases
+
+Each phase ends with a gate that must pass before the next begins. Phases are
+ordered so a later one never needs a rewrite of an earlier one.
+
+### R0 — Skeleton and toolchain [ ]
+
+- `harmony/main.hr`, `harmony/driver/cli.hr`: argument parsing, `--version`,
+  `check|build|run|emit-llvm|explain|audit`, exit codes.
+- `make harmony` builds `build/harmony` with `harmony-base`.
+- `tests/harmony-final/smoke.sh`: the binary runs, reports the version from
+  `VERSION`, and rejects a bad flag.
+- Gate: `make harmony && build/harmony --version` works.
+- **Status:** the `tests/harmony-final/run.sh` harness exists and is wired
+  into `make test`, so `library/core` and the phases are testable before the
+  compiler binary exists. The CLI itself is not started.
+
+### R1 — `library/core`: the compiler's substrate [/]
+
+Everything the later phases allocate goes through this, so it lands first and
+is unit-tested on its own.
+
+- [x] `mem.hr`: arena over chunked `alloc`, 8-aligned, growing by 64 KiB
+  chunks (a request larger than the default chunk gets its own block, so
+  there is no fixed ceiling). `arena_raw`, `arena_slot<T>`, `arena_str`
+  (copies text into the arena and returns it as `&str`).
+- [x] `vec.hr`: `Vec<T>` (the §17.8 MiniVec shape): `make`, `filled`, `len`,
+  `cap`, `is_empty`, `get`, `get_unchecked`, `set`, `push`, `pop`, `clear`,
+  `release`, `reserve`. Doubling growth preserves live elements.
+- [x] `str.hr`: byte classification (`is_digit`/`is_alpha`/`is_hex`/…),
+  `&str` queries (`starts_with`, `ends_with`, `find`, `contains`,
+  `slice`), and a growable `String` over `Vec<u8>` with `push`,
+  `push_byte`, `push_i64`, `push_u64`, `push_hex`, and `as_str`.
+- [ ] `fmt.hr`: the diagnostic renderer's formatting layer (pretty/line/json).
+- [x] `tests/harmony-final/core-{arena,vec,str}.harmony` — unit tests,
+  including growth past several chunks, empty/singleton edges, and a
+  verified-failing mutation (a `Vec` that forgets to copy in `reallocate` is
+  caught rather than passing).
+- Gate: unit tests pass; the only `unchecked` in `library/core` is the
+  allocator plumbing and the three `read`/`write` moves, each with a reason
+  that is checkable by reading it.
+
+### R2 — Lexer [ ]
+
+- `harmony/lexer/token.hr`, `harmony/lexer/scan.hr`: the §4 surface —
+  identifiers, keywords (contextual `life`), every literal form in §4.3
+  (radix, `_`, suffixes, chars, bytes, strings, escapes), nested comments,
+  and §4.4 punctuation, including `>>`/`>=` splitting hints for the parser.
+- Tokens carry `(kind, text: &str, line, col)`; no allocation per token.
+- `harmony/lexer/dump.hr`: `--dump-tokens` for differential testing.
+- Gate: for every `.harmony` file in the repo, the token stream matches
+  harmony-base's lexer. harmony-base has no token dump yet, so R2 adds one
+  (a small, isolated `--dump-tokens` in `bootstrap/harmony-base`).
+
+### R3 — AST and parser [ ]
+
+- `harmony/ast/node.hr`: the flat node model + arena-backed lists.
+- `harmony/ast/print.hr`: `--dump-ast`, byte-identical to harmony-base's.
+- `harmony/parser/items.hr`, `stmts.hr`, `expr.hr`, `types.hr`: recursive
+  descent, the same one-token lookahead, recovery at `;`/`}`, `SYN-01..05`.
+- Gate: `--dump-ast` is byte-identical for the whole accept corpus; the
+  reject corpus produces the same `SYN-*` codes.
+
+### R4 — Modules and name resolution [ ]
+
+- `harmony/driver/loader.hr`: `import`/`export`, path normalization
+  (`..`/`.`), cycle detection, `module::name` flattening.
+- `harmony/sema/resolve.hr`: symbol tables, scopes, `NAME-01..04`.
+- Gate: identical `NAME-*` decisions on the corpus; the LISP interpreter
+  (4 modules, transitive imports) resolves identically.
+
+### R5 — Type checker [ ]
+
+- `harmony/sema/types.hr`: the type table, `ty_eq`/`ty_size`/nominal
+  identity, the `CTY_*` kinds.
+- `harmony/sema/expr.hr`, `stmt.hr`, `check.hr`: the M1 checker — scalars,
+  aggregates, slices, references, casts, `heap`, `sizeof`, generics
+  (monomorphization + inference), `switch` exhaustiveness, `unchecked`
+  gating, format strings, the prelude builtins.
+- Gate: identical accept/reject and identical codes over the corpus
+  (`checker.sh`, `error-handling.sh`, `codegen.sh` inputs).
+
+### R6 — LLVM codegen [ ]
+
+- `harmony/codegen/llvm/emit.hr` + per-construct lowerers: the §19.4
+  mapping, checked arithmetic via `llvm.*.with.overflow`, `lc_*` calls,
+  deterministic label/register naming.
+- Gate: **byte-identical IR** on the whole corpus (gate 1).
+
+### R7 — Driver parity and self-host [ ]
+
+- `build`/`run`: IR to clang on stdin, quiet log, `-v`, `-O` levels.
+- `explain`/`audit`, `--format=pretty|line|json`.
+- Multi-core: split module checking/monomorphization across workers
+  (AGENTS.md's final-language priority), with deterministic merge.
+- Gate: `harmony` compiles itself, and stage 2 equals stage 1 byte for byte.
+
+## What harmony-base must still grow (feed it back)
+
+Any gap found while writing `harmony` is fixed in `harmony-base` first, with a
+regression test, then used. Bugs found this way already (2026-11, while
+starting the rewrite):
+
+- `for (i : 0..n)` took the element type from the lower bound only, so an
+  untyped `0` with `n: usize` emitted mixed-width IR. Fixed; regressions
+  `for-range-usize`, `for-range-bound-mismatch`.
+- `dealloc(p, n)` without `<T>` was resolved as a variable
+  ("no `dealloc` in scope") instead of the builtin; it now infers the element
+  type from the pointer, which is how §17.8 writes it. Regression
+  `dealloc-inferred`.
+- `alloc(n)` without `<T>` still cannot infer (only the result names the
+  element), so it now says exactly that instead of blaming an unknown name.
+  Regression `alloc-missing-targ`.
+- `Raw::null()` without `<T>` (the §17.8 form) was also resolved as a name.
+  It now infers from the expected type, and struct-literal *fields* pass
+  their type down as the expected type (`ck_expr_struct_init` used to check
+  the value before looking the field up). Regression
+  `struct-field-expected-ty`.
+- `const A: usize = 8;` (any non-`i32` const with a literal initializer) was
+  a TYPE-01 stop: the checker defaulted the literal to `i32` *before* asking
+  whether it was coercible. Regression `const-literal-adopts-type`.
+- A `const` exported from an imported module could not be used at all. The
+  loader renames it to `mod::NAME`, and both the checker and the backend
+  treated every `::` name as an *enum path*, so `mod::NAME` was NAME-01
+  "the name before `::` must be an enum or module". Both now consult the
+  symbol table first. Regression `module-const`.
+- A free function and a method with the same name in one module collided:
+  the loader renamed the method's own fn node too, so the method table was
+  keyed by `mod::name` and lookups by the bare name failed (TYPE-02 "no such
+  field"). This alone made `library/core/str.hr` unusable (`len(&str)` and
+  `String::len`). Regression `method-shadow`.
+- A `u64` literal ≥ 2^63 emitted **no operand**: the emitter's decimal loop
+  was `while (v > 0)` and the lexer stores the value in a signed 64-bit
+  `int`, so 18446744073709551615 was negative and produced an empty string
+  (`i64 ` with nothing after it). Unsigned literals now print their unsigned
+  decimal. Regression `unsigned-large-literal`.
+- Unsigned `%` used `srem`: the remainder branch returned before the
+  unsigned check, so `u64 % u64` gave the *signed* answer (`-1` for the max
+  value). It now uses `urem` (matching the existing `udiv`). Same regression.
+- The `str` lang item (the one §19.8.9 reserves) was missing: nothing could
+  build a `&str` from owned bytes, so a compiler could not synthesize a
+  symbol name or a formatted number. `str::from_parts(p, len)` is now a
+  builtin (`unchecked`, since the pointer is unchecked). It is what
+  `library/core/str.hr`'s `String::as_str` uses.

@@ -333,3 +333,26 @@ starting the rewrite):
   (exact for nominal types, structural for refs/slices). Found because the
   loader needs `Vec<&str>` in several functions. Regression
   `generic-instance-identity`.
+- Indexing an array whose element is a fat type (`&str`, a slice) lowered as
+  a *slice range* whenever the result type was `&str`/slice, so `a[1]` on an
+  `[&str; N]` silently dropped the index and yielded the whole array (`.len()`
+  read the array length). `ll_addr`/`ll_expr_index` now dispatch on the index
+  node's shape (`a[lo..hi]` has a `..`), not the result type. Regression
+  `array-of-fat-elements`.
+- A generic parameter used as a *type argument* (`fn get<U>(h: Holder<U>)`)
+  stopped with NAME-01 "no type named `U`": `ck_type_mentions_template_param`
+  returned at a generic head without descending into its arguments, so
+  inference tried to resolve `Holder<U>` while pinning `U`; and `ck_unify`
+  treated a generic head with arguments as "nothing to pin", so `U` was never
+  inferred. Both fixed. Regression `generic-param-as-type-arg`.
+- `ck_ty_to_ast` spelled a monomorphized instance with its mangled display
+  name (`Box__i32`), which is not a symbol; re-walking that type node (an
+  inferred argument that is itself an instance, `wrap(inner)`) gave NAME-01
+  "no type named `Box__i32`". It now rebuilds `Box<i32>` from the instance
+  tables. Same regression.
+
+Known limitation (pre-existing, not introduced here): a *fully inferred*
+double-nesting (`wrap(wrap(42))` with no annotation on the outer binding)
+still mis-infers the outer `T` as the inner argument type. Writing the outer
+binding's type (`let o: Box<Box<i32>> = wrap(...)`) works. This is tracked for
+the R6 work; it does not affect any corpus program.

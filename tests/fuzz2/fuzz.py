@@ -828,6 +828,38 @@ def specials(rng):
     add("unck-short-reason",
         'fn main() -> i32 { unchecked("no") { let p = Raw::null<u8>(); } return 0; }\n')
 
+    # Fat element types (`&str`, slices) in every aggregate position. Indexing
+    # an array whose ELEMENT is fat used to lower as a slice-range (the index
+    # was dropped), because the backend dispatched on the result type instead
+    # of the index shape. These shapes keep the class covered.
+    add("array-of-str",
+        'fn main() -> i32 {\n'
+        'let a: [&str; 3] = ["aa", "bbb", "cccc"];\n'
+        'let mut t = 0;\n'
+        'let mut i = 0;\n'
+        'while (i < 3) { t = t + a[i].len() as i32; i = i + 1; }\n'
+        'let s = &a[1..];\n'
+        't = t + s[0].len() as i32;\n'
+        'if (a[0] != "aa") { return 1; }\n'
+        'return t;\n}\n')
+    add("array-of-slices",
+        'fn main() -> i32 {\n'
+        'let x: [i32; 4] = [1, 2, 3, 4];\n'
+        'let p: [&[i32]; 2] = [&x[0..2], &x[2..4]];\n'
+        'return p[1][0] + p[0].len() as i32;\n}\n')
+    add("fat-struct-fields",
+        'copy struct W { s: &str; n: i32; }\n'
+        'fn main() -> i32 {\n'
+        'let a: [W; 2] = [W { .s = "one", .n = 1 }, W { .s = "tt", .n = 2 }];\n'
+        'let mut w = a[1];\n'
+        'w.s = "abcd";\n'
+        'return w.s.len() as i32 + a[0].s.len() as i32;\n}\n')
+    add("heap-of-str-array",
+        'fn main() -> i32 {\n'
+        'let h = heap(["ab", "cde"]);\n'
+        'let s = &h[1..];\n'
+        'return h[0].len() as i32 + s[0].len() as i32;\n}\n')
+
     return out
 
 

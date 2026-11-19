@@ -665,6 +665,28 @@ int ck_unify(struct AstNode* tn, int ty) {
             }
             return 1;
         }
+        // A generic head with arguments (`Holder<U>` in a parameter): unify
+        // each argument against the matching type argument of the concrete
+        // instance. Without this, `fn get<U>(h: Holder<U>)` could never infer
+        // `U` from a `Holder<i32>` argument -- the walk stopped at "a name
+        // with kids" and left `U` unpinned.
+        {
+            char* ibase;
+            ibase = ck_ty_instance_base(ty);
+            if (ibase != 0 && str_eq(ibase, tn->sval)) {
+                struct AstList* atargs;
+                atargs = ck_ty_instance_targs(ty);
+                if (atargs != 0 && atargs->len == tn->kids->len) {
+                    int j;
+                    j = 0;
+                    while (j < tn->kids->len) {
+                        ck_unify(tn->kids->items[j], atargs->items[j]->ty);
+                        j = j + 1;
+                    }
+                    return 1;
+                }
+            }
+        }
         return 1;
     }
     if (k == AST_TYPE_REF) {
@@ -709,7 +731,10 @@ int ck_type_mentions_template_param(struct AstNode* n) {
             }
             i = i + 1;
         }
-        return 0;
+        // The head is not a parameter, but a generic head's *arguments* may
+        // name one (`Holder<U>` in `fn get<U>(h: Holder<U>)`): keep descending
+        // so the inference pass knows not to resolve it as a concrete type
+        // (resolving would stop with "no type named `U`").
     }
     if (ck_type_mentions_template_param(n->a)) { return 1; }
     if (ck_type_mentions_template_param(n->b)) { return 1; }

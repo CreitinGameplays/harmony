@@ -38,10 +38,16 @@ fn run_one(i: usize, src: &str) {
     println("END {}", i);
 }
 
-// NOTE: an `[&str; N]` array element read through `sources[i]` mis-reads in
-// harmony-base (it yields a 1-byte string), so each case is written as its own
-// call with the literal inline. The harness regenerates this block.
+// The harness regenerates this block with one array element per case. An
+// `[&str; N]` array of sources indexes correctly (that used to be a bug: an
+// element read returned the wrong value because the backend dispatched on the
+// result type instead of the index shape -- fixed in lexpr.c2).
 fn main() -> i32 {
-    run_one(0, "fn main() -> i32 { return 0; }");
+    let sources: [&str; 1] = ["fn main() -> i32 { return 0; }"];
+    let mut i: usize = 0;
+    while (i < 1) {
+        run_one(i, sources[i]);
+        i += 1;
+    }
     return 0;
 }

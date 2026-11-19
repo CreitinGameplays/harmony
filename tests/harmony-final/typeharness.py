@@ -40,14 +40,15 @@ def run_cases(cases):
     if not cases:
         return []
     body = open(BATCH).read()
-    # Each case is its own `run_one(i, "...")` call: an `[&str; N]` element read
-    # mis-reads in harmony-base, so an array of sources is not an option.
-    calls = "\n    ".join('run_one(%d, "%s");' % (i, hs(src))
-                          for i, (_, src) in enumerate(cases))
-    # A lambda replacement: re.sub would otherwise treat the `\n` escapes in
-    # `calls` as real newlines and choke on `\u{..}`.
-    body = re.sub(r"    run_one\(0, \".*?\"\);", lambda _m: calls, body,
-                  count=1, flags=re.S)
+    # Rewrite the `let sources: [&str; N] = [...]; while (i < N)` block with the
+    # real corpus. (A lambda replacement: re.sub would otherwise treat the
+    # `\n` escapes in the literals as real newlines and choke on `\u{..}`.)
+    lits = ",\n        ".join('"%s"' % hs(src) for _, src in cases)
+    arr = "let sources: [&str; %d] = [\n        %s,\n    ];" % (len(cases), lits)
+    body = re.sub(r"let sources: \[&str; \d+\] = \[.*?\];",
+                  lambda _m: arr, body, count=1, flags=re.S)
+    body = re.sub(r"while \(i < \d+\) \{", "while (i < %d) {" % len(cases),
+                  body, count=1)
     # The driver must live beside the template so its relative imports
     # (`../../library/core/...`) resolve; it is removed after the run.
     drv = os.path.join(ROOT, "tests/harmony-final/typebatch_gen.hr")

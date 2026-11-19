@@ -1590,6 +1590,33 @@ struct AstNode* ck_ty_to_ast(int ty) {
         n->b = len;
         return n;
     }
+    // A monomorphized generic instance (`Box__i32`): rebuild the source
+    // spelling `Box<i32>` from the instance tables. The mangled display name
+    // is not a symbol, so a type node carrying it would fail to resolve
+    // ("no type named `Box__i32`") the next time it is walked -- which happens
+    // whenever a declared type argument is itself an instance
+    // (`let o: Box<Box<i32>> = ...;`).
+    {
+        char* ibase;
+        struct AstList* itargs;
+        int kk;
+        kk = ty_kind(ty);
+        ibase = ck_ty_instance_base(ty);
+        if (ibase != 0 && (kk == CTY_STRUCT || kk == CTY_ENUM)) {
+            int j;
+            n->sval = ibase;
+            n->kids = ast_list_new();
+            itargs = ck_ty_instance_targs(ty);
+            if (itargs != 0) {
+                j = 0;
+                while (j < itargs->len) {
+                    ast_list_push(n->kids, ck_ty_to_ast(itargs->items[j]->ty));
+                    j = j + 1;
+                }
+            }
+            return n;
+        }
+    }
     // A named type (primitive, struct, enum): its display name is the source
     // spelling, which is exactly what a type node carries.
     n->sval = ty_display(ty);

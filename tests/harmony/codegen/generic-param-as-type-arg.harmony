@@ -1,0 +1,46 @@
+// EXPECT: 42
+// A generic parameter used as a *type argument* to another generic type in a
+// signature (`fn get<U>(h: Holder<U>)`) must be inferred and substituted.
+//
+// Two backend/checker gaps made this stop with NAME-01 "no type named `U`":
+//   1. `ck_type_mentions_template_param` returned on a generic head (`Holder`)
+//      without descending into its arguments, so inference tried to resolve
+//      `Holder<U>` as a concrete type during the very pass that pins `U`.
+//   2. `ck_unify` treated a generic head with arguments as "nothing to pin",
+//      so `U` in `Holder<U>` was never inferred from a `Holder<i32>` argument.
+struct Holder<T> { v: T; }
+struct Box<T> { v: T; }
+copy struct Pair<T, U> { a: T; b: U; }
+
+fn first<T>(h: Holder<T>) -> T { return h.v; }
+fn wrap<T>(x: T) -> Box<T> { return Box<T> { .v = x }; }
+fn unbox(b: Box<Box<i32>>) -> i32 { return b.v.v; }
+fn swap<A, B>(p: Pair<A, B>) -> Pair<B, A> { return Pair<B, A> { .a = p.b, .b = p.a }; }
+
+fn main() -> i32 {
+    // Inferred from the argument: T = i32.
+    let h: Holder<i32> = Holder<i32> { .v = 7 };
+    if (first(h) != 7) { return 1; }
+
+    // A fat type argument: T = &str, inferred and substituted inside the
+    // generic struct's field.
+    let s: Holder<&str> = Holder<&str> { .v = "hello" };
+    if (first(s).len() as i32 != 5) { return 2; }
+
+    // A generic instance passed to another generic whose parameter is inferred
+    // to be that instance: `wrap(wrap(7))` with the outer annotated. The
+    // checker must spell `Box<i32>` from the instance tables for the inner
+    // argument, not its mangled name `Box__i32` (which is not a symbol and
+    // failed with NAME-01 on the next walk).
+    let inner: Box<i32> = wrap(7);
+    let outer: Box<Box<i32>> = wrap(inner);
+    if (unbox(outer) != 7) { return 10; }
+
+    // Two parameters, positions swapped: A = i32, B = u8, result Pair<u8, i32>.
+    let p: Pair<i32, u8> = Pair<i32, u8> { .a = 40, .b = 2u8 };
+    let q = swap(p);
+    if (q.a as i32 != 2) { return 3; }
+    if (q.b + (q.a as i32) != 42) { return 4; }
+
+    return 42;
+}

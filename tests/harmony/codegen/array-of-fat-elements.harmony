@@ -1,0 +1,40 @@
+// EXPECT: 42
+// Indexing an array whose ELEMENT is a fat type (`&str`, a slice) must yield
+// the element, not the whole array.
+//
+// The backend used to dispatch `a[i]` to the slice-range lowering whenever the
+// *result type* was `&str`/slice, so `a[1]` on an `[&str; N]` was lowered as
+// `a[..]`: the index was silently dropped and `.len()` read the array length.
+// The dispatch is now on the index node's shape (`a[lo..hi]` has a `..`), so a
+// plain index always indexes one element.
+fn main() -> i32 {
+    // A `let`-bound array of strings.
+    let a: [&str; 2] = ["hello", "world"];
+    if (a[0].len() as i32 != 5) { return 1; }
+    if (a[1].len() as i32 != 5) { return 2; }
+
+    // Every element visited through a loop, with a computed index.
+    let b: [&str; 3] = ["a", "bb", "ccc"];
+    let mut total = 0;
+    let mut i = 0;
+    while (i < 3) {
+        total = total + b[i].len() as i32;
+        i = i + 1;
+    }
+    if (total != 6) { return 3; }
+
+    // A slice range of the same array still works, and re-indexing the range
+    // yields an element.
+    let s = &b[1..];
+    if (s.len() != 2) { return 4; }
+    if (s[0].len() as i32 != 2) { return 5; }
+
+    // An array of *slices* (a second fat element type).
+    let x: [i32; 4] = [1, 2, 3, 4];
+    let parts: [&[i32]; 2] = [&x[0..2], &x[2..4]];
+    if (parts[0].len() != 2) { return 6; }
+    if (parts[1][0] != 3) { return 7; }
+
+    // 6 + 5 + 6 + 5 + 4 + 8 + 8 = 42.
+    return 42;
+}

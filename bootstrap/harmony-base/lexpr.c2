@@ -831,8 +831,14 @@ char* ll_addr(struct AstNode* n) {
     }
     if (n->kind == AST_FIELD_ACC) { return ll_field_addr(n); }
     if (n->kind == AST_INDEX) {
-        // A range index is a slice/`&str` value: its address is a fresh pair.
-        if (ty_kind(n->ty) == CTY_SLICE || ty_kind(n->ty) == CTY_STRREF) {
+        // A *range* index (`a[lo..hi]`, `a[..]`) is a slice/`&str` value whose
+        // address is a fresh pair. The test must be on the index expression,
+        // not on the result type: a plain `a[i]` whose element happens to be
+        // `&str` or a slice (an array of strings, say) also has a fat result
+        // type, and dispatching on that lowered `a[1]` as `a[..]` -- the
+        // index was silently dropped and the value became the whole slice.
+        if (n->b != 0 && n->b->kind == AST_BINARY
+            && (str_eq(n->b->sval, "..") || str_eq(n->b->sval, "..="))) {
             return ll_slice_pair(n);
         }
         return ll_index_addr(n);

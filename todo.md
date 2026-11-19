@@ -755,6 +755,12 @@ directly into its binary and (b) support **multi-core compilation by default**.
   - `harmony/driver/loader.hr` + `harmony/sema/resolve.hr` implement module
     loading and name resolution. `tests/harmony-final/resolvediff.py` checks
     19 module scenarios against harmony-base's NAME-* decisions: 0 mismatches.
+  - `harmony/sema/types.hr` + `harmony/sema/check.hr` are the whole type
+    checker, gated by four differential suites (`typediff.py` 32 cases,
+    `typechecker_sh.py` 28, `typecorpus.py error-handling` 58,
+    `typecorpus.py codegen` 81): 199 cases, 0 mismatches. The batch harness
+    compiles the checker once and runs every program through it, so a whole
+    corpus takes ~6s instead of ~5s per case.
   - A fourth harmony-base bug fixed: generic instance reuse compared type-arg
     IDs exactly, making two `Vec<&str>` uses distinct nominal types; now uses
     `ty_eq`. Regression `generic-instance-identity`.

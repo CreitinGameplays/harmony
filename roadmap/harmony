@@ -217,16 +217,33 @@ keeps its string lists in raw growable buffers of `&str` (the same shape as
 `args()`). This is a harmony-base generic-substitution quirk, not a language
 rule; it is recorded here rather than hidden.
 
-### R5 — Type checker [ ]
+### R5 — Type checker [/]
 
-- `harmony/sema/types.hr`: the type table, `ty_eq`/`ty_size`/nominal
-  identity, the `CTY_*` kinds.
-- `harmony/sema/expr.hr`, `stmt.hr`, `check.hr`: the M1 checker — scalars,
-  aggregates, slices, references, casts, `heap`, `sizeof`, generics
-  (monomorphization + inference), `switch` exhaustiveness, `unchecked`
-  gating, format strings, the prelude builtins.
-- Gate: identical accept/reject and identical codes over the corpus
-  (`checker.sh`, `error-handling.sh`, `codegen.sh` inputs).
+- [x] `harmony/sema/types.hr`: the type table (fixed primitive ids and the
+  same `CTY_*` kinds as harmony-base), `eq` (nominal by id, structural for
+  refs/slices/arrays), `size`/`align`/`field_offset`, member lookup.
+- [x] `harmony/sema/check.hr`: the whole M1 checker in one module — scalars,
+  aggregates, slices, references, casts, `heap`, `sizeof`, `raw`, generics
+  (templates, per-call inference, instance reuse by structural arg equality),
+  generic *methods* (`methods<T> Box<T>` instantiated per receiver),
+  `switch` exhaustiveness (CASE-01), definite-initialization (INIT-01),
+  assignment mutability (MUT-01), `unchecked` gating (UNCK-01/02/04/05),
+  format strings (FMT-01), FFI signature and ABI checks (TYPE-02, FFI-01),
+  constants (CONST-01), and the prelude (`Maybe`/`Outcome`, `print`,
+  `alloc`/`dealloc`, `Raw::null`, `str::from_parts`, `Heap::into_raw`…).
+  Every node's resolved type is stamped in `Node.ty` for R6.
+- [x] Differential gates, all 0 mismatches:
+  - `tests/harmony-final/typediff.py` — 32 hand-written cases (accept +
+    reject).
+  - `tests/harmony-final/typechecker_sh.py` — the 28 `checker.sh` snippets.
+  - `tests/harmony-final/typecorpus.py error-handling` — 58 files.
+  - `tests/harmony-final/typecorpus.py codegen` — 81 files.
+- [x] **Speed**: compiling the rewrite's core modules takes ~5s, so the
+  harness (`typeharness.py`) compiles the checker ONCE into a batch binary
+  and feeds every program through it as a generated `run_one(i, "...")` call.
+  A whole corpus now takes ~6s instead of ~5s *per case*. (An `[&str; N]`
+  array element read mis-reads in harmony-base, so the driver never stores
+  sources in an array; that quirk is documented in `typebatch.hr`.)
 
 ### R6 — LLVM codegen [ ]
 

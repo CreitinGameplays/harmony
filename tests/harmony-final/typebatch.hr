@@ -1,0 +1,47 @@
+// Batched type-check driver (R5 differential harness).
+//
+// Reads NO files (file IO is R7). Instead the Python harness embeds every
+// source as a string literal in a generated copy of this file, so the whole
+// corpus runs in ONE process. The driver prints `CASE <i>` before each
+// program's diagnostics, letting the harness split the output.
+//
+// This exists because compiling the rewrite's ~20 core modules takes ~5s;
+// compiling once per case made the differential test take minutes. Batching
+// brings it to a single build plus a single run.
+import "../../library/core/vec.hr";
+import "../../library/core/mem.hr";
+import "../../harmony/ast/node.hr";
+import "../../harmony/lexer/token.hr";
+import "../../harmony/lexer/ctx.hr";
+import "../../harmony/lexer/scan.hr";
+import "../../harmony/parser/pctx.hr";
+import "../../harmony/parser/parse.hr";
+import "../../harmony/parser/item.hr";
+import "../../harmony/sema/check.hr";
+
+fn run_one(i: usize, src: &str) {
+    let mut arena: mem::Arena = mem::Arena { .cur = Raw::null() };
+    let mut ns: node::Nodes = node::nodes_make();
+    let mut lx: ctx::Ctx = ctx::make(src, "main.harmony");
+    scan::scan(&mut lx, &mut arena);
+    let mut p: pctx::Parser = pctx::make(&mut ns, lx.toks, "main.harmony");
+    let program = item::parse_program(&mut p);
+    println("CASE {}", i);
+    let mut pi: usize = 0;
+    while (pi < p.diags.len()) { println("DIAG {}", p.diags.get(pi).code); pi += 1; }
+    if (program >= 0 && p.stops == 0) {
+        let mut c = check::make(ns, "main.harmony");
+        check::check_program(&mut c, program);
+        let mut j: usize = 0;
+        while (j < c.diags.len()) { println("DIAG {}", c.diags.get(j).code); j += 1; }
+    }
+    println("END {}", i);
+}
+
+// NOTE: an `[&str; N]` array element read through `sources[i]` mis-reads in
+// harmony-base (it yields a 1-byte string), so each case is written as its own
+// call with the literal inline. The harness regenerates this block.
+fn main() -> i32 {
+    run_one(0, "fn main() -> i32 { return 0; }");
+    return 0;
+}

@@ -77,10 +77,14 @@ const AST_PAT_RANGE: i32 = 84;
 // One node. `kids` and `kids2` are arena-backed vectors of node handles;
 // using handles (int indices into a global table) instead of pointers keeps
 // the model simple and makes the printer's recursion obvious.
+// `ty` is the resolved type id, stamped by the checker (R5). It starts at 0
+// (unset) and mirrors harmony-base's `struct AstNode.ty`. The printer reads
+// explicit fields, so adding it does not change `--dump-ast` output.
 struct Node {
     kind: i32;
     start: usize;
     end: usize;
+    ty: i32;
     ival: i64;
     sval: &str;
     sfx: &str;       // literal type suffix (`42u8` -> "u8"), else ""
@@ -112,6 +116,7 @@ export fn new_node(ns: &mut Nodes, kind: i32) -> i32 {
         .kind = kind,
         .start = 0,
         .end = 0,
+        .ty = 0,
         .ival = 0,
         .sval = "",
         .sfx = "",
@@ -143,6 +148,11 @@ export fn set_abi(ns: &mut Nodes, h: i32, s: &str) {
 export fn set_ival(ns: &mut Nodes, h: i32, v: i64) {
     let mut n = get(&*ns, h);
     n.ival = v;
+    put(ns, h, n);
+}
+export fn set_ty(ns: &mut Nodes, h: i32, ty: i32) {
+    let mut n = get(&*ns, h);
+    n.ty = ty;
     put(ns, h, n);
 }
 export fn set_span(ns: &mut Nodes, h: i32, start: usize, end: usize) {

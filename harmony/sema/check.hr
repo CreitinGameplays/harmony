@@ -1,0 +1,3275 @@
+// harmony/sema/check.hr — the type checker (roadmap/harmony R5).
+//
+// Mirrors harmony-base's stage 4: a flat symbol table with scope marks, a
+// type-id table (types.hr), then two passes over the merged AST -- register
+// every item, then check every body. Every node's resolved type is stamped in
+// `Node.ty`, so codegen (R6) sees exactly what harmony-base emits.
+//
+// Expression and statement checking are mutually recursive, so they live in
+// ONE module (Harmony has no forward declarations and rejects import cycles;
+// this is the same reason parse.hr holds the whole expression grammar).
+//
+// Function order is deliberately bottom-up: harmony-base's module loader
+// requires a callee to be declared before its caller when this file is
+// imported, so helpers come before their users.
+import "../../library/core/str.hr";
+import "../../library/core/vec.hr";
+import "../../library/core/fmt.hr";
+import "../../harmony/ast/node.hr";
+import "types.hr";
+
+// ---- symbol table ---------------------------------------------------------
+
+const SK_FN: i32 = 1;
+const SK_CONST: i32 = 2;
+const SK_LET: i32 = 3;
+const SK_PARAM: i32 = 4;
+const SK_TYPE: i32 = 5;
+const SK_SELF: i32 = 6;
+const SK_GEN: i32 = 7;
+
+copy struct Sym {
+    name: &str;
+    kind: i32;
+    ty: i32;
+    decl: i32;
+    mutbl: i32;
+    init: i32;      // definite-initialization tracking (INIT-01)
+}
+
+// ---- checker context ------------------------------------------------------
+
+export struct Checker {
+    nodes: node::Nodes;
+    types: types::Types;
+    syms: vec::Vec<Sym>;
+    scopes: vec::Vec<usize>;
+    fns: vec::Vec<i32>;         // function decl handles
+    gen_fns: vec::Vec<i32>;     // generic function templates
+    gen_tys: vec::Vec<i32>;     // generic type templates
+    inst_names: vec::Vec<str::String>; // type-instance reuse: mangled name
+    inst_bases: vec::Vec<str::String>; // template base name
+    inst_ids: vec::Vec<i32>;    // the instance type id
+    inst_args: vec::Vec<i32>;   // resolved args, max_targs per row
+    max_targs: usize;           // fixed row width for inst_args
+    diags: vec::Vec<fmt::Diag>;
+    path: &str;
+    cur_fn: i32;                // current function handle, -1 outside
+    ret_ty: i32;                // current function's return type
+    expected: i32;              // expected type hint (bare enum variants, Raw::null)
+    array_hint: i32;            // declared element type for an array literal
+    callee: i32;                // current callee path handle (generic base targs)
+    gtmpls: vec::Vec<i32>;      // generic method templates (methods<T> T<T>)
+    gtbases: vec::Vec<str::String>;  // their receiver base name ("Box")
+    gtnames: vec::Vec<str::String>;  // their method name ("make")
+    unchecked_depth: i32;
+    deny_unchecked: i32;
+    in_place: i32;              // assignment LHS: suppress uninit reads
+    main_ty: i32;               // -1 until main is checked
+    main_params: usize;
+}
+
+export fn make(nodes: node::Nodes, path: &str) -> Checker {
+    let mut c = Checker {
+        .nodes = nodes,
+        .types = types::make(),
+        .syms = vec::Vec<Sym>::make(),
+        .scopes = vec::Vec<usize>::make(),
+        .fns = vec::Vec<i32>::make(),
+        .gen_fns = vec::Vec<i32>::make(),
+        .gen_tys = vec::Vec<i32>::make(),
+        .inst_names = vec::Vec<str::String>::make(),
+        .inst_bases = vec::Vec<str::String>::make(),
+        .inst_ids = vec::Vec<i32>::make(),
+        .inst_args = vec::Vec<i32>::make(),
+        .max_targs = 8,
+        .diags = vec::Vec<fmt::Diag>::make(),
+        .path = path,
+        .cur_fn = -1,
+        .ret_ty = 0,
+        .expected = 0,
+        .array_hint = 0,
+        .callee = -1,
+        .gtmpls = vec::Vec<i32>::make(),
+        .gtbases = vec::Vec<str::String>::make(),
+        .gtnames = vec::Vec<str::String>::make(),
+        .unchecked_depth = 0,
+        .deny_unchecked = 0,
+        .in_place = 0,
+        .main_ty = -1,
+        .main_params = 0,
+    };
+    types::reset(&mut c.types);
+    return c;
+}
+
+// ---- diagnostics ----------------------------------------------------------
+
+fn add_diag(c: &mut Checker, code: &str, title: &str, summary: &str, at: i32) {
+    let mut line: u32 = 0;
+    let mut col: u32 = 0;
+    if (at >= 0) {
+        let n = node::get(&c.nodes, at);
+        line = n.start as u32;
+        col = n.end as u32;
+    }
+    c.diags.push(fmt::Diag {
+        .code = code,
+        .severity = fmt::Severity::Stop,
+        .title = title,
+        .summary = summary,
+        .file = c.path,
+        .line = line,
+        .col = col,
+    });
+}
+
+fn mismatch(c: &mut Checker, at: i32, want: i32, got: i32, what: &str) {
+    let mut s: str::String = str::String::make();
+    s.push(what);
+    s.push(": expected `");
+    s.push(types::tname(&c.types, want));
+    s.push("`, found `");
+    s.push(types::tname(&c.types, got));
+    s.push("`");
+    add_diag(c, "TYPE-01", "type mismatch", s.as_str(), at);
+}
+
+fn err_arity(c: &mut Checker, at: i32, fname: &str, want: usize, got: usize) {
+    let mut s: str::String = str::String::make();
+    s.push("`");
+    s.push(fname);
+    s.push("` takes ");
+    s.push_u64(want as u64);
+    s.push(" argument(s), got ");
+    s.push_u64(got as u64);
+    add_diag(c, "TYPE-04", "wrong number of arguments", s.as_str(), at);
+}
+
+fn err_condition(c: &mut Checker, at: i32, got: i32, what: &str) {
+    let mut s: str::String = str::String::make();
+    s.push(what);
+    s.push(" must be `bool`, found `");
+    s.push(types::tname(&c.types, got));
+    s.push("`");
+    add_diag(c, "TYPE-03", "condition is not `bool`", s.as_str(), at);
+}
+
+fn err_no_field(c: &mut Checker, at: i32, ty: i32, field: &str) {
+    let mut s: str::String = str::String::make();
+    s.push("`");
+    s.push(types::tname(&c.types, ty));
+    s.push("` has no field `");
+    s.push(field);
+    s.push("`");
+    add_diag(c, "TYPE-02", "no such field", s.as_str(), at);
+}
+
+fn err_unknown(c: &mut Checker, at: i32, name: &str, is_type: bool) {
+    let mut s: str::String = str::String::make();
+    if (is_type) {
+        s.push("no type named `");
+    } else {
+        s.push("no `");
+    }
+    s.push(name);
+    s.push("` in scope");
+    if (is_type) {
+        add_diag(c, "NAME-01", "unknown type", s.as_str(), at);
+    } else {
+        add_diag(c, "NAME-01", "unknown name", s.as_str(), at);
+    }
+}
+
+fn err_needs_unchecked(c: &mut Checker, at: i32, what: &str) {
+    let mut s: str::String = str::String::make();
+    s.push(what);
+    s.push(" needs `unchecked(\"why\") { ... }`");
+    add_diag(c, "UNCK-01", "operation needs `unchecked`", s.as_str(), at);
+}
+
+fn err_fmt(c: &mut Checker, at: i32, title: &str, summary: &str) {
+    add_diag(c, "FMT-01", title, summary, at);
+}
+
+// ---- scope/symbol helpers -------------------------------------------------
+
+export fn scope_push(c: &mut Checker) { c.scopes.push(c.syms.len()); }
+
+export fn scope_pop(c: &mut Checker) {
+    if (c.scopes.len() > 0) {
+        let mark = *c.scopes.get(c.scopes.len() - 1);
+        c.scopes.pop();
+        while (c.syms.len() > mark) { c.syms.pop(); }
+    }
+}
+
+fn scope_start(c: &Checker) -> usize {
+    if (c.scopes.len() == 0) { return 0; }
+    return *c.scopes.get(c.scopes.len() - 1);
+}
+
+// Declares a name; returns its index, or -1 on a duplicate in this scope.
+fn declare(c: &mut Checker, at: i32, name: &str, kind: i32, ty: i32,
+           mutbl: i32) -> i32 {
+    let lo = scope_start(&*c);
+    let mut i = lo;
+    while (i < c.syms.len()) {
+        if (c.syms.get(i).name == name) {
+            let mut s: str::String = str::String::make();
+            s.push("the name `");
+            s.push(name);
+            s.push("` is already used in this scope");
+            add_diag(c, "NAME-03", "name already in use", s.as_str(), at);
+            return -1;
+        }
+        i += 1;
+    }
+    let mut init = 0;
+    if (kind == SK_PARAM || kind == SK_CONST || kind == SK_SELF) { init = 1; }
+    c.syms.push(Sym {
+        .name = name, .kind = kind, .ty = ty, .decl = at,
+        .mutbl = mutbl, .init = init,
+    });
+    return c.syms.len() as i32 - 1;
+}
+
+fn lookup(c: &Checker, name: &str) -> i32 {
+    let mut i: usize = c.syms.len();
+    while (i > 0) {
+        i -= 1;
+        if (c.syms.get(i).name == name) { return i as i32; }
+    }
+    return -1;
+}
+
+fn sym_kind(c: &Checker, idx: i32) -> i32 {
+    if (idx < 0) { return 0; }
+    return c.syms.get(idx as usize).kind;
+}
+
+fn sym_ty(c: &Checker, idx: i32) -> i32 {
+    if (idx < 0) { return 0; }
+    return c.syms.get(idx as usize).ty;
+}
+
+fn sym_decl(c: &Checker, idx: i32) -> i32 {
+    if (idx < 0) { return -1; }
+    return c.syms.get(idx as usize).decl;
+}
+
+// Marks a declared symbol as holding a value (a loop variable, a pattern
+// binding, a `let` with an initializer).
+fn mark_init(c: &mut Checker, idx: i32) {
+    if (idx < 0) { return; }
+    let mut s = *c.syms.get(idx as usize);
+    s.init = 1;
+    c.syms.set(idx as usize, s);
+}
+
+// Declares a binding that already holds a value (INIT-01 never fires).
+fn declare_init(c: &mut Checker, at: i32, name: &str, ty: i32, mutbl: i32) -> i32 {
+    let idx = declare(c, at, name, SK_LET, ty, mutbl);
+    mark_init(c, idx);
+    return idx;
+}
+
+// ---- string helpers -------------------------------------------------------
+
+fn has_colons(s: &str) -> bool {
+    let b = s.as_bytes();
+    let mut i: usize = 0;
+    while (i < s.len()) {
+        if (b[i] == 58u8) { return true; }
+        i += 1;
+    }
+    return false;
+}
+
+fn rfind_colons(s: &str) -> i32 {
+    let b = s.as_bytes();
+    let mut i: usize = s.len();
+    while (i > 1) {
+        i -= 1;
+        if (b[i] == 58u8 && b[i - 1] == 58u8) { return i as i32 - 1; }
+    }
+    return -1;
+}
+
+fn prefix(s: &str, n: usize) -> &str { return &s[0..n]; }
+fn suffix(s: &str, n: usize) -> &str { return &s[n..s.len()]; }
+
+fn concat3(a: &str, b: &str, d: &str) -> &str {
+    let mut s: str::String = str::String::make();
+    s.push(a); s.push(b); s.push(d);
+    return s.as_str();
+}
+
+// ---- literal suffix mapping -----------------------------------------------
+
+fn suffix_type(s: &str) -> i32 {
+    if (s == "i8") { return types::TY_I8; }
+    if (s == "i16") { return types::TY_I16; }
+    if (s == "i32") { return types::TY_I32; }
+    if (s == "i64") { return types::TY_I64; }
+    if (s == "isize") { return types::TY_ISIZE; }
+    if (s == "u8") { return types::TY_U8; }
+    if (s == "u16") { return types::TY_U16; }
+    if (s == "u32") { return types::TY_U32; }
+    if (s == "u64") { return types::TY_U64; }
+    if (s == "usize") { return types::TY_USIZE; }
+    if (s == "f32") { return types::TY_F32; }
+    if (s == "f64") { return types::TY_F64; }
+    return types::TY_INVALID;
+}
+
+// Stamps untyped literal leaves in a subtree with `want` (§5.9).
+fn stamp_lits(c: &mut Checker, h: i32, want: i32) {
+    if (h < 0) { return; }
+    let mut n = node::get(&c.nodes, h);
+    let t = n.ty;
+    if (t != 0 && !types::is_untyped_lit(t) && !types::is_integer(t)
+        && !types::is_float(t)) {
+        return;
+    }
+    stamp_lits(c, n.a, want);
+    stamp_lits(c, n.b, want);
+    if (types::is_untyped_lit(n.ty)) { n.ty = want; }
+    node::put(&mut c.nodes, h, n);
+}
+
+// A coercion is an equality, or `raw mut T` -> `raw T`.
+fn coercible(c: &mut Checker, want: i32, got: i32) -> bool {
+    if (types::eq(want, got, &c.types)) { return true; }
+    // `never` (a `trap`/`exit`/`unreachable`) coerces to any type (§5.1).
+    if (got == types::TY_NEVER) { return true; }
+    let wk = types::type_kind(&c.types, want);
+    let gk = types::type_kind(&c.types, got);
+    // A `Heap<T>` borrows to `&T` at a call site (§12.2).
+    if ((wk == types::CTY_REF || wk == types::CTY_MUTREF) && gk == types::CTY_HEAP) {
+        return types::eq(types::elem(&c.types, want), types::elem(&c.types, got), &c.types);
+    }
+    // An aggregate place borrows to `&T` at a call site (§10.1): the argument
+    // is address-represented, so the borrow is free and sound.
+    if ((wk == types::CTY_REF || wk == types::CTY_MUTREF)
+        && (gk == types::CTY_STRUCT || gk == types::CTY_ENUM)) {
+        return types::eq(types::elem(&c.types, want), got, &c.types);
+    }
+    // `raw mut T` coerces to `raw T`: discarding write capability is sound.
+    if (wk == types::CTY_PTR && gk == types::CTY_MUTPTR) {
+        return types::eq(types::elem(&c.types, want), types::elem(&c.types, got), &c.types);
+    }
+    return false;
+}
+
+fn set_ty(c: &mut Checker, h: i32, ty: i32) {
+    let mut n = node::get(&c.nodes, h);
+    n.ty = ty;
+    node::put(&mut c.nodes, h, n);
+}
+
+fn get_ty(c: &Checker, h: i32) -> i32 {
+    if (h < 0) { return types::TY_UNIT; }
+    return node::get(&c.nodes, h).ty;
+}
+
+// ---- type resolution ------------------------------------------------------
+
+fn builtin_type(s: &str) -> i32 {
+    if (s == "i8") { return types::TY_I8; }
+    if (s == "i16") { return types::TY_I16; }
+    if (s == "i32") { return types::TY_I32; }
+    if (s == "i64") { return types::TY_I64; }
+    if (s == "isize") { return types::TY_ISIZE; }
+    if (s == "u8") { return types::TY_U8; }
+    if (s == "u16") { return types::TY_U16; }
+    if (s == "u32") { return types::TY_U32; }
+    if (s == "u64") { return types::TY_U64; }
+    if (s == "usize") { return types::TY_USIZE; }
+    if (s == "f32") { return types::TY_F32; }
+    if (s == "f64") { return types::TY_F64; }
+    if (s == "bool") { return types::TY_BOOL; }
+    if (s == "char") { return types::TY_CHAR; }
+    if (s == "str") { return types::TY_INVALID; }   // str only behind &
+    if (s == "never") { return types::TY_NEVER; }
+    return 0;
+}
+
+// Constant-fold an array length expression (integer literal or a named const).
+fn const_int(c: &mut Checker, h: i32) -> i32 {
+    if (h < 0) { return 0; }
+    let n = node::get(&c.nodes, h);
+    if (n.kind == node::AST_INT_LIT) { return n.ival as i32; }
+    if (n.kind == node::AST_PATH && n.sval != "") {
+        let sym = lookup(&*c, n.sval);
+        if (sym >= 0 && sym_kind(&*c, sym) == SK_CONST) {
+            let d = node::get(&c.nodes, sym_decl(&*c, sym));
+            return const_int(c, d.b);
+        }
+    }
+    return 0;
+}
+
+// Find a generic type template by name.
+fn find_gen_ty(c: &Checker, name: &str) -> i32 {
+    let mut i: usize = 0;
+    while (i < c.gen_tys.len()) {
+        if (node::get(&c.nodes, *c.gen_tys.get(i)).sval == name) { return i as i32; }
+        i += 1;
+    }
+    return -1;
+}
+
+fn find_gen_fn(c: &Checker, name: &str) -> i32 {
+    let mut i: usize = 0;
+    while (i < c.gen_fns.len()) {
+        if (node::get(&c.nodes, *c.gen_fns.get(i)).sval == name) { return i as i32; }
+        i += 1;
+    }
+    return -1;
+}
+
+// Resolve a type node to a type id. `cache` stamps Node.ty so repeated uses
+// (and recursive types) stay cheap.
+export fn resolve_type(c: &mut Checker, h: i32) -> i32 {
+    if (h < 0) { return types::TY_UNIT; }
+    let n = node::get(&c.nodes, h);
+    if (n.ty != 0) { return n.ty; }
+    let mut result: i32 = types::TY_INVALID;
+    let k = n.kind;
+    if (k == node::AST_TYPE_UNIT) {
+        result = types::TY_UNIT;
+    } else if (k == node::AST_TYPE_REF) {
+        // `&str` is the fat string-reference type (§5.3): `str` itself is
+        // unsized, so it only appears behind a reference.
+        if (n.a >= 0 && node::get(&c.nodes, n.a).kind == node::AST_TYPE_NAME
+            && node::get(&c.nodes, n.a).sval == "str") {
+            set_ty(c, n.a, types::TY_U8);
+            result = types::new_type(&mut c.types, types::CTY_STRREF, "&str", types::TY_U8, 0);
+            set_ty(c, h, result);
+            return result;
+        }
+        let inner = resolve_type(c, n.a);
+        if (inner != types::TY_INVALID) {
+            // `&[T]` is the slice type itself (§5.2): a slice is already a
+            // fat (pointer, length) pair, so a reference to one adds no layer.
+            // `&mut [T]` upgrades the exclusivity.
+            if (types::type_kind(&c.types, inner) == types::CTY_SLICE) {
+                let mut sm: i32 = 0;
+                let mut pre: &str = "&[";
+                if (n.ival == 1) { sm = 1; pre = "&mut ["; }
+                result = types::new_type(&mut c.types, types::CTY_SLICE,
+                    concat3(pre, types::tname(&c.types, types::elem(&c.types, inner)), "]"),
+                    types::elem(&c.types, inner), sm);
+                set_ty(c, h, result);
+                return result;
+            }
+            let mut kd: i32 = types::CTY_REF;
+            let mut nm: &str = "&";
+            if (n.ival == 1) { kd = types::CTY_MUTREF; nm = "&mut "; }
+            result = types::new_type(&mut c.types, kd, concat3(nm, types::tname(&c.types, inner), ""), inner, 0);
+        }
+    } else if (k == node::AST_TYPE_RAW) {
+        let inner = resolve_type(c, n.a);
+        if (inner != types::TY_INVALID) {
+            let mut kd: i32 = types::CTY_PTR;
+            let mut nm: &str = "raw ";
+            if (n.ival == 1) { kd = types::CTY_MUTPTR; nm = "raw mut "; }
+            result = types::new_type(&mut c.types, kd, concat3(nm, types::tname(&c.types, inner), ""), inner, 0);
+        }
+    } else if (k == node::AST_TYPE_SLICE) {
+        let inner = resolve_type(c, n.a);
+        if (inner != types::TY_INVALID) {
+            result = types::new_type(&mut c.types, types::CTY_SLICE,
+                concat3("[", types::tname(&c.types, inner), "]"), inner, 0);
+        }
+    } else if (k == node::AST_TYPE_ARRAY) {
+        let inner = resolve_type(c, n.a);
+        let len = const_int(c, n.b);
+        if (inner != types::TY_INVALID) {
+            let mut s: str::String = str::String::make();
+            s.push("[");
+            s.push(types::tname(&c.types, inner));
+            s.push("; ");
+            s.push_u64(len as u64);
+            s.push("]");
+            result = types::new_type(&mut c.types, types::CTY_ARRAY, s.as_str(), inner, len);
+        }
+    } else if (k == node::AST_TYPE_NAME) {
+        result = resolve_type_name(c, h, &n);
+    }
+    set_ty(c, h, result);
+    return result;
+}
+
+fn resolve_type_name(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
+    let name = n.sval;
+    // `str` is unsized: it only appears behind & (handled above); a bare str
+    // is an error.
+    if (name == "str") {
+        err_unknown(c, h, name, true);
+        return types::TY_INVALID;
+    }
+    let prim = builtin_type(name);
+    if (prim != 0) {
+        if (n.kids.len() > 0) {
+            add_diag(c, "TYPE-01", "this type takes no type arguments",
+                     "Only a generic type is instantiated with `<...>`.", h);
+            return types::TY_INVALID;
+        }
+        return prim;
+    }
+    // `Heap<T>` is a compiler-recognized type (§12).
+    if (name == "Heap") {
+        if (n.kids.len() != 1) {
+            err_unknown(c, h, "Heap", true);
+            return types::TY_INVALID;
+        }
+        let inner = resolve_type(c, *n.kids.get(0));
+        if (inner == types::TY_INVALID) { return types::TY_INVALID; }
+        return types::new_type(&mut c.types, types::CTY_HEAP,
+            concat3("heap ", types::tname(&c.types, inner), ""), inner, 0);
+    }
+    let sym = lookup(&*c, name);
+    if (sym >= 0 && (sym_kind(&*c, sym) == SK_TYPE || sym_kind(&*c, sym) == SK_GEN)) {
+        if (n.kids.len() > 0) {
+            add_diag(c, "TYPE-01", "this type takes no type arguments",
+                     "Only a generic type is instantiated with `<...>`.", h);
+            return types::TY_INVALID;
+        }
+        return sym_ty(&*c, sym);
+    }
+    // A generic type template.
+    let ti = find_gen_ty(&*c, name);
+    if (ti >= 0) {
+        if (n.kids.len() == 0) {
+            add_diag(c, "TYPE-01", "a generic type needs type arguments",
+                     "Write the instantiation, like `Box<i32>`.", h);
+            return types::TY_INVALID;
+        }
+        return instantiate_type(c, ti, h, &n.kids);
+    }
+    err_unknown(c, h, name, true);
+    return types::TY_INVALID;
+}
+
+// ---- registration ---------------------------------------------------------
+
+// Registers the prelude enums Maybe<T> and Outcome<T, E> as templates.
+fn register_prelude(c: &mut Checker) {
+    let mut nm: str::String = str::String::make();
+    nm.push("Maybe");
+    let m = node::new_node(&mut c.nodes, node::AST_ENUM);
+    node::set_sval(&mut c.nodes, m, nm.as_str());
+    // kids = type params, kids2 = variants. Build them as synthetic nodes.
+    let tp = node::new_node(&mut c.nodes, node::AST_PARAM);
+    node::set_sval(&mut c.nodes, tp, "T");
+    node::push_kid(&mut c.nodes, m, tp);
+    let v1 = node::new_node(&mut c.nodes, node::AST_VARIANT);
+    node::set_sval(&mut c.nodes, v1, "Has");
+    let has_t = node::new_node(&mut c.nodes, node::AST_TYPE_NAME);
+    node::set_sval(&mut c.nodes, has_t, "T");
+    node::push_kid(&mut c.nodes, v1, has_t);
+    node::push_kid2(&mut c.nodes, m, v1);
+    let v2 = node::new_node(&mut c.nodes, node::AST_VARIANT);
+    node::set_sval(&mut c.nodes, v2, "Empty");
+    node::push_kid2(&mut c.nodes, m, v2);
+    c.gen_tys.push(m);
+
+    let o = node::new_node(&mut c.nodes, node::AST_ENUM);
+    node::set_sval(&mut c.nodes, o, "Outcome");
+    let tp1 = node::new_node(&mut c.nodes, node::AST_PARAM);
+    node::set_sval(&mut c.nodes, tp1, "T");
+    node::push_kid(&mut c.nodes, o, tp1);
+    let tp2 = node::new_node(&mut c.nodes, node::AST_PARAM);
+    node::set_sval(&mut c.nodes, tp2, "E");
+    node::push_kid(&mut c.nodes, o, tp2);
+    let g = node::new_node(&mut c.nodes, node::AST_VARIANT);
+    node::set_sval(&mut c.nodes, g, "Good");
+    let gt = node::new_node(&mut c.nodes, node::AST_TYPE_NAME);
+    node::set_sval(&mut c.nodes, gt, "T");
+    node::push_kid(&mut c.nodes, g, gt);
+    node::push_kid2(&mut c.nodes, o, g);
+    let b = node::new_node(&mut c.nodes, node::AST_VARIANT);
+    node::set_sval(&mut c.nodes, b, "Bad");
+    let bt = node::new_node(&mut c.nodes, node::AST_TYPE_NAME);
+    node::set_sval(&mut c.nodes, bt, "E");
+    node::push_kid(&mut c.nodes, b, bt);
+    node::push_kid2(&mut c.nodes, o, b);
+    c.gen_tys.push(o);
+}
+
+fn register_primitives(c: &mut Checker) {
+    declare(c, -1, "i8", SK_TYPE, types::TY_I8, 0);
+    declare(c, -1, "i16", SK_TYPE, types::TY_I16, 0);
+    declare(c, -1, "i32", SK_TYPE, types::TY_I32, 0);
+    declare(c, -1, "i64", SK_TYPE, types::TY_I64, 0);
+    declare(c, -1, "isize", SK_TYPE, types::TY_ISIZE, 0);
+    declare(c, -1, "u8", SK_TYPE, types::TY_U8, 0);
+    declare(c, -1, "u16", SK_TYPE, types::TY_U16, 0);
+    declare(c, -1, "u32", SK_TYPE, types::TY_U32, 0);
+    declare(c, -1, "u64", SK_TYPE, types::TY_U64, 0);
+    declare(c, -1, "usize", SK_TYPE, types::TY_USIZE, 0);
+    declare(c, -1, "f32", SK_TYPE, types::TY_F32, 0);
+    declare(c, -1, "f64", SK_TYPE, types::TY_F64, 0);
+    declare(c, -1, "bool", SK_TYPE, types::TY_BOOL, 0);
+    declare(c, -1, "char", SK_TYPE, types::TY_CHAR, 0);
+    declare(c, -1, "str", SK_TYPE, types::TY_INVALID, 0);
+    register_prelude(c);
+}
+
+// Substitute a generic parameter name in a type AST with a concrete type.
+// Returns a new type id; the AST node is not modified (so templates are reusable).
+fn subst_type(c: &mut Checker, h: i32, params: &node::Node, args: &vec::Vec<i32>) -> i32 {
+    if (h < 0) { return types::TY_UNIT; }
+    let n = node::get(&c.nodes, h);
+    if (n.kind == node::AST_TYPE_NAME && n.kids.len() == 0) {
+        // The node may already be stamped with a GENPARAM id (the template
+        // body ran before this instance); find its index by name either way.
+        let mut i: usize = 0;
+        while (i < params.kids.len()) {
+            let pn = node::get(&c.nodes, *params.kids.get(i));
+            let pname = param_base(&pn.sval);
+            if (pname == n.sval && i < args.len()) {
+                return *args.get(i);
+            }
+            i += 1;
+        }
+        // Builtin / regular name: resolve normally.
+        let p = builtin_type(n.sval);
+        if (p != 0) { return p; }
+        let sym = lookup(&*c, n.sval);
+        if (sym >= 0 && sym_kind(&*c, sym) == SK_TYPE) { return sym_ty(&*c, sym); }
+        // A generic type with substituted arguments (`Maybe<T>` inside a
+        // generic method): instantiate it with the substituted args.
+        let ti = find_gen_ty(&*c, n.sval);
+        if (ti >= 0) { return types::TY_INVALID; }
+        return types::TY_INVALID;
+    }
+    if (n.kind == node::AST_TYPE_NAME && n.kids.len() > 0) {
+        // `Maybe<T>` / `Box<T>` in a template: substitute each argument, then
+        // instantiate the generic head with them.
+        let ti = find_gen_ty(&*c, n.sval);
+        if (ti >= 0) {
+            let mut newargs: vec::Vec<i32> = vec::Vec<i32>::make();
+            let mut k: usize = 0;
+            while (k < n.kids.len()) {
+                let at = subst_type(c, *n.kids.get(k), params, args);
+                if (at == types::TY_INVALID) { return types::TY_INVALID; }
+                newargs.push(ty_to_ast_h(c, at));
+                k += 1;
+            }
+            return instantiate_type(c, ti, h, &newargs);
+        }
+        return types::TY_INVALID;
+    }
+    // For composite type nodes, substitute recursively into a temporary by
+    // stamping the child nodes (the template is cloned by the caller in R6;
+    // here a fresh type is built directly from the resolved children).
+    if (n.kind == node::AST_TYPE_REF || n.kind == node::AST_TYPE_RAW) {
+        let mut inner = subst_type(c, n.a, params, args);
+        if (inner == types::TY_INVALID) { return types::TY_INVALID; }
+        // `&[T]` collapses to the slice type (§5.2) instead of adding a layer.
+        if (types::type_kind(&c.types, inner) == types::CTY_SLICE) {
+            let mut sm: i32 = 0;
+            if (n.ival == 1) { sm = 1; }
+            return types::new_type(&mut c.types, types::CTY_SLICE,
+                types::tname(&c.types, inner), types::elem(&c.types, inner), sm);
+        }
+        let mut kd: i32 = types::CTY_REF;
+        if (n.kind == node::AST_TYPE_RAW) {
+            kd = types::CTY_PTR;
+            if (n.ival == 1) { kd = types::CTY_MUTPTR; }
+        } else if (n.ival == 1) { kd = types::CTY_MUTREF; }
+        return types::new_type(&mut c.types, kd, types::tname(&c.types, inner), inner, 0);
+    }
+    if (n.kind == node::AST_TYPE_SLICE) {
+        let inner = subst_type(c, n.a, params, args);
+        if (inner == types::TY_INVALID) { return types::TY_INVALID; }
+        return types::new_type(&mut c.types, types::CTY_SLICE,
+            types::tname(&c.types, inner), inner, 0);
+    }
+    if (n.kind == node::AST_TYPE_ARRAY) {
+        let inner = subst_type(c, n.a, params, args);
+        if (inner == types::TY_INVALID) { return types::TY_INVALID; }
+        let len = const_int(c, n.b);
+        return types::new_type(&mut c.types, types::CTY_ARRAY,
+            types::tname(&c.types, inner), inner, len);
+    }
+    // Fall back to ordinary resolution (works for concrete names).
+    return resolve_type(c, h);
+}
+
+fn param_base(s: &str) -> &str {
+    let mut i: usize = 0;
+    let b = s.as_bytes();
+    while (i < s.len()) {
+        if (b[i] == 58u8) { return prefix(s, i); }   // ':'
+        i += 1;
+    }
+    return s;
+}
+
+// Instantiates a generic type template with concrete type arguments.
+fn instantiate_type(c: &mut Checker, ti: i32, at: i32, args: &vec::Vec<i32>) -> i32 {
+    let tmpl = *c.gen_tys.get(ti as usize);
+    let params = node::get(&c.nodes, tmpl);
+    if (args.len() != params.kids.len()) {
+        err_arity(c, at, node::get(&c.nodes, tmpl).sval, params.kids.len(), args.len());
+        return types::TY_INVALID;
+    }
+    let mut concrete: vec::Vec<i32> = vec::Vec<i32>::make();
+    let mut i: usize = 0;
+    while (i < args.len()) {
+        let a_t = resolve_type(c, *args.get(i));
+        // A failed argument still produces an instance (with a `?` part in
+        // its name), matching harmony-base: the instance keeps the checker
+        // going so later members are typed instead of cascading.
+        if (a_t == types::TY_INVALID) { concrete.push(types::TY_I32); }
+        else { concrete.push(a_t); }
+        i += 1;
+    }
+    let mut kd: i32 = types::CTY_STRUCT;
+    if (params.kind == node::AST_ENUM) { kd = types::CTY_ENUM; }
+    // Reuse an existing instance with the same base and structurally equal
+    // arguments (two `Box<i32>` spellings must be ONE nominal type).
+    let iname = instance_name(c, tmpl, &concrete);
+    let base_name = node::get(&c.nodes, tmpl).sval;
+    let mut k: usize = 0;
+    while (k < c.inst_names.len()) {
+        let cand_name: &str = c.inst_names.get(k).as_str();
+        let cand_base: &str = c.inst_bases.get(k).as_str();
+        if (cand_name == iname && cand_base == base_name) {
+            let cand = *c.inst_ids.get(k);
+            let mut same = true;
+            let mut ai: usize = 0;
+            while (ai < concrete.len()) {
+                let prev: i32 = *c.inst_args.get(k * c.max_targs + ai);
+                let cur: i32 = *concrete.get(ai);
+                if (!types::eq(prev, cur, &c.types)) {
+                    same = false;
+                    break;
+                }
+                ai += 1;
+            }
+            if (same) { return cand; }
+        }
+        k += 1;
+    }
+    let inst = types::new_named(&mut c.types, kd, iname, tmpl);
+    // Record for reuse.
+    let mut iname_s: str::String = str::String::make(); iname_s.push(iname);
+    let mut base_s: str::String = str::String::make(); base_s.push(base_name);
+    c.inst_names.push(iname_s);
+    c.inst_bases.push(base_s);
+    c.inst_ids.push(inst);
+    // Fixed-width rows keep earlier instances' argument slices intact when a
+    // later instance has a different arity.
+    let mut ai2: usize = 0;
+    while (ai2 < c.max_targs) {
+        if (ai2 < concrete.len()) { c.inst_args.push(*concrete.get(ai2)); }
+        else { c.inst_args.push(0); }
+        ai2 += 1;
+    }
+    // Add members with substituted types. For an enum, build every payload
+    // struct FIRST, then the enum's own member list: a type's members must be
+    // contiguous (lookup is `mstart + i`), and interleaving a payload's
+    // members with the enum's corrupts the enum's slice (the second variant's
+    // name read back empty).
+    let members = params.kids2;
+    if (params.kind == node::AST_ENUM) {
+        let mut pids: vec::Vec<i32> = vec::Vec<i32>::make();
+        i = 0;
+        while (i < members.len()) {
+            let m = node::get(&c.nodes, *members.get(i));
+            let mut pt: i32 = types::TY_UNIT;
+            if (m.kids.len() > 0) {
+                pt = types::new_named(&mut c.types, types::CTY_STRUCT, m.sval, *members.get(i));
+                let mut j: usize = 0;
+                while (j < m.kids.len()) {
+                    let ft = subst_type(c, *m.kids.get(j), &params, &concrete);
+                    let mut use_ft: i32 = ft;
+                    if (use_ft == types::TY_INVALID) { use_ft = types::TY_I32; }
+                    types::add_member(&mut c.types, pt, "", use_ft);
+                    j += 1;
+                }
+            }
+            pids.push(pt);
+            i += 1;
+        }
+        i = 0;
+        while (i < members.len()) {
+            let m = node::get(&c.nodes, *members.get(i));
+            types::add_member(&mut c.types, inst, m.sval, *pids.get(i));
+            i += 1;
+        }
+    } else {
+        i = 0;
+        while (i < members.len()) {
+            let m = node::get(&c.nodes, *members.get(i));
+            let mut ft = subst_type(c, m.a, &params, &concrete);
+            if (ft == types::TY_INVALID) { ft = types::TY_I32; }
+            types::add_member(&mut c.types, inst, m.sval, ft);
+            i += 1;
+        }
+    }
+    return inst;
+}
+
+fn instance_name(c: &mut Checker, tmpl: i32, args: &vec::Vec<i32>) -> &str {
+    let mut s: str::String = str::String::make();
+    s.push(node::get(&c.nodes, tmpl).sval);
+    s.push("__");
+    let mut i: usize = 0;
+    while (i < args.len()) {
+        if (i > 0) { s.push("_"); }
+        let nm: &str = types::tname(&c.types, *args.get(i));
+        s.push(nm);
+        i += 1;
+    }
+    return s.as_str();
+}
+
+// ---- expression checking --------------------------------------------------
+
+// Builtins recognized by name (no symbol needed).
+fn is_builtin_fn(s: &str) -> bool {
+    if (s == "print" || s == "println" || s == "eprintln") { return true; }
+    if (s == "trap" || s == "assert" || s == "unreachable" || s == "exit") { return true; }
+    if (s == "args") { return true; }
+    if (s == "alloc" || s == "dealloc") { return true; }
+    if (s == "reinterpret") { return true; }
+    if (s == "Raw::null") { return true; }
+    if (s == "str::from_parts") { return true; }
+    return false;
+}
+
+// Checks a format string: the first arg must be a string literal, and the
+// number of {} placeholders must match the remaining args (FMT-01).
+fn check_format(c: &mut Checker, at: i32, fname: &str, args: &vec::Vec<i32>) {
+    if (args.len() == 0) {
+        err_fmt(c, at, "format string missing",
+                "This function needs a format string as its first argument.");
+        return;
+    }
+    let fmt = node::get(&c.nodes, *args.get(0));
+    if (fmt.kind != node::AST_STRING_LIT) {
+        err_fmt(c, *args.get(0), "format string must be a literal",
+                "The format must be a plain string literal.");
+        return;
+    }
+    // Count `{}` / `{?}` / `{:x}` placeholders; `{{` and `}}` are escapes.
+    let b = fmt.sval.as_bytes();
+    let mut n: usize = 0;
+    let mut i: usize = 0;
+    let mut bad = false;
+    while (i < b.len()) {
+        if (b[i] == 123u8) {   // {
+            if (i + 1 < b.len() && b[i + 1] == 123u8) { i += 2; continue; }
+            let mut j = i + 1;
+            while (j < b.len() && b[j] != 125u8) { j += 1; }
+            if (j >= b.len()) { bad = true; break; }
+            n += 1;
+            i = j + 1;
+            continue;
+        }
+        if (b[i] == 125u8) {   // }
+            if (i + 1 < b.len() && b[i + 1] == 125u8) { i += 2; continue; }
+            bad = true; break;
+        }
+        i += 1;
+    }
+    if (bad) {
+        err_fmt(c, *args.get(0), "malformed format string",
+                "A `{` must close with `}`, and a lone `}` must be written `}}`.");
+        return;
+    }
+    if (args.len() - 1 != n) {
+        let mut s: str::String = str::String::make();
+        s.push(fname); s.push(" takes "); s.push_u64(n as u64);
+        s.push(" format argument(s), got "); s.push_u64((args.len() - 1) as u64);
+        err_fmt(c, at, "wrong number of format arguments", s.as_str());
+        return;
+    }
+    // Check each argument's type against its placeholder kind (`{:x}` needs an
+    // integer; `{}` accepts the displayable scalars).
+    let kinds: vec::Vec<i32> = format_kinds(&fmt.sval);
+    i = 0;
+    while (i < n && i + 1 < args.len()) {
+        let arg = *args.get(i + 1);
+        let mut a_t = check_expr(c, arg);
+        if (a_t == types::TY_UINT_LIT) { stamp_lits(c, arg, types::TY_I32); a_t = types::TY_I32; }
+        else if (a_t == types::TY_FLOAT_LIT) { stamp_lits(c, arg, types::TY_F64); a_t = types::TY_F64; }
+        let mut kind: i32 = 0;
+        if (i < kinds.len()) { kind = *kinds.get(i); }
+        if (a_t != types::TY_INVALID) {
+            if (kind == 1 && !types::is_integer(a_t)) {
+                err_fmt(c, arg, "`{:x}` needs an integer",
+                        "Hexadecimal formatting is defined for integer types only.");
+            } else if (kind == 0 && !fmt_displayable(&*c, a_t)) {
+                err_fmt(c, arg, "this type cannot be displayed",
+                        "`{}` accepts integers, floats, bool, char, and &str.");
+            }
+        }
+        i += 1;
+    }
+}
+
+// The placeholder kinds of a format string: 0 = display `{}`, 1 = hex `{:x}`.
+fn format_kinds(s: &str) -> vec::Vec<i32> {
+    let out: vec::Vec<i32> = vec::Vec<i32>::make();
+    let b = s.as_bytes();
+    let mut i: usize = 0;
+    while (i < b.len()) {
+        if (b[i] == 123u8) {
+            if (i + 1 < b.len() && b[i + 1] == 123u8) { i += 2; continue; }
+            let mut j = i + 1;
+            let mut hex = false;
+            while (j < b.len() && b[j] != 125u8) {
+                if (b[j] == 120u8) { hex = true; }   // 'x'
+                j += 1;
+            }
+            if (hex) { out.push(1); } else { out.push(0); }
+            i = j + 1;
+            continue;
+        }
+        if (b[i] == 125u8 && i + 1 < b.len() && b[i + 1] == 125u8) { i += 2; continue; }
+        i += 1;
+    }
+    return out;
+}
+
+fn fmt_displayable(c: &Checker, ty: i32) -> bool {
+    if (ty == types::TY_UNIT || types::is_untyped_lit(ty)) { return true; }
+    if (types::is_integer(ty) || types::is_float(ty) || types::is_bool(ty) || types::is_char(ty)) { return true; }
+    if (types::type_kind(&c.types, ty) == types::CTY_STRREF) { return true; }
+    return false;
+}
+
+// Auto-deref references and heap boxes to expose their members.
+fn deref_all(c: &Checker, mut ty: i32) -> i32 {
+    let mut guard: usize = 0;
+    while (guard < 16 && (types::is_ref(&c.types, ty) || types::is_heap(&c.types, ty))) {
+        ty = types::elem(&c.types, ty);
+        guard += 1;
+    }
+    return ty;
+}
+
+// Is this name an unqualified enum variant of exactly one in-scope enum?
+fn variant_unqualified(c: &mut Checker, at: i32, name: &str) -> i32 {
+    // An expected enum type narrows the search (prelude instances are not
+    // symbols, so a plain scan would miss them).
+    if (c.expected > 0 && types::is_enum(&c.types, c.expected)) {
+        let vi = types::find_member(&c.types, c.expected, name);
+        if (vi >= 0 && types::member_count(&c.types, types::member_type(&c.types, c.expected, vi)) == 0) {
+            return c.expected;
+        }
+    }
+    let mut found: i32 = 0;
+    let mut fty: i32 = types::TY_INVALID;
+    let mut i: usize = 0;
+    while (i < c.syms.len()) {
+        let s = c.syms.get(i);
+        if (s.kind == SK_TYPE && types::is_enum(&c.types, s.ty)
+            && types::find_member(&c.types, s.ty, name) >= 0) {
+            if (found == 1) { return types::TY_INVALID; }   // ambiguous
+            found = 1;
+            fty = s.ty;
+        }
+        i += 1;
+    }
+    if (found == 0) { return types::TY_INVALID; }
+    let vi = types::find_member(&c.types, fty, name);
+    if (types::member_count(&c.types, types::member_type(&c.types, fty, vi)) != 0) {
+        return types::TY_INVALID;   // payload variant: needs construction
+    }
+    return fty;
+}
+
+// Resolve `Enum::Variant` (the parser flattens `::` into one string).
+fn enum_path(c: &mut Checker, at: i32, full: &str) -> i32 {
+    let cut = rfind_colons(full);
+    if (cut < 0) { return types::TY_INVALID; }
+    let ename = prefix(full, cut as usize);
+    let vname = suffix(full, cut as usize + 2);
+    let sym = lookup(&*c, ename);
+    if (sym < 0 || sym_kind(&*c, sym) != SK_TYPE) {
+        err_unknown(c, at, ename, false);
+        return types::TY_INVALID;
+    }
+    let ty = sym_ty(&*c, sym);
+    if (!types::is_enum(&c.types, ty)) {
+        err_no_field(c, at, ty, vname);
+        return types::TY_INVALID;
+    }
+    let vi = types::find_member(&c.types, ty, vname);
+    if (vi < 0) { err_no_field(c, at, ty, vname); return types::TY_INVALID; }
+    let pt = types::member_type(&c.types, ty, vi);
+    if (types::member_count(&c.types, pt) == 0) { return ty; }
+    return pt;
+}
+
+// A `name` expression (path, constant, local, enum variant, fn-as-value).
+fn check_path(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
+    let name = n.sval;
+    if (name == "self") {
+        let sym = lookup(&*c, "self");
+        if (sym >= 0) { return sym_ty(&*c, sym); }
+        err_unknown(c, h, name, false);
+        return types::TY_INVALID;
+    }
+    if (has_colons(name)) {
+        let sym = lookup(&*c, name);
+        if (sym >= 0 && (sym_kind(&*c, sym) == SK_CONST || sym_kind(&*c, sym) == SK_LET
+            || sym_kind(&*c, sym) == SK_PARAM)) {
+            return sym_ty(&*c, sym);
+        }
+        // A generic enum variant path `Opt<i32>::None`: type args in kids.
+        if (n.kids.len() > 0) {
+            let cut = rfind_colons(name);
+            if (cut >= 0) {
+                let ename = prefix(name, cut as usize);
+                let vname = suffix(name, cut as usize + 2);
+                let sym2 = lookup(&*c, ename);
+                if (sym2 >= 0 && sym_kind(&*c, sym2) == SK_TYPE) {
+                    return enum_path(c, h, name);
+                }
+                // A generic template: instantiate on the first type arg.
+                let ti = find_gen_ty(&*c, ename);
+                if (ti >= 0) {
+                    let ety = instantiate_type(c, ti, h, &n.kids);
+                    if (ety == types::TY_INVALID) { return ety; }
+                    let vi = types::find_member(&c.types, ety, vname);
+                    if (vi < 0) { err_no_field(c, h, ety, vname); return types::TY_INVALID; }
+                    let pt = types::member_type(&c.types, ety, vi);
+                    if (types::member_count(&c.types, pt) == 0) { return ety; }
+                    return pt;
+                }
+            }
+        }
+        return enum_path(c, h, name);
+    }
+    let sym = lookup(&*c, name);
+    if (sym < 0) {
+        let v = variant_unqualified(c, h, name);
+        if (v != types::TY_INVALID) { return v; }
+        err_unknown(c, h, name, false);
+        return types::TY_INVALID;
+    }
+    let kind = sym_kind(&*c, sym);
+    if (kind == SK_CONST || kind == SK_LET || kind == SK_PARAM || kind == SK_SELF) {
+        if ((kind == SK_LET || kind == SK_PARAM) && c.syms.get(sym as usize).init == 0
+            && c.in_place == 0) {
+            let mut s: str::String = str::String::make();
+            s.push("`"); s.push(name); s.push("` is used before it is initialized");
+            add_diag(c, "INIT-01", "use of uninitialized value", s.as_str(), h);
+        }
+        return sym_ty(&*c, sym);
+    }
+    if (kind == SK_FN) { return types::TY_UNIT; }   // fn values arrive in v1
+    if (kind == SK_TYPE) {
+        add_diag(c, "TYPE-05", "a type is not a value",
+                 "Type names can only appear in type position.", h);
+        return types::TY_INVALID;
+    }
+    return sym_ty(&*c, sym);
+}
+
+fn check_binary(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
+    let op = n.sval;
+    let mut lt = check_expr(c, n.a);
+    let mut rt = check_expr(c, n.b);
+    if (lt == types::TY_INVALID || rt == types::TY_INVALID) { return types::TY_INVALID; }
+    if (types::is_untyped_lit(lt) && !types::is_untyped_lit(rt)) {
+        stamp_lits(c, n.a, rt); lt = rt;
+    } else if (types::is_untyped_lit(rt) && !types::is_untyped_lit(lt)) {
+        stamp_lits(c, n.b, lt); rt = lt;
+    }
+    if (op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">="
+        || op == "&&" || op == "||") {
+        if (!types::eq(lt, rt, &c.types)) {
+            mismatch(c, h, lt, rt, "comparison");
+            return types::TY_INVALID;
+        }
+        if ((op == "&&" || op == "||") && !types::eq(lt, types::TY_BOOL, &c.types)) {
+            mismatch(c, n.a, types::TY_BOOL, lt, "logical operand");
+            return types::TY_INVALID;
+        }
+        return types::TY_BOOL;
+    }
+    if (op == "+" || op == "-" || op == "*" || op == "/" || op == "%"
+        || op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>") {
+        let mut l2 = lt;
+        let mut r2 = rt;
+        if (types::is_untyped_lit(l2)) { l2 = r2; }
+        if (types::is_untyped_lit(r2)) { r2 = l2; }
+        if (!types::eq(l2, r2, &c.types)) {
+            mismatch(c, h, l2, r2, "arithmetic operands");
+            return types::TY_INVALID;
+        }
+        if (op == "<<" || op == ">>") {
+            if (!types::is_integer(l2) && !types::is_untyped_lit(lt)) {
+                add_diag(c, "TYPE-01", "cannot shift a non-integer",
+                         "Only integer types can be shifted.", n.a);
+                return types::TY_INVALID;
+            }
+            return lt;
+        }
+        if (!types::is_integer(l2) && !types::is_float(l2) && !types::is_untyped_lit(l2)) {
+            add_diag(c, "TYPE-01", "arithmetic needs numbers",
+                     "These operands are not numeric.", h);
+            return types::TY_INVALID;
+        }
+        if (op == "%" || op == "&" || op == "|" || op == "^") {
+            if (!types::is_integer(l2) && !types::is_untyped_lit(l2)) {
+                add_diag(c, "TYPE-01", "integer-only operator",
+                         "This operator needs integer operands.", h);
+                return types::TY_INVALID;
+            }
+        }
+        return l2;
+    }
+    if (op == ".." || op == "..=") {
+        // A range is only meaningful inside an index/for; as a value it is
+        // unsupported (TYPE-05).
+        add_diag(c, "TYPE-05", "unsupported operator",
+                 "This operator cannot be used here.", h);
+        return types::TY_INVALID;
+    }
+    add_diag(c, "TYPE-05", "unsupported operator",
+             "This operator cannot be used here.", h);
+    return types::TY_INVALID;
+}
+
+fn check_unary(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
+    let op = n.sval;
+    let t = check_expr(c, n.a);
+    if (t == types::TY_INVALID) { return t; }
+    if (op == "-" || op == "~") {
+        if (types::is_untyped_lit(t)) { return t; }
+        if (!types::is_integer(t) && !types::is_float(t)) {
+            add_diag(c, "TYPE-01", "cannot negate this type",
+                     "Unary `-` needs a number.", n.a);
+            return types::TY_INVALID;
+        }
+        if (op == "~" && !types::is_integer(t)) {
+            add_diag(c, "TYPE-01", "`~` needs an integer",
+                     "Bitwise not is integer-only.", n.a);
+            return types::TY_INVALID;
+        }
+        return t;
+    }
+    if (op == "!") {
+        if (!types::eq(t, types::TY_BOOL, &c.types)) {
+            mismatch(c, n.a, types::TY_BOOL, t, "`!` operand");
+            return types::TY_INVALID;
+        }
+        return types::TY_BOOL;
+    }
+    add_diag(c, "TYPE-05", "unsupported unary operator",
+             "This operator cannot be used here.", h);
+    return types::TY_INVALID;
+}
+
+fn check_field(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
+    let base = check_expr(c, n.a);
+    if (base == types::TY_INVALID) { return base; }
+    let bt = deref_all(&*c, base);
+    if (!types::is_struct(&c.types, bt) && !types::is_enum(&c.types, bt)) {
+        add_diag(c, "TYPE-02", "no fields on this type",
+                 "Only structs and enums have named members.", n.a);
+        return types::TY_INVALID;
+    }
+    let fi = types::find_member(&c.types, bt, n.sval);
+    if (fi < 0) { err_no_field(c, h, bt, n.sval); return types::TY_INVALID; }
+    return types::member_type(&c.types, bt, fi);
+}
+
+fn check_index(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
+    let base = check_expr(c, n.a);
+    if (base == types::TY_INVALID) { return base; }
+    // A range index `a[lo..hi]` (n.b is the index expression).
+    let mut is_range = false;
+    let mut rn = node::get(&c.nodes, n.a);   // placeholder, unused
+    if (n.b >= 0) {
+        rn = node::get(&c.nodes, n.b);
+        if (rn.kind == node::AST_BINARY && (rn.sval == ".." || rn.sval == "..=")) {
+            is_range = true;
+        }
+    }
+    if (is_range) {
+        let mut st = base;
+        if (types::type_kind(&c.types, st) == types::CTY_STRREF) {
+            if (rn.a >= 0) {
+                let lo = check_expr(c, rn.a);
+                if (lo == types::TY_INVALID) { return lo; }
+                if (!types::is_integer(lo) && !types::is_untyped_lit(lo)) {
+                    mismatch(c, rn.a, types::TY_ISIZE, lo, "slice start");
+                    return types::TY_INVALID;
+                }
+                stamp_lits(c, rn.a, types::TY_ISIZE);
+            }
+            if (rn.b >= 0) {
+                let hi = check_expr(c, rn.b);
+                if (hi == types::TY_INVALID) { return hi; }
+                if (!types::is_integer(hi) && !types::is_untyped_lit(hi)) {
+                    mismatch(c, rn.b, types::TY_ISIZE, hi, "slice end");
+                    return types::TY_INVALID;
+                }
+                stamp_lits(c, rn.b, types::TY_ISIZE);
+            }
+            return types::new_type(&mut c.types, types::CTY_STRREF, "&str", types::TY_U8, 0);
+        }
+        if (types::is_ref(&c.types, st) || types::is_heap(&c.types, st)) {
+            st = types::elem(&c.types, st);
+        }
+        if (!types::is_array(&c.types, st) && !types::is_slice(&c.types, st)) {
+            add_diag(c, "TYPE-02", "cannot slice this type",
+                     "Slices are made from arrays and slices.", n.a);
+            return types::TY_INVALID;
+        }
+        return types::new_type(&mut c.types, types::CTY_SLICE, "[T]",
+                               types::elem(&c.types, st), 0);
+    }
+    let it = check_expr(c, n.b);
+    if (it == types::TY_INVALID) { return it; }
+    if (types::is_array(&c.types, base) || types::is_slice(&c.types, base)) {
+        if (!types::is_integer(it) && !types::is_untyped_lit(it)) {
+            mismatch(c, n.b, types::TY_USIZE, it, "index");
+            return types::TY_INVALID;
+        }
+        return types::elem(&c.types, base);
+    }
+    if (types::type_kind(&c.types, base) == types::CTY_STRREF) {
+        add_diag(c, "TYPE-02", "cannot index a `str`",
+                 "A `str` is indexed by byte with `s.as_bytes()[i]`, or sliced by byte range.", n.a);
+        return types::TY_INVALID;
+    }
+    if (types::is_ref(&c.types, base) || types::is_heap(&c.types, base)) {
+        let inner = types::elem(&c.types, base);
+        if (types::is_array(&c.types, inner) || types::is_slice(&c.types, inner)) {
+            return types::elem(&c.types, inner);
+        }
+    }
+    if (types::is_ptr(&c.types, base)) {
+        if (!types::is_integer(it) && !types::is_untyped_lit(it)) {
+            mismatch(c, n.b, types::TY_USIZE, it, "index");
+            return types::TY_INVALID;
+        }
+        stamp_lits(c, n.b, types::TY_USIZE);
+        return types::elem(&c.types, base);
+    }
+    add_diag(c, "TYPE-02", "cannot index this type",
+             "Only arrays, slices, &str, and raw pointers can be indexed.", n.a);
+    return types::TY_INVALID;
+}
+
+// ---- call helpers ---------------------------------------------------------
+
+// Checks `args` against a function's parameters. `skip_self` drops a leading
+// self receiver (method calls supply it implicitly).
+fn check_args(c: &mut Checker, at: i32, fname: &str, fn_h: i32,
+              args: &vec::Vec<i32>, skip_self: bool) {
+    let fnode = node::get(&c.nodes, fn_h);
+    let params = fnode.kids2;
+    let mut np = params.len();
+    let na = args.len();
+    if (skip_self && np > 0) { np -= 1; }
+    if (np != na) {
+        err_arity(c, at, fname, np, na);
+        return;
+    }
+    let mut base: usize = 0;
+    if (skip_self) { base = 1; }
+    let mut i: usize = 0;
+    while (i < na) {
+        let p = *params.get(base + i);
+        let pt = node::get(&c.nodes, p).ty;
+        let saved = c.expected;
+        if (pt != types::TY_INVALID) { c.expected = pt; }
+        let mut a_t = check_expr(c, *args.get(i));
+        c.expected = saved;
+        if (a_t != types::TY_INVALID && pt != types::TY_INVALID && !coercible(c, pt, a_t)) {
+            mismatch(c, *args.get(i), pt, a_t, "argument");
+        }
+        stamp_lits(c, *args.get(i), pt);
+        i += 1;
+    }
+}
+
+// Construct `Enum::Variant(payload)` (payload may be absent).
+fn enum_construct(c: &mut Checker, at: i32, ety: i32, vname: &str,
+                  args: &vec::Vec<i32>) -> i32 {
+    let vi = types::find_member(&c.types, ety, vname);
+    if (vi < 0) { err_no_field(c, at, ety, vname); return types::TY_INVALID; }
+    let pt = types::member_type(&c.types, ety, vi);
+    let np = types::member_count(&c.types, pt);
+    if (np != args.len()) {
+        err_arity(c, at, vname, np, args.len());
+        return ety;
+    }
+    let mut i: usize = 0;
+    while (i < np) {
+        let want = types::member_type(&c.types, pt, i as i32);
+        let at2 = *args.get(i);
+        let saved = c.expected;
+        c.expected = want;
+        let a_t = check_expr(c, at2);
+        c.expected = saved;
+        if (a_t != types::TY_INVALID && want != types::TY_INVALID && !coercible(c, want, a_t)) {
+            mismatch(c, at2, want, a_t, "argument");
+        }
+        stamp_lits(c, at2, want);
+        i += 1;
+    }
+    return ety;
+}
+
+// Unqualified variant construction `Has(x)`.
+fn enum_construct_unqualified(c: &mut Checker, at: i32, name: &str,
+                             args: &vec::Vec<i32>) -> i32 {
+    // An expected enum type resolves the construction directly: the prelude
+    // `Maybe`/`Outcome` are templates, not symbols, so the expected type is
+    // the only way `Has(3)` finds `Maybe<i32>` (§8.5).
+    if (c.expected > 0 && types::is_enum(&c.types, c.expected)) {
+        let vi = types::find_member(&c.types, c.expected, name);
+        if (vi >= 0) { return enum_construct(c, at, c.expected, name, args); }
+    }
+    let mut found: i32 = 0;
+    let mut fty: i32 = types::TY_INVALID;
+    let mut fvi: i32 = -1;
+    let mut i: usize = 0;
+    while (i < c.syms.len()) {
+        let s = c.syms.get(i);
+        if (s.kind == SK_TYPE && types::is_enum(&c.types, s.ty)) {
+            let vi = types::find_member(&c.types, s.ty, name);
+            if (vi >= 0) {
+                let np = types::member_count(&c.types, types::member_type(&c.types, s.ty, vi));
+                if (np == args.len()) {
+                    if (found == 1) { return types::TY_INVALID; }
+                    found = 1; fty = s.ty; fvi = vi;
+                }
+            }
+        }
+        i += 1;
+    }
+    if (found == 0) { return types::TY_INVALID; }
+    let pt = types::member_type(&c.types, fty, fvi);
+    let mut k: usize = 0;
+    while (k < args.len()) {
+        let want = types::member_type(&c.types, pt, k as i32);
+        let at2 = *args.get(k);
+        let a_t = check_expr(c, at2);
+        if (a_t != types::TY_INVALID && want != types::TY_INVALID && !coercible(c, want, a_t)) {
+            mismatch(c, at2, want, a_t, "argument");
+        }
+        stamp_lits(c, at2, want);
+        k += 1;
+    }
+    return fty;
+}
+
+// Finds a method (recv type, name) and returns its fn handle (-1 if absent).
+fn find_method(c: &mut Checker, recv: i32, name: &str) -> i32 {
+    let mut i: usize = 0;
+    while (i < c.fns.len()) {
+        let fh = *c.fns.get(i);
+        let n = node::get(&c.nodes, fh);
+        // A method fn's sval is "Type::name" after registration; compare both
+        // the bare name (stored in sfx) and the receiver recorded in ival.
+        if (n.sfx == name && n.ival == recv as i64) { return fh; }
+        i += 1;
+    }
+    // No concrete instance: try a generic method template whose base matches
+    // the receiver's instantiation (the receiver is `Box__i32` for `Box<i32>`).
+    let ibase = instance_base(&*c, recv);
+    if (ibase != "") {
+        i = 0;
+        while (i < c.gtmpls.len()) {
+            if (c.gtbases.get(i).as_str() == ibase && c.gtnames.get(i).as_str() == name) {
+                return instantiate_gt(c, *c.gtmpls.get(i), recv);
+            }
+            i += 1;
+        }
+    }
+    return -1;
+}
+
+// The template base of an instance type name ("Box__i32" -> "Box").
+fn instance_base(c: &Checker, ty: i32) -> &str {
+    if (ty <= 0) { return ""; }
+    let nm = types::tname(&c.types, ty);
+    let b = nm.as_bytes();
+    let mut i: usize = 0;
+    while (i + 1 < nm.len()) {
+        if (b[i] == 95u8 && b[i + 1] == 95u8) { return prefix(nm, i); }
+        i += 1;
+    }
+    return "";
+}
+
+// Instantiates generic method template `tmpl` for the concrete receiver
+// type `recv`. The instance is registered as an ordinary method.
+fn instantiate_gt(c: &mut Checker, tmpl: i32, recv: i32) -> i32 {
+    let f = node::get(&c.nodes, tmpl);
+    // The receiver's instance args are the method's type arguments.
+    let targs = instance_targs(&*c, recv);
+    let h = node::new_node(&mut c.nodes, node::AST_FN);
+    node::set_sval(&mut c.nodes, h, f.sval);
+    let mut fnode = node::get(&c.nodes, h);
+    fnode.sfx = f.sval;
+    fnode.ival = recv as i64;
+    fnode.ival = recv as i64;
+    node::put(&mut c.nodes, h, fnode);
+    // Return type: substitute the template's params from the type template.
+    let tt = find_gen_ty(&*c, instance_base(&*c, recv));
+    let mut ttparams: i32 = -1;
+    if (tt >= 0) { ttparams = *c.gen_tys.get(tt as usize); }
+    if (ttparams < 0) { return -1; }
+    let tparams = node::get(&c.nodes, ttparams);
+    let mut rt = types::TY_UNIT;
+    if (f.a >= 0) { rt = subst_type(c, f.a, &tparams, &targs); }
+    if (rt == types::TY_INVALID) { rt = types::TY_UNIT; }
+    let ret_h = node::new_node(&mut c.nodes, node::AST_TYPE_NAME);
+    node::set_ty(&mut c.nodes, ret_h, rt);
+    node::set_a(&mut c.nodes, h, ret_h);
+    node::set_ty(&mut c.nodes, h, rt);
+    // Parameters, with `self` resolved from its spelling.
+    let mut i: usize = 0;
+    while (i < f.kids2.len()) {
+        let p = node::get(&c.nodes, *f.kids2.get(i));
+        let ph = node::new_node(&mut c.nodes, node::AST_PARAM);
+        node::set_sval(&mut c.nodes, ph, p.sval);
+        let mut pt: i32 = types::TY_UNIT;
+        if (is_self_param(&p.sval)) {
+            pt = recv;
+            if (p.sval == "&self") {
+                pt = types::new_type(&mut c.types, types::CTY_REF,
+                    concat3("&", types::tname(&c.types, recv), ""), recv, 0);
+            } else if (p.sval == "&mut self") {
+                pt = types::new_type(&mut c.types, types::CTY_MUTREF,
+                    concat3("&mut ", types::tname(&c.types, recv), ""), recv, 0);
+            }
+        } else {
+            pt = subst_type(c, p.a, &tparams, &targs);
+            if (pt == types::TY_INVALID) { pt = types::TY_I32; }
+        }
+        let pth = node::new_node(&mut c.nodes, node::AST_TYPE_NAME);
+        node::set_ty(&mut c.nodes, pth, pt);
+        node::set_a(&mut c.nodes, ph, pth);
+        node::set_ty(&mut c.nodes, ph, pt);
+        node::push_kid2(&mut c.nodes, h, ph);
+        i += 1;
+    }
+    node::set_b(&mut c.nodes, h, f.b);
+    node::set_ival(&mut c.nodes, h, 3);   // 3 = a generic method instance
+    c.fns.push(h);
+    return h;
+}
+
+// The concrete type *ids* an instance was created with. `subst_type` takes a
+// vec of ids (a node handle would be misread as an id).
+fn instance_targs(c: &Checker, ty: i32) -> vec::Vec<i32> {
+    let out: vec::Vec<i32> = vec::Vec<i32>::make();
+    let mut k: usize = 0;
+    while (k < c.inst_ids.len()) {
+        let cid: i32 = *c.inst_ids.get(k);
+        if (cid == ty) {
+            let mut ai: usize = 0;
+            while (ai < 8) {
+                let a: i32 = *c.inst_args.get(k * 8 + ai);
+                if (a == 0) { return out; }
+                out.push(a);
+                ai += 1;
+            }
+            return out;
+        }
+        k += 1;
+    }
+    return out;
+}
+
+// Builds a type AST node stamped with `ty` (so `subst_type` sees it directly).
+fn ty_to_ast_h(c: &mut Checker, ty: i32) -> i32 {
+    let h = node::new_node(&mut c.nodes, node::AST_TYPE_NAME);
+    node::set_ty(&mut c.nodes, h, ty);
+    node::set_sval(&mut c.nodes, h, types::tname(&c.types, ty));
+    return h;
+}
+
+fn method_name_of(c: &Checker, fh: i32) -> &str {
+    return node::get(&c.nodes, fh).sfx;
+}
+
+// `Type::assoc(args)` — an associated function (a method with no self).
+fn assoc_call(c: &mut Checker, at: i32, ty: i32, mname: &str,
+              args: &vec::Vec<i32>) -> i32 {
+    let fh = find_method(c, ty, mname);
+    if (fh < 0) { err_no_field(c, at, ty, mname); return types::TY_INVALID; }
+    check_args(c, at, mname, fh, args, false);
+    return node::get(&c.nodes, fh).ty;
+}
+
+// `Heap::into_raw(h)` / `Heap::from_raw(p)` (§13.5): `Heap` is a
+// compiler-recognized type, so these are matched by name.
+fn heap_assoc(c: &mut Checker, at: i32, mname: &str, args: &vec::Vec<i32>) -> i32 {
+    if (mname == "into_raw" && args.len() == 1) {
+        let h = check_expr(c, *args.get(0));
+        let mut elem: i32 = types::TY_U8;
+        if (types::is_heap(&c.types, h)) { elem = types::elem(&c.types, h); }
+        return types::new_type(&mut c.types, types::CTY_MUTPTR,
+            concat3("raw mut ", types::tname(&c.types, elem), ""), elem, 0);
+    }
+    if (mname == "from_raw" && args.len() == 1) {
+        if (c.unchecked_depth == 0) { err_needs_unchecked(c, at, "`Heap::from_raw`"); }
+        let p = check_expr(c, *args.get(0));
+        let mut elem: i32 = types::TY_U8;
+        if (types::is_ptr(&c.types, p)) { elem = types::elem(&c.types, p); }
+        return types::new_type(&mut c.types, types::CTY_HEAP,
+            concat3("heap ", types::tname(&c.types, elem), ""), elem, 0);
+    }
+    add_diag(c, "TYPE-02", "no such field", "`Heap` has no such associated function.", at);
+    return types::TY_INVALID;
+}
+
+// `recv.name(args)` — a method call, with the receiver supplying `self`.
+fn method_call(c: &mut Checker, at: i32, recv_h: i32, recv_ty: i32,
+               name: &str, args: &vec::Vec<i32>) -> i32 {
+    let rt = deref_all(&*c, recv_ty);
+    // Builtin `.len()` on arrays and slices.
+    if (name == "len" && args.len() == 0) {
+        let mut lt = recv_ty;
+        if (types::type_kind(&c.types, lt) == types::CTY_SLICE
+            || types::type_kind(&c.types, lt) == types::CTY_STRREF) {
+            return types::TY_USIZE;
+        }
+        lt = deref_all(&*c, lt);
+        if (types::is_array(&c.types, lt)) { return types::TY_USIZE; }
+    }
+    // `.as_bytes()` on &str.
+    if (name == "as_bytes" && args.len() == 0
+        && types::type_kind(&c.types, recv_ty) == types::CTY_STRREF) {
+        return types::new_type(&mut c.types, types::CTY_SLICE, "[u8]", types::TY_U8, 0);
+    }
+    // Raw pointer toolbox (§13.5).
+    if (types::is_ptr(&c.types, recv_ty)) {
+        let elem = types::elem(&c.types, recv_ty);
+        if (name == "is_null" && args.len() == 0) { return types::TY_BOOL; }
+        if (name == "read" && args.len() == 0) {
+            if (c.unchecked_depth == 0) { err_needs_unchecked(c, at, "reading through a raw pointer"); }
+            return elem;
+        }
+        if (name == "write" && args.len() == 1) {
+            if (c.unchecked_depth == 0) { err_needs_unchecked(c, at, "writing through a raw pointer"); }
+            let vt = check_expr(c, *args.get(0));
+            if (!coercible(c, elem, vt)) { mismatch(c, *args.get(0), elem, vt, "`p.write` value"); }
+            stamp_lits(c, *args.get(0), elem);
+            return types::TY_UNIT;
+        }
+        if ((name == "plus" || name == "minus") && args.len() == 1) {
+            if (c.unchecked_depth == 0) { err_needs_unchecked(c, at, "raw pointer arithmetic"); }
+            let at2 = check_expr(c, *args.get(0));
+            if (!coercible(c, types::TY_USIZE, at2)) {
+                mismatch(c, *args.get(0), types::TY_USIZE, at2, "pointer offset");
+            }
+            stamp_lits(c, *args.get(0), types::TY_USIZE);
+            return recv_ty;
+        }
+    }
+    // `get_unchecked(i)` on an array/slice.
+    if (name == "get_unchecked" && args.len() == 1) {
+        let mut base = recv_ty;
+        base = deref_all(&*c, base);
+        if (types::is_array(&c.types, base) || types::is_slice(&c.types, base)) {
+            if (c.unchecked_depth == 0) { err_needs_unchecked(c, at, "`get_unchecked`"); }
+            let at2 = check_expr(c, *args.get(0));
+            if (!types::is_integer(at2) && !types::is_untyped_lit(at2)) {
+                mismatch(c, *args.get(0), types::TY_USIZE, at2, "index");
+            }
+            stamp_lits(c, *args.get(0), types::TY_USIZE);
+            let el = types::elem(&c.types, base);
+            return types::new_type(&mut c.types, types::CTY_REF,
+                concat3("&", types::tname(&c.types, el), ""), el, 0);
+        }
+    }
+    let fh = find_method(c, rt, name);
+    if (fh < 0) { err_no_field(c, at, rt, name); return types::TY_INVALID; }
+    check_args(c, at, name, fh, args, true);
+    return node::get(&c.nodes, fh).ty;
+}
+
+// Tries an enum-variant construction `Enum::Variant(args)`.
+fn try_enum_construct(c: &mut Checker, at: i32, full: &str,
+                      args: &vec::Vec<i32>) -> i32 {
+    let cut = rfind_colons(full);
+    if (cut < 0) { return types::TY_INVALID; }
+    let ename = prefix(full, cut as usize);
+    let vname = suffix(full, cut as usize + 2);
+    let mut ety: i32 = types::TY_INVALID;
+    let sym = lookup(&*c, ename);
+    if (sym >= 0 && sym_kind(&*c, sym) == SK_TYPE) {
+        ety = sym_ty(&*c, sym);
+    } else {
+        // A generic enum base `Opt<i32>::Some`: the callee path carries the
+        // type arguments in its kids.
+        let ti = find_gen_ty(&*c, ename);
+        if (ti < 0) { return types::TY_INVALID; }
+        if (c.callee < 0) { return types::TY_INVALID; }
+        let cn = node::get(&c.nodes, c.callee);
+        if (cn.kids.len() == 0) { return types::TY_INVALID; }
+        ety = instantiate_type(c, ti, at, &cn.kids);
+        if (ety == types::TY_INVALID) { return ety; }
+    }
+    if (!types::is_enum(&c.types, ety)) { return types::TY_INVALID; }
+    if (types::find_member(&c.types, ety, vname) < 0) { return types::TY_INVALID; }
+    return enum_construct(c, at, ety, vname, args);
+}
+
+// `alloc<T>(n)` / `dealloc<T>(p, n)` (§13.5).
+fn builtin_alloc(c: &mut Checker, at: i32, name: &str, targs: &vec::Vec<i32>,
+                 args: &vec::Vec<i32>) -> i32 {
+    let is_alloc = name == "alloc";
+    if (c.unchecked_depth == 0) {
+        if (is_alloc) {
+            err_needs_unchecked(c, at, "calling `alloc`");
+        } else {
+            err_needs_unchecked(c, at, "calling `dealloc`");
+        }
+    }
+    let mut elem: i32 = types::TY_U8;
+    let mut want: usize = 3;
+    let mut countidx: usize = 0;
+    if (is_alloc) { want = 1; } else { want = 2; countidx = 1; }
+    if (args.len() != want) {
+        err_arity(c, at, name, want, args.len());
+        if (is_alloc) {
+            return types::new_type(&mut c.types, types::CTY_MUTPTR, "raw mut ?", types::TY_U8, 0);
+        }
+        return types::TY_UNIT;
+    }
+    if (!is_alloc) {
+        let pt = check_expr(c, *args.get(0));
+        if (pt != types::TY_INVALID && !types::is_ptr(&c.types, pt)) {
+            mismatch(c, *args.get(0),
+                types::new_type(&mut c.types, types::CTY_MUTPTR, "raw mut T", elem, 0),
+                pt, "`dealloc` pointer");
+        } else if (targs.len() != 1) {
+            if (pt != types::TY_INVALID) { elem = types::elem(&c.types, pt); }
+            if (elem == 0) { elem = types::TY_U8; }
+        }
+    }
+    if (targs.len() > 0) {
+        if (targs.len() != 1) {
+            err_arity(c, at, name, 1, targs.len());
+        } else {
+            elem = resolve_type(c, *targs.get(0));
+            if (elem == types::TY_INVALID) { elem = types::TY_U8; }
+        }
+    } else if (is_alloc) {
+        add_diag(c, "TYPE-01", "`alloc` needs its element type",
+                 "Write `alloc<T>(n)` -- e.g. `alloc<u8>(16)`.", at);
+    }
+    let ct = check_expr(c, *args.get(countidx));
+    if (ct != types::TY_INVALID && !types::is_integer(ct) && !types::is_untyped_lit(ct)) {
+        mismatch(c, *args.get(countidx), types::TY_USIZE, ct, "`alloc`/`dealloc` count");
+    }
+    stamp_lits(c, *args.get(countidx), types::TY_USIZE);
+    if (is_alloc) {
+        return types::new_type(&mut c.types, types::CTY_MUTPTR,
+            concat3("raw mut ", types::tname(&c.types, elem), ""), elem, 0);
+    }
+    return types::TY_UNIT;
+}
+
+// `name<T,...>(args)` — an explicit generic call.
+fn generic_call(c: &mut Checker, at: i32, n: &node::Node) -> i32 {
+    let name = n.sval;
+    if (name == "Raw::null") {
+        let mut elem: i32 = types::TY_U8;
+        if (n.kids2.len() != 1) {
+            err_arity(c, at, "Raw::null", 1, n.kids2.len());
+            return types::new_type(&mut c.types, types::CTY_PTR, "raw ?", types::TY_U8, 0);
+        }
+        elem = resolve_type(c, *n.kids2.get(0));
+        if (elem == types::TY_INVALID) { elem = types::TY_U8; }
+        return types::new_type(&mut c.types, types::CTY_MUTPTR,
+            concat3("raw mut ", types::tname(&c.types, elem), ""), elem, 0);
+    }
+    if (name == "alloc" || name == "dealloc") {
+        return builtin_alloc(c, at, name, &n.kids2, &n.kids);
+    }
+    if (name == "reinterpret") {
+        if (n.kids2.len() != 2) {
+            err_arity(c, at, "reinterpret", 2, n.kids2.len());
+            return types::TY_U8;
+        }
+        let from = resolve_type(c, *n.kids2.get(0));
+        let to = resolve_type(c, *n.kids2.get(1));
+        if (from == types::TY_INVALID || to == types::TY_INVALID) { return types::TY_U8; }
+        if (c.unchecked_depth == 0) { err_needs_unchecked(c, at, "calling `reinterpret`"); }
+        if (n.kids.len() >= 1) {
+            let a_t = check_expr(c, *n.kids.get(0));
+            if (a_t != types::TY_INVALID && !types::eq(a_t, from, &c.types) && !coercible(c, from, a_t)) {
+                mismatch(c, *n.kids.get(0), from, a_t, "`reinterpret` value");
+            }
+        } else {
+            err_arity(c, at, "reinterpret", 1, n.kids.len());
+        }
+        if (types::size(from, &mut c.types) != types::size(to, &mut c.types)) {
+            add_diag(c, "TYPE-01", "`reinterpret` sizes must match",
+                     "Both types must have the same size; use `as` for value conversions.", at);
+        }
+        return to;
+    }
+    // A bare variant construction `Has(x)` that carries explicit type args
+    // (rare) or resolves from the expected type: the parser puts the name in
+    // `sval` and the args in `kids` with `a < 0`, so route it to the ordinary
+    // path (which knows the unqualified-variant rule and the expected type).
+    if (n.kids2.len() == 0) {
+        return ordinary_call(c, at, name, &n.kids);
+    }
+    // A generic function: instantiate with the explicit type arguments.
+    let ti = find_gen_fn(&*c, name);
+    if (ti < 0) {
+        let sym = lookup(&*c, name);
+        if (sym < 0) { err_unknown(c, at, name, false); return types::TY_INVALID; }
+        // Not generic: fall back to an ordinary call.
+        return ordinary_call(c, at, name, &n.kids);
+    }
+    let inst = instantiate_fn(c, ti, at, &n.kids2);
+    if (inst < 0) { return types::TY_INVALID; }
+    check_args(c, at, name, inst, &n.kids, false);
+    return node::get(&c.nodes, inst).ty;
+}
+
+// `name(args)` — a plain call (builtins first, then user functions).
+fn ordinary_call(c: &mut Checker, at: i32, name: &str, args: &vec::Vec<i32>) -> i32 {
+    if (name == "print" || name == "println" || name == "eprintln") {
+        check_format(c, at, name, args);
+        return types::TY_UNIT;
+    }
+    if (name == "trap") {
+        if (args.len() != 1) {
+            err_arity(c, at, name, 1, args.len());
+        } else {
+            let t = check_expr(c, *args.get(0));
+            if (t != types::TY_INVALID && types::type_kind(&c.types, t) != types::CTY_STRREF) {
+                mismatch(c, *args.get(0), types::new_type(&mut c.types, types::CTY_STRREF, "&str", types::TY_U8, 0), t, "trap message");
+            }
+        }
+        return types::TY_NEVER;
+    }
+    if (name == "assert") {
+        if (args.len() < 1 || args.len() > 2) {
+            err_arity(c, at, name, 2, args.len());
+        } else {
+            let t = check_expr(c, *args.get(0));
+            if (t != types::TY_INVALID && !types::eq(t, types::TY_BOOL, &c.types)) {
+                err_condition(c, *args.get(0), t, "assert condition");
+            }
+            if (args.len() == 2) { check_expr(c, *args.get(1)); }
+        }
+        return types::TY_UNIT;
+    }
+    if (name == "unreachable") {
+        if (args.len() != 0) { err_arity(c, at, name, 0, args.len()); }
+        return types::TY_NEVER;
+    }
+    if (name == "exit") {
+        if (args.len() != 1) {
+            err_arity(c, at, name, 1, args.len());
+        } else {
+            let t = check_expr(c, *args.get(0));
+            if (t != types::TY_INVALID && !coercible(c, types::TY_I32, t)) {
+                mismatch(c, *args.get(0), types::TY_I32, t, "exit code");
+            }
+            stamp_lits(c, *args.get(0), types::TY_I32);
+        }
+        return types::TY_NEVER;
+    }
+    if (name == "args") {
+        if (args.len() != 0) { err_arity(c, at, name, 0, args.len()); }
+        // &[&str]
+        let sref = types::new_type(&mut c.types, types::CTY_STRREF, "&str", types::TY_U8, 0);
+        return types::new_type(&mut c.types, types::CTY_SLICE, "[&str]", sref, 0);
+    }
+    if (name == "alloc" || name == "dealloc") {
+        return builtin_alloc(c, at, name, &vec::Vec<i32>::make(), args);
+    }
+    if (name == "str::from_parts") {
+        let out = types::new_type(&mut c.types, types::CTY_STRREF, "&str", types::TY_U8, 0);
+        if (args.len() != 2) { err_arity(c, at, name, 2, args.len()); return out; }
+        if (c.unchecked_depth == 0) { err_needs_unchecked(c, at, "calling `str::from_parts`"); }
+        let pt = check_expr(c, *args.get(0));
+        if (pt != types::TY_INVALID && !types::is_ptr(&c.types, pt)) {
+            mismatch(c, *args.get(0),
+                types::new_type(&mut c.types, types::CTY_PTR, "raw u8", types::TY_U8, 0),
+                pt, "`str::from_parts` pointer");
+        }
+        let lt = check_expr(c, *args.get(1));
+        if (lt != types::TY_INVALID && !types::is_integer(lt) && !types::is_untyped_lit(lt)) {
+            mismatch(c, *args.get(1), types::TY_USIZE, lt, "`str::from_parts` length");
+        }
+        stamp_lits(c, *args.get(1), types::TY_USIZE);
+        return out;
+    }
+    // `Raw::null()` without `<T>`: infer the pointee from the expected type.
+    if (name == "Raw::null") {
+        let mut elem: i32 = types::TY_U8;
+        if (c.expected > 0 && types::is_ptr(&c.types, c.expected)) {
+            elem = types::elem(&c.types, c.expected);
+        }
+        if (elem == 0) { elem = types::TY_U8; }
+        if (!(c.expected > 0 && types::is_ptr(&c.types, c.expected))) {
+            add_diag(c, "TYPE-01", "`Raw::null` needs its element type",
+                     "Write `Raw::null<T>()`, or use it where the pointer type is known.", at);
+        }
+        return types::new_type(&mut c.types, types::CTY_MUTPTR,
+            concat3("raw mut ", types::tname(&c.types, elem), ""), elem, 0);
+    }
+    // An enum variant construction `Enum::Variant(args)`.
+    if (has_colons(name)) {
+        let ev = try_enum_construct(c, at, name, args);
+        if (ev != types::TY_INVALID) { return ev; }
+        // A module function or `Type::assoc`.
+        let sym = lookup(&*c, name);
+        if (sym >= 0 && sym_kind(&*c, sym) == SK_FN) {
+            check_args(c, at, name, sym_decl(&*c, sym), args, false);
+            return sym_ty(&*c, sym);
+        }
+        let cut = rfind_colons(name);
+        if (cut >= 0) {
+            let tname = prefix(name, cut as usize);
+            let mname = suffix(name, cut as usize + 2);
+            let tsym = lookup(&*c, tname);
+            if (tsym >= 0 && sym_kind(&*c, tsym) == SK_TYPE) {
+                return assoc_call(c, at, sym_ty(&*c, tsym), mname, args);
+            }
+            // A generic base `MiniVec<u8>::make`: instantiate from the
+            // callee's type arguments, then resolve the associated function.
+            let gti = find_gen_ty(&*c, tname);
+            if (gti >= 0 && c.callee >= 0) {
+                let cn = node::get(&c.nodes, c.callee);
+                if (cn.kids.len() > 0) {
+                    let ity = instantiate_type(c, gti, at, &cn.kids);
+                    if (ity != types::TY_INVALID) {
+                        return assoc_call(c, at, ity, mname, args);
+                    }
+                }
+            }
+            // `Heap::into_raw` / `Heap::from_raw`: a compiler-recognized type.
+            if (tname == "Heap") { return heap_assoc(c, at, mname, args); }
+        }
+        err_unknown(c, at, name, false);
+        return types::TY_INVALID;
+    }
+    // Unqualified variant construction `Has(x)`.
+    let ev = enum_construct_unqualified(c, at, name, args);
+    if (ev != types::TY_INVALID) { return ev; }
+    // A generic function without explicit arguments: infer.
+    let ti = find_gen_fn(&*c, name);
+    if (ti >= 0) {
+        let inst = infer_fn(c, ti, at, args);
+        if (inst < 0) { return types::TY_INVALID; }
+        check_args(c, at, name, inst, args, false);
+        return node::get(&c.nodes, inst).ty;
+    }
+    let sym = lookup(&*c, name);
+    if (sym < 0 || sym_kind(&*c, sym) != SK_FN) {
+        err_unknown(c, at, name, false);
+        return types::TY_INVALID;
+    }
+    let decl = sym_decl(&*c, sym);
+    let fnode = node::get(&c.nodes, decl);
+    if (c.unchecked_depth == 0) {
+        if (fnode.kind == node::AST_EXTERN_FN) {
+            err_needs_unchecked(c, at, "calling an `extern fn`");
+        } else if ((fnode.ival & 1) == 1) {
+            add_diag(c, "UNCK-04", "calling a contract without promising it",
+                     "This is an `unchecked fn`; calling it needs an `unchecked` block.", at);
+        }
+    }
+    check_args(c, at, name, decl, args, false);
+    return sym_ty(&*c, sym);
+}
+
+// A call expression: method, explicit generic, plain, or not-callable.
+fn check_call(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
+    // Explicit generic call: parser put the name in sval and args in kids.
+    if (n.a < 0) { return generic_call(c, h, n); }
+    let callee = node::get(&c.nodes, n.a);
+    if (callee.kind == node::AST_FIELD_ACC) {
+        let recv_ty = check_expr(c, callee.a);
+        if (recv_ty == types::TY_INVALID) { return recv_ty; }
+        return method_call(c, h, callee.a, recv_ty, callee.sval, &n.kids);
+    }
+    if (callee.kind != node::AST_PATH) {
+        let ct = check_expr(c, n.a);
+        let mut s: str::String = str::String::make();
+        let mut shown: i32 = ct;
+        if (shown == types::TY_INVALID) { shown = types::TY_UNIT; }
+        s.push("`");
+        s.push(types::tname(&c.types, shown));
+        s.push("` is not callable");
+        add_diag(c, "TYPE-04", "not callable", s.as_str(), n.a);
+        return types::TY_INVALID;
+    }
+    let saved_callee = c.callee;
+    c.callee = n.a;
+    let r = ordinary_call(c, h, callee.sval, &n.kids);
+    c.callee = saved_callee;
+    return r;
+}
+
+// A `Type { .field = value }` struct literal.
+fn check_struct_init(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
+    let mut ty: i32 = types::TY_INVALID;
+    if (n.kids2.len() > 0) {
+        let ti = find_gen_ty(&*c, n.sval);
+        if (ti < 0) { err_unknown(c, h, n.sval, true); return types::TY_INVALID; }
+        ty = instantiate_type(c, ti, h, &n.kids2);
+        if (ty == types::TY_INVALID) { return ty; }
+    } else {
+        let sym = lookup(&*c, n.sval);
+        if (sym < 0 || sym_kind(&*c, sym) != SK_TYPE) {
+            if (find_gen_ty(&*c, n.sval) >= 0) {
+                add_diag(c, "TYPE-01", "a generic type needs type arguments",
+                         "Write the instantiation: `Box<i32> { ... }`.", h);
+                return types::TY_INVALID;
+            }
+            err_unknown(c, h, n.sval, true);
+            return types::TY_INVALID;
+        }
+        ty = sym_ty(&*c, sym);
+    }
+    let mut i: usize = 0;
+    while (i < n.kids.len()) {
+        let fi = *n.kids.get(i);
+        let fin = node::get(&c.nodes, fi);
+        let mi = types::find_member(&c.types, ty, fin.sval);
+        let saved = c.expected;
+        if (mi >= 0) { c.expected = types::member_type(&c.types, ty, mi); }
+        let vt = check_expr(c, fin.a);
+        c.expected = saved;
+        if (mi < 0) {
+            err_no_field(c, fi, ty, fin.sval);
+        } else {
+            let want = types::member_type(&c.types, ty, mi);
+            if (vt != types::TY_INVALID && want != types::TY_INVALID && !coercible(c, want, vt)) {
+                mismatch(c, fi, want, vt, "field value");
+            }
+            stamp_lits(c, fin.a, want);
+        }
+        i += 1;
+    }
+    return ty;
+}
+
+// An array literal `[a, b, c]` or `[v; n]`.
+fn check_array_lit(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
+    let mut et: i32 = types::TY_INVALID;
+    // A declared array type in the context pins the element type (§5.9), so
+    // `let a: [i64; 3] = [1, 2, 3];` gets i64 elements, not the i32 default.
+    let hint = c.array_hint;
+    c.array_hint = 0;
+    if (n.kids.len() > 0) {
+        et = check_expr(c, *n.kids.get(0));
+        let mut i: usize = 1;
+        while (i < n.kids.len()) {
+            let t2 = check_expr(c, *n.kids.get(i));
+            if (et != types::TY_INVALID && t2 != types::TY_INVALID
+                && !types::eq(et, t2, &c.types)) {
+                mismatch(c, *n.kids.get(i), et, t2, "array element");
+            }
+            i += 1;
+        }
+        if (hint != 0) { et = hint; }
+        else {
+            if (et == types::TY_UINT_LIT) { et = types::TY_I32; }
+            if (et == types::TY_FLOAT_LIT) { et = types::TY_F64; }
+        }
+        let mut i2: usize = 0;
+        while (i2 < n.kids.len()) {
+            stamp_lits(c, *n.kids.get(i2), et);
+            i2 += 1;
+        }
+        let mut s: str::String = str::String::make();
+        s.push("[");
+        s.push(types::tname(&c.types, et));
+        s.push("; ");
+        s.push_u64(n.kids.len() as u64);
+        s.push("]");
+        return types::new_type(&mut c.types, types::CTY_ARRAY, s.as_str(), et, n.kids.len() as i32);
+    }
+    if (n.a >= 0) {
+        et = check_expr(c, n.a);
+        if (et == types::TY_UINT_LIT) { et = types::TY_I32; }
+        if (et == types::TY_FLOAT_LIT) { et = types::TY_F64; }
+        stamp_lits(c, n.a, et);
+        let mut len = const_int(c, n.b);
+        if (len < 0) { len = 0; }
+        let mut s: str::String = str::String::make();
+        s.push("[");
+        s.push(types::tname(&c.types, et));
+        s.push("; ");
+        s.push_u64(len as u64);
+        s.push("]");
+        return types::new_type(&mut c.types, types::CTY_ARRAY, s.as_str(), et, len);
+    }
+    add_diag(c, "TYPE-05", "empty array literal",
+             "An array needs at least one element (or use `[v; n]`).", h);
+    return types::TY_INVALID;
+}
+
+fn check_as(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
+    let from = check_expr(c, n.a);
+    let to = resolve_type(c, n.b);
+    if (from == types::TY_INVALID || to == types::TY_INVALID) { return types::TY_INVALID; }
+    if (types::is_untyped_lit(from)) { return to; }
+    if (from == types::TY_CHAR && to == types::TY_U32) { return to; }
+    if (from == types::TY_U8 && to == types::TY_CHAR) { return to; }
+    if (types::is_integer(from) && types::is_integer(to)) { return to; }
+    if (types::is_float(from) && types::is_float(to)) { return to; }
+    if (types::is_integer(from) && types::is_float(to)) { return to; }
+    if (types::is_float(from) && types::is_integer(to)) { return to; }
+    if (types::is_ref(&c.types, from) && types::is_ptr(&c.types, to)) { return to; }
+    if (types::is_ptr(&c.types, from) && types::is_integer(to)) {
+        if (c.unchecked_depth == 0) { err_needs_unchecked(c, h, "casting a raw pointer to an integer"); }
+        return to;
+    }
+    if (types::is_integer(from) && types::is_ptr(&c.types, to)) {
+        if (c.unchecked_depth == 0) { err_needs_unchecked(c, h, "casting an integer to a raw pointer"); }
+        return to;
+    }
+    if (types::is_ptr(&c.types, from) && types::is_ptr(&c.types, to)) { return to; }
+    add_diag(c, "TYPE-05", "unsupported cast", "These types have no `as` conversion.", h);
+    return types::TY_INVALID;
+}
+
+fn check_borrow(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
+    let is_mut = n.ival == 1;
+    let t = check_expr(c, n.a);
+    if (t == types::TY_INVALID) { return t; }
+    if (types::type_kind(&c.types, t) == types::CTY_STRREF) { return t; }
+    if (types::type_kind(&c.types, t) == types::CTY_SLICE) {
+        let sm = c.types.entries.get(t as usize).b;
+        if (is_mut && sm == 0) {
+            return types::new_type(&mut c.types, types::CTY_SLICE, "[T]", types::elem(&c.types, t), 1);
+        }
+        if (!is_mut && sm == 1) {
+            return types::new_type(&mut c.types, types::CTY_SLICE, "[T]", types::elem(&c.types, t), 0);
+        }
+        return t;
+    }
+    if (is_mut) {
+        return types::new_type(&mut c.types, types::CTY_MUTREF,
+            concat3("&mut ", types::tname(&c.types, t), ""), t, 0);
+    }
+    return types::new_type(&mut c.types, types::CTY_REF,
+        concat3("&", types::tname(&c.types, t), ""), t, 0);
+}
+
+fn check_deref(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
+    let t = check_expr(c, n.a);
+    if (t == types::TY_INVALID) { return t; }
+    if (!types::is_ref(&c.types, t) && !types::is_heap(&c.types, t)
+        && !types::is_ptr(&c.types, t)) {
+        add_diag(c, "TYPE-02", "cannot dereference this type",
+                 "Only references, raw pointers, and `heap` boxes can be dereferenced.", n.a);
+        return types::TY_INVALID;
+    }
+    return types::elem(&c.types, t);
+}
+
+fn check_raw(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
+    let t = check_expr(c, n.a);
+    if (t == types::TY_INVALID) { return t; }
+    if (types::is_ptr(&c.types, t)) { return t; }
+    if (!types::is_ref(&c.types, t)) {
+        add_diag(c, "TYPE-02", "cannot make a raw pointer from this",
+                 "`raw(...)` takes a borrow: write `raw(&x)` or `raw(&mut x)`.", n.a);
+        return types::TY_INVALID;
+    }
+    let elem = types::elem(&c.types, t);
+    if (types::type_kind(&c.types, t) == types::CTY_MUTREF) {
+        return types::new_type(&mut c.types, types::CTY_MUTPTR,
+            concat3("raw mut ", types::tname(&c.types, elem), ""), elem, 0);
+    }
+    return types::new_type(&mut c.types, types::CTY_PTR,
+        concat3("raw ", types::tname(&c.types, elem), ""), elem, 0);
+}
+
+fn check_heap(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
+    let mut t = check_expr(c, n.a);
+    if (t == types::TY_INVALID) { return t; }
+    if (t == types::TY_UINT_LIT) { t = types::TY_I32; }
+    if (t == types::TY_FLOAT_LIT) { t = types::TY_F64; }
+    return types::new_type(&mut c.types, types::CTY_HEAP,
+        concat3("heap ", types::tname(&c.types, t), ""), t, 0);
+}
+
+fn check_sizeof(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
+    let t = resolve_type(c, n.a);
+    if (t == types::TY_INVALID) { return t; }
+    return types::TY_USIZE;
+}
+
+// The expression dispatcher. Every path stamps Node.ty.
+export fn check_expr(c: &mut Checker, h: i32) -> i32 {
+    if (h < 0) { return types::TY_UNIT; }
+    let n = node::get(&c.nodes, h);
+    if (n.ty != 0) { return n.ty; }   // idempotent
+    let k = n.kind;
+    let mut t: i32 = types::TY_INVALID;
+    if (k == node::AST_INT_LIT) {
+        if (n.sval != "") { t = suffix_type(n.sval); }
+        else { t = types::TY_UINT_LIT; }
+    } else if (k == node::AST_FLOAT_LIT) {
+        if (n.sfx == "f32") { t = types::TY_F32; }
+        else if (n.sfx == "f64") { t = types::TY_F64; }
+        else { t = types::TY_FLOAT_LIT; }
+    } else if (k == node::AST_STRING_LIT) {
+        t = types::new_type(&mut c.types, types::CTY_STRREF, "&str", types::TY_U8, 0);
+    } else if (k == node::AST_CHAR_LIT) {
+        t = types::TY_CHAR;
+    } else if (k == node::AST_BOOL_LIT) {
+        t = types::TY_BOOL;
+    } else if (k == node::AST_UNIT_LIT) {
+        t = types::TY_UNIT;
+    } else if (k == node::AST_PATH) {
+        t = check_path(c, h, &n);
+    } else if (k == node::AST_BINARY) {
+        t = check_binary(c, h, &n);
+    } else if (k == node::AST_UNARY) {
+        t = check_unary(c, h, &n);
+    } else if (k == node::AST_FIELD_ACC) {
+        t = check_field(c, h, &n);
+    } else if (k == node::AST_INDEX) {
+        t = check_index(c, h, &n);
+    } else if (k == node::AST_CALL) {
+        t = check_call(c, h, &n);
+    } else if (k == node::AST_AS) {
+        t = check_as(c, h, &n);
+    } else if (k == node::AST_STRUCT_INIT) {
+        t = check_struct_init(c, h, &n);
+    } else if (k == node::AST_ARRAY_LIT) {
+        t = check_array_lit(c, h, &n);
+    } else if (k == node::AST_BORROW) {
+        t = check_borrow(c, h, &n);
+    } else if (k == node::AST_DEREF) {
+        t = check_deref(c, h, &n);
+    } else if (k == node::AST_HEAP) {
+        t = check_heap(c, h, &n);
+    } else if (k == node::AST_SIZEOF) {
+        t = check_sizeof(c, h, &n);
+    } else if (k == node::AST_RAW_EXPR) {
+        t = check_raw(c, h, &n);
+    } else if (k == node::AST_BLOCK) {
+        check_stmt_block(c, h);
+        t = types::TY_UNIT;
+    } else {
+        add_diag(c, "TYPE-05", "unsupported expression",
+                 "This expression form is not supported yet.", h);
+        t = types::TY_INVALID;
+    }
+    set_ty(c, h, t);
+    return t;
+}
+
+// ---- generic function instantiation --------------------------------------
+
+fn gen_param_name(c: &Checker, tmpl: i32, i: usize) -> &str {
+    let t = node::get(&c.nodes, tmpl);
+    if (i >= t.kids.len()) { return ""; }
+    return param_base(node::get(&c.nodes, *t.kids.get(i)).sval);
+}
+
+// Count a template's generic parameters.
+fn gen_param_count(c: &Checker, tmpl: i32) -> usize {
+    return node::get(&c.nodes, tmpl).kids.len();
+}
+
+// Converts a type id back into a type AST node (for inference slots).
+fn ty_to_ast(c: &mut Checker, ty: i32) -> i32 {
+    if (ty <= 0) { return -1; }
+    let k = types::type_kind(&c.types, ty);
+    let h = node::new_node(&mut c.nodes, node::AST_TYPE_NAME);
+    node::set_ty(&mut c.nodes, h, ty);
+    if (k == types::CTY_REF || k == types::CTY_MUTREF || k == types::CTY_PTR
+        || k == types::CTY_MUTPTR) {
+        let mut kind = node::AST_TYPE_REF;
+        let mut m: i64 = 0;
+        if (k == types::CTY_MUTREF || k == types::CTY_MUTPTR) { m = 1; }
+        if (k == types::CTY_PTR || k == types::CTY_MUTPTR) { kind = node::AST_TYPE_RAW; }
+        let mut n = node::get(&c.nodes, h);
+        n.kind = kind;
+        n.ival = m;
+        node::put(&mut c.nodes, h, n);
+        let inner = ty_to_ast(c, types::elem(&c.types, ty));
+        node::set_a(&mut c.nodes, h, inner);
+        return h;
+    }
+    node::set_sval(&mut c.nodes, h, types::tname(&c.types, ty));
+    return h;
+}
+
+struct RawStrList { items: raw mut &str; len: usize; }
+methods RawStrList {
+    fn push(&mut self, s: &str) {
+        unchecked("grow buffer, caller uses len") {
+            if (self.len == 0) { self.items = alloc<&str>(16); }
+            self.items.plus(self.len).write(s);
+        }
+        self.len += 1;
+    }
+    fn at(&self, i: usize) -> &str {
+        unchecked("caller passes i < len") { return self.items.plus(i).read(); }
+    }
+}
+
+// Unify a template parameter type node against a concrete arg type (§18).
+fn unify(c: &mut Checker, tn_h: i32, ty: i32, names: &RawStrList,
+         slots: &mut vec::Vec<i32>) {
+    if (tn_h < 0 || ty == types::TY_INVALID) { return; }
+    let tn = node::get(&c.nodes, tn_h);
+    if (tn.kind == node::AST_TYPE_NAME) {
+        if (tn.sval == "Heap" && tn.kids.len() == 1) {
+            if (types::is_heap(&c.types, ty)) { unify(c, *tn.kids.get(0), types::elem(&c.types, ty), names, slots); }
+            return;
+        }
+        if (tn.kids.len() == 0) {
+            let mut i: usize = 0;
+            while (i < names.len) {
+                let nm: &str = names.at(i);
+                if (nm == tn.sval) {
+                    if (*slots.get(i) == 0) {
+                        *slots.get(i) = ty_to_ast(c, ty);
+                    }
+                    return;
+                }
+                i += 1;
+            }
+            return;
+        }
+        return;
+    }
+    if (tn.kind == node::AST_TYPE_REF) {
+        // `&[T]` is the slice type itself (§5.2), so a slice argument unifies
+        // against the *inner* slice node's element, not the ref's child.
+        if (types::type_kind(&c.types, ty) == types::CTY_SLICE) {
+            let inner = node::get(&c.nodes, tn.a);
+            if (inner.kind == node::AST_TYPE_SLICE) {
+                unify(c, inner.a, types::elem(&c.types, ty), names, slots);
+            } else {
+                unify(c, tn.a, ty, names, slots);
+            }
+            return;
+        }
+        if (types::is_ref(&c.types, ty) || types::is_ptr(&c.types, ty) || types::is_heap(&c.types, ty)) {
+            unify(c, tn.a, types::elem(&c.types, ty), names, slots);
+        }
+        return;
+    }
+    if (tn.kind == node::AST_TYPE_SLICE) {
+        if (types::type_kind(&c.types, ty) == types::CTY_SLICE) { unify(c, tn.a, types::elem(&c.types, ty), names, slots); }
+        return;
+    }
+    if (tn.kind == node::AST_TYPE_ARRAY) {
+        if (types::is_array(&c.types, ty)) { unify(c, tn.a, types::elem(&c.types, ty), names, slots); }
+        return;
+    }
+}
+
+// Instantiate a generic fn template with concrete type ASTs. Returns the new
+// fn handle (an ordinary fn), or -1.
+fn instantiate_fn(c: &mut Checker, ti: i32, at: i32, targs: &vec::Vec<i32>) -> i32 {
+    let tmpl = *c.gen_fns.get(ti as usize);
+    let t = node::get(&c.nodes, tmpl);
+    let nparams = t.kids.len();
+    if (targs.len() != nparams) {
+        err_arity(c, at, t.sval, nparams, targs.len());
+        return -1;
+    }
+    let mut concrete: vec::Vec<i32> = vec::Vec<i32>::make();
+    let mut i: usize = 0;
+    while (i < targs.len()) {
+        concrete.push(resolve_type(c, *targs.get(i)));
+        i += 1;
+    }
+    return build_instance(c, tmpl, &concrete);
+}
+
+// Builds a concrete copy of a fn template, substituting parameters with
+// `concrete`. The instance is registered in `c.fns` but NOT as a global symbol
+// (its mangled name is what codegen uses).
+fn build_instance(c: &mut Checker, tmpl: i32, concrete: &vec::Vec<i32>) -> i32 {
+    let t = node::get(&c.nodes, tmpl);
+    let params = t.kids;
+    let h = node::new_node(&mut c.nodes, node::AST_FN);
+    node::set_sval(&mut c.nodes, h, instance_fn_name(c, tmpl, concrete));
+    // Return type.
+    let rt = subst_type(c, t.a, &t, concrete);
+    let ret_h = node::new_node(&mut c.nodes, node::AST_TYPE_NAME);
+    node::set_ty(&mut c.nodes, ret_h, rt);
+    node::set_a(&mut c.nodes, h, ret_h);
+    // Parameters: params are AST_PARAM nodes with a type in children.
+    let mut i: usize = 0;
+    while (i < t.kids2.len()) {
+        let p = node::get(&c.nodes, *t.kids2.get(i));
+        let ph = node::new_node(&mut c.nodes, node::AST_PARAM);
+        node::set_sval(&mut c.nodes, ph, p.sval);
+        let pt = subst_type(c, p.a, &t, concrete);
+        let pth = node::new_node(&mut c.nodes, node::AST_TYPE_NAME);
+        node::set_ty(&mut c.nodes, pth, pt);
+        node::set_a(&mut c.nodes, ph, pth);
+        node::set_ty(&mut c.nodes, ph, pt);
+        node::push_kid2(&mut c.nodes, h, ph);
+        i += 1;
+    }
+    // The body is shared (it only mentions parameters through type ids R6
+    // lowers); record the template handle so R6 can walk it.
+    node::set_b(&mut c.nodes, h, t.b);
+    node::set_ty(&mut c.nodes, h, rt);
+    node::set_ival(&mut c.nodes, h, 2);   // 2 = a generic instance
+    c.fns.push(h);
+    return h;
+}
+
+fn instance_fn_name(c: &mut Checker, tmpl: i32, args: &vec::Vec<i32>) -> &str {
+    let mut s: str::String = str::String::make();
+    s.push(node::get(&c.nodes, tmpl).sval);
+    s.push("__");
+    let mut i: usize = 0;
+    while (i < args.len()) {
+        if (i > 0) { s.push("_"); }
+        s.push(types::tname(&c.types, *args.get(i)));
+        i += 1;
+    }
+    return s.as_str();
+}
+
+// Infer a generic call's type arguments from the argument types (§18).
+fn infer_fn(c: &mut Checker, ti: i32, at: i32, args: &vec::Vec<i32>) -> i32 {
+    let tmpl = *c.gen_fns.get(ti as usize);
+    let t = node::get(&c.nodes, tmpl);
+    let nparams = t.kids.len();
+    let mut names: RawStrList = RawStrList { .items = Raw::null(), .len = 0 };
+    let mut slots: vec::Vec<i32> = vec::Vec<i32>::make();
+    let mut i: usize = 0;
+    while (i < nparams) {
+        names.push(gen_param_name(&*c, tmpl, i));
+        slots.push(0);
+        i += 1;
+    }
+    // Pin parameters from each argument.
+    i = 0;
+    while (i < args.len() && i < t.kids2.len()) {
+        let p = node::get(&c.nodes, *t.kids2.get(i));
+        let mut a_t = check_expr(c, *args.get(i));
+        if (a_t == types::TY_UINT_LIT) { stamp_lits(c, *args.get(i), types::TY_I32); a_t = types::TY_I32; }
+        if (a_t == types::TY_FLOAT_LIT) { stamp_lits(c, *args.get(i), types::TY_F64); a_t = types::TY_F64; }
+        if (a_t != types::TY_INVALID) { unify(c, p.a, a_t, &names, &mut slots); }
+        i += 1;
+    }
+    let mut targs: vec::Vec<i32> = vec::Vec<i32>::make();
+    i = 0;
+    while (i < nparams) {
+        if (*slots.get(i) == 0) {
+            let mut s: str::String = str::String::make();
+            s.push("cannot infer `");
+            s.push(names.at(i));
+            s.push("` for `");
+            s.push(t.sval);
+            s.push("` from the argument types; write it explicitly");
+            add_diag(c, "TYPE-01", "cannot infer the generic type arguments", s.as_str(), at);
+            return -1;
+        }
+        targs.push(*slots.get(i));
+        i += 1;
+    }
+    return instantiate_fn(c, ti, at, &targs);
+}
+
+// ---- statements -----------------------------------------------------------
+
+// Is `s` a self parameter spelling?
+fn is_self_param(s: &str) -> bool {
+    if (s == "self" || s == "mut self" || s == "&self" || s == "&mut self") { return true; }
+    return false;
+}
+
+fn check_place_mut(c: &mut Checker, h: i32) {
+    if (h < 0) { return; }
+    let n = node::get(&c.nodes, h);
+    if (n.kind == node::AST_INDEX) {
+        let bt = get_ty(&*c, n.a);
+        let mut sm: i32 = 0;
+        if (bt > 0 && bt < c.types.entries.len() as i32) {
+            sm = c.types.entries.get(bt as usize).b;
+        }
+        if (types::type_kind(&c.types, bt) == types::CTY_SLICE && sm == 1) { return; }
+        if (types::type_kind(&c.types, bt) == types::CTY_MUTPTR) { return; }
+        check_place_mut(c, n.a);
+        return;
+    }
+    if (n.kind == node::AST_FIELD_ACC) {
+        check_place_mut(c, n.a);
+        return;
+    }
+    if (n.kind == node::AST_DEREF) {
+        // `*r` is writable iff r is an exclusive reference or a raw mut
+        // pointer; that belongs to the borrow checker (M3), so accept here.
+        return;
+    }
+    if (n.kind == node::AST_PATH && n.a < 0 && !has_colons(n.sval)) {
+        let sym = lookup(&*c, n.sval);
+        if (sym < 0) { return; }
+        let sk = sym_kind(&*c, sym);
+        // Writing through a `&mut T` or `&mut [T]` place is always allowed.
+        let sty = sym_ty(&*c, sym);
+        if (types::type_kind(&c.types, sty) == types::CTY_MUTREF) { return; }
+        if (types::type_kind(&c.types, sty) == types::CTY_SLICE
+            && c.types.entries.get(sty as usize).b == 1) { return; }
+        if (c.syms.get(sym as usize).mutbl == 0
+            && (sk == SK_LET || sk == SK_PARAM || sk == SK_SELF)) {
+            let mut s: str::String = str::String::make();
+            s.push("cannot assign to `");
+            s.push(n.sval);
+            s.push("`: it is not declared `mut`");
+            add_diag(c, "MUT-01", "assignment to immutable binding", s.as_str(), h);
+        }
+        return;
+    }
+}
+
+fn check_place(c: &mut Checker, h: i32) -> i32 {
+    let saved = c.in_place;
+    c.in_place = 1;
+    let t = check_expr(c, h);
+    c.in_place = saved;
+    if (t != types::TY_INVALID) { check_place_mut(c, h); }
+    return t;
+}
+
+fn arm_ends_in_return(c: &Checker, h: i32) -> bool {
+    if (h < 0) { return false; }
+    let n = node::get(&c.nodes, h);
+    if (n.kind == node::AST_IF) {
+        if (n.c < 0) { return false; }
+        if (!block_ends_in_return(c, n.b)) { return false; }
+        return arm_ends_in_return(c, n.c);
+    }
+    return block_ends_in_return(c, h);
+}
+
+fn block_ends_in_return(c: &Checker, h: i32) -> bool {
+    if (h < 0) { return false; }
+    let n = node::get(&c.nodes, h);
+    if (n.kids.len() == 0) { return false; }
+    let last = *n.kids.get(n.kids.len() - 1);
+    let ln = node::get(&c.nodes, last);
+    if (ln.kind == node::AST_RETURN) { return true; }
+    if (ln.ty == types::TY_NEVER && ln.ty != 0) { return true; }
+    if (ln.kind == node::AST_UNCHECKED) { return block_ends_in_return(c, ln.a); }
+    if (ln.kind == node::AST_BLOCK) { return block_ends_in_return(c, last); }
+    if (ln.kind == node::AST_IF) {
+        if (ln.c < 0) { return false; }
+        if (!block_ends_in_return(c, ln.b)) { return false; }
+        return arm_ends_in_return(c, ln.c);
+    }
+    if (ln.kind == node::AST_SWITCH) {
+        if (ln.kids.len() == 0) { return false; }
+        let mut i: usize = 0;
+        while (i < ln.kids.len()) {
+            let arm = node::get(&c.nodes, *ln.kids.get(i));
+            if (arm.b < 0 || !block_ends_in_return(c, arm.b)) { return false; }
+            i += 1;
+        }
+        return true;
+    }
+    return false;
+}
+
+// A variant-name suffix (`Op::Add` -> `Add`).
+fn variant_suffix(s: &str) -> &str {
+    let cut = rfind_colons(s);
+    if (cut >= 0) { return suffix(s, cut as usize + 2); }
+    return s;
+}
+
+// Checks one switch pattern against the subject type `st`, recording which
+// enum variants it covers (for exhaustiveness).
+fn check_switch_pattern(c: &mut Checker, h: i32, st: i32, seen: &mut vec::Vec<i32>) {
+    if (h < 0) { return; }
+    let n = node::get(&c.nodes, h);
+    if (n.kind == node::AST_PAT_WILD) { return; }
+    if (n.kind == node::AST_PAT_LIT) {
+        let t = check_expr(c, n.a);
+        if (st != types::TY_INVALID && t != types::TY_INVALID && !types::eq(st, t, &c.types)) {
+            mismatch(c, h, st, t, "switch pattern");
+        }
+        return;
+    }
+    if (n.kind == node::AST_PAT_BIND) {
+        // A bare identifier whose name is a variant of the switched enum is a
+        // variant pattern; otherwise it binds a value.
+        if (types::is_enum(&c.types, st)) {
+            let vname = variant_suffix(n.sval);
+            let vi = types::find_member(&c.types, st, vname);
+            if (vi >= 0) { note_variant(seen, vi); return; }
+        }
+        declare_init(c, h, n.sval, st, 1);
+        let mut i: usize = 0;
+        while (i < n.kids.len()) { check_switch_pattern(c, *n.kids.get(i), st, seen); i += 1; }
+        return;
+    }
+    if (n.kind == node::AST_PAT_VARIANT) {
+        let vname = variant_suffix(n.sval);
+        if (types::is_enum(&c.types, st)) {
+            let vi = types::find_member(&c.types, st, vname);
+            if (vi < 0) {
+                err_no_field(c, h, st, vname);
+            } else {
+                note_variant(seen, vi);
+                let pid = types::member_type(&c.types, st, vi);
+                let mut k: usize = 0;
+                while (k < n.kids.len() && k < types::member_count(&c.types, pid)) {
+                    let sub = *n.kids.get(k);
+                    let sn = node::get(&c.nodes, sub);
+                    let pty = types::member_type(&c.types, pid, k as i32);
+                    if (sn.kind == node::AST_PAT_BIND) {
+                        declare_init(c, sub, sn.sval, pty, 1);
+                    } else if (sn.kind != node::AST_PAT_WILD) {
+                        check_switch_pattern(c, sub, pty, seen);
+                    }
+                    k += 1;
+                }
+            }
+        }
+        return;
+    }
+    if (n.kind == node::AST_PAT_RANGE) {
+        check_expr(c, n.a);
+        check_expr(c, n.b);
+        return;
+    }
+}
+
+fn note_variant(seen: &mut vec::Vec<i32>, vi: i32) {
+    let mut k: usize = 0;
+    while (k < seen.len()) {
+        let cur: i32 = *seen.get(k);
+        if (cur == vi) { return; }
+        k += 1;
+    }
+    seen.push(vi);
+}
+
+fn check_stmt(c: &mut Checker, h: i32) {
+    if (h < 0) { return; }
+    let n = node::get(&c.nodes, h);
+    let k = n.kind;
+    if (k == node::AST_LET) {
+        let mut ty: i32 = 0;
+        if (n.a >= 0) {
+            ty = resolve_type(c, n.a);
+            if (ty == types::TY_INVALID) { ty = types::TY_I32; }
+        }
+        if (n.b >= 0) {
+            let saved = c.expected;
+            if (ty != 0 && types::is_array(&c.types, ty)
+                && node::get(&c.nodes, n.b).kind == node::AST_ARRAY_LIT) {
+                c.array_hint = types::elem(&c.types, ty);
+            }
+            c.expected = ty;
+            let _ = check_expr(c, n.b);
+            c.expected = saved;
+            c.array_hint = 0;
+            if (ty == 0) {
+                ty = node::get(&c.nodes, n.b).ty;
+                if (ty == types::TY_UINT_LIT) { ty = types::TY_I32; }
+                if (ty == types::TY_FLOAT_LIT) { ty = types::TY_F64; }
+            } else if (!coercible(c, ty, node::get(&c.nodes, n.b).ty)) {
+                mismatch(c, h, ty, node::get(&c.nodes, n.b).ty, "`let` initializer");
+            }
+            stamp_lits(c, n.b, ty);
+        }
+        if (ty == 0) {
+            ty = types::TY_I32;
+            // A failed initializer leaves the binding untyped, exactly like a
+            // binding with no initializer at all: harmony-base reports
+            // TYPE-05 here (the NAME-01/TYPE-02 that caused it came first).
+            add_diag(c, "TYPE-05", "cannot infer the type of this binding",
+                     "Annotate it: `let name: Type = ...;`", h);
+        }
+        set_ty(c, h, ty);
+        let mut mutbl: i32 = 0;
+        if (n.ival == 1) { mutbl = 1; }
+        let idx = declare(c, h, n.sval, SK_LET, ty, mutbl);
+        if (n.b >= 0 && idx >= 0) {
+            let mut s = *c.syms.get(idx as usize);
+            s.init = 1;
+            c.syms.set(idx as usize, s);
+        }
+    } else if (k == node::AST_ASSIGN) {
+        let lt = check_place(c, n.a);
+        let saved = c.expected;
+        c.expected = lt;
+        let _ = check_expr(c, n.b);
+        c.expected = saved;
+        let rt = node::get(&c.nodes, n.b).ty;
+        set_ty(c, h, types::TY_UNIT);
+        if (lt == types::TY_INVALID || rt == types::TY_INVALID) { return; }
+        if (!types::eq(lt, rt, &c.types)) { mismatch(c, h, lt, rt, "assignment"); }
+        stamp_lits(c, n.b, lt);
+        let ln = node::get(&c.nodes, n.a);
+        if (ln.kind == node::AST_PATH && ln.a < 0 && ln.sval != "") {
+            let sym = lookup(&*c, ln.sval);
+            if (sym >= 0) {
+                let mut s = *c.syms.get(sym as usize);
+                s.init = 1;
+                c.syms.set(sym as usize, s);
+            }
+        }
+    } else if (k == node::AST_EXPR_STMT) {
+        let t = check_expr(c, n.a);
+        set_ty(c, h, t);
+    } else if (k == node::AST_BLOCK) {
+        check_stmt_block(c, h);
+    } else if (k == node::AST_IF) {
+        let ct = check_expr(c, n.a);
+        if (ct != types::TY_INVALID && !types::eq(ct, types::TY_BOOL, &c.types)) {
+            err_condition(c, n.a, ct, "`if` condition");
+        }
+        check_stmt(c, n.b);
+        check_stmt(c, n.c);
+    } else if (k == node::AST_WHILE) {
+        let ct = check_expr(c, n.a);
+        if (ct != types::TY_INVALID && !types::eq(ct, types::TY_BOOL, &c.types)) {
+            err_condition(c, n.a, ct, "`while` condition");
+        }
+        check_stmt(c, n.b);
+    } else if (k == node::AST_FOR) {
+        scope_push(c);
+        let mut for_ok = true;
+        if (n.sval != "") {
+            // Shape 2: `for (x : expr)` -- range or iteration protocol.
+            if (n.a >= 0 && node::get(&c.nodes, n.a).kind == node::AST_BINARY) {
+                let rn = node::get(&c.nodes, n.a);
+                if (rn.sval == ".." || rn.sval == "..=") {
+                    let lo = check_expr(c, rn.a);
+                    let hi = check_expr(c, rn.b);
+                    let mut et: i32 = types::TY_INVALID;
+                    if (lo != types::TY_INVALID && hi != types::TY_INVALID) {
+                        if (!types::is_integer(lo) && lo != types::TY_UINT_LIT) {
+                            mismatch(c, rn.a, types::TY_ISIZE, lo, "range start");
+                        }
+                        if (!types::is_integer(hi) && hi != types::TY_UINT_LIT) {
+                            mismatch(c, rn.b, types::TY_ISIZE, hi, "range end");
+                        }
+                        if (types::is_untyped_lit(lo)) { et = hi; }
+                        else if (types::is_untyped_lit(hi)) { et = lo; }
+                        else if (lo == hi) { et = lo; }
+                        else { mismatch(c, rn.b, lo, hi, "range end"); et = lo; }
+                        if (et == types::TY_UINT_LIT || et == types::TY_INVALID) { et = types::TY_I32; }
+                        stamp_lits(c, rn.a, et);
+                        stamp_lits(c, rn.b, et);
+                    }
+                    declare_init(c, h, n.sval, et, 1);
+                }
+            } else {
+                let it = check_expr(c, n.a);
+                let mut m: i32 = -1;
+                if (it != types::TY_INVALID) {
+                    m = find_method(c, deref_all(&*c, it), "next");
+                }
+                if (m < 0) {
+                    for_ok = false;
+                    add_diag(c, "TYPE-05", "unsupported `for` iterable",
+                             "Only ranges and types with `fn next(&mut self) -> Maybe<T>` are iterable.", n.a);
+                } else {
+                    let ret = node::get(&c.nodes, m).ty;
+                    if (!types::is_enum(&c.types, ret)) {
+                        for_ok = false;
+                        add_diag(c, "TYPE-05", "`next` must return `Maybe<T>`",
+                                 "The iteration protocol requires `fn next(&mut self) -> Maybe<T>`.", n.a);
+                    } else {
+                        let vi = types::find_member(&c.types, ret, "Has");
+                        let mut elem: i32 = types::TY_INVALID;
+                        if (vi >= 0) {
+                            let pt = types::member_type(&c.types, ret, vi);
+                            if (types::member_count(&c.types, pt) == 1) {
+                                elem = types::member_type(&c.types, pt, 0);
+                            }
+                        }
+                        if (elem == types::TY_INVALID) {
+                            for_ok = false;
+                            add_diag(c, "TYPE-05", "`next` must return `Maybe<T>`",
+                                     "`Maybe<T>` has a `Has(T)` variant; the loop binds its payload.", n.a);
+                        } else {
+                            declare_init(c, h, n.sval, elem, 1);
+                        }
+                    }
+                }
+            }
+        } else {
+            // Shape 1: C-style `for (init; cond; step)`.
+            check_stmt(c, n.a);
+            let ct = check_expr(c, n.b);
+            if (ct != types::TY_INVALID && !types::eq(ct, types::TY_BOOL, &c.types)) {
+                err_condition(c, n.b, ct, "`for` condition");
+            }
+            check_stmt(c, n.c);
+        }
+        if (for_ok) {
+            let mut i: usize = 0;
+            while (i < n.kids.len()) { check_stmt(c, *n.kids.get(i)); i += 1; }
+        }
+        scope_pop(c);
+    } else if (k == node::AST_SWITCH) {
+        let mut st = check_expr(c, n.a);
+        while (types::is_ref(&c.types, st) || types::is_heap(&c.types, st)) {
+            st = types::elem(&c.types, st);
+        }
+        let mut saw_default = false;
+        let mut seen: vec::Vec<i32> = vec::Vec<i32>::make();
+        let mut i: usize = 0;
+        while (i < n.kids.len()) {
+            let arm_h = *n.kids.get(i);
+            let arm = node::get(&c.nodes, arm_h);
+            if (arm.kids.len() == 0) {
+                saw_default = true;
+            } else {
+                scope_push(c);
+                let mut j: usize = 0;
+                while (j < arm.kids.len()) {
+                    check_switch_pattern(c, *arm.kids.get(j), st, &mut seen);
+                    j += 1;
+                }
+            }
+            check_stmt(c, arm.b);
+            if (arm.kids.len() != 0) { scope_pop(c); }
+            i += 1;
+        }
+        // Exhaustiveness: an enum switch must cover every variant or have a
+        // default; a scalar switch always needs a default (CASE-01).
+        if (!saw_default) {
+            if (types::is_enum(&c.types, st)) {
+                if (seen.len() < types::member_count(&c.types, st)) {
+                    let mut msg: str::String = str::String::make();
+                    msg.push("`switch` on `");
+                    msg.push(types::tname(&c.types, st));
+                    msg.push("` needs a `default` arm (or every variant)");
+                    add_diag(c, "CASE-01", "non-exhaustive switch", msg.as_str(), h);
+                }
+            } else {
+                let mut msg: str::String = str::String::make();
+                msg.push("`switch` on `");
+                msg.push(types::tname(&c.types, st));
+                msg.push("` needs a `default` arm");
+                add_diag(c, "CASE-01", "non-exhaustive switch", msg.as_str(), h);
+            }
+        }
+    } else if (k == node::AST_RETURN) {
+        if (c.ret_ty != types::TY_UNIT && c.ret_ty > 0) {
+            if (n.a < 0) {
+                add_diag(c, "RET-01", "missing return value",
+                         "This function must return a value.", h);
+            } else {
+                let saved = c.expected;
+                c.expected = c.ret_ty;
+                let t = check_expr(c, n.a);
+                c.expected = saved;
+                if (t != types::TY_INVALID && !coercible(c, c.ret_ty, t)) {
+                    mismatch(c, n.a, c.ret_ty, t, "`return` value");
+                }
+                stamp_lits(c, n.a, c.ret_ty);
+            }
+        } else if (n.a >= 0) {
+            let t = check_expr(c, n.a);
+            if (t != types::TY_INVALID && !types::eq(t, types::TY_UNIT, &c.types)) {
+                mismatch(c, n.a, types::TY_UNIT, t, "`return` value");
+            }
+        }
+        set_ty(c, h, types::TY_NEVER);
+    } else if (k == node::AST_BREAK || k == node::AST_CONTINUE) {
+        set_ty(c, h, types::TY_NEVER);
+    } else if (k == node::AST_UNCHECKED) {
+        if (c.deny_unchecked == 1) {
+            add_diag(c, "UNCK-05", "`unchecked` is disabled by --deny-unchecked",
+                     "Remove the block or drop the flag.", h);
+        }
+        let reason_len = n.sval.len();
+        if (reason_len < 12) {
+            add_diag(c, "UNCK-02", "the reason has to be a reason",
+                     "`unchecked` reasons must be at least 12 characters.", h);
+        }
+        c.unchecked_depth += 1;
+        check_stmt_block(c, n.a);
+        c.unchecked_depth -= 1;
+        set_ty(c, h, types::TY_UNIT);
+    } else {
+        let t = check_expr(c, h);
+        set_ty(c, h, t);
+    }
+}
+
+export fn check_stmt_block(c: &mut Checker, h: i32) {
+    if (h < 0) { return; }
+    scope_push(c);
+    let n = node::get(&c.nodes, h);
+    let mut i: usize = 0;
+    while (i < n.kids.len()) {
+        check_stmt(c, *n.kids.get(i));
+        i += 1;
+    }
+    scope_pop(c);
+}
+
+// Checks one function body as a fresh scope with params/generics bound.
+// Checks a generic template's body ONCE with every parameter bound to a fresh
+// stand-in type. This mirrors harmony-base, which type-checks the template
+// body (so errors like `return x; // wrong type` are caught) even though it
+// also instantiates per concrete argument later.
+fn check_template_body(c: &mut Checker, fh: i32) {
+    let f = node::get(&c.nodes, fh);
+    if (f.b < 0) { return; }
+    let saved_ret = c.ret_ty;
+    let saved_fn = c.cur_fn;
+    scope_push(c);
+    let mut i: usize = 0;
+    while (i < f.kids.len()) {
+        let gp = node::get(&c.nodes, *f.kids.get(i));
+        let pname = param_base(&gp.sval);
+        if (pname != "") {
+            let gt = types::new_named(&mut c.types, types::CTY_GENPARAM, pname, *f.kids.get(i));
+            declare(c, *f.kids.get(i), pname, SK_GEN, gt, 0);
+        }
+        i += 1;
+    }
+    // Parameters: resolve their types with the parameters in scope.
+    i = 0;
+    while (i < f.kids2.len()) {
+        let p = *f.kids2.get(i);
+        let pn = node::get(&c.nodes, p);
+        let mut pt = resolve_type(c, pn.a);
+        if (pt == types::TY_INVALID) { pt = types::TY_I32; }
+        set_ty(c, p, pt);
+        declare(c, p, pn.sval, SK_PARAM, pt, 0);
+        i += 1;
+    }
+    let mut ret = types::TY_UNIT;
+    if (f.a >= 0) {
+        ret = resolve_type(c, f.a);
+        if (ret == types::TY_INVALID) { ret = types::TY_UNIT; }
+    }
+    c.ret_ty = ret;
+    c.cur_fn = fh;
+    check_stmt_block(c, f.b);
+    if (ret != types::TY_UNIT && ret != types::TY_NEVER && !block_ends_in_return(&*c, f.b)) {
+        add_diag(c, "RET-01", "missing return value",
+                 "Control can reach the end of the body.", fh);
+    }
+    scope_pop(c);
+    c.ret_ty = saved_ret;
+    c.cur_fn = saved_fn;
+}
+
+fn check_fn_body(c: &mut Checker, fh: i32) {
+    let f = node::get(&c.nodes, fh);
+    if (f.b < 0) { return; }   // extern declaration
+    // A generic instance's body was already checked as a template; the shared
+    // nodes keep the template's types, so do not re-check (that re-check would
+    // compare concrete params against the template's `T` return type).
+    if (f.ival == 2 || f.ival == 3) { return; }
+    let saved_ret = c.ret_ty;
+    let saved_fn = c.cur_fn;
+    c.ret_ty = f.ty;
+    c.cur_fn = fh;
+    scope_push(c);
+    // Generic parameters are types in this scope.
+    let mut i: usize = 0;
+    while (i < f.kids.len()) {
+        let gp = node::get(&c.nodes, *f.kids.get(i));
+        let pname = param_base(&gp.sval);
+        if (pname != "") {
+            let gt = types::new_named(&mut c.types, types::CTY_GENPARAM, pname, *f.kids.get(i));
+            declare(c, *f.kids.get(i), pname, SK_GEN, gt, 0);
+        }
+        i += 1;
+    }
+    // Parameters.
+    i = 0;
+    while (i < f.kids2.len()) {
+        let p = node::get(&c.nodes, *f.kids2.get(i));
+        if (is_self_param(&p.sval)) {
+            let mut st = p.ty;
+            if (st <= 0 || st == types::TY_UNIT) { st = types::elem(&c.types, st); }
+            if (st <= 0 || st == types::TY_UNIT) { st = f.ival as i32; }
+            let mut smut: i32 = 0;
+            if (p.sval == "mut self" || p.sval == "&mut self") { smut = 1; }
+            declare(c, *f.kids2.get(i), "self", SK_SELF, st, smut);
+        } else {
+            let mut mutbl: i32 = 0;
+            if (p.ival == 1) { mutbl = 1; }
+            declare(c, *f.kids2.get(i), p.sval, SK_PARAM, p.ty, mutbl);
+        }
+        i += 1;
+    }
+    check_stmt_block(c, f.b);
+    if (f.ty != types::TY_UNIT && f.ty != types::TY_NEVER
+        && !block_ends_in_return(&*c, f.b)) {
+        add_diag(c, "RET-01", "missing return value",
+                 "Control can reach the end of the body.", fh);
+    }
+    scope_pop(c);
+    c.ret_ty = saved_ret;
+    c.cur_fn = saved_fn;
+}
+
+// ---- program registration and entry --------------------------------------
+
+fn register_struct(c: &mut Checker, h: i32) {
+    let n = node::get(&c.nodes, h);
+    if (n.kids.len() > 0) {
+        c.gen_tys.push(h);
+        return;
+    }
+    let id = types::new_named(&mut c.types, types::CTY_STRUCT, n.sval, h);
+    declare(c, h, n.sval, SK_TYPE, id, 0);
+}
+
+fn register_enum(c: &mut Checker, h: i32) {
+    let n = node::get(&c.nodes, h);
+    if (n.kids.len() > 0) {
+        c.gen_tys.push(h);
+        return;
+    }
+    let id = types::new_named(&mut c.types, types::CTY_ENUM, n.sval, h);
+    declare(c, h, n.sval, SK_TYPE, id, 0);
+}
+
+fn fill_struct(c: &mut Checker, h: i32) {
+    let n = node::get(&c.nodes, h);
+    if (n.kids.len() > 0) { return; }
+    let sym = lookup(&*c, n.sval);
+    if (sym < 0) { return; }
+    let id = sym_ty(&*c, sym);
+    let mut i: usize = 0;
+    while (i < n.kids2.len()) {
+        let f = node::get(&c.nodes, *n.kids2.get(i));
+        let ft = resolve_type(c, f.a);
+        types::add_member(&mut c.types, id, f.sval, ft);
+        i += 1;
+    }
+}
+
+fn fill_enum(c: &mut Checker, h: i32) {
+    let n = node::get(&c.nodes, h);
+    if (n.kids.len() > 0) { return; }
+    let sym = lookup(&*c, n.sval);
+    if (sym < 0) { return; }
+    let id = sym_ty(&*c, sym);
+    // Two phases: build every variant's payload struct FIRST, then add the
+    // enum's own member list. A type's members must be contiguous (member
+    // lookup is `mstart + i`), so interleaving a payload's members with the
+    // enum's would corrupt the enum's member slice.
+    let mut pids: vec::Vec<i32> = vec::Vec<i32>::make();
+    let mut i: usize = 0;
+    while (i < n.kids2.len()) {
+        let v = *n.kids2.get(i);
+        let vn = node::get(&c.nodes, v);
+        let mut pt: i32 = types::TY_UNIT;
+        if (vn.kids.len() > 0) {
+            pt = types::new_named(&mut c.types, types::CTY_STRUCT, vn.sval, v);
+            let mut j: usize = 0;
+            while (j < vn.kids.len()) {
+                let ft = resolve_type(c, *vn.kids.get(j));
+                types::add_member(&mut c.types, pt, "", ft);
+                j += 1;
+            }
+        }
+        pids.push(pt);
+        i += 1;
+    }
+    i = 0;
+    while (i < n.kids2.len()) {
+        let vn = node::get(&c.nodes, *n.kids2.get(i));
+        types::add_member(&mut c.types, id, vn.sval, *pids.get(i));
+        i += 1;
+    }
+}
+
+fn register_fn(c: &mut Checker, h: i32) {
+    let n = node::get(&c.nodes, h);
+    if (n.kids.len() > 0) {   // generic params
+        c.gen_fns.push(h);
+        return;
+    }
+    prepare_fn_sig(c, h);
+    declare(c, h, n.sval, SK_FN, node::get(&c.nodes, h).ty, 0);
+}
+
+// Resolves a function's return and parameter types and records it for body
+// checking, WITHOUT declaring a symbol. A method's identity is
+// `(receiver type, name)`, so it must not bind its bare name globally (two
+// types may each have `m`).
+fn prepare_fn_sig(c: &mut Checker, h: i32) {
+    let n = node::get(&c.nodes, h);
+    let mut ret: i32 = types::TY_UNIT;
+    if (n.a >= 0) { ret = resolve_type(c, n.a); }
+    if (ret == types::TY_INVALID) { ret = types::TY_UNIT; }
+    set_ty(c, h, ret);
+    let mut i: usize = 0;
+    while (i < n.kids2.len()) {
+        let p = *n.kids2.get(i);
+        let pn = node::get(&c.nodes, p);
+        if (is_self_param(&pn.sval)) {
+            i += 1;
+            continue;   // receiver type set by register_methods
+        }
+        let mut pt = resolve_type(c, pn.a);
+        if (pt == types::TY_INVALID) { pt = types::TY_I32; }
+        set_ty(c, p, pt);
+        i += 1;
+    }
+    c.fns.push(h);
+}
+
+fn ffi_ty_ok(c: &Checker, ty: i32) -> bool {
+    if (types::is_ptr(&c.types, ty)) { return true; }
+    if (types::is_primitive(ty) && ty != types::TY_UNIT && ty != types::TY_NEVER) { return true; }
+    return false;
+}
+
+fn register_extern(c: &mut Checker, h: i32) {
+    let n = node::get(&c.nodes, h);
+    if (n.kids.len() > 0) { c.gen_fns.push(h); return; }
+    let mut ret: i32 = types::TY_UNIT;
+    if (n.a >= 0) { ret = resolve_type(c, n.a); }
+    if (ret == types::TY_INVALID) { ret = types::TY_UNIT; }
+    set_ty(c, h, ret);
+    let mut i: usize = 0;
+    while (i < n.kids2.len()) {
+        let p = *n.kids2.get(i);
+        let pn = node::get(&c.nodes, p);
+        if (is_self_param(&pn.sval)) {
+            i += 1;
+            continue;   // receiver type set by register_methods
+        }
+        let mut pt = resolve_type(c, pn.a);
+        if (pt == types::TY_INVALID) { pt = types::TY_I32; }
+        set_ty(c, p, pt);
+        i += 1;
+    }
+    // FFI: only the C ABI is implemented (§6.8).
+    if (n.abi != "C") {
+        let mut msg: str::String = str::String::make();
+        msg.push("the ABI `"); msg.push(n.abi); msg.push("` is not supported");
+        add_diag(c, "FFI-01", "unknown ABI", msg.as_str(), h);
+    }
+    // FFI signature: only primitives and raw pointers cross the boundary.
+    let mut j: usize = 0;
+    while (j < n.kids2.len()) {
+        let p = *n.kids2.get(j);
+        let pt = node::get(&c.nodes, p);
+        if (pt.a < 0) {
+            add_diag(c, "TYPE-02", "not an FFI type",
+                     "a foreign function cannot have a `self` parameter", p);
+        } else if (!ffi_ty_ok(&*c, pt.ty)) {
+            let mut msg: str::String = str::String::make();
+            msg.push("parameter `"); msg.push(pt.sval);
+            msg.push("`: `"); msg.push(types::tname(&c.types, pt.ty));
+            msg.push("` cannot cross the C boundary");
+            add_diag(c, "TYPE-02", "not an FFI type", msg.as_str(), p);
+        }
+        j += 1;
+    }
+    if (ret != types::TY_UNIT && !ffi_ty_ok(&*c, ret)) {
+        add_diag(c, "TYPE-02", "not an FFI type",
+                 "`return type` cannot cross the C boundary", h);
+    }
+    c.fns.push(h);
+    declare(c, h, n.sval, SK_FN, ret, 0);
+}
+
+fn const_expr_ok(c: &Checker, h: i32) -> bool {
+    if (h < 0) { return false; }
+    let n = node::get(&c.nodes, h);
+    if (n.kind == node::AST_INT_LIT || n.kind == node::AST_FLOAT_LIT
+        || n.kind == node::AST_CHAR_LIT || n.kind == node::AST_BOOL_LIT
+        || n.kind == node::AST_STRING_LIT) {
+        return true;
+    }
+    if (n.kind == node::AST_UNARY || n.kind == node::AST_BINARY) {
+        if (n.a >= 0 && !const_expr_ok(c, n.a)) { return false; }
+        if (n.b >= 0 && !const_expr_ok(c, n.b)) { return false; }
+        return true;
+    }
+    if (n.kind == node::AST_PATH) {
+        // A bare path may name a constant, including one from another module.
+        let sym = lookup(c, n.sval);
+        return sym >= 0 && sym_kind(c, sym) == SK_CONST;
+    }
+    if (n.kind == node::AST_STRUCT_INIT || n.kind == node::AST_FIELD_INIT
+        || n.kind == node::AST_ARRAY_LIT) {
+        let mut i: usize = 0;
+        while (i < n.kids.len()) {
+            if (!const_expr_ok(c, *n.kids.get(i))) { return false; }
+            i += 1;
+        }
+        if (n.a >= 0 && !const_expr_ok(c, n.a)) { return false; }
+        return true;
+    }
+    return false;
+}
+
+fn register_const(c: &mut Checker, h: i32) {
+    let n = node::get(&c.nodes, h);
+    let mut ty = resolve_type(c, n.a);
+    if (ty == types::TY_INVALID) { ty = types::TY_I32; }
+    set_ty(c, h, ty);
+    // A `const` initializer must be a compile-time constant (CONST-01).
+    if (!const_expr_ok(&*c, n.b)) {
+        add_diag(c, "CONST-01", "constant initializer is not a constant",
+                 "A `const` must be initialized with a literal or a constant expression.", h);
+    } else {
+        let vt = check_expr(c, n.b);
+        if (vt != types::TY_INVALID && !coercible(c, ty, vt)) {
+            mismatch(c, n.b, ty, vt, "`const` initializer");
+        }
+        stamp_lits(c, n.b, ty);
+    }
+    declare(c, h, n.sval, SK_CONST, ty, 0);
+}
+
+fn register_methods(c: &mut Checker, h: i32) {
+    let n = node::get(&c.nodes, h);
+    if (n.kids.len() > 0) {
+        // `methods<T> Box<T>`: each method is a template instantiated once per
+        // concrete receiver (`Box<i32>`, `Box<u8>`), with `self`, the return
+        // type, and the body's `T` substituted (§5.8, §18).
+        let mut i: usize = 0;
+        while (i < n.kids2.len()) {
+            let f = *n.kids2.get(i);
+            let mut fnode = node::get(&c.nodes, f);
+            fnode.sfx = fnode.sval;      // method name
+            node::put(&mut c.nodes, f, fnode);
+            c.gtmpls.push(f);
+            let mut b: str::String = str::String::make(); b.push(n.sval);
+            c.gtbases.push(b);
+            let mut nm: str::String = str::String::make(); nm.push(fnode.sfx);
+            c.gtnames.push(nm);
+            i += 1;
+        }
+        return;
+    }
+    let base = lookup(&*c, n.sval);
+    if (base < 0 || sym_kind(&*c, base) != SK_TYPE) {
+        err_unknown(c, h, n.sval, true);
+        return;
+    }
+    let recv = sym_ty(&*c, base);
+    let mut i: usize = 0;
+    while (i < n.kids2.len()) {
+        let f = *n.kids2.get(i);
+        let mut fnode = node::get(&c.nodes, f);
+        fnode.sfx = fnode.sval;         // method name for lookup
+        fnode.ival = recv as i64;       // receiver type
+        node::put(&mut c.nodes, f, fnode);
+        // The self parameter's type depends on its spelling.
+        let fp = node::get(&c.nodes, f);
+        if (fp.kids2.len() > 0) {
+            let sp = *fp.kids2.get(0);
+            let sn = node::get(&c.nodes, sp);
+            if (is_self_param(&sn.sval)) {
+                let mut st: i32 = recv;
+                if (sn.sval == "&self") {
+                    st = types::new_type(&mut c.types, types::CTY_REF,
+                        concat3("&", types::tname(&c.types, recv), ""), recv, 0);
+                } else if (sn.sval == "&mut self") {
+                    st = types::new_type(&mut c.types, types::CTY_MUTREF,
+                        concat3("&mut ", types::tname(&c.types, recv), ""), recv, 0);
+                }
+                set_ty(c, sp, st);
+            }
+        }
+        prepare_fn_sig(c, f);
+        i += 1;
+    }
+}
+
+fn check_main(c: &mut Checker) {
+    let sym = lookup(&*c, "main");
+    if (sym < 0) { return; }
+    c.main_ty = sym_ty(&*c, sym);
+    let d = sym_decl(&*c, sym);
+    c.main_params = node::get(&c.nodes, d).kids2.len();
+    if (sym_kind(&*c, sym) != SK_FN) {
+        add_diag(c, "TYPE-06", "`main` is not a function",
+                 "The entry point must be `fn main() -> i32` or `fn main()`.", d);
+        return;
+    }
+    let t = sym_ty(&*c, sym);
+    if (t != types::TY_UNIT && t != types::TY_I32 && t != types::TY_NEVER) {
+        add_diag(c, "TYPE-06", "`main` must return `i32` or nothing",
+                 "The returned `i32` becomes the process exit code.", d);
+    }
+    if (c.main_params > 0) {
+        add_diag(c, "TYPE-06", "`main` takes no parameters",
+                 "The runtime calls `main` with no arguments.", d);
+    }
+}
+
+// Checks a whole merged program. Returns the number of diagnostics.
+export fn check_program(c: &mut Checker, program: i32) -> i32 {
+    if (program < 0) { return 0; }
+    register_primitives(c);
+    let p = node::get(&c.nodes, program);
+    // Pass 1: nominal names.
+    let mut i: usize = 0;
+    while (i < p.kids.len()) {
+        let h = *p.kids.get(i);
+        let n = node::get(&c.nodes, h);
+        if (n.kind == node::AST_STRUCT) { register_struct(c, h); }
+        if (n.kind == node::AST_ENUM) { register_enum(c, h); }
+        i += 1;
+    }
+    // Pass 2: members.
+    i = 0;
+    while (i < p.kids.len()) {
+        let h = *p.kids.get(i);
+        let n = node::get(&c.nodes, h);
+        if (n.kind == node::AST_STRUCT) { fill_struct(c, h); }
+        if (n.kind == node::AST_ENUM) { fill_enum(c, h); }
+        i += 1;
+    }
+    // Pass 3: everything else.
+    i = 0;
+    while (i < p.kids.len()) {
+        let h = *p.kids.get(i);
+        let n = node::get(&c.nodes, h);
+        if (n.kind == node::AST_FN) { register_fn(c, h); }
+        if (n.kind == node::AST_EXTERN_FN) { register_extern(c, h); }
+        if (n.kind == node::AST_CONST) { register_const(c, h); }
+        if (n.kind == node::AST_METHODS) { register_methods(c, h); }
+        i += 1;
+    }
+    check_main(c);
+    // Body pass: copy the fn list (instances may be appended during checks).
+    let mut k: usize = 0;
+    while (k < c.fns.len()) {
+        let fh = *c.fns.get(k);
+        check_fn_body(c, fh);
+        k += 1;
+    }
+    // Generic templates: check each body once with its parameters bound.
+    k = 0;
+    while (k < c.gen_fns.len()) {
+        let fh = *c.gen_fns.get(k);
+        check_template_body(c, fh);
+        k += 1;
+    }
+    return c.diags.len() as i32;
+}

@@ -1,0 +1,34 @@
+// A name-resolution driver for R4: builds a small module table from embedded
+// source literals, loads/merges it, resolves names, and prints every
+// diagnostic code. The Python harness supplies the module sources.
+import "../../library/core/vec.hr";
+import "../../library/core/mem.hr";
+import "../../harmony/ast/node.hr";
+import "../../harmony/driver/loader.hr";
+import "../../harmony/sema/resolve.hr";
+
+fn run(mods: &vec::Vec<loader::Module>, root: &str) -> i32 {
+    let mut arena: mem::Arena = mem::Arena { .cur = Raw::null() };
+    let mut ns: node::Nodes = node::nodes_make();
+    let l = loader::load(&mut ns, &mut arena, mods, root);
+    let mut r = resolve::make(root);
+    if (l.program >= 0) { resolve::resolve(&mut r, &ns, l.program); }
+    let mut i: usize = 0;
+    while (i < l.diags.len()) {
+        println("DIAG {}", l.diags.get(i).code);
+        i += 1;
+    }
+    i = 0;
+    while (i < r.diags.len()) {
+        println("DIAG {}", r.diags.get(i).code);
+        i += 1;
+    }
+    return 0;
+}
+
+fn main() -> i32 {
+    // Overwritten by the generated driver.
+    let mut mods: vec::Vec<loader::Module> = vec::Vec<loader::Module>::make();
+    mods.push(loader::Module { .path = "main.harmony", .src = "fn main() -> i32 { return 0; }" });
+    return run(&mods, "main.harmony");
+}

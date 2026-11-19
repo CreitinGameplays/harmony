@@ -1,0 +1,239 @@
+// library/core/str.hr — text helpers and a growable `String`.
+//
+// `harmony` is written in Harmony, so it speaks `&str` in signatures and
+// builds `String` when it needs to synthesize text (mangled symbols, rendered
+// diagnostics). Two rules keep this layer honest:
+//
+//   * `&str` is a *view*: every function here reads bytes and allocates
+//     nothing unless it returns a `String`.
+//   * `String` owns a `Vec<u8>` and promises valid UTF-8. The constructors
+//     that can break that promise are the raw ones, which stay `unchecked`.
+//
+// Byte-level indexing uses `s.as_bytes()` (§5.2: `s[i]` is not
+// integer-indexable — "the 3rd what?" — the byte view is explicit).
+//
+// `String` is built on `Vec<u8>`, so the module imports it (§6.7).
+import "vec.hr";
+
+// ---------------------------------------------------------------------------
+// Byte classification. The scanner's whole alphabet lives here.
+// ---------------------------------------------------------------------------
+export fn is_digit(c: u8) -> bool { return c >= 48u8 && c <= 57u8; }
+export fn is_upper(c: u8) -> bool { return c >= 65u8 && c <= 90u8; }
+export fn is_lower(c: u8) -> bool { return c >= 97u8 && c <= 122u8; }
+export fn is_alpha(c: u8) -> bool { return is_upper(c) || is_lower(c); }
+export fn is_alnum(c: u8) -> bool { return is_alpha(c) || is_digit(c); }
+export fn is_hex(c: u8) -> bool {
+    return is_digit(c) || (c >= 97u8 && c <= 102u8) || (c >= 65u8 && c <= 70u8);
+}
+export fn is_space(c: u8) -> bool {
+    return c == 32u8 || c == 9u8 || c == 10u8 || c == 13u8 || c == 11u8 || c == 12u8;
+}
+export fn is_ident_start(c: u8) -> bool { return is_alpha(c) || c == 95u8; }
+export fn is_ident_cont(c: u8) -> bool { return is_alnum(c) || c == 95u8; }
+
+// The value of a hex digit (caller has checked `is_hex`).
+export fn hex_value(c: u8) -> u8 {
+    if (is_digit(c)) { return c - 48u8; }
+    if (c >= 97u8 && c <= 102u8) { return c - 87u8; }
+    return c - 55u8;
+}
+
+// ---------------------------------------------------------------------------
+// `&str` queries and slices. None of these allocate.
+// ---------------------------------------------------------------------------
+export fn len(s: &str) -> usize { return s.len(); }
+export fn is_empty(s: &str) -> bool { return s.len() == 0; }
+export fn byte_at(s: &str, i: usize) -> u8 { return s.as_bytes()[i]; }
+
+// Byte-wise equality (the `==` operator already compares contents, but code
+// that walks a cursor wants the explicit helper).
+export fn eq(a: &str, b: &str) -> bool { return a == b; }
+
+export fn starts_with(s: &str, pre: &str) -> bool {
+    if (pre.len() > s.len()) { return false; }
+    let a = s.as_bytes();
+    let b = pre.as_bytes();
+    let mut i: usize = 0;
+    while (i < pre.len()) {
+        if (a[i] != b[i]) { return false; }
+        i += 1;
+    }
+    return true;
+}
+
+export fn ends_with(s: &str, suf: &str) -> bool {
+    if (suf.len() > s.len()) { return false; }
+    let at = s.len() - suf.len();
+    let a = s.as_bytes();
+    let b = suf.as_bytes();
+    let mut i: usize = 0;
+    while (i < suf.len()) {
+        if (a[at + i] != b[i]) { return false; }
+        i += 1;
+    }
+    return true;
+}
+
+// First index of `needle` at or after `from`, or -1.
+export fn find_from(s: &str, needle: &str, from: usize) -> i64 {
+    if (needle.len() == 0) { return from as i64; }
+    if (needle.len() > s.len()) { return -1; }
+    let a = s.as_bytes();
+    let b = needle.as_bytes();
+    let mut i: usize = from;
+    while (i + needle.len() <= s.len()) {
+        let mut j: usize = 0;
+        let mut hit: bool = true;
+        while (j < needle.len()) {
+            if (a[i + j] != b[j]) { hit = false; break; }
+            j += 1;
+        }
+        if (hit) { return i as i64; }
+        i += 1;
+    }
+    return -1;
+}
+
+export fn find(s: &str, needle: &str) -> i64 {
+    return find_from(s, needle, 0);
+}
+
+export fn contains(s: &str, needle: &str) -> bool {
+    return find(s, needle) >= 0;
+}
+
+// The byte range `[lo, hi)` as a `&str`. Traps (T-SLICE) when a bound splits
+// a UTF-8 code point, which is the documented behavior (§14.1).
+export fn slice(s: &str, lo: usize, hi: usize) -> &str {
+    return &s[lo..hi];
+}
+
+// ---------------------------------------------------------------------------
+// `String`: an owned, growable, valid-UTF-8 byte buffer.
+// ---------------------------------------------------------------------------
+export struct String {
+    bytes: vec::Vec<u8>;
+}
+
+methods String {
+    export fn make() -> String {
+        return String { .bytes = vec::Vec<u8>::make() };
+    }
+
+    export fn len(&self) -> usize { return self.bytes.len(); }
+    export fn is_empty(&self) -> bool { return self.bytes.len() == 0; }
+    export fn byte_at(&self, i: usize) -> u8 { return *self.bytes.get(i); }
+    export fn clear(&mut self) { self.bytes.clear(); }
+    export fn release(&mut self) { self.bytes.release(); }
+
+    // A `&str` view of the current contents. `self` is shared, so the view
+    // cannot outlive a mutation by the borrow rules once they land (M3).
+    export fn as_str(&self) -> &str {
+        // An empty String has no slot 0: reading through a null pointer would
+        // fault. Return a static empty slice instead. (A parsed empty string
+        // literal `""` reaches this path, so it is not a theoretical case.)
+        if (self.bytes.len() == 0) { return ""; }
+        unchecked("the bytes are valid UTF-8 by construction (see push_byte)") {
+            return str::from_parts(self.bytes.get_unchecked(0) as raw u8, self.bytes.len());
+        }
+    }
+
+    // Appends one byte. The `String` buffer is a raw byte vector, so all 256
+    // values are accepted: UTF-8 text is appended byte by byte (a caller that
+    // walks a &str gets the encoded bytes via as_bytes(), which are valid
+    // UTF-8 by construction). Restricting this to ASCII silently dropped
+    // non-ASCII text -- `json_escape("héllo")` lost the é.
+    export fn push_byte(&mut self, b: u8) {
+        self.bytes.push(b);
+    }
+
+    export fn push(&mut self, s: &str) {
+        let a = s.as_bytes();
+        let mut i: usize = 0;
+        while (i < s.len()) {
+            self.bytes.push(a[i]);
+            i += 1;
+        }
+    }
+
+    // Appends a decimal integer.
+    export fn push_i64(&mut self, v: i64) {
+        let mut buf: [u8; 24] = [0u8; 24];
+        let mut n: usize = 0;
+        let mut x: i64 = v;
+        let neg = x < 0;
+        // Build the digits backwards, then copy them forwards.
+        if (x == 0) {
+            self.bytes.push(48u8);
+        } else {
+            if (neg) {
+                // Avoid negating i64::MIN by working on a positive quotient
+                // per digit; the magnitude fits in u64.
+                while (x != 0) {
+                    let d = 0 - (x % 10);
+                    buf[n] = 48u8 + (d as u8);
+                    n += 1;
+                    x = x / 10;
+                }
+            } else {
+                while (x != 0) {
+                    buf[n] = 48u8 + ((x % 10) as u8);
+                    n += 1;
+                    x = x / 10;
+                }
+            }
+            if (neg) { self.bytes.push(45u8); }
+            while (n > 0) {
+                n -= 1;
+                self.bytes.push(buf[n]);
+            }
+        }
+    }
+
+    // Appends an unsigned integer.
+    export fn push_u64(&mut self, v: u64) {
+        let mut buf: [u8; 24] = [0u8; 24];
+        let mut n: usize = 0;
+        let mut x: u64 = v;
+        if (x == 0) {
+            self.bytes.push(48u8);
+            return;
+        }
+        while (x != 0) {
+            buf[n] = 48u8 + ((x % 10u64) as u8);
+            n += 1;
+            x = x / 10u64;
+        }
+        while (n > 0) {
+            n -= 1;
+            self.bytes.push(buf[n]);
+        }
+    }
+
+    // Appends a lowercase hex integer, zero-padded to `width` digits.
+    export fn push_hex(&mut self, v: u64, width: usize) {
+        let mut buf: [u8; 16] = [0u8; 16];
+        let mut n: usize = 0;
+        let mut x: u64 = v;
+        if (x == 0) {
+            buf[0] = 48u8;
+            n = 1;
+        } else {
+            while (x != 0 && n < 16) {
+                let d: u8 = (x % 16u64) as u8;
+                if (d < 10u8) { buf[n] = 48u8 + d; } else { buf[n] = 87u8 + d; }
+                n += 1;
+                x = x / 16u64;
+            }
+        }
+        while (n < width && n < 16) {
+            buf[n] = 48u8;
+            n += 1;
+        }
+        while (n > 0) {
+            n -= 1;
+            self.bytes.push(buf[n]);
+        }
+    }
+}

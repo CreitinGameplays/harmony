@@ -1824,8 +1824,15 @@ int ck_instantiate_type(struct AstNode* at, char* base, struct AstList* targs) {
                 same = 1;
                 j = 0;
                 while (j < ntargs) {
-                    if (g_tyinst_args[i * TYINST_ARGS_ROW + j]
-                        != ck_resolve_type(targs->items[j])) {
+                    // Compare *structurally*. An `&str` (or any ref/slice)
+                    // resolves to a fresh type id on each spelling, so an
+                    // exact id comparison made two `Vec<&str>` uses produce
+                    // two different nominal `Vec__Rstr` types -- NAME... a
+                    // TYPE-01 on any program passing a `Vec<&str>` between
+                    // functions. `ty_eq` is exact for nominal types and
+                    // structural for refs/slices, which is the right rule.
+                    if (!ty_eq(g_tyinst_args[i * TYINST_ARGS_ROW + j],
+                               ck_resolve_type(targs->items[j]))) {
                         same = 0;
                         break;
                     }

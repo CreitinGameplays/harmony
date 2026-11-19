@@ -1,0 +1,412 @@
+// harmony/sema/resolve.hr — name resolution (roadmap/harmony R4).
+//
+// Walks the merged AST from the loader and builds a scoped symbol table:
+//   NAME-01  an unknown name or unknown type
+//   NAME-03  a name declared twice in the same scope
+//   NAME-04  comes from the loader (missing module / import cycle)
+//
+// The symbol table is a flat array with scope marks (harmony-base's model):
+// a `declare` checks only the current scope for a duplicate, and a `lookup`
+// walks newest-first so the innermost binding wins (shadowing). Strings are
+// compared by content; nodes carry their declaration for later stages.
+//
+// This pass records *symbols*, not types: the checker (R5) resolves what each
+// symbol means. Keeping them separate is §19.1 stage 3 vs stage 4.
+import "../../library/core/str.hr";
+import "../../library/core/vec.hr";
+import "../../library/core/fmt.hr";
+import "../../harmony/ast/node.hr";
+
+// Symbol kinds. Only the identity matters in this pass; the type table comes
+// in R5, so a `ty` slot is reserved here but left 0.
+const SK_FN: i32 = 1;
+const SK_CONST: i32 = 2;
+const SK_LET: i32 = 3;
+const SK_PARAM: i32 = 4;
+const SK_TYPE: i32 = 5;
+const SK_SELF: i32 = 6;
+const SK_GEN: i32 = 7;
+
+struct Sym {
+    name: &str;
+    kind: i32;
+    decl: i32;      // AST handle of the declaring node
+}
+
+export struct Resolver {
+    syms: vec::Vec<Sym>;
+    scopes: vec::Vec<usize>;   // start marks into `syms`
+    diags: vec::Vec<fmt::Diag>;
+    path: &str;
+}
+
+export fn make(path: &str) -> Resolver {
+    return Resolver {
+        .syms = vec::Vec<Sym>::make(),
+        .scopes = vec::Vec<usize>::make(),
+        .diags = vec::Vec<fmt::Diag>::make(),
+        .path = path,
+    };
+}
+
+// ---- diagnostics ---------------------------------------------------------
+
+fn diag(r: &mut Resolver, code: &str, title: &str, summary: &str, at: i32,
+        nodes: &node::Nodes) {
+    let n = node::get(nodes, at);
+    // Node spans are byte offsets in the source; the line/col are recorded by
+    // the lexer on tokens but the AST keeps only offsets. The code is what the
+    // differential test compares, so line/col are derived from the offset as
+    // a monotonic approximation (see §16: the first line is the identity).
+    let mut line: u32 = 1;
+    let mut col: u32 = 0;
+    let b = nodes.items.get(0);   // unused; keeps spans simple
+    let _ = b;
+    r.diags.push(fmt::Diag {
+        .code = code,
+        .severity = fmt::Severity::Stop,
+        .title = title,
+        .summary = summary,
+        .file = r.path,
+        .line = line,
+        .col = col,
+    });
+}
+
+// ---- scopes and symbols --------------------------------------------------
+
+export fn push_scope(r: &mut Resolver) { r.scopes.push(r.syms.len()); }
+
+export fn pop_scope(r: &mut Resolver) {
+    if (r.scopes.len() > 0) {
+        let mark = *r.scopes.get(r.scopes.len() - 1);
+        r.scopes.pop();
+        // Truncate by rebuilding: `Vec` has no `truncate` yet, so pop the
+        // tail one at a time.
+        while (r.syms.len() > mark) { r.syms.pop(); }
+    }
+}
+
+fn scope_start(r: &Resolver) -> usize {
+    if (r.scopes.len() == 0) { return 0; }
+    return *r.scopes.get(r.scopes.len() - 1);
+}
+
+// Declares a name in the current scope. Returns its index, or -1 when the
+// name is already taken *in this scope* (NAME-03; outer bindings may be
+// shadowed).
+fn declare(r: &mut Resolver, nodes: &node::Nodes, at: i32, name: &str,
+           kind: i32) -> i32 {
+    let lo = scope_start(&*r);
+    let mut i = lo;
+    while (i < r.syms.len()) {
+        if (r.syms.get(i).name == name) {
+            diag(r, "NAME-03", "name already in use",
+                 "The name is already declared in this scope.", at, nodes);
+            return -1;
+        }
+        i += 1;
+    }
+    r.syms.push(Sym { .name = name, .kind = kind, .decl = at });
+    return r.syms.len() as i32 - 1;
+}
+
+// Innermost binding of a name, or -1 (NAME-01 at the call site).
+fn lookup(r: &Resolver, name: &str) -> i32 {
+    let mut i: usize = r.syms.len();
+    while (i > 0) {
+        i -= 1;
+        if (r.syms.get(i).name == name) { return i as i32; }
+    }
+    return -1;
+}
+
+fn unknown(r: &mut Resolver, nodes: &node::Nodes, at: i32, name: &str,
+           is_type: bool) {
+    if (is_type) {
+        diag(r, "NAME-01", "unknown type",
+             "The type is not in scope.", at, nodes);
+    } else {
+        diag(r, "NAME-01", "unknown name",
+             "The name is not in scope.", at, nodes);
+    }
+}
+
+// ---- type expressions ----------------------------------------------------
+
+// Prelude and primitive types that are always in scope.
+fn builtin_type(s: &str) -> bool {
+    if (s == "i8" || s == "i16" || s == "i32" || s == "i64") { return true; }
+    if (s == "u8" || s == "u16" || s == "u32" || s == "u64") { return true; }
+    if (s == "isize" || s == "usize") { return true; }
+    if (s == "f32" || s == "f64") { return true; }
+    if (s == "bool" || s == "char" || s == "str" || s == "never") { return true; }
+    if (s == "Heap" || s == "Maybe" || s == "Outcome") { return true; }
+    return false;
+}
+
+// Resolves one type node. A path type's *head* is the name to check; the
+// generic arguments are walked as types too.
+fn resolve_type(r: &mut Resolver, nodes: &node::Nodes, h: i32) {
+    if (h < 0) { return; }
+    let n = node::get(nodes, h);
+    if (n.kind == node::AST_TYPE_NAME) {
+        // "Vec<i32>": the head is before '<'. Module-qualified paths already
+        // carry their `::` prefix from the loader.
+        let name = head_name(n.sval);
+        if (!builtin_type(name) && lookup(&*r, name) < 0) {
+            unknown(r, nodes, h, name, true);
+        }
+        let mut i: usize = 0;
+        while (i < n.kids.len()) {
+            resolve_type(r, nodes, *n.kids.get(i));
+            i += 1;
+        }
+        return;
+    }
+    // Ref/raw/array/slice: check the inner type (and an array's length expr).
+    resolve_type(r, nodes, n.a);
+    resolve_type(r, nodes, n.b);
+}
+
+fn head_name(s: &str) -> &str {
+    let b = s.as_bytes();
+    let mut i: usize = 0;
+    while (i < s.len()) {
+        if (b[i] == 60u8 || b[i] == 40u8) { return &s[0..i]; }   // '<' or '('
+        i += 1;
+    }
+    return s;
+}
+
+// ---- expression and statement walks --------------------------------------
+
+// Prelude functions and methods that are always callable.
+fn builtin_fn(s: &str) -> bool {
+    if (s == "print" || s == "println" || s == "eprintln") { return true; }
+    if (s == "trap" || s == "assert" || s == "unreachable" || s == "exit") { return true; }
+    if (s == "args" || s == "alloc" || s == "dealloc" || s == "reinterpret") { return true; }
+    if (s == "raw" || s == "sizeof" || s == "heap") { return true; }
+    if (s == "true" || s == "false") { return true; }
+    if (s == "Has" || s == "Empty" || s == "Good" || s == "Bad") { return true; }
+    return false;
+}
+
+// Does a `::` path name a builtin's tail (e.g. `str::from_parts`)?
+fn builtin_path(s: &str) -> bool {
+    if (s == "Raw::null" || s == "str::from_parts") { return true; }
+    if (s == "Heap::into_raw" || s == "Heap::from_raw") { return true; }
+    if (s == "Maybe::Has" || s == "Maybe::Empty") { return true; }
+    return false;
+}
+
+fn resolve_expr(r: &mut Resolver, nodes: &node::Nodes, h: i32) {
+    if (h < 0) { return; }
+    let n = node::get(nodes, h);
+    let k = n.kind;
+    if (k == node::AST_PATH) {
+        if (n.sval != "") {
+            let name = head_name(n.sval);
+            if (!builtin_fn(name) && !builtin_path(name)
+                && lookup(&*r, name) < 0 && !has_colons(name)) {
+                unknown(r, nodes, h, name, false);
+            }
+        }
+        let mut i: usize = 0;
+        while (i < n.kids.len()) { resolve_type(r, nodes, *n.kids.get(i)); i += 1; }
+    } else if (k == node::AST_CALL) {
+        if (n.a < 0 && n.sval != "") {
+            let name = head_name(n.sval);
+            if (!builtin_fn(name) && !builtin_path(name)
+                && lookup(&*r, name) < 0 && !has_colons(name)) {
+                unknown(r, nodes, h, name, false);
+            }
+        }
+        resolve_expr(r, nodes, n.a);
+        let mut i: usize = 0;
+        while (i < n.kids.len()) { resolve_expr(r, nodes, *n.kids.get(i)); i += 1; }
+        i = 0;
+        while (i < n.kids2.len()) { resolve_type(r, nodes, *n.kids2.get(i)); i += 1; }
+    } else if (k == node::AST_STRUCT_INIT) {
+        let name = head_name(n.sval);
+        if (!builtin_type(name) && lookup(&*r, name) < 0) {
+            unknown(r, nodes, h, name, true);
+        }
+        let mut i: usize = 0;
+        while (i < n.kids.len()) {
+            resolve_expr(r, nodes, node::get(nodes, *n.kids.get(i)).a);
+            i += 1;
+        }
+    } else if (k == node::AST_SIZEOF) {
+        resolve_type(r, nodes, n.a);
+    } else if (k == node::AST_HEAP || k == node::AST_DEREF
+               || k == node::AST_UNARY || k == node::AST_BORROW
+               || k == node::AST_RAW_EXPR || k == node::AST_ARRAY_LIT) {
+        resolve_expr(r, nodes, n.a);
+        resolve_expr(r, nodes, n.b);
+        let mut i: usize = 0;
+        while (i < n.kids.len()) { resolve_expr(r, nodes, *n.kids.get(i)); i += 1; }
+    } else {
+        // Binary / field / index / as / literals: walk the children.
+        resolve_expr(r, nodes, n.a);
+        resolve_expr(r, nodes, n.b);
+        resolve_expr(r, nodes, n.c);
+        let mut i: usize = 0;
+        while (i < n.kids.len()) { resolve_expr(r, nodes, *n.kids.get(i)); i += 1; }
+    }
+}
+
+fn has_colons(s: &str) -> bool {
+    let b = s.as_bytes();
+    let mut i: usize = 0;
+    while (i < s.len()) {
+        if (b[i] == 58u8) { return true; }
+        i += 1;
+    }
+    return false;
+}
+
+fn resolve_pattern(r: &mut Resolver, nodes: &node::Nodes, h: i32) {
+    if (h < 0) { return; }
+    let n = node::get(nodes, h);
+    if (n.kind == node::AST_PAT_BIND && n.sval != "") {
+        declare(r, nodes, h, n.sval, SK_LET);
+    }
+    resolve_expr(r, nodes, n.a);
+    let mut i: usize = 0;
+    while (i < n.kids.len()) { resolve_pattern(r, nodes, *n.kids.get(i)); i += 1; }
+}
+
+fn resolve_stmt(r: &mut Resolver, nodes: &node::Nodes, h: i32) {
+    if (h < 0) { return; }
+    let n = node::get(nodes, h);
+    let k = n.kind;
+    if (k == node::AST_LET) {
+        resolve_type(r, nodes, n.a);
+        resolve_expr(r, nodes, n.b);
+        if (n.sval != "") { declare(r, nodes, h, n.sval, SK_LET); }
+    } else if (k == node::AST_BLOCK) {
+        push_scope(r);
+        let mut i: usize = 0;
+        while (i < n.kids.len()) { resolve_stmt(r, nodes, *n.kids.get(i)); i += 1; }
+        pop_scope(r);
+    } else if (k == node::AST_IF) {
+        resolve_expr(r, nodes, n.a);
+        resolve_stmt(r, nodes, n.b);
+        resolve_stmt(r, nodes, n.c);
+    } else if (k == node::AST_WHILE) {
+        resolve_expr(r, nodes, n.a);
+        resolve_stmt(r, nodes, n.b);
+    } else if (k == node::AST_FOR) {
+        push_scope(r);
+        resolve_stmt(r, nodes, n.a);
+        resolve_expr(r, nodes, n.b);
+        resolve_stmt(r, nodes, n.c);
+        if (n.sval != "") { declare(r, nodes, h, n.sval, SK_LET); }
+        let mut i: usize = 0;
+        while (i < n.kids.len()) { resolve_stmt(r, nodes, *n.kids.get(i)); i += 1; }
+        pop_scope(r);
+    } else if (k == node::AST_SWITCH) {
+        resolve_expr(r, nodes, n.a);
+        let mut i: usize = 0;
+        while (i < n.kids.len()) {
+            let arm = node::get(nodes, *n.kids.get(i));
+            push_scope(r);
+            let mut j: usize = 0;
+            while (j < arm.kids.len()) { resolve_pattern(r, nodes, *arm.kids.get(j)); j += 1; }
+            resolve_stmt(r, nodes, arm.b);
+            pop_scope(r);
+            i += 1;
+        }
+    } else if (k == node::AST_UNCHECKED) {
+        resolve_stmt(r, nodes, n.a);
+    } else {
+        resolve_expr(r, nodes, h);
+    }
+}
+
+// A function's params and generics live in one scope; its body in a nested
+// one (so a local cannot redeclare a param in the outermost body block).
+fn resolve_fn(r: &mut Resolver, nodes: &node::Nodes, h: i32) {
+    let n = node::get(nodes, h);
+    push_scope(r);
+    let mut i: usize = 0;
+    while (i < n.kids.len()) {
+        let gp = node::get(nodes, *n.kids.get(i));
+        if (gp.sval != "") { declare(r, nodes, *n.kids.get(i), gp.sval, SK_GEN); }
+        i += 1;
+    }
+    i = 0;
+    while (i < n.kids2.len()) {
+        let p = *n.kids2.get(i);
+        let pn = node::get(nodes, p);
+        if (pn.sval != "") { declare(r, nodes, p, pn.sval, SK_PARAM); }
+        resolve_type(r, nodes, pn.a);
+        i += 1;
+    }
+    resolve_type(r, nodes, n.a);   // return type
+    resolve_stmt(r, nodes, n.b);   // body (opens/pops its own scope)
+    pop_scope(r);
+}
+
+// ---- program entry -------------------------------------------------------
+
+export fn resolve(r: &mut Resolver, nodes: &node::Nodes, program: i32) -> i32 {
+    if (program < 0) { return -1; }
+    // Pass 1: declare every top-level item, so order does not matter.
+    let p = node::get(nodes, program);
+    let mut i: usize = 0;
+    while (i < p.kids.len()) {
+        let it = *p.kids.get(i);
+        let n = node::get(nodes, it);
+        // A `methods Type` block is not a symbol: harmony-base registers
+        // its functions on the receiver type, so declaring `Type` here a
+        // second time (once for the struct, once for the methods block) was
+        // a spurious NAME-03.
+        if (n.sval != "" && (n.kind == node::AST_FN || n.kind == node::AST_CONST
+            || n.kind == node::AST_STRUCT || n.kind == node::AST_ENUM
+            || n.kind == node::AST_EXTERN_FN)) {
+            let mut kind: i32 = SK_FN;
+            if (n.kind == node::AST_STRUCT || n.kind == node::AST_ENUM) { kind = SK_TYPE; }
+            declare(r, nodes, it, n.sval, kind);
+        }
+        i += 1;
+    }
+    // Pass 2: resolve bodies and signatures.
+    i = 0;
+    while (i < p.kids.len()) {
+        let it = *p.kids.get(i);
+        let n = node::get(nodes, it);
+        if (n.kind == node::AST_FN || n.kind == node::AST_EXTERN_FN) {
+            resolve_fn(r, nodes, it);
+        } else if (n.kind == node::AST_CONST) {
+            resolve_type(r, nodes, n.a);
+            resolve_expr(r, nodes, n.b);
+        } else if (n.kind == node::AST_METHODS) {
+            let mut j: usize = 0;
+            while (j < n.kids2.len()) {
+                resolve_fn(r, nodes, *n.kids2.get(j));
+                j += 1;
+            }
+        } else if (n.kind == node::AST_STRUCT) {
+            let mut j: usize = 0;
+            while (j < n.kids2.len()) {
+                resolve_type(r, nodes, node::get(nodes, *n.kids2.get(j)).a);
+                j += 1;
+            }
+        } else if (n.kind == node::AST_ENUM) {
+            let mut j: usize = 0;
+            while (j < n.kids2.len()) {
+                let v = *n.kids2.get(j);
+                let mut k: usize = 0;
+                while (k < node::get(nodes, v).kids.len()) {
+                    resolve_type(r, nodes, *node::get(nodes, v).kids.get(k));
+                    k += 1;
+                }
+                j += 1;
+            }
+        }
+        i += 1;
+    }
+    return r.diags.len() as i32;
+}

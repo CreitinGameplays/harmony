@@ -1,0 +1,457 @@
+// harmony/driver/loader.hr — the module loader (roadmap/harmony R4).
+//
+// One file is one module. `import "path";` binds that file's items under the
+// file's base name as a namespace (`geometry::name`); the root module stays
+// un-prefixed. The loader expands imports depth-first in source order, merges
+// once per module, then produces ONE flat item list: imported items renamed
+// `mod::orig`, followed by the root's items unchanged. That is exactly
+// harmony-base's model, so the checker and backend see the same shape.
+//
+// The rewrite has no file IO yet (R7), so the caller supplies the modules as
+// a slice. Strings are kept in raw growable buffers of `&str`: a `Vec<&str>`
+// would hit a generic-substitution quirk where `get` returns `&&str` inside
+// a method, while raw slots of `&str` work (the same shape as `args()`).
+import "../../library/core/str.hr";
+import "../../library/core/vec.hr";
+import "../../library/core/fmt.hr";
+import "../../library/core/mem.hr";
+import "../../harmony/lexer/token.hr";
+import "../../harmony/lexer/ctx.hr";
+import "../../harmony/lexer/scan.hr";
+import "../../harmony/ast/node.hr";
+import "../parser/pctx.hr";
+import "../parser/parse.hr";
+import "../parser/item.hr";
+
+// One module supplied by the caller.
+copy struct Module { path: &str; src: &str; }
+
+copy struct ModuleInfo {
+    path: &str;
+    name: &str;            // namespace (base name sans dir/ext, folded)
+    root: i32;             // that module's AST_PROGRAM handle
+}
+
+export struct Loaded {
+    program: i32;          // merged AST_PROGRAM handle, -1 on failure
+    modules: vec::Vec<ModuleInfo>;
+    diags: vec::Vec<fmt::Diag>;
+}
+
+// A growable raw buffer of `&str` (a `StrList`). Keeps the loader independent
+// of `Vec<&str>`, whose method substitution is unreliable (see above).
+struct StrList { items: raw mut &str; len: usize; cap: usize; }
+
+fn sl_make() -> StrList { return StrList { .items = Raw::null<&str>(), .len = 0, .cap = 0 }; }
+
+fn sl_push(l: &mut StrList, s: &str) {
+    if (l.len == l.cap) {
+        let mut nc: usize = 8;
+        if (l.cap > 0) { nc = l.cap * 2; }
+        unchecked("grow doubles the slot count, copying the live strings") {
+            let fresh: raw mut &str = alloc<&str>(nc);
+            let mut i: usize = 0;
+            while (i < l.len) {
+                fresh.plus(i).write(l.items.plus(i).read());
+                i += 1;
+            }
+            if (l.cap > 0) { dealloc(l.items, l.cap); }
+            l.items = fresh;
+        }
+        l.cap = nc;
+    }
+    unchecked("len < cap after growth, so slot len is live") {
+        l.items.plus(l.len).write(s);
+    }
+    l.len += 1;
+}
+
+fn sl_at(l: &StrList, i: usize) -> &str {
+    unchecked("caller passes an index below len") { return l.items.plus(i).read(); }
+}
+
+// ---- path helpers --------------------------------------------------------
+
+fn ident_char(c: u8) -> bool {
+    if (c >= 97u8 && c <= 122u8) { return true; }
+    if (c >= 65u8 && c <= 90u8) { return true; }
+    if (c >= 48u8 && c <= 57u8) { return true; }
+    return c == 95u8;
+}
+
+// "library/std/geometry.harmony" -> "geometry"; non-identifier chars fold to
+// '_' ("my-lib.harmony" -> "my_lib") so namespaces stay identifier-safe.
+fn base_name(path: &str) -> &str {
+    let b = path.as_bytes();
+    let mut start: usize = 0;
+    let mut dot: usize = 0;
+    let mut i: usize = 0;
+    while (i < path.len()) {
+        if (b[i] == 47u8) { start = i + 1; dot = 0; }
+        if (b[i] == 46u8) { dot = i; }
+        i += 1;
+    }
+    if (dot == 0 || dot <= start) { dot = path.len(); }
+    let mut out: str::String = str::String::make();
+    i = start;
+    while (i < dot) {
+        if (ident_char(b[i])) { out.push_byte(b[i]); } else { out.push_byte(95u8); }
+        i += 1;
+    }
+    return out.as_str();
+}
+
+fn dir_of(path: &str) -> &str {
+    let b = path.as_bytes();
+    let mut i: usize = path.len();
+    while (i > 0) {
+        i -= 1;
+        if (b[i] == 47u8) { return &path[0..i]; }
+    }
+    return "";
+}
+
+// Collapse '.' and resolve '..'. The normalized path is the module's identity:
+// "shared.harmony" and "nested/../shared.harmony" must be ONE module, or its
+// names are merged twice and collide (NAME-03).
+fn normalize(path: &str) -> &str {
+    let b = path.as_bytes();
+    let mut absolute = false;
+    if (path.len() > 0 && b[0] == 47u8) { absolute = true; }
+    let mut segs: vec::Vec<usize> = vec::Vec<usize>::make();
+    let mut lens: vec::Vec<usize> = vec::Vec<usize>::make();
+    let mut i: usize = 0;
+    while (i < path.len()) {
+        while (i < path.len() && b[i] == 47u8) { i += 1; }
+        if (i >= path.len()) { break; }
+        let start = i;
+        while (i < path.len() && b[i] != 47u8) { i += 1; }
+        let len = i - start;
+        if (len == 1 && b[start] == 46u8) { continue; }
+        if (len == 2 && b[start] == 46u8 && b[start + 1] == 46u8) {
+            if (lens.len() > 0) { segs.pop(); lens.pop(); continue; }
+            if (absolute) { continue; }
+        }
+        segs.push(start);
+        lens.push(len);
+    }
+    let mut out: str::String = str::String::make();
+    let mut has_seg = false;
+    if (absolute) { out.push("/"); has_seg = true; }
+    let mut s: usize = 0;
+    while (s < lens.len()) {
+        if (has_seg) { out.push("/"); }
+        let st = *segs.get(s);
+        let ln = *lens.get(s);
+        let mut j: usize = 0;
+        while (j < ln) { out.push_byte(b[st + j]); j += 1; }
+        has_seg = true;
+        s += 1;
+    }
+    return out.as_str();
+}
+
+fn join(dir: &str, path: &str) -> &str {
+    if (dir == "") { return normalize(path); }
+    let mut s: str::String = str::String::make();
+    s.push(dir);
+    s.push("/");
+    s.push(path);
+    return normalize(s.as_str());
+}
+
+// ---- module table --------------------------------------------------------
+
+fn find_path(infos: &vec::Vec<ModuleInfo>, path: &str) -> i32 {
+    let mut i: usize = 0;
+    while (i < infos.len()) {
+        if (infos.get(i).path == path) { return i as i32; }
+        i += 1;
+    }
+    return -1;
+}
+
+fn load_error(l: &mut Loaded, code: &str, title: &str, summary: &str) {
+    l.diags.push(fmt::Diag {
+        .code = code,
+        .severity = fmt::Severity::Stop,
+        .title = title,
+        .summary = summary,
+        .file = "",
+        .line = 0,
+        .col = 0,
+    });
+}
+
+// The import paths of a module's AST_PROGRAM.
+fn imports(nodes: &node::Nodes, root: i32) -> StrList {
+    let out = sl_make();
+    let rn = node::get(nodes, root);
+    let mut i: usize = 0;
+    while (i < rn.kids.len()) {
+        let it = node::get(nodes, *rn.kids.get(i));
+        if (it.kind == node::AST_IMPORT) { sl_push(&mut out, it.sval); }
+        i += 1;
+    }
+    return out;
+}
+
+// ---- the rename walk -----------------------------------------------------
+
+fn in_names(names: &StrList, name: &str) -> bool {
+    let mut i: usize = 0;
+    while (i < names.len) {
+        if (sl_at(names, i) == name) { return true; }
+        i += 1;
+    }
+    return false;
+}
+
+fn first_in_names(names: &StrList, name: &str) -> bool {
+    let mut i: usize = 0;
+    while (i < names.len) {
+        let n = sl_at(names, i);
+        // Check the character *after* the prefix in `name`, not in `n`
+        // (which has only n.len() bytes -- indexing it was an OOB trap).
+        let nb = name.as_bytes();
+        if (name.len() > n.len() && str::slice(name, 0, n.len()) == n
+            && nb[n.len()] == 58u8) {
+            return true;
+        }
+        i += 1;
+    }
+    return false;
+}
+
+fn has_colons(s: &str) -> bool {
+    let b = s.as_bytes();
+    let mut i: usize = 0;
+    while (i < s.len()) {
+        if (b[i] == 58u8) { return true; }
+        i += 1;
+    }
+    return false;
+}
+
+fn concat(pre: &str, s: &str) -> &str {
+    let mut out: str::String = str::String::make();
+    out.push(pre);
+    out.push(s);
+    return out.as_str();
+}
+
+fn collect_names(nodes: &node::Nodes, root: i32) -> StrList {
+    let out = sl_make();
+    let rn = node::get(nodes, root);
+    let mut i: usize = 0;
+    while (i < rn.kids.len()) {
+        let it = node::get(nodes, *rn.kids.get(i));
+        if (it.sval != "" && (it.kind == node::AST_STRUCT || it.kind == node::AST_ENUM
+            || it.kind == node::AST_CONST || it.kind == node::AST_FN
+            || it.kind == node::AST_EXTERN_FN || it.kind == node::AST_METHODS)) {
+            sl_push(&mut out, it.sval);
+        }
+        i += 1;
+    }
+    return out;
+}
+
+// Mirrors harmony-base's `mod_rename_node`. A method's own fn name is exempt
+// (its identity is `(receiver type, name)`, mangled per receiver). A bare
+// generic path stores its type args in kids, which must be renamed; a
+// qualified path's kids are segments and are left alone.
+fn rename_node(nodes: &mut node::Nodes, h: i32, pre: &str,
+               names: &StrList, in_methods: bool) {
+    if (h < 0) { return; }
+    let mut n = node::get(&*nodes, h);
+    let k = n.kind;
+    let s = n.sval;
+    if ((k == node::AST_TYPE_NAME || k == node::AST_PATH || k == node::AST_STRUCT_INIT)
+        && s != "") {
+        let mut head = true;
+        if (k == node::AST_TYPE_NAME && n.kids.len() > 0 && !in_names(names, s)) {
+            head = false;
+        }
+        if (head) {
+            if (has_colons(s)) {
+                if (first_in_names(names, s)) { n.sval = concat(pre, s); }
+            } else if (in_names(names, s)) {
+                n.sval = concat(pre, s);
+            }
+        }
+        if (k == node::AST_PATH) {
+            let base = n.a;
+            rename_node(nodes, base, pre, names, in_methods);
+            if (base < 0) {
+                let mut i: usize = 0;
+                while (i < n.kids.len()) {
+                    rename_node(nodes, *n.kids.get(i), pre, names, in_methods);
+                    i += 1;
+                }
+            }
+            node::put(nodes, h, n);
+            return;
+        }
+    }
+    let item = k == node::AST_STRUCT || k == node::AST_ENUM || k == node::AST_CONST
+               || k == node::AST_METHODS || k == node::AST_FN
+               || k == node::AST_EXTERN_FN;
+    if (item && s != "" && in_names(names, s) && !(k == node::AST_FN && in_methods)) {
+        n.sval = concat(pre, s);
+    }
+    if (k == node::AST_CALL && n.a < 0 && n.sval != "") {
+        if (has_colons(n.sval)) {
+            if (first_in_names(names, n.sval)) { n.sval = concat(pre, n.sval); }
+        } else if (in_names(names, n.sval)) {
+            n.sval = concat(pre, n.sval);
+        }
+    }
+    node::put(nodes, h, n);
+    let cur = node::get(&*nodes, h);
+    rename_node(nodes, cur.a, pre, names, in_methods);
+    rename_node(nodes, cur.b, pre, names, in_methods);
+    rename_node(nodes, cur.c, pre, names, in_methods);
+    let in_m = cur.kind == node::AST_METHODS;
+    let mut i: usize = 0;
+    while (i < cur.kids.len()) {
+        rename_node(nodes, *cur.kids.get(i), pre, names, in_methods);
+        i += 1;
+    }
+    i = 0;
+    while (i < cur.kids2.len()) {
+        rename_node(nodes, *cur.kids2.get(i), pre, names, in_m || in_methods);
+        i += 1;
+    }
+    i = 0;
+    while (i < cur.kids3.len()) {
+        rename_node(nodes, *cur.kids3.get(i), pre, names, in_methods);
+        i += 1;
+    }
+}
+
+// ---- parse, expand, merge ------------------------------------------------
+
+fn parse_one(nodes: &mut node::Nodes, arena: &mut mem::Arena,
+             src: &str, path: &str) -> i32 {
+    let mut lx: ctx::Ctx = ctx::make(src, path);
+    scan::scan(&mut lx, arena);
+    let mut p: pctx::Parser = pctx::make(nodes, lx.toks, path);
+    return item::parse_program(&mut p);
+}
+
+fn expand(nodes: &mut node::Nodes, arena: &mut mem::Arena,
+          modules: &vec::Vec<Module>, infos: &mut vec::Vec<ModuleInfo>,
+          chain: &mut vec::Vec<i32>, idx: usize, l: &mut Loaded) {
+    // Cycle check FIRST: a module already being expanded is a cycle, even
+    // though it is also in `infos` (the root is pushed there before its
+    // imports are scanned). Checking "already expanded" first skipped the
+    // cycle and let `main -> a -> main` merge `main` twice silently.
+    let mut j: usize = 0;
+    while (j < chain.len()) {
+        let in_chain: usize = *chain.get(j) as usize;
+        if (in_chain == idx) {
+            load_error(l, "NAME-04", "import cycle",
+                       "A module imports itself, directly or indirectly.");
+            return;
+        }
+        j += 1;
+    }
+    // Already expanded (a module with several importers is merged once).
+    j = 0;
+    while (j < infos.len()) {
+        if (infos.get(j).path == modules.get(idx).path) { return; }
+        j += 1;
+    }
+    chain.push(idx as i32);
+    let path = modules.get(idx).path;
+    let root = parse_one(nodes, arena, modules.get(idx).src, path);
+    infos.push(ModuleInfo { .path = path, .name = base_name(path), .root = root });
+    let imps = imports(&*nodes, root);
+    let mut i: usize = 0;
+    while (i < imps.len) {
+        let full = join(dir_of(path), sl_at(&imps, i));
+        // Resolve to a MODULE index (the only kind `expand` accepts). An
+        // `infos` index is a different space and caused a false cycle on the
+        // diamond case. Always call `expand`: it checks the chain first for
+        // cycles, then skips modules already merged.
+        let mut k: usize = 0;
+        let mut found: i32 = -1;
+        while (k < modules.len()) {
+            if (modules.get(k).path == full) { found = k as i32; break; }
+            k += 1;
+        }
+        if (found < 0) {
+            load_error(l, "NAME-04", "unknown module",
+                       "An imported file was not found.");
+        } else {
+            expand(nodes, arena, modules, infos, chain, found as usize, l);
+        }
+        i += 1;
+    }
+    chain.pop();
+}
+
+fn merge(nodes: &mut node::Nodes, infos: &vec::Vec<ModuleInfo>,
+         root_path: &str) -> i32 {
+    let prog = node::new_node(nodes, node::AST_PROGRAM);
+    let mut i: usize = 0;
+    while (i < infos.len()) {
+        let info = infos.get(i);
+        if (info.path == root_path) { i += 1; continue; }
+        let names = collect_names(&*nodes, info.root);
+        let mut pre: str::String = str::String::make();
+        pre.push(info.name);
+        pre.push("::");
+        let m = node::get(&*nodes, info.root);
+        let mut j: usize = 0;
+        while (j < m.kids.len()) {
+            let it = *m.kids.get(j);
+            rename_node(nodes, it, pre.as_str(), &names, false);
+            node::push_kid(nodes, prog, it);
+            j += 1;
+        }
+        i += 1;
+    }
+    let mut i2: usize = 0;
+    while (i2 < infos.len()) {
+        if (infos.get(i2).path == root_path) {
+            let m = node::get(&*nodes, infos.get(i2).root);
+            let mut j: usize = 0;
+            while (j < m.kids.len()) {
+                node::push_kid(nodes, prog, *m.kids.get(j));
+                j += 1;
+            }
+            break;
+        }
+        i2 += 1;
+    }
+    return prog;
+}
+
+// The entry point. `root_path` is the module named on the "command line".
+export fn load(nodes: &mut node::Nodes, arena: &mut mem::Arena,
+               modules: &vec::Vec<Module>, root_path: &str) -> Loaded {
+    let l = Loaded {
+        .program = -1,
+        .modules = vec::Vec<ModuleInfo>::make(),
+        .diags = vec::Vec<fmt::Diag>::make(),
+    };
+    let mut root_idx: i32 = -1;
+    let mut i: usize = 0;
+    while (i < modules.len()) {
+        if (modules.get(i).path == root_path) { root_idx = i as i32; break; }
+        i += 1;
+    }
+    if (root_idx < 0) {
+        let mut l2 = l;
+        load_error(&mut l2, "NAME-04", "unknown module",
+                   "The root module was not found.");
+        return l2;
+    }
+    let mut chain: vec::Vec<i32> = vec::Vec<i32>::make();
+    let mut l2 = l;
+    expand(nodes, arena, modules, &mut l2.modules, &mut chain, root_idx as usize, &mut l2);
+    if (l2.diags.len() > 0) { return l2; }
+    l2.program = merge(nodes, &l2.modules, root_path);
+    return l2;
+}

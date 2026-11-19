@@ -79,6 +79,7 @@ test: test-seed harmony-base
 	bash tests/harmony-final/run.sh
 	python3 tests/harmony-final/difftest.py
 	python3 tests/harmony-final/parsediff.py
+	python3 tests/harmony-final/resolvediff.py
 
 # c2x-seed regression corpus (guards the compiler bugs fixed during bring-up).
 test-seed: seed
@@ -100,6 +101,7 @@ test-final: harmony-base
 	bash tests/harmony-final/run.sh
 	python3 tests/harmony-final/difftest.py
 	python3 tests/harmony-final/parsediff.py
+	python3 tests/harmony-final/resolvediff.py
 
 test-fuzz: harmony-base
 	bash tests/harmony/fuzz.sh

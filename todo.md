@@ -752,6 +752,12 @@ directly into its binary and (b) support **multi-core compilation by default**.
     `item`). `tests/harmony-final/parsediff.py` diffs `--dump-ast` against
     harmony-base on 61 accept programs (byte-identical) and checks 15 reject
     programs report the same `SYN-*` code: 76 cases, 0 mismatches.
+  - `harmony/driver/loader.hr` + `harmony/sema/resolve.hr` implement module
+    loading and name resolution. `tests/harmony-final/resolvediff.py` checks
+    19 module scenarios against harmony-base's NAME-* decisions: 0 mismatches.
+  - A fourth harmony-base bug fixed: generic instance reuse compared type-arg
+    IDs exactly, making two `Vec<&str>` uses distinct nominal types; now uses
+    `ty_eq`. Regression `generic-instance-identity`.
   - Eleven `harmony-base` gaps found and fixed while writing it (see
     `roadmap/harmony` "What harmony-base must still grow"): `for`-range
     element typing, `dealloc`/`Raw::null()`/`alloc` without `<T>`,

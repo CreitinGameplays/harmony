@@ -191,13 +191,31 @@ is unit-tested on its own.
   first. The rewrite's parser compares token kinds on every check, which is
   how it surfaced. Regression `enum-compare`.
 
-### R4 — Modules and name resolution [ ]
+### R4 — Modules and name resolution [/]
 
-- `harmony/driver/loader.hr`: `import`/`export`, path normalization
-  (`..`/`.`), cycle detection, `module::name` flattening.
-- `harmony/sema/resolve.hr`: symbol tables, scopes, `NAME-01..04`.
-- Gate: identical `NAME-*` decisions on the corpus; the LISP interpreter
-  (4 modules, transitive imports) resolves identically.
+- [x] `harmony/driver/loader.hr`: eager depth-first expansion, path
+  normalization (`.`/`..`), dedupe by normalized path, cycle detection
+  (NAME-04), and `module::name` flattening of imported items. The merged
+  program is one flat item list: imported items renamed, then root items.
+  Only names a module declares top-level are renamed; a method's own fn name
+  is exempt (its identity is `(receiver type, name)`).
+- [x] `harmony/sema/resolve.hr`: scoped symbol table (flat array + scope
+  marks -> shadowing and duplicate detection), NAME-01/03. Declarations are
+  collected in a first pass so item order does not matter.
+- [x] `tests/harmony-final/resolvediff.py` (in `make test`): 19 module
+  scenarios compared against harmony-base's NAME-* decisions: single-file,
+  unknown name/type, duplicate locals and top-level names, shadowing, one
+  import, transitive, diamond, relative paths with `..`, self-generic,
+  missing module, direct/indirect cycle, repeated import, methods, enums.
+  0 mismatches. Verified to fail when renaming is skipped.
+- [ ] Gate: extend to the LISP interpreter's 4 modules (the driver embeds
+  source as string literals; file IO is R7), and to the full corpus.
+
+A subtle bug found while testing the loader: `Vec<&str>` inside a method
+mis-substitutes (`get` yields `&&str` and `push` wants `&&str`), so the loader
+keeps its string lists in raw growable buffers of `&str` (the same shape as
+`args()`). This is a harmony-base generic-substitution quirk, not a language
+rule; it is recorded here rather than hidden.
 
 ### R5 — Type checker [ ]
 
@@ -291,3 +309,10 @@ starting the rewrite):
   Equality is tag equality; both sides are now loaded as the i32 tag first.
   Found because the rewrite's parser compares token kinds everywhere.
   Regression `enum-compare`.
+- Generic instance reuse compared type-argument IDs with `!=`. A reference or
+  slice type is freshly allocated per spelling, so two `Vec<&str>` uses
+  produced two different nominal `Vec__Rstr` types and a TYPE-01 on any
+  program passing one between functions. The cache now compares with `ty_eq`
+  (exact for nominal types, structural for refs/slices). Found because the
+  loader needs `Vec<&str>` in several functions. Regression
+  `generic-instance-identity`.

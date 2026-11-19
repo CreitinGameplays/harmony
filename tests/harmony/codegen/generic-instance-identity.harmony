@@ -1,0 +1,17 @@
+// EXPECT: 42
+import "generic-instance-identity/vec.hr";
+
+fn make() -> vec::Vec<&str> {
+    let mut v: vec::Vec<&str> = vec::Vec<&str>::make();
+    return v;
+}
+
+fn count(v: vec::Vec<&str>) -> usize { return v.len(); }
+
+fn main() -> i32 {
+    let v = make();
+    if (count(v) != 0) { return 1; }
+    let mut w: vec::Vec<&str> = vec::Vec<&str>::make();
+    if (count(w) != 0) { return 2; }
+    return 42;
+}

@@ -53,7 +53,11 @@ export fn number(c: &mut ctx::Ctx) {
     let line = c.line;
     let col = c.col;
     let mut radix: u8 = 10u8;
-    let mut val: i64 = 0;
+    // Accumulate unsigned. A `u64` literal may reach 2^64-1, which does not
+    // fit in the token's signed payload; the bits are reinterpreted at the
+    // end. Signed arithmetic here would trap halfway through the largest
+    // legal `u64` literal.
+    let mut val_u: u64 = 0u64;
     let mut is_float = false;
     let mut suffix_at: usize = 0;
     // Radix prefix, consumed only when a digit of that radix follows, so a
@@ -72,14 +76,14 @@ export fn number(c: &mut ctx::Ctx) {
     }
     // Digits with `_` separators (only between two digits).
     while (digit_in(ctx::at(&*c, 0), radix)) {
-        val = val * (radix as i64) + (digit_val(ctx::at(&*c, 0)) as i64);
+        val_u = val_u * (radix as u64) + (digit_val(ctx::at(&*c, 0)) as u64);
         ctx::bump(c);
     }
     if (ctx::at(&*c, 0) == 95u8 && digit_in(ctx::at(&*c, 1), radix)) {
         while (ctx::at(&*c, 0) == 95u8 && digit_in(ctx::at(&*c, 1), radix)) {
             ctx::bump(c);
             while (digit_in(ctx::at(&*c, 0), radix)) {
-                val = val * (radix as i64) + (digit_val(ctx::at(&*c, 0)) as i64);
+                val_u = val_u * (radix as u64) + (digit_val(ctx::at(&*c, 0)) as u64);
                 ctx::bump(c);
             }
         }
@@ -140,6 +144,12 @@ export fn number(c: &mut ctx::Ctx) {
         ctx::push(c, token::TokKind::Float, ttext, start, c.pos,
                   line, col, 0, suffix);
     } else {
+        // The token payload is signed (the AST mirrors harmony-base), but the
+        // bits of a `u64` literal are preserved exactly.
+        let mut val: i64 = 0;
+        unchecked("reinterpret the same-width unsigned literal bits") {
+            val = reinterpret<u64, i64>(val_u);
+        }
         ctx::push(c, k, text, start, c.pos, line, col, val, suffix);
     }
 }

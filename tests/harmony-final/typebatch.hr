@@ -39,9 +39,8 @@ fn run_one(i: usize, src: &str) {
 }
 
 // The harness regenerates this block with one array element per case. An
-// `[&str; N]` array of sources indexes correctly (that used to be a bug: an
-// element read returned the wrong value because the backend dispatched on the
-// result type instead of the index shape -- fixed in lexpr.c2).
+// `[&str; N]` array of sources indexes correctly (the old fat-element
+// indexing bug is fixed in harmony-base's backend).
 fn main() -> i32 {
     let sources: [&str; 1] = ["fn main() -> i32 { return 0; }"];
     let mut i: usize = 0;

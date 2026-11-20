@@ -55,6 +55,7 @@ File extension: `.harmony`
 | v0.3.2 | Heap form | The heap keyword `new` (a prefix operator: `new 42`) is replaced by the `sizeof`-styled built-in form **`heap(x)`**. It reads like the allocation it is, cannot be mistaken for a constructor, and lets the compiler construct the value **in place** (`heap([0u8; 8_000_000])`). `new` and `delete` join the recognized foreign words. |
 | v0.3.3 | Split rule | §19.8 makes the compiler-vs-library boundary explicit: the compiler keeps only what soundness or syntax requires (analyses, traps, indexing, `heap(x)`, about a dozen intrinsics). Types, collections, formatting, I/O, the runtime's entry/allocator/trap formatting, protocol implementations, diagnostic wording, and lints all move to the library or tooling. |
 | impl | M1 in harmony-base | The bootstrap compiler now **runs the language**: lexer → parser → type checker → LLVM IR text → clang + freestanding runtime → executable. Checked arithmetic (T-OVERFLOW), division/shift traps (T-DIV0, T-SHIFT), bounds-checked indexing (T-INDEX), `heap(x)` allocation, structs/enums by value (sret), methods with `Type__method` mangling, `switch` on scalars and enums, and references all work under `run` with trap status 70 (§14.3). `emit-llvm` output is byte-deterministic. |
+| impl (rewrite) | R6 LLVM backend | The self-hosted compiler now has its own LLVM IR emitter (`harmony/codegen/llvm/`). On all 85 single-file programs in the codegen corpus, its IR is **byte-identical** to harmony-base's, including checked arithmetic, traps, slices, aggregates, generics, methods, enums, switches, and formatting calls. |
 
 ### 1.2 Bug fixed in v0.3
 
@@ -2656,6 +2657,13 @@ readable symbol names (`module__Type__method`), types emitted in a fixed
 order, explicit (non-numerical) block labels, no hashes, no timestamps,
 no build paths. The same input compiles to identical `.ll` bytes
 (two runs diff clean).
+
+**Self-hosted implementation:** the rewrite's primary backend lives in
+`harmony/codegen/llvm/`: `context.hr` owns the deterministic emitter state,
+`llx.hr` lowers expressions and statements, and `emit.hr` drives module
+and function emission. Its IR is byte-identical to the bootstrap backend's
+on the single-file codegen corpus; `tests/harmony-final/irdiff.py` is the
+differential gate.
 
 ### 19.4b C backend (secondary, cross-check)
 

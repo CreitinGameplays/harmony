@@ -306,6 +306,9 @@ export fn eq(a: i32, b: i32, t: &Types) -> bool {
     }
     if (type_kind(t, a) != type_kind(t, b)) { return false; }
     let k = type_kind(t, a);
+    // Generic parameters are stand-ins: two references to `T` name the same
+    // type even though each resolution allocated its own placeholder id.
+    if (k == CTY_GENPARAM) { return tname(t, a) == tname(t, b); }
     if (k == CTY_ARRAY) {
         return eq(elem(t, a), elem(t, b), &*t) && array_len(t, a) == array_len(t, b);
     }

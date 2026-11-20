@@ -370,6 +370,15 @@ fn set_ty(c: &mut Checker, h: i32, ty: i32) {
     node::put(&mut c.nodes, h, n);
 }
 
+// Records a resolved declaration for LLVM lowering. Unlike `b`, which the
+// grammar uses for several purposes, this link cannot be mistaken for a type
+// argument or a second operand.
+fn set_target(c: &mut Checker, h: i32, target: i32) {
+    let mut n = node::get(&c.nodes, h);
+    n.target = target;
+    node::put(&mut c.nodes, h, n);
+}
+
 fn get_ty(c: &Checker, h: i32) -> i32 {
     if (h < 0) { return types::TY_UNIT; }
     return node::get(&c.nodes, h).ty;
@@ -413,6 +422,53 @@ fn const_int(c: &mut Checker, h: i32) -> i32 {
 }
 
 // Find a generic type template by name.
+// The type id of a visible nominal type name (for the backend's definitions).
+export fn type_id(c: &Checker, name: &str) -> i32 {
+    let mut i: usize = c.syms.len();
+    while (i > 0) {
+        i -= 1;
+        let s = c.syms.get(i);
+        if (s.name == name && s.kind == SK_TYPE) { return s.ty; }
+    }
+    return types::TY_INVALID;
+}
+
+// True when a type still contains a generic-parameter type, directly or in
+// one of its members (`Box<T>` inside `Box<Box<T>>`).
+fn type_has_genparam(c: &Checker, ty: i32) -> bool {
+    if (ty <= 0 || ty >= c.types.entries.len() as i32) { return false; }
+    if (types::type_kind(&c.types, ty) == types::CTY_GENPARAM) { return true; }
+    let mut i: usize = 0;
+    while (i < types::member_count(&c.types, ty)) {
+        if (type_has_genparam(c, types::member_type(&c.types, ty, i as i32))) { return true; }
+        i += 1;
+    }
+    return false;
+}
+
+// Monomorphized type instances, in first-instantiation order.
+export fn type_instance_ids(c: &Checker) -> vec::Vec<i32> {
+    let mut out: vec::Vec<i32> = vec::Vec<i32>::make();
+    let mut i: usize = 0;
+    while (i < c.inst_ids.len()) {
+        // A template-body check can temporarily instantiate `Box<T>` with a
+        // generic-parameter type. That placeholder is not a monomorphized
+        // definition and must not be emitted.
+        let mut concrete = true;
+        let mut ai: usize = 0;
+        while (ai < c.max_targs) {
+            let arg = *c.inst_args.get(i * c.max_targs + ai);
+            if (arg != 0 && type_has_genparam(c, arg)) {
+                concrete = false;
+            }
+            ai += 1;
+        }
+        if (concrete) { out.push(*c.inst_ids.get(i)); }
+        i += 1;
+    }
+    return out;
+}
+
 fn find_gen_ty(c: &Checker, name: &str) -> i32 {
     let mut i: usize = 0;
     while (i < c.gen_tys.len()) {
@@ -702,6 +758,110 @@ fn subst_type(c: &mut Checker, h: i32, params: &node::Node, args: &vec::Vec<i32>
     return resolve_type(c, h);
 }
 
+fn is_type_syntax(kind: i32) -> bool {
+    return kind == node::AST_TYPE_NAME || kind == node::AST_TYPE_REF
+        || kind == node::AST_TYPE_ARRAY || kind == node::AST_TYPE_SLICE
+        || kind == node::AST_TYPE_UNIT || kind == node::AST_TYPE_RAW;
+}
+
+// Rewrites every type in a freshly cloned generic body and clears semantic
+// stamps on the expressions. The instance is then checked normally, producing
+// concrete Node.ty and Node.target values instead of inheriting whichever
+// instantiation happened to use the template first.
+fn subst_tree(c: &mut Checker, h: i32, params: &node::Node,
+              args: &vec::Vec<i32>) {
+    if (h < 0) { return; }
+    let n = node::get(&c.nodes, h);
+    if (is_type_syntax(n.kind)) {
+        let ty = subst_type(c, h, params, args);
+        if (ty != types::TY_INVALID) {
+            let fresh = ty_to_ast_h(c, ty);
+            node::put(&mut c.nodes, h, node::get(&c.nodes, fresh));
+        }
+        return;
+    }
+    let mut cleared = n;
+    cleared.ty = 0;
+    cleared.target = -1;
+    node::put(&mut c.nodes, h, cleared);
+    subst_tree(c, n.a, params, args);
+    subst_tree(c, n.b, params, args);
+    subst_tree(c, n.c, params, args);
+    let mut i: usize = 0;
+    while (i < n.kids.len()) {
+        subst_tree(c, *n.kids.get(i), params, args);
+        i += 1;
+    }
+    i = 0;
+    while (i < n.kids2.len()) {
+        subst_tree(c, *n.kids2.get(i), params, args);
+        i += 1;
+    }
+    i = 0;
+    while (i < n.kids3.len()) {
+        subst_tree(c, *n.kids3.get(i), params, args);
+        i += 1;
+    }
+}
+
+// Supplies a generic receiver's arguments to bare constructors in a cloned
+// method body (`Box { ... }`, `Opt::Empty`). The arguments are inferred, so an
+// enclosing expected type can still select a nested instantiation.
+fn subst_ctor_args(c: &mut Checker, h: i32, base: &str,
+                   targs: &vec::Vec<i32>) {
+    if (h < 0) { return; }
+    let n = node::get(&c.nodes, h);
+    if (n.kind == node::AST_STRUCT_INIT && n.sval == base && n.kids2.len() == 0) {
+        let mut i: usize = 0;
+        while (i < targs.len()) {
+            node::push_kid2(&mut c.nodes, h, ty_to_ast_h(c, *targs.get(i)));
+            i += 1;
+        }
+        node::set_ival(&mut c.nodes, h, 1);
+    }
+    if (n.kind == node::AST_CALL && n.a >= 0) {
+        let callee = node::get(&c.nodes, n.a);
+        if (callee.kind == node::AST_PATH && callee.kids.len() == 0) {
+            let cut = rfind_colons(callee.sval);
+            if (cut >= 0 && prefix(callee.sval, cut as usize) == base) {
+                let mut i: usize = 0;
+                while (i < targs.len()) {
+                    node::push_kid(&mut c.nodes, n.a, ty_to_ast_h(c, *targs.get(i)));
+                    i += 1;
+                }
+            }
+        }
+    }
+    if (n.kind == node::AST_PATH && n.kids.len() == 0) {
+        let cut = rfind_colons(n.sval);
+        if (cut >= 0 && prefix(n.sval, cut as usize) == base) {
+            let mut i: usize = 0;
+            while (i < targs.len()) {
+                node::push_kid(&mut c.nodes, h, ty_to_ast_h(c, *targs.get(i)));
+                i += 1;
+            }
+        }
+    }
+    subst_ctor_args(c, n.a, base, targs);
+    subst_ctor_args(c, n.b, base, targs);
+    subst_ctor_args(c, n.c, base, targs);
+    let mut i: usize = 0;
+    while (i < n.kids.len()) {
+        subst_ctor_args(c, *n.kids.get(i), base, targs);
+        i += 1;
+    }
+    i = 0;
+    while (i < n.kids2.len()) {
+        subst_ctor_args(c, *n.kids2.get(i), base, targs);
+        i += 1;
+    }
+    i = 0;
+    while (i < n.kids3.len()) {
+        subst_ctor_args(c, *n.kids3.get(i), base, targs);
+        i += 1;
+    }
+}
+
 fn param_base(s: &str) -> &str {
     let mut i: usize = 0;
     let b = s.as_bytes();
@@ -818,15 +978,35 @@ fn instantiate_type(c: &mut Checker, ti: i32, at: i32, args: &vec::Vec<i32>) -> 
     return inst;
 }
 
+// The mangled spelling of a type in an instance name. Every illegal
+// character maps to a distinct letter, so `&[i32]` and `i32` cannot collide.
+fn mangle_ty(c: &Checker, ty: i32) -> &str {
+    let mut s: str::String = str::String::make();
+    let d = types::tname(&c.types, ty);
+    let b = d.as_bytes();
+    let mut i: usize = 0;
+    while (i < d.len()) {
+        let ch = b[i];
+        if ((ch >= 97u8 && ch <= 122u8) || (ch >= 65u8 && ch <= 90u8)
+            || (ch >= 48u8 && ch <= 57u8) || ch == 95u8) {
+            s.push_byte(ch);
+        } else if (ch == 38u8) { s.push("R"); }
+        else if (ch == 91u8) { s.push("A"); }
+        else if (ch == 93u8) { s.push("Z"); }
+        else if (ch == 59u8) { s.push("S"); }
+        else if (ch != 32u8) { s.push("X"); }
+        i += 1;
+    }
+    return s.as_str();
+}
+
 fn instance_name(c: &mut Checker, tmpl: i32, args: &vec::Vec<i32>) -> &str {
     let mut s: str::String = str::String::make();
     s.push(node::get(&c.nodes, tmpl).sval);
-    s.push("__");
     let mut i: usize = 0;
     while (i < args.len()) {
-        if (i > 0) { s.push("_"); }
-        let nm: &str = types::tname(&c.types, *args.get(i));
-        s.push(nm);
+        s.push("__");
+        s.push(mangle_ty(&*c, *args.get(i)));
         i += 1;
     }
     return s.as_str();
@@ -1025,6 +1205,7 @@ fn check_path(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
         let sym = lookup(&*c, name);
         if (sym >= 0 && (sym_kind(&*c, sym) == SK_CONST || sym_kind(&*c, sym) == SK_LET
             || sym_kind(&*c, sym) == SK_PARAM)) {
+            if (sym_kind(&*c, sym) == SK_CONST) { set_target(c, h, sym_decl(&*c, sym)); }
             return sym_ty(&*c, sym);
         }
         // A generic enum variant path `Opt<i32>::None`: type args in kids.
@@ -1061,6 +1242,7 @@ fn check_path(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
     }
     let kind = sym_kind(&*c, sym);
     if (kind == SK_CONST || kind == SK_LET || kind == SK_PARAM || kind == SK_SELF) {
+        if (kind == SK_CONST) { set_target(c, h, sym_decl(&*c, sym)); }
         if ((kind == SK_LET || kind == SK_PARAM) && c.syms.get(sym as usize).init == 0
             && c.in_place == 0) {
             let mut s: str::String = str::String::make();
@@ -1106,7 +1288,9 @@ fn check_binary(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
         let mut r2 = rt;
         if (types::is_untyped_lit(l2)) { l2 = r2; }
         if (types::is_untyped_lit(r2)) { r2 = l2; }
-        if (!types::eq(l2, r2, &c.types)) {
+        if (!types::eq(l2, r2, &c.types)
+            && !types::is_genparam(&c.types, l2)
+            && !types::is_genparam(&c.types, r2)) {
             mismatch(c, h, l2, r2, "arithmetic operands");
             return types::TY_INVALID;
         }
@@ -1118,13 +1302,15 @@ fn check_binary(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
             }
             return lt;
         }
-        if (!types::is_integer(l2) && !types::is_float(l2) && !types::is_untyped_lit(l2)) {
+        if (!types::is_integer(l2) && !types::is_float(l2) && !types::is_untyped_lit(l2)
+            && !types::is_genparam(&c.types, l2)) {
             add_diag(c, "TYPE-01", "arithmetic needs numbers",
                      "These operands are not numeric.", h);
             return types::TY_INVALID;
         }
         if (op == "%" || op == "&" || op == "|" || op == "^") {
-            if (!types::is_integer(l2) && !types::is_untyped_lit(l2)) {
+            if (!types::is_integer(l2) && !types::is_untyped_lit(l2)
+                && !types::is_genparam(&c.types, l2)) {
                 add_diag(c, "TYPE-01", "integer-only operator",
                          "This operator needs integer operands.", h);
                 return types::TY_INVALID;
@@ -1150,12 +1336,12 @@ fn check_unary(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
     if (t == types::TY_INVALID) { return t; }
     if (op == "-" || op == "~") {
         if (types::is_untyped_lit(t)) { return t; }
-        if (!types::is_integer(t) && !types::is_float(t)) {
+        if (!types::is_integer(t) && !types::is_float(t) && !types::is_genparam(&c.types, t)) {
             add_diag(c, "TYPE-01", "cannot negate this type",
                      "Unary `-` needs a number.", n.a);
             return types::TY_INVALID;
         }
-        if (op == "~" && !types::is_integer(t)) {
+        if (op == "~" && !types::is_integer(t) && !types::is_genparam(&c.types, t)) {
             add_diag(c, "TYPE-01", "`~` needs an integer",
                      "Bitwise not is integer-only.", n.a);
             return types::TY_INVALID;
@@ -1231,6 +1417,27 @@ fn check_index(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
                      "Slices are made from arrays and slices.", n.a);
             return types::TY_INVALID;
         }
+        // Range bounds are runtime `isize` values (§5.2). Stamp literal
+        // bounds now so the backend emits them directly as i64 rather than
+        // widening an i32 at the use site.
+        if (rn.a >= 0) {
+            let lo = check_expr(c, rn.a);
+            if (lo != types::TY_INVALID && !types::is_integer(lo)
+                && !types::is_untyped_lit(lo)) {
+                mismatch(c, rn.a, types::TY_ISIZE, lo, "slice start");
+                return types::TY_INVALID;
+            }
+            stamp_lits(c, rn.a, types::TY_ISIZE);
+        }
+        if (rn.b >= 0) {
+            let hi = check_expr(c, rn.b);
+            if (hi != types::TY_INVALID && !types::is_integer(hi)
+                && !types::is_untyped_lit(hi)) {
+                mismatch(c, rn.b, types::TY_ISIZE, hi, "slice end");
+                return types::TY_INVALID;
+            }
+            stamp_lits(c, rn.b, types::TY_ISIZE);
+        }
         return types::new_type(&mut c.types, types::CTY_SLICE, "[T]",
                                types::elem(&c.types, st), 0);
     }
@@ -1260,6 +1467,7 @@ fn check_index(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
             return types::TY_INVALID;
         }
         stamp_lits(c, n.b, types::TY_USIZE);
+        node::set_ival(&mut c.nodes, h, 9);
         return types::elem(&c.types, base);
     }
     add_diag(c, "TYPE-02", "cannot index this type",
@@ -1325,6 +1533,9 @@ fn enum_construct(c: &mut Checker, at: i32, ety: i32, vname: &str,
         stamp_lits(c, at2, want);
         i += 1;
     }
+    // The backend distinguishes variant construction from an ordinary call by
+    // this stable marker; the low builtin ids stay below 1000.
+    node::set_ival(&mut c.nodes, at, (1000 + vi) as i64);
     return ety;
 }
 
@@ -1369,6 +1580,7 @@ fn enum_construct_unqualified(c: &mut Checker, at: i32, name: &str,
         stamp_lits(c, at2, want);
         k += 1;
     }
+    node::set_ival(&mut c.nodes, at, (1000 + fvi) as i64);
     return fty;
 }
 
@@ -1411,8 +1623,8 @@ fn find_method(c: &mut Checker, recv: i32, name: &str) -> i32 {
         let fh = *c.fns.get(i);
         let n = node::get(&c.nodes, fh);
         // A method fn's sval is "Type::name" after registration; compare both
-        // the bare name (stored in sfx) and the receiver recorded in ival.
-        if (n.sfx == name && n.ival == recv as i64) { return fh; }
+        // the bare name (stored in sfx) and the receiver recorded in self_ty.
+        if (n.sfx == name && n.self_ty == recv) { return fh; }
         i += 1;
     }
     // No concrete instance: try a generic method template whose base matches
@@ -1454,61 +1666,114 @@ fn instance_base(c: &Checker, ty: i32) -> &str {
     return "";
 }
 
+// Binds a methods block's own generic parameters from its receiver pattern.
+// `methods<U> Box<U>` must substitute `U`, not the type template's unrelated
+// `T`; nested headers (`Box<Box<U>>`) bind recursively through `unify`.
+fn gtmeth_bind(c: &mut Checker, gi: usize, recv: i32) -> vec::Vec<i32> {
+    let blk_h = *c.gtblks.get(gi);
+    let blk = node::get(&c.nodes, blk_h);
+    let mut names: RawStrList = RawStrList { .items = Raw::null(), .len = 0 };
+    let mut slots: vec::Vec<i32> = vec::Vec<i32>::make();
+    let mut i: usize = 0;
+    while (i < blk.kids.len()) {
+        let gp = node::get(&c.nodes, *blk.kids.get(i));
+        names.push(param_base(&gp.sval));
+        slots.push(0);
+        i += 1;
+    }
+    let pat = node::new_node(&mut c.nodes, node::AST_TYPE_NAME);
+    node::set_sval(&mut c.nodes, pat, blk.sval);
+    i = 0;
+    while (i < blk.kids3.len()) {
+        node::push_kid(&mut c.nodes, pat, *blk.kids3.get(i));
+        i += 1;
+    }
+    unify(c, pat, recv, &names, &mut slots);
+    // `unify` records AST handles for generic-call inference. Substitution
+    // takes concrete type ids, so convert the bound slots here.
+    let mut k: usize = 0;
+    while (k < slots.len()) {
+        let h = *slots.get(k);
+        if (h >= 0) {
+            let id = node::get(&c.nodes, h).ty;
+            slots.set(k, id);
+        }
+        k += 1;
+    }
+    return slots;
+}
+
 // Instantiates generic method template `tmpl` for the concrete receiver
 // type `recv`. The instance is registered as an ordinary method.
 fn instantiate_gt(c: &mut Checker, tmpl: i32, recv: i32) -> i32 {
     let f = node::get(&c.nodes, tmpl);
-    // The receiver's instance args are the method's type arguments.
     let targs = instance_targs(&*c, recv);
-    let h = node::new_node(&mut c.nodes, node::AST_FN);
+    let base = instance_base(&*c, recv);
+    let tt = find_gen_ty(&*c, base);
+    if (tt < 0) { return -1; }
+    let type_tmpl = *c.gen_tys.get(tt as usize);
+    let type_params = node::get(&c.nodes, type_tmpl);
+    // Locate the block to bind its own parameter names, if it has any.
+    let mut gi: usize = 0;
+    while (gi < c.gtmpls.len() && *c.gtmpls.get(gi) != tmpl) { gi += 1; }
+    let mut subst_params = type_params;
+    let mut subst_args = targs;
+    if (gi < c.gtblks.len()) {
+        let blk = node::get(&c.nodes, *c.gtblks.get(gi));
+        if (blk.kids.len() > 0) {
+            let bound = gtmeth_bind(c, gi, recv);
+            if (bound.len() != blk.kids.len()) { return -1; }
+            let mut all_bound = true;
+            let mut bi: usize = 0;
+            while (bi < bound.len()) {
+                if (*bound.get(bi) == 0) { all_bound = false; }
+                bi += 1;
+            }
+            if (!all_bound) { return -1; }
+            subst_params = blk;
+            subst_args = bound;
+        }
+    }
+    let h = node::clone(&mut c.nodes, tmpl);
     node::set_sval(&mut c.nodes, h, f.sval);
-    let mut fnode = node::get(&c.nodes, h);
-    fnode.sfx = f.sval;
-    fnode.ival = recv as i64;
-    fnode.ival = recv as i64;
-    node::put(&mut c.nodes, h, fnode);
-    // Return type: substitute the template's params from the type template.
-    let tt = find_gen_ty(&*c, instance_base(&*c, recv));
-    let mut ttparams: i32 = -1;
-    if (tt >= 0) { ttparams = *c.gen_tys.get(tt as usize); }
-    if (ttparams < 0) { return -1; }
-    let tparams = node::get(&c.nodes, ttparams);
-    let mut rt = types::TY_UNIT;
-    if (f.a >= 0) { rt = subst_type(c, f.a, &tparams, &targs); }
-    if (rt == types::TY_INVALID) { rt = types::TY_UNIT; }
-    let ret_h = node::new_node(&mut c.nodes, node::AST_TYPE_NAME);
-    node::set_ty(&mut c.nodes, ret_h, rt);
-    node::set_a(&mut c.nodes, h, ret_h);
-    node::set_ty(&mut c.nodes, h, rt);
-    // Parameters, with `self` resolved from its spelling.
+    subst_tree(c, node::get(&c.nodes, h).a, &subst_params, &subst_args);
+    subst_tree(c, node::get(&c.nodes, h).b, &subst_params, &subst_args);
     let mut i: usize = 0;
     while (i < f.kids2.len()) {
-        let p = node::get(&c.nodes, *f.kids2.get(i));
-        let ph = node::new_node(&mut c.nodes, node::AST_PARAM);
-        node::set_sval(&mut c.nodes, ph, p.sval);
+        let p = *node::get(&c.nodes, h).kids2.get(i);
+        subst_tree(c, node::get(&c.nodes, p).a, &subst_params, &subst_args);
+        i += 1;
+    }
+    subst_ctor_args(c, node::get(&c.nodes, h).b, base, &targs);
+    let rt = resolve_type(c, node::get(&c.nodes, h).a);
+    set_ty(c, h, rt);
+    // Parameters, with `self` resolved from its spelling.
+    i = 0;
+    while (i < f.kids2.len()) {
+        let p = *node::get(&c.nodes, h).kids2.get(i);
+        let pn = node::get(&c.nodes, p);
         let mut pt: i32 = types::TY_UNIT;
-        if (is_self_param(&p.sval)) {
+        if (is_self_param(&pn.sval)) {
             pt = recv;
-            if (p.sval == "&self") {
+            if (pn.sval == "&self") {
                 pt = types::new_type(&mut c.types, types::CTY_REF,
                     concat3("&", types::tname(&c.types, recv), ""), recv, 0);
-            } else if (p.sval == "&mut self") {
+            } else if (pn.sval == "&mut self") {
                 pt = types::new_type(&mut c.types, types::CTY_MUTREF,
                     concat3("&mut ", types::tname(&c.types, recv), ""), recv, 0);
             }
         } else {
-            pt = subst_type(c, p.a, &tparams, &targs);
+            pt = resolve_type(c, pn.a);
             if (pt == types::TY_INVALID) { pt = types::TY_I32; }
         }
-        let pth = node::new_node(&mut c.nodes, node::AST_TYPE_NAME);
-        node::set_ty(&mut c.nodes, pth, pt);
-        node::set_a(&mut c.nodes, ph, pth);
-        node::set_ty(&mut c.nodes, ph, pt);
-        node::push_kid2(&mut c.nodes, h, ph);
+        set_ty(c, p, pt);
         i += 1;
     }
-    node::set_b(&mut c.nodes, h, f.b);
-    node::set_ival(&mut c.nodes, h, 3);   // 3 = a generic method instance
+    let mut fnode = node::get(&c.nodes, h);
+    fnode.sfx = f.sval;
+    fnode.self_ty = recv;
+    fnode.instance = 3;
+    node::put(&mut c.nodes, h, fnode);
     c.fns.push(h);
     return h;
 }
@@ -1552,6 +1817,7 @@ fn assoc_call(c: &mut Checker, at: i32, ty: i32, mname: &str,
               args: &vec::Vec<i32>) -> i32 {
     let fh = find_method(c, ty, mname);
     if (fh < 0) { err_no_field(c, at, ty, mname); return types::TY_INVALID; }
+    set_target(c, at, fh);
     check_args(c, at, mname, fh, args, false);
     return node::get(&c.nodes, fh).ty;
 }
@@ -1560,6 +1826,7 @@ fn assoc_call(c: &mut Checker, at: i32, ty: i32, mname: &str,
 // compiler-recognized type, so these are matched by name.
 fn heap_assoc(c: &mut Checker, at: i32, mname: &str, args: &vec::Vec<i32>) -> i32 {
     if (mname == "into_raw" && args.len() == 1) {
+        node::set_ival(&mut c.nodes, at, 14);
         let h = check_expr(c, *args.get(0));
         let mut elem: i32 = types::TY_U8;
         if (types::is_heap(&c.types, h)) { elem = types::elem(&c.types, h); }
@@ -1567,6 +1834,7 @@ fn heap_assoc(c: &mut Checker, at: i32, mname: &str, args: &vec::Vec<i32>) -> i3
             concat3("raw mut ", types::tname(&c.types, elem), ""), elem, 0);
     }
     if (mname == "from_raw" && args.len() == 1) {
+        node::set_ival(&mut c.nodes, at, 15);
         if (c.unchecked_depth == 0) { err_needs_unchecked(c, at, "`Heap::from_raw`"); }
         let p = check_expr(c, *args.get(0));
         let mut elem: i32 = types::TY_U8;
@@ -1587,22 +1855,31 @@ fn method_call(c: &mut Checker, at: i32, recv_h: i32, recv_ty: i32,
         let mut lt = recv_ty;
         if (types::type_kind(&c.types, lt) == types::CTY_SLICE
             || types::type_kind(&c.types, lt) == types::CTY_STRREF) {
+            node::set_ival(&mut c.nodes, at, 1);
             return types::TY_USIZE;
         }
         lt = deref_all(&*c, lt);
-        if (types::is_array(&c.types, lt)) { return types::TY_USIZE; }
+        if (types::is_array(&c.types, lt)) {
+            node::set_ival(&mut c.nodes, at, 1);
+            return types::TY_USIZE;
+        }
     }
     // `.as_bytes()` on &str.
     if (name == "as_bytes" && args.len() == 0
         && types::type_kind(&c.types, recv_ty) == types::CTY_STRREF) {
+        node::set_ival(&mut c.nodes, at, 2);
         return types::new_type(&mut c.types, types::CTY_SLICE, "[u8]", types::TY_U8, 0);
     }
     // Raw pointer toolbox (§13.5).
     if (types::is_ptr(&c.types, recv_ty)) {
         let elem = types::elem(&c.types, recv_ty);
-        if (name == "is_null" && args.len() == 0) { return types::TY_BOOL; }
+        if (name == "is_null" && args.len() == 0) {
+            node::set_ival(&mut c.nodes, at, 3);
+            return types::TY_BOOL;
+        }
         if (name == "read" && args.len() == 0) {
             if (c.unchecked_depth == 0) { err_needs_unchecked(c, at, "reading through a raw pointer"); }
+            node::set_ival(&mut c.nodes, at, 4);
             return elem;
         }
         if (name == "write" && args.len() == 1) {
@@ -1610,6 +1887,7 @@ fn method_call(c: &mut Checker, at: i32, recv_h: i32, recv_ty: i32,
             let vt = check_expr(c, *args.get(0));
             if (!coercible(c, elem, vt)) { mismatch(c, *args.get(0), elem, vt, "`p.write` value"); }
             stamp_lits(c, *args.get(0), elem);
+            node::set_ival(&mut c.nodes, at, 5);
             return types::TY_UNIT;
         }
         if ((name == "plus" || name == "minus") && args.len() == 1) {
@@ -1619,6 +1897,8 @@ fn method_call(c: &mut Checker, at: i32, recv_h: i32, recv_ty: i32,
                 mismatch(c, *args.get(0), types::TY_USIZE, at2, "pointer offset");
             }
             stamp_lits(c, *args.get(0), types::TY_USIZE);
+            if (name == "plus") { node::set_ival(&mut c.nodes, at, 6); }
+            else { node::set_ival(&mut c.nodes, at, 7); }
             return recv_ty;
         }
     }
@@ -1633,6 +1913,7 @@ fn method_call(c: &mut Checker, at: i32, recv_h: i32, recv_ty: i32,
                 mismatch(c, *args.get(0), types::TY_USIZE, at2, "index");
             }
             stamp_lits(c, *args.get(0), types::TY_USIZE);
+            node::set_ival(&mut c.nodes, at, 13);
             let el = types::elem(&c.types, base);
             return types::new_type(&mut c.types, types::CTY_REF,
                 concat3("&", types::tname(&c.types, el), ""), el, 0);
@@ -1640,6 +1921,7 @@ fn method_call(c: &mut Checker, at: i32, recv_h: i32, recv_ty: i32,
     }
     let fh = find_method(c, rt, name);
     if (fh < 0) { err_no_field(c, at, rt, name); return types::TY_INVALID; }
+    set_target(c, at, fh);
     check_args(c, at, name, fh, args, true);
     return node::get(&c.nodes, fh).ty;
 }
@@ -1675,6 +1957,8 @@ fn try_enum_construct(c: &mut Checker, at: i32, full: &str,
 fn builtin_alloc(c: &mut Checker, at: i32, name: &str, targs: &vec::Vec<i32>,
                  args: &vec::Vec<i32>) -> i32 {
     let is_alloc = name == "alloc";
+    if (is_alloc) { node::set_ival(&mut c.nodes, at, 10); }
+    else { node::set_ival(&mut c.nodes, at, 11); }
     if (c.unchecked_depth == 0) {
         if (is_alloc) {
             err_needs_unchecked(c, at, "calling `alloc`");
@@ -1720,6 +2004,9 @@ fn builtin_alloc(c: &mut Checker, at: i32, name: &str, targs: &vec::Vec<i32>,
         mismatch(c, *args.get(countidx), types::TY_USIZE, ct, "`alloc`/`dealloc` count");
     }
     stamp_lits(c, *args.get(countidx), types::TY_USIZE);
+    let elem_h = node::new_node(&mut c.nodes, node::AST_TYPE_NAME);
+    node::set_ty(&mut c.nodes, elem_h, elem);
+    node::set_b(&mut c.nodes, at, elem_h);
     if (is_alloc) {
         return types::new_type(&mut c.types, types::CTY_MUTPTR,
             concat3("raw mut ", types::tname(&c.types, elem), ""), elem, 0);
@@ -1731,6 +2018,7 @@ fn builtin_alloc(c: &mut Checker, at: i32, name: &str, targs: &vec::Vec<i32>,
 fn generic_call(c: &mut Checker, at: i32, n: &node::Node) -> i32 {
     let name = n.sval;
     if (name == "Raw::null") {
+        node::set_ival(&mut c.nodes, at, 16);
         let mut elem: i32 = types::TY_U8;
         if (n.kids2.len() != 1) {
             err_arity(c, at, "Raw::null", 1, n.kids2.len());
@@ -1745,6 +2033,7 @@ fn generic_call(c: &mut Checker, at: i32, n: &node::Node) -> i32 {
         return builtin_alloc(c, at, name, &n.kids2, &n.kids);
     }
     if (name == "reinterpret") {
+        node::set_ival(&mut c.nodes, at, 12);
         if (n.kids2.len() != 2) {
             err_arity(c, at, "reinterpret", 2, n.kids2.len());
             return types::TY_U8;
@@ -1765,6 +2054,10 @@ fn generic_call(c: &mut Checker, at: i32, n: &node::Node) -> i32 {
             add_diag(c, "TYPE-01", "`reinterpret` sizes must match",
                      "Both types must have the same size; use `as` for value conversions.", at);
         }
+        let types_h = node::new_node(&mut c.nodes, node::AST_TYPE_NAME);
+        node::set_ty(&mut c.nodes, types_h, to);
+        node::set_ival(&mut c.nodes, types_h, from as i64);
+        node::set_b(&mut c.nodes, at, types_h);
         return to;
     }
     // A bare variant construction `Has(x)` that carries explicit type args
@@ -1784,6 +2077,8 @@ fn generic_call(c: &mut Checker, at: i32, n: &node::Node) -> i32 {
     }
     let inst = instantiate_fn(c, ti, at, &n.kids2);
     if (inst < 0) { return types::TY_INVALID; }
+    set_target(c, at, inst);
+    node::set_b(&mut c.nodes, at, inst);
     check_args(c, at, name, inst, &n.kids, false);
     return node::get(&c.nodes, inst).ty;
 }
@@ -1791,10 +2086,14 @@ fn generic_call(c: &mut Checker, at: i32, n: &node::Node) -> i32 {
 // `name(args)` — a plain call (builtins first, then user functions).
 fn ordinary_call(c: &mut Checker, at: i32, name: &str, args: &vec::Vec<i32>) -> i32 {
     if (name == "print" || name == "println" || name == "eprintln") {
+        if (name == "print") { node::set_ival(&mut c.nodes, at, 1); }
+        else if (name == "println") { node::set_ival(&mut c.nodes, at, 2); }
+        else { node::set_ival(&mut c.nodes, at, 3); }
         check_format(c, at, name, args);
         return types::TY_UNIT;
     }
     if (name == "trap") {
+        node::set_ival(&mut c.nodes, at, 4);
         if (args.len() != 1) {
             err_arity(c, at, name, 1, args.len());
         } else {
@@ -1806,6 +2105,7 @@ fn ordinary_call(c: &mut Checker, at: i32, name: &str, args: &vec::Vec<i32>) -> 
         return types::TY_NEVER;
     }
     if (name == "assert") {
+        node::set_ival(&mut c.nodes, at, 5);
         if (args.len() < 1 || args.len() > 2) {
             err_arity(c, at, name, 2, args.len());
         } else {
@@ -1818,10 +2118,12 @@ fn ordinary_call(c: &mut Checker, at: i32, name: &str, args: &vec::Vec<i32>) -> 
         return types::TY_UNIT;
     }
     if (name == "unreachable") {
+        node::set_ival(&mut c.nodes, at, 6);
         if (args.len() != 0) { err_arity(c, at, name, 0, args.len()); }
         return types::TY_NEVER;
     }
     if (name == "exit") {
+        node::set_ival(&mut c.nodes, at, 7);
         if (args.len() != 1) {
             err_arity(c, at, name, 1, args.len());
         } else {
@@ -1834,6 +2136,7 @@ fn ordinary_call(c: &mut Checker, at: i32, name: &str, args: &vec::Vec<i32>) -> 
         return types::TY_NEVER;
     }
     if (name == "args") {
+        node::set_ival(&mut c.nodes, at, 8);
         if (args.len() != 0) { err_arity(c, at, name, 0, args.len()); }
         // &[&str]
         let sref = types::new_type(&mut c.types, types::CTY_STRREF, "&str", types::TY_U8, 0);
@@ -1843,6 +2146,7 @@ fn ordinary_call(c: &mut Checker, at: i32, name: &str, args: &vec::Vec<i32>) -> 
         return builtin_alloc(c, at, name, &vec::Vec<i32>::make(), args);
     }
     if (name == "str::from_parts") {
+        node::set_ival(&mut c.nodes, at, 17);
         let out = types::new_type(&mut c.types, types::CTY_STRREF, "&str", types::TY_U8, 0);
         if (args.len() != 2) { err_arity(c, at, name, 2, args.len()); return out; }
         if (c.unchecked_depth == 0) { err_needs_unchecked(c, at, "calling `str::from_parts`"); }
@@ -1861,6 +2165,7 @@ fn ordinary_call(c: &mut Checker, at: i32, name: &str, args: &vec::Vec<i32>) -> 
     }
     // `Raw::null()` without `<T>`: infer the pointee from the expected type.
     if (name == "Raw::null") {
+        node::set_ival(&mut c.nodes, at, 16);
         let mut elem: i32 = types::TY_U8;
         if (c.expected > 0 && types::is_ptr(&c.types, c.expected)) {
             elem = types::elem(&c.types, c.expected);
@@ -1880,6 +2185,7 @@ fn ordinary_call(c: &mut Checker, at: i32, name: &str, args: &vec::Vec<i32>) -> 
         // A module function or `Type::assoc`.
         let sym = lookup(&*c, name);
         if (sym >= 0 && sym_kind(&*c, sym) == SK_FN) {
+            set_target(c, at, sym_decl(&*c, sym));
             check_args(c, at, name, sym_decl(&*c, sym), args, false);
             return sym_ty(&*c, sym);
         }
@@ -1917,6 +2223,9 @@ fn ordinary_call(c: &mut Checker, at: i32, name: &str, args: &vec::Vec<i32>) -> 
     if (ti >= 0) {
         let inst = infer_fn(c, ti, at, args);
         if (inst < 0) { return types::TY_INVALID; }
+        set_target(c, at, inst);
+        node::set_a(&mut c.nodes, at, -1);
+        node::set_b(&mut c.nodes, at, inst);
         check_args(c, at, name, inst, args, false);
         return node::get(&c.nodes, inst).ty;
     }
@@ -1935,6 +2244,7 @@ fn ordinary_call(c: &mut Checker, at: i32, name: &str, args: &vec::Vec<i32>) -> 
                      "This is an `unchecked fn`; calling it needs an `unchecked` block.", at);
         }
     }
+    set_target(c, at, decl);
     check_args(c, at, name, decl, args, false);
     return sym_ty(&*c, sym);
 }
@@ -2183,6 +2493,7 @@ fn check_heap(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
 fn check_sizeof(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
     let t = resolve_type(c, n.a);
     if (t == types::TY_INVALID) { return t; }
+    node::set_ival(&mut c.nodes, h, types::size(t, &mut c.types) as i64);
     return types::TY_USIZE;
 }
 
@@ -2323,6 +2634,20 @@ fn unify(c: &mut Checker, tn_h: i32, ty: i32, names: &RawStrList,
             }
             return;
         }
+        // A generic head (`Box<T>`, `Box<Box<T>>`) unifies against the
+        // concrete instance's arguments. This is what binds a methods
+        // block's own parameter names from its receiver pattern.
+        let base = instance_base(&*c, ty);
+        if (base == tn.sval) {
+            let args = instance_targs(&*c, ty);
+            if (args.len() == tn.kids.len()) {
+                let mut k: usize = 0;
+                while (k < tn.kids.len()) {
+                    unify(c, *tn.kids.get(k), *args.get(k), names, slots);
+                    k += 1;
+                }
+            }
+        }
         return;
     }
     if (tn.kind == node::AST_TYPE_REF) {
@@ -2376,33 +2701,50 @@ fn instantiate_fn(c: &mut Checker, ti: i32, at: i32, targs: &vec::Vec<i32>) -> i
 // (its mangled name is what codegen uses).
 fn build_instance(c: &mut Checker, tmpl: i32, concrete: &vec::Vec<i32>) -> i32 {
     let t = node::get(&c.nodes, tmpl);
-    let params = t.kids;
-    let h = node::new_node(&mut c.nodes, node::AST_FN);
-    node::set_sval(&mut c.nodes, h, instance_fn_name(c, tmpl, concrete));
-    // Return type.
-    let rt = subst_type(c, t.a, &t, concrete);
-    let ret_h = node::new_node(&mut c.nodes, node::AST_TYPE_NAME);
-    node::set_ty(&mut c.nodes, ret_h, rt);
-    node::set_a(&mut c.nodes, h, ret_h);
-    // Parameters: params are AST_PARAM nodes with a type in children.
+    let iname = instance_fn_name(c, tmpl, concrete);
+    // One definition per concrete signature. Reusing the handle also keeps the
+    // emission order and every call site's target identical.
+    let mut old: usize = 0;
+    while (old < c.fns.len()) {
+        let fh = *c.fns.get(old);
+        if (node::get(&c.nodes, fh).sval == iname) { return fh; }
+        old += 1;
+    }
+    let h = node::clone(&mut c.nodes, tmpl);
+    node::set_sval(&mut c.nodes, h, iname);
+    // Substitute the signature and the *whole cloned body*. Sharing `t.b`
+    // leaves calls and expression types tied to the first instantiation.
+    subst_tree(c, node::get(&c.nodes, h).a, &t, concrete);
+    subst_tree(c, node::get(&c.nodes, h).b, &t, concrete);
     let mut i: usize = 0;
     while (i < t.kids2.len()) {
-        let p = node::get(&c.nodes, *t.kids2.get(i));
-        let ph = node::new_node(&mut c.nodes, node::AST_PARAM);
-        node::set_sval(&mut c.nodes, ph, p.sval);
-        let pt = subst_type(c, p.a, &t, concrete);
-        let pth = node::new_node(&mut c.nodes, node::AST_TYPE_NAME);
-        node::set_ty(&mut c.nodes, pth, pt);
-        node::set_a(&mut c.nodes, ph, pth);
-        node::set_ty(&mut c.nodes, ph, pt);
-        node::push_kid2(&mut c.nodes, h, ph);
+        let p = *node::get(&c.nodes, h).kids2.get(i);
+        subst_tree(c, node::get(&c.nodes, p).a, &t, concrete);
         i += 1;
     }
-    // The body is shared (it only mentions parameters through type ids R6
-    // lowers); record the template handle so R6 can walk it.
-    node::set_b(&mut c.nodes, h, t.b);
-    node::set_ty(&mut c.nodes, h, rt);
-    node::set_ival(&mut c.nodes, h, 2);   // 2 = a generic instance
+    let rt = resolve_type(c, node::get(&c.nodes, h).a);
+    set_ty(c, h, rt);
+    i = 0;
+    while (i < t.kids2.len()) {
+        let p = *node::get(&c.nodes, h).kids2.get(i);
+        let pt = resolve_type(c, node::get(&c.nodes, p).a);
+        set_ty(c, p, pt);
+        i += 1;
+    }
+    let mut unresolved = false;
+    let mut ci: usize = 0;
+    while (ci < concrete.len()) {
+        if (types::type_kind(&c.types, *concrete.get(ci)) == types::CTY_GENPARAM) {
+            unresolved = true;
+        }
+        ci += 1;
+    }
+    let mut fnode = node::get(&c.nodes, h);
+    // 2 = a concrete generic-fn instance; 4 = a template-only placeholder
+    // (its type argument is still a generic parameter).
+    fnode.instance = 4;
+    if (!unresolved) { fnode.instance = 2; }
+    node::put(&mut c.nodes, h, fnode);
     c.fns.push(h);
     return h;
 }
@@ -2410,11 +2752,10 @@ fn build_instance(c: &mut Checker, tmpl: i32, concrete: &vec::Vec<i32>) -> i32 {
 fn instance_fn_name(c: &mut Checker, tmpl: i32, args: &vec::Vec<i32>) -> &str {
     let mut s: str::String = str::String::make();
     s.push(node::get(&c.nodes, tmpl).sval);
-    s.push("__");
     let mut i: usize = 0;
     while (i < args.len()) {
-        if (i > 0) { s.push("_"); }
-        s.push(types::tname(&c.types, *args.get(i)));
+        s.push("__");
+        s.push(mangle_ty(&*c, *args.get(i)));
         i += 1;
     }
     return s.as_str();
@@ -2729,6 +3070,7 @@ fn check_stmt(c: &mut Checker, h: i32) {
             if (n.a >= 0 && node::get(&c.nodes, n.a).kind == node::AST_BINARY) {
                 let rn = node::get(&c.nodes, n.a);
                 if (rn.sval == ".." || rn.sval == "..=") {
+                    node::set_ival(&mut c.nodes, h, 1);   // a range, not an iterable
                     let lo = check_expr(c, rn.a);
                     let hi = check_expr(c, rn.b);
                     let mut et: i32 = types::TY_INVALID;
@@ -2746,6 +3088,7 @@ fn check_stmt(c: &mut Checker, h: i32) {
                         if (et == types::TY_UINT_LIT || et == types::TY_INVALID) { et = types::TY_I32; }
                         stamp_lits(c, rn.a, et);
                         stamp_lits(c, rn.b, et);
+                        set_ty(c, n.a, et);   // the loop's element type
                     }
                     declare_init(c, h, n.sval, et, 1);
                 }
@@ -2852,7 +3195,8 @@ fn check_stmt(c: &mut Checker, h: i32) {
                 c.expected = c.ret_ty;
                 let t = check_expr(c, n.a);
                 c.expected = saved;
-                if (t != types::TY_INVALID && !coercible(c, c.ret_ty, t)) {
+                if (t != types::TY_INVALID && !coercible(c, c.ret_ty, t)
+                    && !types::is_genparam(&c.types, t)) {
                     mismatch(c, n.a, c.ret_ty, t, "`return` value");
                 }
                 stamp_lits(c, n.a, c.ret_ty);
@@ -2950,10 +3294,12 @@ fn check_template_body(c: &mut Checker, fh: i32) {
 fn check_fn_body(c: &mut Checker, fh: i32) {
     let f = node::get(&c.nodes, fh);
     if (f.b < 0) { return; }   // extern declaration
-    // A generic instance's body was already checked as a template; the shared
-    // nodes keep the template's types, so do not re-check (that re-check would
-    // compare concrete params against the template's `T` return type).
-    if (f.ival == 2 || f.ival == 3) { return; }
+    // Generic instances own a substituted clone, so checking them is both
+    // necessary and safe: it stamps every expression and call target with the
+    // concrete types used by LLVM lowering.
+    // A template-only placeholder is not a concrete definition; checking it
+    // against generic-parameter types would report false mismatches.
+    if (f.instance == 4) { return; }
     let saved_ret = c.ret_ty;
     let saved_fn = c.cur_fn;
     c.ret_ty = f.ty;
@@ -2977,7 +3323,7 @@ fn check_fn_body(c: &mut Checker, fh: i32) {
         if (is_self_param(&p.sval)) {
             let mut st = p.ty;
             if (st <= 0 || st == types::TY_UNIT) { st = types::elem(&c.types, st); }
-            if (st <= 0 || st == types::TY_UNIT) { st = f.ival as i32; }
+            if (st <= 0 || st == types::TY_UNIT) { st = f.self_ty; }
             let mut smut: i32 = 0;
             if (p.sval == "mut self" || p.sval == "&mut self") { smut = 1; }
             declare(c, *f.kids2.get(i), "self", SK_SELF, st, smut);
@@ -3223,24 +3569,18 @@ fn register_methods(c: &mut Checker, h: i32) {
     // parser) registered its methods for every `Box<T>`, so a method declared
     // for `Box<u8>` was callable on a `Box<i32>` -- a silent miscompile.
     if (n.kids.len() == 0 && n.kids3.len() > 0) {
-        let mut args: vec::Vec<i32> = vec::Vec<i32>::make();
-        let mut k: usize = 0;
-        while (k < n.kids3.len()) {
-            let at = resolve_type(c, *n.kids3.get(k));
-            if (at == types::TY_INVALID) { return; }
-            args.push(at);
-            k += 1;
-        }
         let ti = find_gen_ty(&*c, n.sval);
         if (ti < 0) { err_unknown(c, h, n.sval, true); return; }
-        let recv = instantiate_type(c, ti, h, &args);
+        // `instantiate_type` takes type-AST handles and resolves them itself;
+        // passing already-resolved ids would treat them as node handles.
+        let recv = instantiate_type(c, ti, h, &n.kids3);
         if (recv == types::TY_INVALID) { return; }
         let mut i: usize = 0;
         while (i < n.kids2.len()) {
             let f = *n.kids2.get(i);
             let mut fnode = node::get(&c.nodes, f);
             fnode.sfx = fnode.sval;      // method name for lookup
-            fnode.ival = recv as i64;    // receiver type
+            fnode.self_ty = recv;        // receiver type (semantic, not AST payload)
             node::put(&mut c.nodes, f, fnode);
             let fp = node::get(&c.nodes, f);
             if (fp.kids2.len() > 0) {
@@ -3294,7 +3634,7 @@ fn register_methods(c: &mut Checker, h: i32) {
         let f = *n.kids2.get(i);
         let mut fnode = node::get(&c.nodes, f);
         fnode.sfx = fnode.sval;         // method name for lookup
-        fnode.ival = recv as i64;       // receiver type
+        fnode.self_ty = recv;           // receiver type (semantic, not AST payload)
         node::put(&mut c.nodes, f, fnode);
         // The self parameter's type depends on its spelling.
         let fp = node::get(&c.nodes, f);

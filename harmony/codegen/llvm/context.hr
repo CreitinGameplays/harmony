@@ -1,0 +1,427 @@
+// harmony/codegen/llvm/context.hr — the LLVM emitter's shared state.
+//
+// The emitter is deterministic by construction: register names are counters,
+// block labels carry a stable hint, and the string pool is numbered in source
+// order. Nothing here depends on a hash, an address, or the clock, so two
+// runs of the same program produce identical IR bytes (docs/harmony.md §19.4).
+//
+// The module is deliberately small and boring: output, type spellings, the
+// local-variable environment, the string pool, and the format-string parser.
+// The lowering itself lives in `lower.hr`; the module driver lives in
+// `emit.hr`.
+import "../../../library/core/str.hr";
+import "../../../library/core/vec.hr";
+import "../../ast/node.hr";
+import "../../sema/types.hr";
+import "../../sema/check.hr";
+
+// One local binding: its source name, the alloca that holds it, and its type.
+copy struct Local {
+    name: &str;
+    slot: &str;
+    ty: i32;
+}
+
+// One `break`/`continue` target. The stack is innermost-last.
+copy struct LoopTarget {
+    brk: &str;
+    cont: &str;
+}
+
+// Format-string pieces (docs/harmony.md §15.1).
+export const FMT_LIT: i32 = 0;
+export const FMT_DISP: i32 = 1;
+export const FMT_DEBUG: i32 = 2;
+export const FMT_HEX: i32 = 3;
+
+copy struct FmtPiece {
+    kind: i32;
+    start: usize;      // literal bytes: range in `Format.lit`
+    len: usize;
+    width: i32;
+    has_width: i32;
+    prec: i32;
+    has_prec: i32;
+    zero: i32;
+}
+
+struct Format {
+    pieces: vec::Vec<FmtPiece>;
+    lit: str::String;
+}
+
+export struct Emitter {
+    c: &mut check::Checker;
+    out: str::String;
+    ssa: i32;
+    label: i32;
+    expr_ty: i32;          // type of the most recently lowered expression
+    terminated: i32;       // current block already has a terminator
+    sret_on: i32;          // current function returns an aggregate (0/1)
+    sret_ty: i32;
+    locals: vec::Vec<Local>;
+    scopes: vec::Vec<usize>;
+    loops: vec::Vec<LoopTarget>;
+    strings: vec::Vec<str::String>;
+}
+
+export fn make(c: &mut check::Checker) -> Emitter {
+    return Emitter {
+        .c = c,
+        .out = str::String::make(),
+        .ssa = 0,
+        .label = 0,
+        .expr_ty = types::TY_UNIT,
+        .terminated = 0,
+        .sret_on = 0,
+        .sret_ty = types::TY_UNIT,
+        .locals = vec::Vec<Local>::make(),
+        .scopes = vec::Vec<usize>::make(),
+        .loops = vec::Vec<LoopTarget>::make(),
+        .strings = vec::Vec<str::String>::make(),
+    };
+}
+
+// ---- output ---------------------------------------------------------------
+
+export fn out(e: &mut Emitter, s: &str) { e.out.push(s); }
+export fn out_i64(e: &mut Emitter, v: i64) { e.out.push_i64(v); }
+export fn out_u64(e: &mut Emitter, v: u64) { e.out.push_u64(v); }
+export fn nl(e: &mut Emitter) { e.out.push("\n"); }
+
+// A fresh SSA register name (`%1`, `%2`, ...).
+export fn new_reg(e: &mut Emitter) -> &str {
+    let mut s: str::String = str::String::make();
+    e.ssa += 1;
+    s.push("%");
+    s.push_i64(e.ssa as i64);
+    return s.as_str();
+}
+
+// A fresh block label (`if.then.1`, ...). The hint keeps the IR readable and
+// the counter keeps it unique.
+export fn new_label(e: &mut Emitter, hint: &str) -> &str {
+    let mut s: str::String = str::String::make();
+    e.label += 1;
+    s.push(hint);
+    s.push(".");
+    s.push_i64(e.label as i64);
+    return s.as_str();
+}
+
+// Collapses `::` to `__`, as LLVM symbol names cannot contain colons.
+export fn sanitize(s: &str) -> &str {
+    let mut out_s: str::String = str::String::make();
+    let b = s.as_bytes();
+    let mut i: usize = 0;
+    while (i < s.len()) {
+        if (b[i] == 58u8 && i + 1 < s.len() && b[i + 1] == 58u8) {
+            out_s.push("__");
+            i += 2;
+        } else {
+            out_s.push_byte(b[i]);
+            i += 1;
+        }
+    }
+    return out_s.as_str();
+}
+
+// ---- type spellings -------------------------------------------------------
+
+export fn is_float_ty(id: i32) -> bool {
+    return id == types::TY_F32 || id == types::TY_F64;
+}
+
+export fn is_integer_or_char(id: i32) -> bool {
+    return types::is_integer(id) || id == types::TY_CHAR;
+}
+
+export fn bit_width(id: i32) -> i32 {
+    if (id == types::TY_I8 || id == types::TY_U8) { return 8; }
+    if (id == types::TY_I16 || id == types::TY_U16) { return 16; }
+    if (id == types::TY_I32 || id == types::TY_U32
+        || id == types::TY_CHAR || id == types::TY_F32) { return 32; }
+    if (id == types::TY_I64 || id == types::TY_U64
+        || id == types::TY_ISIZE || id == types::TY_USIZE
+        || id == types::TY_F64) { return 64; }
+    if (id == types::TY_BOOL) { return 1; }
+    return 0;
+}
+
+// The LLVM type for a Harmony type (§19.4).
+export fn type_name(e: &mut Emitter, id: i32) -> &str {
+    if (id == types::TY_BOOL) { return "i1"; }
+    if (id == types::TY_CHAR || id == types::TY_I32
+        || id == types::TY_U32 || id == types::TY_UINT_LIT) { return "i32"; }
+    if (id == types::TY_I8 || id == types::TY_U8) { return "i8"; }
+    if (id == types::TY_I16 || id == types::TY_U16) { return "i16"; }
+    if (id == types::TY_I64 || id == types::TY_U64
+        || id == types::TY_ISIZE || id == types::TY_USIZE) { return "i64"; }
+    if (id == types::TY_F32) { return "float"; }
+    if (id == types::TY_F64 || id == types::TY_FLOAT_LIT) { return "double"; }
+    if (id == types::TY_UNIT || id == types::TY_NEVER) { return "void"; }
+    let k = types::type_kind(&e.c.types, id);
+    if (k == types::CTY_SLICE || k == types::CTY_STRREF) { return "%slice"; }
+    if (k == types::CTY_REF || k == types::CTY_MUTREF || k == types::CTY_HEAP
+        || k == types::CTY_PTR || k == types::CTY_MUTPTR) { return "ptr"; }
+    if (k == types::CTY_STRUCT) {
+        let mut s: str::String = str::String::make();
+        s.push("%struct.");
+        s.push(sanitize(types::tname(&e.c.types, id)));
+        return s.as_str();
+    }
+    if (k == types::CTY_ENUM) {
+        let mut s: str::String = str::String::make();
+        s.push("%enum.");
+        s.push(sanitize(types::tname(&e.c.types, id)));
+        return s.as_str();
+    }
+    if (k == types::CTY_ARRAY) {
+        let elem = types::elem(&e.c.types, id);
+        let esz = types::size(elem, &mut e.c.types);
+        let mut s: str::String = str::String::make();
+        s.push("[");
+        s.push_i64(types::array_len(&e.c.types, id) as i64);
+        s.push(" x ");
+        // Resolve the element name before building the outer name.
+        let en = type_name(e, elem);
+        s.push(en);
+        s.push("]");
+        return s.as_str();
+    }
+    return "i32";
+}
+
+// A field's *sized* LLVM type: bool and unit occupy one byte in memory.
+export fn sized_field_type(e: &mut Emitter, id: i32) -> &str {
+    if (id == types::TY_UNIT || id == types::TY_NEVER || id == types::TY_BOOL) {
+        return "i8";
+    }
+    return type_name(e, id);
+}
+
+// The zero value for a type.
+export fn zero_of(e: &mut Emitter, id: i32) -> &str {
+    if (id == types::TY_BOOL) { return "false"; }
+    if (is_float_ty(id)) { return "0.0"; }
+    let k = types::type_kind(&e.c.types, id);
+    if (k == types::CTY_STRUCT || k == types::CTY_ENUM
+        || k == types::CTY_ARRAY || k == types::CTY_SLICE
+        || k == types::CTY_STRREF) { return "zeroinitializer"; }
+    if (k == types::CTY_REF || k == types::CTY_MUTREF || k == types::CTY_HEAP
+        || k == types::CTY_PTR || k == types::CTY_MUTPTR) { return "null"; }
+    return "0";
+}
+
+// Aggregates are address-represented in this backend.
+export fn is_aggregate(e: &mut Emitter, id: i32) -> bool {
+    let k = types::type_kind(&e.c.types, id);
+    return k == types::CTY_STRUCT || k == types::CTY_ENUM
+        || k == types::CTY_ARRAY || k == types::CTY_SLICE
+        || k == types::CTY_STRREF;
+}
+
+// The node's resolved type, with the same fallback harmony-base uses.
+export fn node_ty(e: &mut Emitter, h: i32) -> i32 {
+    if (h < 0) { return types::TY_I32; }
+    let id = node::get(&e.c.nodes, h).ty;
+    if (id == 0) { return types::TY_I32; }
+    if (id == types::TY_UINT_LIT) { return types::TY_I32; }
+    if (id == types::TY_FLOAT_LIT) { return types::TY_F64; }
+    return id;
+}
+
+export fn is_self_param(s: &str) -> bool {
+    return s == "self" || s == "mut self" || s == "&self" || s == "&mut self";
+}
+
+// ---- locals and scopes ----------------------------------------------------
+
+export fn scope_push(e: &mut Emitter) { e.scopes.push(e.locals.len()); }
+
+export fn scope_pop(e: &mut Emitter) {
+    if (e.scopes.len() > 0) {
+        let mark = *e.scopes.get(e.scopes.len() - 1);
+        e.scopes.pop();
+        while (e.locals.len() > mark) { e.locals.pop(); }
+    }
+}
+
+export fn local_declare(e: &mut Emitter, name: &str, slot: &str, ty: i32) {
+    e.locals.push(Local { .name = name, .slot = slot, .ty = ty });
+}
+
+export fn local_find(e: &mut Emitter, name: &str) -> i32 {
+    let mut i: usize = e.locals.len();
+    while (i > 0) {
+        i -= 1;
+        if (e.locals.get(i).name == name) { return i as i32; }
+    }
+    return -1;
+}
+
+export fn local_slot(e: &mut Emitter, name: &str) -> &str {
+    let i = local_find(e, name);
+    if (i < 0) { return ""; }
+    return e.locals.get(i as usize).slot;
+}
+
+export fn local_ty(e: &mut Emitter, name: &str) -> i32 {
+    let i = local_find(e, name);
+    if (i < 0) { return types::TY_INVALID; }
+    return e.locals.get(i as usize).ty;
+}
+
+// ---- string pool ----------------------------------------------------------
+
+// Interns a literal and returns its pool index. The bytes are copied, so the
+// source may be a temporary decoded string.
+export fn intern(e: &mut Emitter, s: &str) -> i32 {
+    let mut i: usize = 0;
+    while (i < e.strings.len()) {
+        if (e.strings.get(i).as_str() == s) { return i as i32; }
+        i += 1;
+    }
+    let mut copy_s: str::String = str::String::make();
+    copy_s.push(s);
+    e.strings.push(copy_s);
+    return e.strings.len() as i32 - 1;
+}
+
+// The LLVM symbol for an interned literal.
+export fn string_symbol(e: &mut Emitter, i: i32) -> &str {
+    let mut s: str::String = str::String::make();
+    s.push("@.str.");
+    s.push_i64(i as i64);
+    return s.as_str();
+}
+
+// ---- symbols --------------------------------------------------------------
+
+// `Type__method`, the method mangling of §19.4.
+export fn method_symbol(e: &mut Emitter, recv: i32, name: &str) -> &str {
+    let mut s: str::String = str::String::make();
+    s.push("harmony__");
+    s.push(sanitize(types::tname(&e.c.types, recv)));
+    s.push("__");
+    s.push(name);
+    return s.as_str();
+}
+
+// The symbol used for a function definition or call.
+export fn fn_symbol(e: &mut Emitter, h: i32) -> &str {
+    let n = node::get(&e.c.nodes, h);
+    if (n.kind == node::AST_EXTERN_FN) { return n.sval; }
+    if (n.self_ty != 0) { return method_symbol(e, n.self_ty, n.sval); }
+    if (n.sval == "main") { return "harmony_main"; }
+    let mut s: str::String = str::String::make();
+    s.push("harmony__");
+    s.push(sanitize(n.sval));
+    return s.as_str();
+}
+
+// ---- format strings -------------------------------------------------------
+
+fn fmt_add_lit(f: &mut Format, n: usize) {
+    if (n == 0) { return; }
+    let start = f.lit.len() - n;
+    f.pieces.push(FmtPiece {
+        .kind = FMT_LIT, .start = start, .len = n,
+        .width = 0, .has_width = 0, .prec = 0, .has_prec = 0, .zero = 0,
+    });
+}
+
+fn fmt_add_field(f: &mut Format, kind: i32) -> i32 {
+    f.pieces.push(FmtPiece {
+        .kind = kind, .start = 0, .len = 0,
+        .width = 0, .has_width = 0, .prec = 0, .has_prec = 0, .zero = 0,
+    });
+    return f.pieces.len() as i32 - 1;
+}
+
+// Parses a format string into literal runs and placeholders. The literal
+// bytes are decoded in place, so `{{` becomes one `{`.
+export fn parse_format(s: &str) -> Format {
+    let mut f: Format = Format {
+        .pieces = vec::Vec<FmtPiece>::make(),
+        .lit = str::String::make(),
+    };
+    let b = s.as_bytes();
+    let mut i: usize = 0;
+    let mut lit: usize = 0;
+    while (i < s.len()) {
+        let ch = b[i];
+        if (ch == 123u8) {   // '{'
+            if (i + 1 < s.len() && b[i + 1] == 123u8) {
+                f.lit.push_byte(123u8);
+                lit += 1;
+                i += 2;
+                continue;
+            }
+            fmt_add_lit(&mut f, lit);
+            lit = 0;
+            let cur = fmt_add_field(&mut f, FMT_DISP);
+            i += 1;
+            if (i < s.len() && b[i] == 63u8) {   // '?'
+                let mut p = *f.pieces.get(cur as usize);
+                p.kind = FMT_DEBUG;
+                f.pieces.set(cur as usize, p);
+                i += 1;
+            } else {
+                if (i < s.len() && b[i] == 58u8) { i += 1; }   // ':'
+                if (i < s.len() && b[i] == 48u8) {   // '0'
+                    let mut p = *f.pieces.get(cur as usize);
+                    p.zero = 1;
+                    f.pieces.set(cur as usize, p);
+                    i += 1;
+                }
+                if (i < s.len() && b[i] >= 48u8 && b[i] <= 57u8) {
+                    let mut width: i32 = 0;
+                    while (i < s.len() && b[i] >= 48u8 && b[i] <= 57u8) {
+                        width = width * 10 + (b[i] - 48u8) as i32;
+                        i += 1;
+                    }
+                    let mut p = *f.pieces.get(cur as usize);
+                    p.has_width = 1;
+                    p.width = width;
+                    f.pieces.set(cur as usize, p);
+                }
+                if (i < s.len() && b[i] == 46u8) {   // '.'
+                    i += 1;
+                    let mut prec: i32 = 0;
+                    while (i < s.len() && b[i] >= 48u8 && b[i] <= 57u8) {
+                        prec = prec * 10 + (b[i] - 48u8) as i32;
+                        i += 1;
+                    }
+                    let mut p = *f.pieces.get(cur as usize);
+                    p.has_prec = 1;
+                    p.prec = prec;
+                    f.pieces.set(cur as usize, p);
+                }
+                if (i < s.len() && b[i] == 120u8) {   // 'x'
+                    let mut p = *f.pieces.get(cur as usize);
+                    p.kind = FMT_HEX;
+                    f.pieces.set(cur as usize, p);
+                    i += 1;
+                }
+            }
+            if (i >= s.len() || b[i] != 125u8) { break; }   // '}'
+            i += 1;
+            continue;
+        }
+        if (ch == 125u8) {   // '}'
+            if (i + 1 < s.len() && b[i + 1] == 125u8) {
+                f.lit.push_byte(125u8);
+                lit += 1;
+                i += 2;
+                continue;
+            }
+            break;
+        }
+        f.lit.push_byte(ch);
+        lit += 1;
+        i += 1;
+    }
+    fmt_add_lit(&mut f, lit);
+    return f;
+}

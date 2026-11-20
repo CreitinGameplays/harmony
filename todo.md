@@ -757,8 +757,8 @@ directly into its binary and (b) support **multi-core compilation by default**.
     19 module scenarios against harmony-base's NAME-* decisions: 0 mismatches.
   - `harmony/sema/types.hr` + `harmony/sema/check.hr` are the whole type
     checker, gated by four differential suites (`typediff.py` 32 cases,
-    `typechecker_sh.py` 28, `typecorpus.py error-handling` 58,
-    `typecorpus.py codegen` 81): 199 cases, 0 mismatches. The batch harness
+    `typechecker_sh.py` 28, `typecorpus.py error-handling` 59,
+    `typecorpus.py codegen` 85): 204 cases, 0 mismatches. The batch harness
     compiles the checker once and runs every program through it, so a whole
     corpus takes ~6s instead of ~5s per case.
   - A fourth harmony-base bug fixed: generic instance reuse compared type-arg
@@ -791,6 +791,21 @@ directly into its binary and (b) support **multi-core compilation by default**.
     level gets consistently wrong, which is the exact shape of the
     fat-element and `methods` bugs. The class is now guarded by the fuzzer,
     not only by the codegen corpus.
+  - `harmony/codegen/llvm/` is the rewrite's LLVM backend: `context.hr`
+    (deterministic emitter state and type spellings), `llx.hr`
+    (mutually recursive expression/statement lowering), and `emit.hr` (module
+    and function driver). `tests/harmony-final/irdiff.py` is the R6 gate: its
+    IR is **byte-identical** to harmony-base's on all 85 single-file codegen
+    programs (0 mismatches). The harness compiles the backend once and runs
+    the corpus in isolated processes, so a trap in one program cannot hide
+    the rest; build ~10s, diff ~0.3s.
+  - The rewrite checker now records resolved call targets and method
+    receivers and clones/substitutes a concrete body for every monomorphized
+    instance. The R6 diff exposed several rewrite-only bugs this way: a
+    `u64` literal at 2^64-1 trapped in the rewrite's lexer, a concrete
+    `methods Box<u8>` block resolved to `Box<i32>`, generic placeholders
+    leaked into emitted definitions, and range/slice literal bounds had the
+    wrong width. All are fixed at the source and covered by the IR gate.
 - [ ] Integrate LLVM IR emission directly into the compiler binary (AGENTS.md).
 - [ ] Multi-core compilation by default (AGENTS.md).
 - [ ] Byte-deterministic self-hosting milestone.

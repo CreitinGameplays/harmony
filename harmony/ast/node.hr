@@ -82,9 +82,16 @@ const AST_PAT_RANGE: i32 = 84;
 // explicit fields, so adding it does not change `--dump-ast` output.
 struct Node {
     kind: i32;
+    file: i32;       // source-file index (0 until the loader assigns one)
     start: usize;
     end: usize;
     ty: i32;
+    // Semantic links used by LLVM lowering. They are deliberately outside the
+    // parser-visible payload: `target` is a resolved fn/const declaration,
+    // `self_ty` a method receiver, and `instance` marks a monomorphized fn.
+    target: i32;
+    self_ty: i32;
+    instance: i32;
     ival: i64;
     sval: &str;
     sfx: &str;       // literal type suffix (`42u8` -> "u8"), else ""
@@ -114,9 +121,13 @@ export fn nodes_make() -> Nodes {
 export fn new_node(ns: &mut Nodes, kind: i32) -> i32 {
     ns.items.push(Node {
         .kind = kind,
+        .file = 0,
         .start = 0,
         .end = 0,
         .ty = 0,
+        .target = -1,
+        .self_ty = 0,
+        .instance = 0,
         .ival = 0,
         .sval = "",
         .sfx = "",
@@ -134,6 +145,49 @@ export fn new_node(ns: &mut Nodes, kind: i32) -> i32 {
 export fn get(ns: &Nodes, h: i32) -> Node { return *ns.items.get(h as usize); }
 export fn ref(ns: &Nodes, h: i32) -> &Node { return ns.items.get(h as usize); }
 export fn put(ns: &mut Nodes, h: i32, n: Node) { ns.items.set(h as usize, n); }
+
+// Deep-clones a subtree into fresh handles. Monomorphization needs an
+// independent body for every concrete instance: sharing the template body
+// leaves its expression types and call targets stamped for whichever instance
+// happened to be checked first. Strings are immutable source/arena views and
+// are shared; every node and child list is new.
+export fn clone(ns: &mut Nodes, h: i32) -> i32 {
+    if (h < 0) { return -1; }
+    let old = get(&*ns, h);
+    let out = new_node(ns, old.kind);
+    let mut n = get(&*ns, out);
+    n.file = old.file;
+    n.start = old.start;
+    n.end = old.end;
+    n.ty = old.ty;
+    n.target = old.target;
+    n.self_ty = old.self_ty;
+    n.instance = old.instance;
+    n.ival = old.ival;
+    n.sval = old.sval;
+    n.sfx = old.sfx;
+    n.abi = old.abi;
+    put(ns, out, n);
+    set_a(ns, out, clone(ns, old.a));
+    set_b(ns, out, clone(ns, old.b));
+    set_c(ns, out, clone(ns, old.c));
+    let mut i: usize = 0;
+    while (i < old.kids.len()) {
+        push_kid(ns, out, clone(ns, *old.kids.get(i)));
+        i += 1;
+    }
+    i = 0;
+    while (i < old.kids2.len()) {
+        push_kid2(ns, out, clone(ns, *old.kids2.get(i)));
+        i += 1;
+    }
+    i = 0;
+    while (i < old.kids3.len()) {
+        push_kid3(ns, out, clone(ns, *old.kids3.get(i)));
+        i += 1;
+    }
+    return out;
+}
 
 export fn set_sval(ns: &mut Nodes, h: i32, s: &str) {
     let mut n = get(&*ns, h);

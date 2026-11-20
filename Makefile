@@ -84,6 +84,7 @@ test: test-seed harmony-base
 	python3 tests/harmony-final/typechecker_sh.py
 	python3 tests/harmony-final/typecorpus.py error-handling
 	python3 tests/harmony-final/typecorpus.py codegen
+	python3 tests/harmony-final/irdiff.py codegen
 
 # c2x-seed regression corpus (guards the compiler bugs fixed during bring-up).
 test-seed: seed
@@ -110,6 +111,7 @@ test-final: harmony-base
 	python3 tests/harmony-final/typechecker_sh.py
 	python3 tests/harmony-final/typecorpus.py error-handling
 	python3 tests/harmony-final/typecorpus.py codegen
+	python3 tests/harmony-final/irdiff.py codegen
 
 test-fuzz: harmony-base
 	bash tests/harmony/fuzz.sh

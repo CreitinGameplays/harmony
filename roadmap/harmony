@@ -231,26 +231,71 @@ rule; it is recorded here rather than hidden.
   format strings (FMT-01), FFI signature and ABI checks (TYPE-02, FFI-01),
   constants (CONST-01), and the prelude (`Maybe`/`Outcome`, `print`,
   `alloc`/`dealloc`, `Raw::null`, `str::from_parts`, `Heap::into_raw`…).
-  Every node's resolved type is stamped in `Node.ty` for R6.
+  Every node's resolved type is stamped in `Node.ty` for R6. Resolved
+  call targets, method receivers, and concrete generic instances are recorded
+  as semantic links too, so the backend never repeats name resolution.
 - [x] Differential gates, all 0 mismatches:
   - `tests/harmony-final/typediff.py` — 32 hand-written cases (accept +
     reject).
   - `tests/harmony-final/typechecker_sh.py` — the 28 `checker.sh` snippets.
-  - `tests/harmony-final/typecorpus.py error-handling` — 58 files.
-  - `tests/harmony-final/typecorpus.py codegen` — 81 files.
+  - `tests/harmony-final/typecorpus.py error-handling` — 59 files.
+  - `tests/harmony-final/typecorpus.py codegen` — 85 files.
 - [x] **Speed**: compiling the rewrite's core modules takes ~5s, so the
   harness (`typeharness.py`) compiles the checker ONCE into a batch binary
   and feeds every program through it as a generated `run_one(i, "...")` call.
-  A whole corpus now takes ~6s instead of ~5s *per case*. (An `[&str; N]`
-  array element read mis-reads in harmony-base, so the driver never stores
-  sources in an array; that quirk is documented in `typebatch.hr`.)
+  A whole corpus now takes ~6s instead of ~5s *per case*. The old
+  `[&str; N]` element-read quirk in harmony-base is fixed, so the batch
+  drivers can embed their corpus directly in an array.
 
-### R6 — LLVM codegen [ ]
+### R6 — LLVM codegen [/]
 
-- `harmony/codegen/llvm/emit.hr` + per-construct lowerers: the §19.4
-  mapping, checked arithmetic via `llvm.*.with.overflow`, `lc_*` calls,
-  deterministic label/register naming.
-- Gate: **byte-identical IR** on the whole corpus (gate 1).
+- [x] `harmony/codegen/llvm/context.hr`: the emitter state (output buffer,
+  SSA/label counters, local environment, string pool, format-string parser),
+  deterministic type spellings, and the runtime-hook surface.
+- [x] `harmony/codegen/llvm/llx.hr`: expression and statement lowering.
+  The two are mutually recursive (a block expression contains statements),
+  so they share one module (the same reason the parser and checker do). It
+  implements the §19.4
+  mapping: address-represented aggregates, sret returns, checked arithmetic via
+  `llvm.*.with.overflow`, explicit bounds/slice checks, `lc_*` runtime calls,
+  format-string lowering, raw-pointer operations, enums, switches, iteration,
+  and deterministic register/label names.
+- [x] `harmony/codegen/llvm/emit.hr`: module order (string globals, nominal
+  types, functions), monomorphized type/function instances, extern
+  declarations, parameter spilling, and the in-memory IR result.
+- [x] The checker now records resolved call targets and method receivers, and
+  monomorphizes a **cloned, substituted body** per concrete instance. A shared
+  template body left its expression types and call targets stamped for
+  whichever instance was checked first.
+- [x] Gate: `tests/harmony-final/irdiff.py` compares the rewrite's IR with
+  harmony-base's byte for byte. The 85 single-file programs in the codegen
+  corpus are **identical (0 mismatches)**. The emitter is compiled once into a
+  batch driver; the whole comparison takes about 10 s to build and 0.3 s to
+  diff.
+- [ ] The multi-module corpus still needs the rewrite's module loader wired
+  into the IR driver (file IO arrives with R7). The 85 single-file programs
+  cover the complete M1 language surface, including generics and methods.
+
+The R6 byte-diff found six rewrite-only bugs, all fixed at the source:
+
+- The rewrite lexer accumulated integer literals in signed `i64`, so
+  `18446744073709551615u64` trapped halfway through the scan. It now
+  accumulates in `u64` and reinterprets the same-width bits.
+- A concrete `methods Box<u8>` block passed already-resolved type *ids* to
+  `instantiate_type`, which expected type-AST *handles*. It therefore
+  resolved to the wrong instance (`Box<i32>`), and its method was emitted
+  under the wrong symbol.
+- Generic instances shared the template body. Its expression types and call
+  targets therefore belonged to whichever instance was checked first. Each
+  instance now owns a deep-cloned, substituted, re-checked body.
+- Instance names used raw display names and joined arguments with one `_`.
+  The backend needs harmony-base's exact legal-symbol mangling
+  (`first__Rstr`, `Pair__i32__u8`).
+- Template-only placeholder instances (`Box__T`, `Box__Box__T`) leaked into
+  the emitted type table. They are now excluded, recursively.
+- Range bounds were not stamped as `isize`, and a range `for` did not stamp
+  its element type. The backend consequently widened i32 bounds at each use
+  and lowered `usize`/`u8` ranges at i32 width.
 
 ### R7 — Driver parity and self-host [ ]
 

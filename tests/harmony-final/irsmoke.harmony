@@ -1,0 +1,28 @@
+// R6 smoke test: lower one program and print its LLVM IR.
+import "../../library/core/mem.hr";
+import "../../library/core/vec.hr";
+import "../../harmony/ast/node.hr";
+import "../../harmony/lexer/token.hr";
+import "../../harmony/lexer/ctx.hr";
+import "../../harmony/lexer/scan.hr";
+import "../../harmony/parser/pctx.hr";
+import "../../harmony/parser/parse.hr";
+import "../../harmony/parser/item.hr";
+import "../../harmony/sema/check.hr";
+import "../../harmony/codegen/llvm/emit.hr";
+
+fn main() -> i32 {
+    let src = "fn add(a: i32, b: i32) -> i32 { return a + b; }\nfn main() -> i32 { return add(20, 22); }\n";
+    let mut arena: mem::Arena = mem::Arena { .cur = Raw::null() };
+    let mut ns: node::Nodes = node::nodes_make();
+    let mut lx: ctx::Ctx = ctx::make(src, "main.harmony");
+    scan::scan(&mut lx, &mut arena);
+    let mut p: pctx::Parser = pctx::make(&mut ns, lx.toks, "main.harmony");
+    let program = item::parse_program(&mut p);
+    let mut c = check::make(ns, "main.harmony");
+    check::check_program(&mut c, program);
+    if (c.diags.len() > 0) { return 1; }
+    let ir = emit::emit_module(&mut c, program);
+    print("{}", ir);
+    return 0;
+}

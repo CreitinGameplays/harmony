@@ -1,0 +1,2664 @@
+// harmony/codegen/llvm/lower.hr — expression and statement lowering.
+//
+// Expression and statement lowering are mutually recursive, so they live in
+// one module (Harmony has no forward declarations and rejects import cycles).
+// The module follows harmony-base's backend operation for operation: an
+// expression lowers to an SSA value name, aggregates are represented by their
+// address, and control flow uses explicit block labels.
+//
+// The output is the deterministic LLVM IR text of docs/harmony.md §19.4.
+import "../../../library/core/str.hr";
+import "../../../library/core/vec.hr";
+import "../../ast/node.hr";
+import "../../sema/types.hr";
+import "../../sema/check.hr";
+import "context.hr";
+
+// ---- instruction helpers --------------------------------------------------
+
+fn bin(e: &mut context::Emitter, op: &str, ty: i32, a: &str, b: &str) -> &str {
+    let r = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, r);
+    context::out(e, " = ");
+    context::out(e, op);
+    context::out(e, " ");
+    context::out(e, context::type_name(e, ty));
+    context::out(e, " ");
+    context::out(e, a);
+    context::out(e, ", ");
+    context::out(e, b);
+    context::nl(e);
+    return r;
+}
+
+fn cmp(e: &mut context::Emitter, op: &str, ty: i32, a: &str, b: &str) -> &str {
+    let r = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, r);
+    context::out(e, " = ");
+    context::out(e, op);
+    context::out(e, " ");
+    context::out(e, context::type_name(e, ty));
+    context::out(e, " ");
+    context::out(e, a);
+    context::out(e, ", ");
+    context::out(e, b);
+    context::nl(e);
+    return r;
+}
+
+fn const_int(e: &mut context::Emitter, v: i64, ty: i32) -> &str {
+    let mut s: str::String = str::String::make();
+    s.push_i64(v);
+    e.expr_ty = ty;
+    return s.as_str();
+}
+
+fn uint_const(e: &mut context::Emitter, v: u64) -> &str {
+    let mut s: str::String = str::String::make();
+    s.push_u64(v);
+    return s.as_str();
+}
+
+fn load(e: &mut context::Emitter, ty: i32, ptr: &str) -> &str {
+    let r = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, r);
+    context::out(e, " = load ");
+    context::out(e, context::type_name(e, ty));
+    context::out(e, ", ptr ");
+    context::out(e, ptr);
+    context::nl(e);
+    return r;
+}
+
+fn load_ptr(e: &mut context::Emitter, ptr: &str) -> &str {
+    let r = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, r);
+    context::out(e, " = load ptr, ptr ");
+    context::out(e, ptr);
+    context::nl(e);
+    return r;
+}
+
+fn label(e: &mut context::Emitter, l: &str) {
+    context::out(e, l);
+    context::out(e, ":\n");
+    e.terminated = 0;
+}
+
+// Stores one value into `addr`. Aggregates are copied by address.
+fn store_value(e: &mut context::Emitter, addr: &str, ty: i32, v: &str) {
+    if (context::is_aggregate(e, ty)) {
+        context::out(e, "  call void @llvm.memcpy.p0.p0.i64(ptr align 8 ");
+        context::out(e, addr);
+        context::out(e, ", ptr align 8 ");
+        context::out(e, v);
+        context::out(e, ", i64 ");
+        context::out_i64(e, types::size(ty, &mut e.c.types) as i64);
+        context::out(e, ", i1 false)\n");
+        return;
+    }
+    context::out(e, "  store ");
+    context::out(e, context::type_name(e, ty));
+    context::out(e, " ");
+    context::out(e, v);
+    context::out(e, ", ptr ");
+    context::out(e, addr);
+    context::nl(e);
+}
+
+// A trap sequence. The caller has already branched to a fresh trap block.
+fn emit_trap(e: &mut context::Emitter, code: i32, at: i32, detail: &str) {
+    let saved = e.terminated;
+    let n = node::get(&e.c.nodes, at);
+    context::out(e, "  call void @lc_trap(i64 ");
+    context::out_i64(e, code as i64);
+    context::out(e, ", i64 ");
+    context::out_i64(e, n.file as i64);
+    context::out(e, ", i64 ");
+    context::out_i64(e, n.start as i64);
+    context::out(e, ", i64 ");
+    if (detail == "") { context::out(e, "0"); } else { context::out(e, detail); }
+    context::out(e, ")\n  unreachable\n");
+    e.terminated = saved;
+}
+
+fn call_void(e: &mut context::Emitter, symbol: &str, args: &str) {
+    context::out(e, "  call void @");
+    context::out(e, symbol);
+    context::out(e, "(");
+    context::out(e, args);
+    context::out(e, ")\n");
+}
+
+fn call_noreturn(e: &mut context::Emitter, symbol: &str, args: &str) {
+    call_void(e, symbol, args);
+    context::out(e, "  unreachable\n");
+    e.terminated = 1;
+}
+
+// ---- literals -------------------------------------------------------------
+
+fn suffix_ty(s: &str) -> i32 {
+    if (s == "u8") { return types::TY_U8; }
+    if (s == "u16") { return types::TY_U16; }
+    if (s == "u32") { return types::TY_U32; }
+    if (s == "u64") { return types::TY_U64; }
+    if (s == "usize") { return types::TY_USIZE; }
+    if (s == "i8") { return types::TY_I8; }
+    if (s == "i16") { return types::TY_I16; }
+    if (s == "i32") { return types::TY_I32; }
+    if (s == "i64") { return types::TY_I64; }
+    if (s == "isize") { return types::TY_ISIZE; }
+    return types::TY_I32;
+}
+
+// Rewrites a float spelling into the form LLVM's IR parser accepts.
+fn float_spelling(s: &str) -> &str {
+    let b = s.as_bytes();
+    let mut has_dot = false;
+    let mut has_exp = false;
+    let mut i: usize = 0;
+    while (i < s.len()) {
+        if (b[i] == 46u8) { has_dot = true; }
+        if (b[i] == 101u8 || b[i] == 69u8) { has_exp = true; }
+        i += 1;
+    }
+    if (has_dot) { return s; }
+    let mut out_s: str::String = str::String::make();
+    if (!has_exp) {
+        out_s.push(s);
+        out_s.push(".0");
+        return out_s.as_str();
+    }
+    i = 0;
+    while (i < s.len() && b[i] != 101u8 && b[i] != 69u8) {
+        out_s.push_byte(b[i]);
+        i += 1;
+    }
+    out_s.push(".0");
+    while (i < s.len()) {
+        out_s.push_byte(b[i]);
+        i += 1;
+    }
+    return out_s.as_str();
+}
+
+// A `&str` literal: a private global plus the fat (pointer, length) pair.
+fn str_literal(e: &mut context::Emitter, s: &str) -> &str {
+    let idx = context::intern(e, s);
+    let sym = context::string_symbol(e, idx);
+    let slot = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, slot);
+    context::out(e, " = alloca %slice\n");
+    let f0 = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, f0);
+    context::out(e, " = getelementptr inbounds %slice, ptr ");
+    context::out(e, slot);
+    context::out(e, ", i32 0, i32 0\n");
+    context::out(e, "  store ptr ");
+    context::out(e, sym);
+    context::out(e, ", ptr ");
+    context::out(e, f0);
+    context::nl(e);
+    let f1 = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, f1);
+    context::out(e, " = getelementptr inbounds %slice, ptr ");
+    context::out(e, slot);
+    context::out(e, ", i32 0, i32 1\n");
+    context::out(e, "  store i64 ");
+    context::out_i64(e, s.len() as i64);
+    context::out(e, ", ptr ");
+    context::out(e, f1);
+    context::nl(e);
+    e.expr_ty = types::new_type(&mut e.c.types, types::CTY_STRREF, "&str", types::TY_U8, 0);
+    return slot;
+}
+
+// ---- arithmetic ------------------------------------------------------------
+
+fn int_cmp(e: &mut context::Emitter, op: &str, ty: i32, l: &str, r: &str) -> &str {
+    let mut ir = "";
+    let mut signed = true;
+    let mut l2 = l;
+    let mut r2 = r;
+    if (types::is_unsigned(ty) || ty == types::TY_BOOL) { signed = false; }
+    if (types::is_ptr(&e.c.types, ty)) { signed = false; }
+    if (op == "==") { ir = "icmp eq"; }
+    else if (op == "!=") { ir = "icmp ne"; }
+    else if (op == "<") { if (signed) { ir = "icmp slt"; } else { ir = "icmp ult"; } }
+    else if (op == "<=") { if (signed) { ir = "icmp sle"; } else { ir = "icmp ule"; } }
+    else if (op == ">") { if (signed) { ir = "icmp sgt"; } else { ir = "icmp ugt"; } }
+    else { if (signed) { ir = "icmp sge"; } else { ir = "icmp uge"; } }
+    if (types::is_ptr(&e.c.types, ty)) {
+        if (r2 == "0") { r2 = "null"; }
+        if (l2 == "0") { l2 = "null"; }
+    }
+    e.expr_ty = types::TY_BOOL;
+    return cmp(e, ir, ty, l2, r2);
+}
+
+fn overflow_op(e: &mut context::Emitter, which: &str, ty: i32, at: i32,
+               l: &str, r: &str) -> &str {
+    let pair = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, pair);
+    context::out(e, " = call { ");
+    context::out(e, context::type_name(e, ty));
+    context::out(e, ", i1 } @llvm.");
+    if (types::is_unsigned(ty)) { context::out(e, "u"); } else { context::out(e, "s"); }
+    context::out(e, which);
+    context::out(e, ".with.overflow.");
+    let w = context::bit_width(ty);
+    if (w == 8) { context::out(e, "i8"); }
+    else if (w == 16) { context::out(e, "i16"); }
+    else if (w == 64) { context::out(e, "i64"); }
+    else { context::out(e, "i32"); }
+    context::out(e, "(");
+    context::out(e, context::type_name(e, ty));
+    context::out(e, " ");
+    context::out(e, l);
+    context::out(e, ", ");
+    context::out(e, context::type_name(e, ty));
+    context::out(e, " ");
+    context::out(e, r);
+    context::out(e, ")\n");
+    let val = context::new_reg(e);
+    let ovf = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, val);
+    context::out(e, " = extractvalue { ");
+    context::out(e, context::type_name(e, ty));
+    context::out(e, ", i1 } ");
+    context::out(e, pair);
+    context::out(e, ", 0\n  ");
+    context::out(e, ovf);
+    context::out(e, " = extractvalue { ");
+    context::out(e, context::type_name(e, ty));
+    context::out(e, ", i1 } ");
+    context::out(e, pair);
+    context::out(e, ", 1\n");
+    let oklbl = context::new_label(e, "arith.ok");
+    let taplbl = context::new_label(e, "arith.trap");
+    context::out(e, "  br i1 ");
+    context::out(e, ovf);
+    context::out(e, ", label %");
+    context::out(e, taplbl);
+    context::out(e, ", label %");
+    context::out(e, oklbl);
+    context::nl(e);
+    context::out(e, taplbl);
+    context::out(e, ":\n");
+    emit_trap(e, 3, at, "");
+    context::out(e, oklbl);
+    context::out(e, ":\n");
+    e.expr_ty = ty;
+    return val;
+}
+
+fn div_checked(e: &mut context::Emitter, ty: i32, at: i32, l: &str, r: &str,
+               is_rem: bool) -> &str {
+    let iszero = cmp(e, "icmp eq", ty, r, "0");
+    let zerolbl = context::new_label(e, "div.zero");
+    let oklbl = context::new_label(e, "div.ok");
+    context::out(e, "  br i1 ");
+    context::out(e, iszero);
+    context::out(e, ", label %");
+    context::out(e, zerolbl);
+    context::out(e, ", label %");
+    context::out(e, oklbl);
+    context::nl(e);
+    context::out(e, zerolbl);
+    context::out(e, ":\n");
+    emit_trap(e, 4, at, "");
+    context::out(e, oklbl);
+    context::out(e, ":\n");
+    e.expr_ty = ty;
+    if (is_rem) {
+        if (types::is_unsigned(ty)) { return bin(e, "urem", ty, l, r); }
+        return bin(e, "srem", ty, l, r);
+    }
+    if (types::is_unsigned(ty)) { return bin(e, "udiv", ty, l, r); }
+    return bin(e, "sdiv", ty, l, r);
+}
+
+fn shift(e: &mut context::Emitter, ty: i32, at: i32, l: &str, r: &str,
+         is_right: bool) -> &str {
+    let bound = const_int(e, context::bit_width(ty) as i64, ty);
+    let inrange = cmp(e, "icmp ult", ty, r, bound);
+    let badlbl = context::new_label(e, "shift.bad");
+    let oklbl = context::new_label(e, "shift.ok");
+    context::out(e, "  br i1 ");
+    context::out(e, inrange);
+    context::out(e, ", label %");
+    context::out(e, oklbl);
+    context::out(e, ", label %");
+    context::out(e, badlbl);
+    context::nl(e);
+    context::out(e, badlbl);
+    context::out(e, ":\n");
+    emit_trap(e, 5, at, "");
+    context::out(e, oklbl);
+    context::out(e, ":\n");
+    e.expr_ty = ty;
+    if (is_right) {
+        if (types::is_unsigned(ty)) { return bin(e, "lshr", ty, l, r); }
+        return bin(e, "ashr", ty, l, r);
+    }
+    return bin(e, "shl", ty, l, r);
+}
+
+fn float_bin(e: &mut context::Emitter, op: &str, ty: i32, l: &str, r: &str) -> &str {
+    let mut ty2 = ty;
+    if (types::is_untyped_lit(ty2)) { ty2 = types::TY_F64; }
+    if (op == "==" || op == "!=" || op == "<" || op == "<="
+        || op == ">" || op == ">=") {
+        let mut ir = "";
+        if (op == "==") { ir = "fcmp oeq"; }
+        else if (op == "!=") { ir = "fcmp une"; }
+        else if (op == "<") { ir = "fcmp olt"; }
+        else if (op == "<=") { ir = "fcmp ole"; }
+        else if (op == ">") { ir = "fcmp ogt"; }
+        else { ir = "fcmp oge"; }
+        e.expr_ty = types::TY_BOOL;
+        return cmp(e, ir, ty2, l, r);
+    }
+    e.expr_ty = ty2;
+    if (op == "+") { return bin(e, "fadd", ty2, l, r); }
+    if (op == "-") { return bin(e, "fsub", ty2, l, r); }
+    if (op == "*") { return bin(e, "fmul", ty2, l, r); }
+    if (op == "/") { return bin(e, "fdiv", ty2, l, r); }
+    return context::zero_of(e, ty2);
+}
+
+fn slice_data(e: &mut context::Emitter, pair: &str) -> &str {
+    let gp = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, gp);
+    context::out(e, " = getelementptr inbounds %slice, ptr ");
+    context::out(e, pair);
+    context::out(e, ", i32 0, i32 0\n");
+    let r = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, r);
+    context::out(e, " = load ptr, ptr ");
+    context::out(e, gp);
+    context::nl(e);
+    return r;
+}
+
+fn slice_len(e: &mut context::Emitter, pair: &str) -> &str {
+    let gp = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, gp);
+    context::out(e, " = getelementptr inbounds %slice, ptr ");
+    context::out(e, pair);
+    context::out(e, ", i32 0, i32 1\n");
+    let r = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, r);
+    context::out(e, " = load i64, ptr ");
+    context::out(e, gp);
+    context::nl(e);
+    return r;
+}
+
+// `lc_slice_eq(a_ptr, a_len, b_ptr, b_len)` — contents equality.
+fn slice_eq(e: &mut context::Emitter, a: &str, b: &str) -> &str {
+    let ad = slice_data(e, a);
+    let al = slice_len(e, a);
+    let bd = slice_data(e, b);
+    let bl = slice_len(e, b);
+    let r = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, r);
+    context::out(e, " = call i64 @lc_slice_eq(ptr ");
+    context::out(e, ad);
+    context::out(e, ", i64 ");
+    context::out(e, al);
+    context::out(e, ", ptr ");
+    context::out(e, bd);
+    context::out(e, ", i64 ");
+    context::out(e, bl);
+    context::out(e, ")\n");
+    let bv = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, bv);
+    context::out(e, " = icmp ne i64 ");
+    context::out(e, r);
+    context::out(e, ", 0\n");
+    return bv;
+}
+
+fn checked_bin(e: &mut context::Emitter, op: &str, ty: i32, at: i32,
+               l: &str, r: &str) -> &str {
+    if (context::is_float_ty(ty)) { return float_bin(e, op, ty, l, r); }
+    if ((op == "==" || op == "!=")
+        && (types::type_kind(&e.c.types, ty) == types::CTY_SLICE
+            || types::type_kind(&e.c.types, ty) == types::CTY_STRREF)) {
+        let eqv = slice_eq(e, l, r);
+        if (op == "==") { e.expr_ty = types::TY_BOOL; return eqv; }
+        let rv = context::new_reg(e);
+        context::out(e, "  ");
+        context::out(e, rv);
+        context::out(e, " = xor i1 ");
+        context::out(e, eqv);
+        context::out(e, ", true\n");
+        e.expr_ty = types::TY_BOOL;
+        return rv;
+    }
+    if (op == "==" || op == "!=" || op == "<" || op == "<="
+        || op == ">" || op == ">=") {
+        return int_cmp(e, op, ty, l, r);
+    }
+    if (op == "+") { return overflow_op(e, "add", ty, at, l, r); }
+    if (op == "-") { return overflow_op(e, "sub", ty, at, l, r); }
+    if (op == "*") { return overflow_op(e, "mul", ty, at, l, r); }
+    if (op == "/") { return div_checked(e, ty, at, l, r, false); }
+    if (op == "%") { return div_checked(e, ty, at, l, r, true); }
+    if (op == "&") { e.expr_ty = ty; return bin(e, "and", ty, l, r); }
+    if (op == "|") { e.expr_ty = ty; return bin(e, "or", ty, l, r); }
+    if (op == "^") { e.expr_ty = ty; return bin(e, "xor", ty, l, r); }
+    if (op == "<<") { return shift(e, ty, at, l, r, false); }
+    if (op == ">>") { return shift(e, ty, at, l, r, true); }
+    e.expr_ty = ty;
+    return context::zero_of(e, ty);
+}
+
+// ---- places and aggregates -------------------------------------------------
+
+fn struct_gep(e: &mut context::Emitter, base: &str, struct_ty: i32, field: i32) -> &str {
+    let r = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, r);
+    context::out(e, " = getelementptr inbounds ");
+    context::out(e, context::type_name(e, struct_ty));
+    context::out(e, ", ptr ");
+    context::out(e, base);
+    context::out(e, ", i32 0, i32 ");
+    context::out_i64(e, field as i64);
+    context::nl(e);
+    return r;
+}
+
+fn array_gep_i64(e: &mut context::Emitter, base: &str, elem: i32, idx: &str) -> &str {
+    let r = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, r);
+    context::out(e, " = getelementptr inbounds ");
+    context::out(e, context::type_name(e, elem));
+    context::out(e, ", ptr ");
+    context::out(e, base);
+    context::out(e, ", i64 ");
+    context::out(e, idx);
+    context::nl(e);
+    return r;
+}
+
+fn offset_addr(e: &mut context::Emitter, base: &str, byteoff: i32) -> &str {
+    if (byteoff == 0) { return base; }
+    let r = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, r);
+    context::out(e, " = getelementptr inbounds i8, ptr ");
+    context::out(e, base);
+    context::out(e, ", i64 ");
+    context::out_i64(e, byteoff as i64);
+    context::nl(e);
+    return r;
+}
+
+fn int_convert(e: &mut context::Emitter, v: &str, from: i32, to: i32) -> &str {
+    let fw = context::bit_width(from);
+    let tw = context::bit_width(to);
+    if (fw == tw) { return v; }
+    let mut op = "";
+    if (types::is_bool(from) && tw > 1) { op = "zext"; }
+    else if (tw < fw) { op = "trunc"; }
+    else if (types::is_signed(from)) { op = "sext"; }
+    else { op = "zext"; }
+    return convert_instr(e, op, v, from, to);
+}
+
+fn convert_instr(e: &mut context::Emitter, op: &str, v: &str, from: i32, to: i32) -> &str {
+    let r = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, r);
+    context::out(e, " = ");
+    context::out(e, op);
+    context::out(e, " ");
+    context::out(e, context::type_name(e, from));
+    context::out(e, " ");
+    context::out(e, v);
+    context::out(e, " to ");
+    context::out(e, context::type_name(e, to));
+    context::nl(e);
+    return r;
+}
+
+fn fp_convert(e: &mut context::Emitter, v: &str, from: i32, to: i32,
+               is_float_seq: bool) -> &str {
+    let mut op = "";
+    let mut to2 = to;
+    if (is_float_seq) {
+        op = "fpext";
+        to2 = types::TY_F64;
+    } else if (context::is_float_ty(to2)) {
+        if (types::is_unsigned(from)) { op = "uitofp"; } else { op = "sitofp"; }
+    } else {
+        if (types::is_unsigned(to2)) { op = "fptoui"; } else { op = "fptosi"; }
+    }
+    return convert_instr(e, op, v, from, to2);
+}
+
+fn reinterpret_cast(e: &mut context::Emitter, v: &str, from: i32, to: i32) -> &str {
+    if (types::is_bool(from) || types::is_bool(to)) { return v; }
+    let r = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, r);
+    context::out(e, " = bitcast ");
+    context::out(e, context::type_name(e, from));
+    context::out(e, " ");
+    context::out(e, v);
+    context::out(e, " to ");
+    context::out(e, context::type_name(e, to));
+    context::nl(e);
+    return r;
+}
+
+// ---- expressions -----------------------------------------------------------
+
+fn expr_path(e: &mut context::Emitter, h: i32) -> &str {
+    let n = node::get(&e.c.nodes, h);
+    // A constant is inlined at every use (§6.2).
+    if (n.target >= 0) {
+        let decl = node::get(&e.c.nodes, n.target);
+        if (decl.kind == node::AST_CONST && decl.b >= 0) {
+            return expr(e, decl.b);
+        }
+    }
+    if (str::find(n.sval, "::") >= 0) { return expr_variant(e, h); }
+    let slot = context::local_slot(e, n.sval);
+    if (slot != "") {
+        let ty = context::local_ty(e, n.sval);
+        e.expr_ty = ty;
+        if (context::is_aggregate(e, ty)) { return slot; }
+        return load(e, ty, slot);
+    }
+    // An unqualified enum variant has no local slot: build the tagged value.
+    let ty = context::node_ty(e, h);
+    if (types::type_kind(&e.c.types, ty) == types::CTY_ENUM) {
+        let vi = types::find_member(&e.c.types, ty, n.sval);
+        if (vi >= 0) { return enum_construct(e, h, ty, vi, &vec::Vec<i32>::make()); }
+    }
+    e.expr_ty = ty;
+    return context::zero_of(e, ty);
+}
+
+// The byte offset of the last `::`, or -1.
+fn rfind_colons(s: &str) -> i32 {
+    let b = s.as_bytes();
+    let mut i: usize = s.len();
+    while (i > 1) {
+        i -= 1;
+        if (b[i] == 58u8 && b[i - 1] == 58u8) { return i as i32 - 1; }
+    }
+    return -1;
+}
+
+// A bare enum variant value.
+fn expr_variant(e: &mut context::Emitter, h: i32) -> &str {
+    let n = node::get(&e.c.nodes, h);
+    let ty = context::node_ty(e, h);
+    if (types::type_kind(&e.c.types, ty) != types::CTY_ENUM) {
+        e.expr_ty = ty;
+        return context::zero_of(e, ty);
+    }
+    let mut vname = n.sval;
+    let cut = rfind_colons(n.sval);
+    if (cut >= 0) { vname = &n.sval[cut + 2..n.sval.len()]; }
+    let mut vi = types::find_member(&e.c.types, ty, vname);
+    if (vi < 0) { vi = 0; }
+    return make_enum(e, ty, vi);
+}
+
+// `{ i32 tag, [N x i8] payload }` with the payload cleared.
+fn make_enum(e: &mut context::Emitter, ty: i32, tag: i32) -> &str {
+    let slot = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, slot);
+    context::out(e, " = alloca ");
+    context::out(e, context::type_name(e, ty));
+    context::nl(e);
+    context::out(e, "  store ");
+    context::out(e, context::type_name(e, ty));
+    context::out(e, " zeroinitializer, ptr ");
+    context::out(e, slot);
+    context::nl(e);
+    let tp = struct_gep(e, slot, ty, 0);
+    context::out(e, "  store i32 ");
+    context::out_i64(e, tag as i64);
+    context::out(e, ", ptr ");
+    context::out(e, tp);
+    context::nl(e);
+    e.expr_ty = ty;
+    return slot;
+}
+
+// `Enum::Variant(payload...)`.
+fn enum_construct(e: &mut context::Emitter, at: i32, ty: i32, vi: i32,
+                  args: &vec::Vec<i32>) -> &str {
+    let pid = types::member_type(&e.c.types, ty, vi);
+    let slot = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, slot);
+    context::out(e, " = alloca ");
+    context::out(e, context::type_name(e, ty));
+    context::nl(e);
+    context::out(e, "  store ");
+    context::out(e, context::type_name(e, ty));
+    context::out(e, " zeroinitializer, ptr ");
+    context::out(e, slot);
+    context::nl(e);
+    let tp = struct_gep(e, slot, ty, 0);
+    context::out(e, "  store i32 ");
+    context::out_i64(e, vi as i64);
+    context::out(e, ", ptr ");
+    context::out(e, tp);
+    context::nl(e);
+    let mut i: usize = 0;
+    while (i < args.len()) {
+        let ft = types::member_type(&e.c.types, pid, i as i32);
+        let v = expr(e, *args.get(i));
+        let addr = offset_addr(e, slot, 8 + types::field_offset(pid, i, &mut e.c.types));
+        store_value(e, addr, ft, v);
+        i += 1;
+    }
+    e.expr_ty = ty;
+    return slot;
+}
+
+fn logical_and(e: &mut context::Emitter, h: i32) -> &str {
+    let n = node::get(&e.c.nodes, h);
+    let l = expr(e, n.a);
+    let lslot = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, lslot);
+    context::out(e, " = alloca i1\n  store i1 ");
+    context::out(e, l);
+    context::out(e, ", ptr ");
+    context::out(e, lslot);
+    context::nl(e);
+    let rhslbl = context::new_label(e, "and.rhs");
+    let endlbl = context::new_label(e, "and.end");
+    context::out(e, "  br i1 ");
+    context::out(e, l);
+    context::out(e, ", label %");
+    context::out(e, rhslbl);
+    context::out(e, ", label %");
+    context::out(e, endlbl);
+    context::nl(e);
+    context::out(e, rhslbl);
+    context::out(e, ":\n");
+    let rr = expr(e, n.b);
+    context::out(e, "  store i1 ");
+    context::out(e, rr);
+    context::out(e, ", ptr ");
+    context::out(e, lslot);
+    context::nl(e);
+    context::out(e, "  br label %");
+    context::out(e, endlbl);
+    context::nl(e);
+    context::out(e, endlbl);
+    context::out(e, ":\n");
+    let res = load(e, types::TY_BOOL, lslot);
+    e.expr_ty = types::TY_BOOL;
+    return res;
+}
+
+fn logical_or(e: &mut context::Emitter, h: i32) -> &str {
+    let n = node::get(&e.c.nodes, h);
+    let l = expr(e, n.a);
+    let lslot = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, lslot);
+    context::out(e, " = alloca i1\n  store i1 ");
+    context::out(e, l);
+    context::out(e, ", ptr ");
+    context::out(e, lslot);
+    context::nl(e);
+    let rhslbl = context::new_label(e, "or.rhs");
+    let endlbl = context::new_label(e, "or.end");
+    context::out(e, "  br i1 ");
+    context::out(e, l);
+    context::out(e, ", label %");
+    context::out(e, endlbl);
+    context::out(e, ", label %");
+    context::out(e, rhslbl);
+    context::nl(e);
+    context::out(e, rhslbl);
+    context::out(e, ":\n");
+    let rr = expr(e, n.b);
+    context::out(e, "  store i1 ");
+    context::out(e, rr);
+    context::out(e, ", ptr ");
+    context::out(e, lslot);
+    context::nl(e);
+    context::out(e, "  br label %");
+    context::out(e, endlbl);
+    context::nl(e);
+    context::out(e, endlbl);
+    context::out(e, ":\n");
+    let res = load(e, types::TY_BOOL, lslot);
+    e.expr_ty = types::TY_BOOL;
+    return res;
+}
+
+fn expr_binary(e: &mut context::Emitter, h: i32) -> &str {
+    let n = node::get(&e.c.nodes, h);
+    let op = n.sval;
+    if (op == "&&") { return logical_and(e, h); }
+    if (op == "||") { return logical_or(e, h); }
+    let l = expr(e, n.a);
+    let lt = e.expr_ty;
+    let r = expr(e, n.b);
+    let rt = e.expr_ty;
+    let mut lty = lt;
+    let mut rty = rt;
+    if (types::is_untyped_lit(lty)) { lty = rty; }
+    if (types::is_untyped_lit(rty)) { rty = lty; }
+    // Enums are address-represented: equality compares their tags.
+    if ((op == "==" || op == "!=")
+        && types::type_kind(&e.c.types, lty) == types::CTY_ENUM
+        && types::type_kind(&e.c.types, rty) == types::CTY_ENUM) {
+        let lt_tag = load(e, types::TY_I32, struct_gep(e, l, lty, 0));
+        let rt_tag = load(e, types::TY_I32, struct_gep(e, r, rty, 0));
+        let mut cmpop = "";
+        if (op == "==") { cmpop = "icmp eq"; } else { cmpop = "icmp ne"; }
+        e.expr_ty = types::TY_BOOL;
+        return cmp(e, cmpop, types::TY_I32, lt_tag, rt_tag);
+    }
+    return checked_bin(e, op, lty, h, l, r);
+}
+
+fn expr_unary(e: &mut context::Emitter, h: i32) -> &str {
+    let n = node::get(&e.c.nodes, h);
+    let op = n.sval;
+    if (op == "-") {
+        let v = expr(e, n.a);
+        let ty = e.expr_ty;
+        if (context::is_float_ty(ty)) {
+            e.expr_ty = ty;
+            return bin(e, "fsub", ty, context::zero_of(e, ty), v);
+        }
+        return overflow_op(e, "sub", ty, h, context::zero_of(e, ty), v);
+    }
+    if (op == "!") {
+        let v = expr(e, n.a);
+        let r = context::new_reg(e);
+        context::out(e, "  ");
+        context::out(e, r);
+        context::out(e, " = xor i1 ");
+        context::out(e, v);
+        context::out(e, ", true\n");
+        e.expr_ty = types::TY_BOOL;
+        return r;
+    }
+    if (op == "~") {
+        let v = expr(e, n.a);
+        let ty = e.expr_ty;
+        e.expr_ty = ty;
+        return bin(e, "xor", ty, v, "-1");
+    }
+    return expr(e, n.a);
+}
+
+// ---- addresses ------------------------------------------------------------
+
+fn is_place(e: &mut context::Emitter, h: i32) -> bool {
+    if (h < 0) { return false; }
+    let n = node::get(&e.c.nodes, h);
+    if (n.kind == node::AST_PATH) {
+        if (str::find(n.sval, "::") >= 0) { return false; }
+        return context::local_slot(e, n.sval) != "";
+    }
+    return n.kind == node::AST_DEREF || n.kind == node::AST_FIELD_ACC
+        || n.kind == node::AST_INDEX;
+}
+
+// The address of a place.
+fn place_addr(e: &mut context::Emitter, h: i32) -> &str {
+    if (h < 0) { return "null"; }
+    let n = node::get(&e.c.nodes, h);
+    if (n.kind == node::AST_PATH) {
+        let slot = context::local_slot(e, n.sval);
+        if (slot != "") { return slot; }
+        if (n.target >= 0) {
+            let decl = node::get(&e.c.nodes, n.target);
+            if (decl.kind == node::AST_CONST && decl.b >= 0) { return expr(e, decl.b); }
+        }
+        return "null";
+    }
+    if (n.kind == node::AST_DEREF) { return expr(e, n.a); }
+    if (n.kind == node::AST_FIELD_ACC) { return field_addr(e, h); }
+    if (n.kind == node::AST_INDEX) {
+        let ix = node::get(&e.c.nodes, n.b);
+        if (ix.kind == node::AST_BINARY && (ix.sval == ".." || ix.sval == "..=")) {
+            return slice_pair(e, h);
+        }
+        return index_addr(e, h);
+    }
+    if (n.kind == node::AST_CALL) { return expr(e, h); }
+    return "null";
+}
+
+fn field_addr(e: &mut context::Emitter, h: i32) -> &str {
+    let n = node::get(&e.c.nodes, h);
+    let base = node::get(&e.c.nodes, n.a);
+    let mut bt = base.ty;
+    let mut baseaddr = "";
+    if (types::is_ref(&e.c.types, bt) || types::is_heap(&e.c.types, bt)) {
+        baseaddr = expr(e, n.a);
+        bt = types::elem(&e.c.types, bt);
+    } else {
+        baseaddr = place_addr(e, n.a);
+    }
+    let mut fi = types::find_member(&e.c.types, bt, n.sval);
+    if (fi < 0) { fi = 0; }
+    return struct_gep(e, baseaddr, bt, fi);
+}
+
+fn bounds_check_n(e: &mut context::Emitter, idx: &str, len: &str, at: i32) {
+    let n = node::get(&e.c.nodes, at);
+    context::out(e, "  call void @lc_check_index(i64 ");
+    context::out(e, idx);
+    context::out(e, ", i64 ");
+    context::out(e, len);
+    context::out(e, ", i64 ");
+    context::out_i64(e, n.file as i64);
+    context::out(e, ", i64 ");
+    context::out_i64(e, n.start as i64);
+    context::out(e, ")\n");
+}
+
+fn index_to_i64(e: &mut context::Emitter, idx: &str) -> &str {
+    let t = e.expr_ty;
+    if (types::is_untyped_lit(t)) { return idx; }
+    if (!types::is_integer(t)) { return idx; }
+    if (context::bit_width(t) == 64) { e.expr_ty = types::TY_ISIZE; return idx; }
+    let widened = int_convert(e, idx, t, types::TY_ISIZE);
+    e.expr_ty = types::TY_ISIZE;
+    return widened;
+}
+
+fn index_addr(e: &mut context::Emitter, h: i32) -> &str {
+    let n = node::get(&e.c.nodes, h);
+    let base = node::get(&e.c.nodes, n.a);
+    let mut bt = base.ty;
+    if (types::type_kind(&e.c.types, bt) == types::CTY_SLICE) {
+        let pair = expr(e, n.a);
+        let data = slice_data(e, pair);
+        let len = slice_len(e, pair);
+        let idx = expr(e, n.b);
+        let wide = index_to_i64(e, idx);
+        bounds_check_n(e, wide, len, h);
+        let mut elem = types::elem(&e.c.types, bt);
+        if (elem == 0) { elem = types::TY_I32; }
+        return array_gep_i64(e, data, elem, wide);
+    }
+    if (types::is_ptr(&e.c.types, bt)) {
+        let p = expr(e, n.a);
+        let idx = expr(e, n.b);
+        let wide = index_to_i64(e, idx);
+        let mut elem = types::elem(&e.c.types, bt);
+        if (elem == 0) { elem = types::TY_U8; }
+        return array_gep_i64(e, p, elem, wide);
+    }
+    let mut baseaddr = "";
+    if (types::is_ref(&e.c.types, bt) || types::is_heap(&e.c.types, bt)) {
+        baseaddr = expr(e, n.a);
+        bt = types::elem(&e.c.types, bt);
+    } else {
+        baseaddr = place_addr(e, n.a);
+    }
+    let idx = expr(e, n.b);
+    let wide = index_to_i64(e, idx);
+    if (types::is_array(&e.c.types, bt)) {
+        let elem = types::elem(&e.c.types, bt);
+        let alen = const_int(e, types::array_len(&e.c.types, bt) as i64, types::TY_ISIZE);
+        bounds_check_n(e, wide, alen, h);
+        return array_gep_i64(e, baseaddr, elem, wide);
+    }
+    let mut elem = types::elem(&e.c.types, bt);
+    if (elem == 0) { elem = types::TY_I32; }
+    return array_gep_i64(e, baseaddr, elem, wide);
+}
+
+// The slice pair for `base[lo..hi]` / `base[..]`.
+fn slice_pair(e: &mut context::Emitter, h: i32) -> &str {
+    let n = node::get(&e.c.nodes, h);
+    let r = node::get(&e.c.nodes, n.b);
+    let base = node::get(&e.c.nodes, n.a);
+    let mut bt = base.ty;
+    let mut is_str = false;
+    let mut data = "";
+    let mut len = "";
+    let mut elem: i32 = types::TY_I32;
+    let k = types::type_kind(&e.c.types, bt);
+    if (k == types::CTY_SLICE || k == types::CTY_STRREF) {
+        let pair = expr(e, n.a);
+        if (k == types::CTY_STRREF) {
+            elem = types::TY_U8;
+            is_str = true;
+        } else {
+            elem = types::elem(&e.c.types, bt);
+        }
+        data = slice_data(e, pair);
+        len = slice_len(e, pair);
+    } else if (types::is_ref(&e.c.types, bt) && types::is_array(&e.c.types, types::elem(&e.c.types, bt))) {
+        let at = types::elem(&e.c.types, bt);
+        elem = types::elem(&e.c.types, at);
+        data = expr(e, n.a);
+        len = const_int(e, types::array_len(&e.c.types, at) as i64, types::TY_ISIZE);
+    } else if (types::is_heap(&e.c.types, bt) && types::is_array(&e.c.types, types::elem(&e.c.types, bt))) {
+        let at = types::elem(&e.c.types, bt);
+        elem = types::elem(&e.c.types, at);
+        data = expr(e, n.a);
+        len = const_int(e, types::array_len(&e.c.types, at) as i64, types::TY_ISIZE);
+    } else if (types::is_heap(&e.c.types, bt)
+               && types::type_kind(&e.c.types, types::elem(&e.c.types, bt)) == types::CTY_SLICE) {
+        let at = types::elem(&e.c.types, bt);
+        let pair = expr(e, n.a);
+        elem = types::elem(&e.c.types, at);
+        data = slice_data(e, pair);
+        len = slice_len(e, pair);
+    } else {
+        elem = types::elem(&e.c.types, bt);
+        data = place_addr(e, n.a);
+        len = const_int(e, types::array_len(&e.c.types, bt) as i64, types::TY_ISIZE);
+    }
+    if (elem == 0) { elem = types::TY_I32; }
+    let mut lo = "0";
+    if (r.a >= 0) {
+        lo = expr(e, r.a);
+        lo = index_to_i64(e, lo);
+    }
+    let mut hi = len;
+    if (r.b >= 0) {
+        hi = expr(e, r.b);
+        hi = index_to_i64(e, hi);
+        if (r.sval == "..=") { hi = bin(e, "add", types::TY_ISIZE, hi, "1"); }
+    }
+    context::out(e, "  call void @lc_check_slice(i64 ");
+    context::out(e, lo);
+    context::out(e, ", i64 ");
+    context::out(e, hi);
+    context::out(e, ", i64 ");
+    context::out(e, len);
+    context::out(e, ", i64 ");
+    context::out_i64(e, n.file as i64);
+    context::out(e, ", i64 ");
+    context::out_i64(e, n.start as i64);
+    context::out(e, ")\n");
+    if (is_str) {
+        context::out(e, "  call void @lc_check_boundary(ptr ");
+        context::out(e, data);
+        context::out(e, ", i64 ");
+        context::out(e, len);
+        context::out(e, ", i64 ");
+        context::out(e, lo);
+        context::out(e, ", i64 ");
+        context::out_i64(e, n.file as i64);
+        context::out(e, ", i64 ");
+        context::out_i64(e, n.start as i64);
+        context::out(e, ")\n");
+        context::out(e, "  call void @lc_check_boundary(ptr ");
+        context::out(e, data);
+        context::out(e, ", i64 ");
+        context::out(e, len);
+        context::out(e, ", i64 ");
+        context::out(e, hi);
+        context::out(e, ", i64 ");
+        context::out_i64(e, n.file as i64);
+        context::out(e, ", i64 ");
+        context::out_i64(e, n.start as i64);
+        context::out(e, ")\n");
+    }
+    let slot = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, slot);
+    context::out(e, " = alloca %slice\n");
+    let newdata = array_gep_i64(e, data, elem, lo);
+    let newlen = bin(e, "sub", types::TY_ISIZE, hi, lo);
+    let f0 = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, f0);
+    context::out(e, " = getelementptr inbounds %slice, ptr ");
+    context::out(e, slot);
+    context::out(e, ", i32 0, i32 0\n");
+    context::out(e, "  store ptr ");
+    context::out(e, newdata);
+    context::out(e, ", ptr ");
+    context::out(e, f0);
+    context::nl(e);
+    let f1 = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, f1);
+    context::out(e, " = getelementptr inbounds %slice, ptr ");
+    context::out(e, slot);
+    context::out(e, ", i32 0, i32 1\n");
+    context::out(e, "  store i64 ");
+    context::out(e, newlen);
+    context::out(e, ", ptr ");
+    context::out(e, f1);
+    context::nl(e);
+    e.expr_ty = context::node_ty(e, h);
+    return slot;
+}
+
+// ---- calls -----------------------------------------------------------------
+
+// Emits a call with already-evaluated arguments.
+fn emit_call(e: &mut context::Emitter, symbol: &str, args: &str, retty: i32) -> &str {
+    let agg = context::is_aggregate(e, retty);
+    if (retty == types::TY_UNIT || retty == types::TY_NEVER) {
+        if (agg) {
+            let sslot = context::new_reg(e);
+            context::out(e, "  ");
+            context::out(e, sslot);
+            context::out(e, " = alloca ");
+            context::out(e, context::type_name(e, retty));
+            context::nl(e);
+            context::out(e, "  call void @");
+            context::out(e, symbol);
+            context::out(e, "(ptr sret(");
+            context::out(e, context::type_name(e, retty));
+            context::out(e, ") ");
+            context::out(e, sslot);
+            if (args != "") {
+                context::out(e, ", ");
+                context::out(e, args);
+            }
+            context::out(e, ")\n");
+        } else {
+            call_void(e, symbol, args);
+        }
+        if (retty == types::TY_NEVER) {
+            context::out(e, "  unreachable\n");
+            e.terminated = 1;
+        }
+        e.expr_ty = retty;
+        return "0";
+    }
+    if (agg) {
+        let sslot = context::new_reg(e);
+        context::out(e, "  ");
+        context::out(e, sslot);
+        context::out(e, " = alloca ");
+        context::out(e, context::type_name(e, retty));
+        context::nl(e);
+        context::out(e, "  call void @");
+        context::out(e, symbol);
+        context::out(e, "(ptr sret(");
+        context::out(e, context::type_name(e, retty));
+        context::out(e, ") ");
+        context::out(e, sslot);
+        if (args != "") {
+            context::out(e, ", ");
+            context::out(e, args);
+        }
+        context::out(e, ")\n");
+        e.expr_ty = retty;
+        return sslot;
+    }
+    let ret = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, ret);
+    context::out(e, " = call ");
+    context::out(e, context::type_name(e, retty));
+    context::out(e, " @");
+    context::out(e, symbol);
+    context::out(e, "(");
+    context::out(e, args);
+    context::out(e, ")\n");
+    e.expr_ty = retty;
+    return ret;
+}
+
+// Evaluates arguments and builds the LLVM argument list.
+fn emit_call_args(e: &mut context::Emitter, symbol: &str, retty: i32,
+                   args: &vec::Vec<i32>) -> &str {
+    let mut buf: str::String = str::String::make();
+    let mut i: usize = 0;
+    while (i < args.len()) {
+        let a = expr(e, *args.get(i));
+        let aty = e.expr_ty;
+        if (i > 0) { buf.push(", "); }
+        if (context::is_aggregate(e, aty)) {
+            buf.push("ptr ");
+        } else {
+            buf.push(context::type_name(e, aty));
+            buf.push(" ");
+        }
+        buf.push(a);
+        i += 1;
+    }
+    return emit_call(e, symbol, buf.as_str(), retty);
+}
+
+// The receiver type a method symbol is keyed by.
+fn method_recv_ty(e: &mut context::Emitter, rt: i32) -> i32 {
+    let mut t = rt;
+    while (types::is_ref(&e.c.types, t) || types::is_heap(&e.c.types, t)) {
+        t = types::elem(&e.c.types, t);
+    }
+    return t;
+}
+
+// A method call: the receiver is the implicit first argument.
+fn method_call(e: &mut context::Emitter, h: i32, callee_h: i32,
+               args: &vec::Vec<i32>, retty: i32) -> &str {
+    let n = node::get(&e.c.nodes, h);
+    let callee = node::get(&e.c.nodes, callee_h);
+    let marker = n.ival as i32;
+    // Builtin `.len()`.
+    if (marker == 1) {
+        let recv = node::get(&e.c.nodes, callee.a);
+        let mut lt = recv.ty;
+        while ((types::is_ref(&e.c.types, lt) || types::is_heap(&e.c.types, lt))
+               && types::type_kind(&e.c.types, lt) != types::CTY_SLICE
+               && types::type_kind(&e.c.types, lt) != types::CTY_STRREF) {
+            lt = types::elem(&e.c.types, lt);
+        }
+        if (types::is_array(&e.c.types, lt)) {
+            e.expr_ty = types::TY_USIZE;
+            return const_int(e, types::array_len(&e.c.types, lt) as i64, types::TY_USIZE);
+        }
+        let pair = expr(e, callee.a);
+        e.expr_ty = types::TY_USIZE;
+        return slice_len(e, pair);
+    }
+    // Builtin `.as_bytes()`.
+    if (marker == 2) {
+        let pair = expr(e, callee.a);
+        e.expr_ty = retty;
+        return pair;
+    }
+    // Raw-pointer toolbox.
+    if (marker == 3) {
+        let p = expr(e, callee.a);
+        let r = context::new_reg(e);
+        context::out(e, "  ");
+        context::out(e, r);
+        context::out(e, " = icmp eq ptr ");
+        context::out(e, p);
+        context::out(e, ", null\n");
+        e.expr_ty = types::TY_BOOL;
+        return r;
+    }
+    if (marker == 4) {
+        let p = expr(e, callee.a);
+        e.expr_ty = retty;
+        if (retty == types::TY_UNIT || context::is_aggregate(e, retty)) { return p; }
+        return load(e, retty, p);
+    }
+    if (marker == 5) {
+        let recv = node::get(&e.c.nodes, callee.a);
+        let mut et = types::elem(&e.c.types, recv.ty);
+        if (et == 0) { et = types::TY_U8; }
+        let p = expr(e, callee.a);
+        let v = expr(e, *args.get(0));
+        store_value(e, p, et, v);
+        e.expr_ty = types::TY_UNIT;
+        return "0";
+    }
+    if (marker == 6 || marker == 7) {
+        let recv = node::get(&e.c.nodes, callee.a);
+        let mut et = types::elem(&e.c.types, recv.ty);
+        if (et == 0) { et = types::TY_U8; }
+        let p = expr(e, callee.a);
+        let mut idx = expr(e, *args.get(0));
+        idx = index_to_i64(e, idx);
+        if (marker == 7) {
+            let neg = context::new_reg(e);
+            context::out(e, "  ");
+            context::out(e, neg);
+            context::out(e, " = sub i64 0, ");
+            context::out(e, idx);
+            context::nl(e);
+            idx = neg;
+        }
+        let r = context::new_reg(e);
+        context::out(e, "  ");
+        context::out(e, r);
+        context::out(e, " = getelementptr inbounds ");
+        context::out(e, context::type_name(e, et));
+        context::out(e, ", ptr ");
+        context::out(e, p);
+        context::out(e, ", i64 ");
+        context::out(e, idx);
+        context::nl(e);
+        e.expr_ty = retty;
+        return r;
+    }
+    // `get_unchecked(i)`.
+    if (marker == 13) {
+        let recv = node::get(&e.c.nodes, callee.a);
+        let mut et = types::elem(&e.c.types, recv.ty);
+        if (et == 0) { et = types::TY_I32; }
+        let base = expr(e, callee.a);
+        let mut idx2 = expr(e, *args.get(0));
+        idx2 = index_to_i64(e, idx2);
+        e.expr_ty = retty;
+        return array_gep_i64(e, base, et, idx2);
+    }
+    let recv = node::get(&e.c.nodes, callee.a);
+    let rt = recv.ty;
+    let mut selfv = "";
+    if (types::is_ref(&e.c.types, rt) || types::is_heap(&e.c.types, rt)) {
+        selfv = expr(e, callee.a);
+    } else {
+        selfv = place_addr(e, callee.a);
+    }
+    let mut buf: str::String = str::String::make();
+    buf.push("ptr ");
+    buf.push(selfv);
+    let mut i: usize = 0;
+    while (i < args.len()) {
+        buf.push(", ");
+        let a = expr(e, *args.get(i));
+        let aty = e.expr_ty;
+        if (context::is_aggregate(e, aty)) {
+            buf.push("ptr ");
+        } else {
+            buf.push(context::type_name(e, aty));
+            buf.push(" ");
+        }
+        buf.push(a);
+        i += 1;
+    }
+    let symbol = context::method_symbol(e, method_recv_ty(e, rt), callee.sval);
+    let ret = emit_call(e, symbol, buf.as_str(), retty);
+    e.expr_ty = retty;
+    return ret;
+}
+
+// ---- prelude builtins ------------------------------------------------------
+
+fn str_arg(e: &mut context::Emitter, h: i32) -> &str {
+    let pair = expr(e, h);
+    let data = slice_data(e, pair);
+    let len = slice_len(e, pair);
+    let mut b: str::String = str::String::make();
+    b.push("ptr ");
+    b.push(data);
+    b.push(", i64 ");
+    b.push(len);
+    return b.as_str();
+}
+
+fn builtin_trap(e: &mut context::Emitter, h: i32, args: &vec::Vec<i32>) -> &str {
+    let b = str_arg(e, *args.get(0));
+    let n = node::get(&e.c.nodes, h);
+    let mut full: str::String = str::String::make();
+    full.push(b);
+    full.push(", i64 ");
+    full.push_i64(n.file as i64);
+    full.push(", i64 ");
+    full.push_i64(n.start as i64);
+    call_noreturn(e, "lc_trap_msg", full.as_str());
+    e.expr_ty = types::TY_NEVER;
+    return "0";
+}
+
+fn builtin_assert(e: &mut context::Emitter, h: i32, args: &vec::Vec<i32>) -> &str {
+    let mut cond2 = expr(e, *args.get(0));
+    cond2 = int_convert(e, cond2, types::TY_BOOL, types::TY_I64);
+    let mut b: str::String = str::String::make();
+    b.push("i64 ");
+    b.push(cond2);
+    b.push(", ");
+    if (args.len() == 2) {
+        b.push(str_arg(e, *args.get(1)));
+    } else {
+        b.push("ptr null, i64 0");
+    }
+    let n = node::get(&e.c.nodes, h);
+    b.push(", i64 ");
+    b.push_i64(n.file as i64);
+    b.push(", i64 ");
+    b.push_i64(n.start as i64);
+    call_void(e, "lc_assert", b.as_str());
+    e.expr_ty = types::TY_UNIT;
+    return "0";
+}
+
+fn builtin_unreachable(e: &mut context::Emitter, h: i32) -> &str {
+    let n = node::get(&e.c.nodes, h);
+    let mut b: str::String = str::String::make();
+    b.push("i64 ");
+    b.push_i64(n.file as i64);
+    b.push(", i64 ");
+    b.push_i64(n.start as i64);
+    call_noreturn(e, "lc_unreachable", b.as_str());
+    e.expr_ty = types::TY_NEVER;
+    return "0";
+}
+
+fn builtin_exit(e: &mut context::Emitter, h: i32, args: &vec::Vec<i32>) -> &str {
+    let mut exit_code = expr(e, *args.get(0));
+    exit_code = int_convert(e, exit_code, types::TY_I32, types::TY_I64);
+    let mut b: str::String = str::String::make();
+    b.push("i64 ");
+    b.push(exit_code);
+    call_noreturn(e, "lc_exit", b.as_str());
+    e.expr_ty = types::TY_NEVER;
+    return "0";
+}
+
+fn builtin_args(e: &mut context::Emitter, h: i32) -> &str {
+    let ty = context::node_ty(e, h);
+    let src = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, src);
+    context::out(e, " = call ptr @lc_args()\n");
+    let slot = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, slot);
+    context::out(e, " = alloca ");
+    context::out(e, context::type_name(e, ty));
+    context::nl(e);
+    context::out(e, "  call void @llvm.memcpy.p0.p0.i64(ptr align 8 ");
+    context::out(e, slot);
+    context::out(e, ", ptr align 8 ");
+    context::out(e, src);
+    context::out(e, ", i64 16, i1 false)\n");
+    e.expr_ty = ty;
+    return slot;
+}
+
+// `print`/`println`/`eprintln` lowered to the runtime formatting hooks.
+fn format_call(e: &mut context::Emitter, h: i32, args: &vec::Vec<i32>) -> &str {
+    let n = node::get(&e.c.nodes, h);
+    let fmtnode = node::get(&e.c.nodes, *args.get(0));
+    let mut f = context::parse_format(fmtnode.sval);
+    let mut fd = "";
+    if (n.ival == 3) { fd = "i64 2"; } else { fd = "i64 1"; }
+    call_void(e, "lc_set_fd", fd);
+    let mut argi: usize = 1;
+    let mut k: usize = 0;
+    while (k < f.pieces.len()) {
+        let piece = *f.pieces.get(k);
+        if (piece.kind == context::FMT_LIT) {
+            let lit = &f.lit.as_str()[piece.start..piece.start + piece.len];
+            let idx = context::intern(e, lit);
+            let sym = context::string_symbol(e, idx);
+            let mut b: str::String = str::String::make();
+            b.push("ptr ");
+            b.push(sym);
+            b.push(", i64 ");
+            b.push_i64(piece.len as i64);
+            call_void(e, "lc_put_str", b.as_str());
+        } else {
+            let arg = *args.get(argi);
+            let val = expr(e, arg);
+            let mut aty = e.expr_ty;
+            let mut b: str::String = str::String::make();
+            if (types::is_untyped_lit(aty)) {
+                if (aty == types::TY_UINT_LIT) { aty = types::TY_I32; }
+                else { aty = types::TY_F64; }
+            }
+            if (types::is_integer(aty) || types::is_bool(aty) || types::is_char(aty)) {
+                if (types::is_char(aty)) {
+                    b.push("i64 ");
+                    b.push(int_convert(e, val, aty, types::TY_I64));
+                    call_void(e, "lc_put_char", b.as_str());
+                } else {
+                    let v = int_convert(e, val, aty, types::TY_I64);
+                    b.push("i64 ");
+                    b.push(v);
+                    b.push(", i64 ");
+                    if (piece.has_width != 0) { b.push_i64(piece.width as i64); }
+                    else { b.push("0"); }
+                    b.push(", i64 ");
+                    if (piece.zero != 0) { b.push("1"); } else { b.push("0"); }
+                    if (piece.kind == context::FMT_HEX) { call_void(e, "lc_put_hex", b.as_str()); }
+                    else if (types::is_bool(aty)) { call_void(e, "lc_put_bool", b.as_str()); }
+                    else if (types::is_unsigned(aty)) { call_void(e, "lc_put_u64", b.as_str()); }
+                    else { call_void(e, "lc_put_i64", b.as_str()); }
+                }
+            } else if (types::is_float(aty)) {
+                let mut v = val;
+                if (aty != types::TY_F64) { v = fp_convert(e, v, aty, types::TY_F64, true); }
+                b.push("double ");
+                b.push(v);
+                b.push(", i64 ");
+                if (piece.has_width != 0) { b.push_i64(piece.width as i64); }
+                else { b.push("0"); }
+                b.push(", i64 ");
+                if (piece.has_prec != 0) { b.push_i64(piece.prec as i64); }
+                else { b.push("0"); }
+                b.push(", i64 ");
+                if (piece.has_prec != 0) { b.push("1"); } else { b.push("0"); }
+                call_void(e, "lc_put_f64", b.as_str());
+            } else {
+                let data = slice_data(e, val);
+                let len = slice_len(e, val);
+                let mut b2: str::String = str::String::make();
+                b2.push("ptr ");
+                b2.push(data);
+                b2.push(", i64 ");
+                b2.push(len);
+                call_void(e, "lc_put_str", b2.as_str());
+            }
+            argi += 1;
+        }
+        k += 1;
+    }
+    if (n.ival == 2 || n.ival == 3) { call_void(e, "lc_put_char", "i64 10"); }
+    call_void(e, "lc_flush", "");
+    e.expr_ty = types::TY_UNIT;
+    return "0";
+}
+
+// A call expression.
+fn expr_call(e: &mut context::Emitter, h: i32) -> &str {
+    let n = node::get(&e.c.nodes, h);
+    let retty = context::node_ty(e, h);
+    let marker = n.ival as i32;
+    // An explicit or inferred generic call has no callee path; the checker
+    // stored the concrete instance in `b`.
+    if (n.a < 0 && marker != 10 && marker != 11 && marker != 12 && marker != 16) {
+        if (n.b >= 0) {
+            let inst = node::get(&e.c.nodes, n.b);
+            let symbol = context::fn_symbol(e, n.b);
+            return emit_call_args(e, symbol, inst.ty, &n.kids);
+        }
+        e.expr_ty = retty;
+        return context::zero_of(e, retty);
+    }
+    let callee = node::get(&e.c.nodes, n.a);
+    if (callee.kind == node::AST_FIELD_ACC) {
+        return method_call(e, h, n.a, &n.kids, retty);
+    }
+    // `Enum::Variant(payload...)`.
+    if (marker >= 1000 && callee.kind == node::AST_PATH
+        && types::type_kind(&e.c.types, retty) == types::CTY_ENUM) {
+        return enum_construct(e, h, retty, marker - 1000, &n.kids);
+    }
+    if (marker == 1 || marker == 2 || marker == 3) {
+        return format_call(e, h, &n.kids);
+    }
+    if (marker == 4) { return builtin_trap(e, h, &n.kids); }
+    if (marker == 5) { return builtin_assert(e, h, &n.kids); }
+    if (marker == 6) { return builtin_unreachable(e, h); }
+    if (marker == 7) { return builtin_exit(e, h, &n.kids); }
+    if (marker == 8) { return builtin_args(e, h); }
+    if (marker == 14 || marker == 15) {
+        let v = expr(e, *n.kids.get(0));
+        e.expr_ty = retty;
+        return v;
+    }
+    // `str::from_parts(p, len)`.
+    if (marker == 17) {
+        let p = expr(e, *n.kids.get(0));
+        let mut l2 = expr(e, *n.kids.get(1));
+        l2 = index_to_i64(e, l2);
+        let slot = context::new_reg(e);
+        context::out(e, "  ");
+        context::out(e, slot);
+        context::out(e, " = alloca %slice\n");
+        let f0 = context::new_reg(e);
+        context::out(e, "  ");
+        context::out(e, f0);
+        context::out(e, " = getelementptr inbounds %slice, ptr ");
+        context::out(e, slot);
+        context::out(e, ", i32 0, i32 0\n");
+        context::out(e, "  store ptr ");
+        context::out(e, p);
+        context::out(e, ", ptr ");
+        context::out(e, f0);
+        context::nl(e);
+        let f1 = context::new_reg(e);
+        context::out(e, "  ");
+        context::out(e, f1);
+        context::out(e, " = getelementptr inbounds %slice, ptr ");
+        context::out(e, slot);
+        context::out(e, ", i32 0, i32 1\n");
+        context::out(e, "  store i64 ");
+        context::out(e, l2);
+        context::out(e, ", ptr ");
+        context::out(e, f1);
+        context::nl(e);
+        e.expr_ty = retty;
+        return slot;
+    }
+    // `Raw::null<T>()`.
+    if (marker == 16) {
+        e.expr_ty = retty;
+        return "null";
+    }
+    // `alloc<T>(n)` / `dealloc<T>(p, n)`.
+    if (marker == 10 || marker == 11) {
+        let mut elem = types::TY_U8;
+        if (n.b >= 0) { elem = node::get(&e.c.nodes, n.b).ty; }
+        let mut esz = types::size(elem, &mut e.c.types);
+        if (esz == 0) { esz = 1; }
+        let mut count_index: usize = 0;
+        if (marker == 11) { count_index = 1; }
+        let count_h = *n.kids.get(count_index);
+        let mut count2 = expr(e, count_h);
+        count2 = index_to_i64(e, count2);
+        let bytes = context::new_reg(e);
+        context::out(e, "  ");
+        context::out(e, bytes);
+        context::out(e, " = mul i64 ");
+        context::out(e, count2);
+        context::out(e, ", ");
+        context::out_i64(e, esz as i64);
+        context::nl(e);
+        if (marker == 10) {
+            let r = context::new_reg(e);
+            context::out(e, "  ");
+            context::out(e, r);
+            context::out(e, " = call ptr @lc_alloc(i64 ");
+            context::out(e, bytes);
+            context::out(e, ")\n");
+            e.expr_ty = retty;
+            return r;
+        }
+        let p = expr(e, *n.kids.get(0));
+        context::out(e, "  call void @lc_dealloc(ptr ");
+        context::out(e, p);
+        context::out(e, ", i64 ");
+        context::out(e, bytes);
+        context::out(e, ")\n");
+        e.expr_ty = types::TY_UNIT;
+        return "0";
+    }
+    // `reinterpret<T, U>(x)`.
+    if (marker == 12) {
+        let v = expr(e, *n.kids.get(0));
+        let mut from = e.expr_ty;
+        let mut to = retty;
+        if (n.b >= 0) {
+            let tb = node::get(&e.c.nodes, n.b);
+            from = tb.ival as i32;
+            to = tb.ty;
+        }
+        e.expr_ty = to;
+        if (types::is_ptr(&e.c.types, from) && types::is_integer(to)) {
+            let r = context::new_reg(e);
+            context::out(e, "  ");
+            context::out(e, r);
+            context::out(e, " = ptrtoint ptr ");
+            context::out(e, v);
+            context::out(e, " to ");
+            context::out(e, context::type_name(e, to));
+            context::nl(e);
+            return r;
+        }
+        if (types::is_integer(from) && types::is_ptr(&e.c.types, to)) {
+            let r = context::new_reg(e);
+            context::out(e, "  ");
+            context::out(e, r);
+            context::out(e, " = inttoptr i64 ");
+            context::out(e, v);
+            context::out(e, " to ptr\n");
+            return r;
+        }
+        if (from == to) { return v; }
+        return reinterpret_cast(e, v, from, to);
+    }
+    // An ordinary call.
+    let mut symbol = "";
+    if (n.target >= 0) { symbol = context::fn_symbol(e, n.target); }
+    else {
+        let mut s: str::String = str::String::make();
+        s.push("harmony__");
+        s.push(context::sanitize(callee.sval));
+        symbol = s.as_str();
+    }
+    return emit_call_args(e, symbol, retty, &n.kids);
+}
+
+// ---- aggregate expressions -------------------------------------------------
+
+fn expr_field(e: &mut context::Emitter, h: i32) -> &str {
+    let a = place_addr(e, h);
+    let ft = context::node_ty(e, h);
+    e.expr_ty = ft;
+    if (ft == types::TY_UNIT || context::is_aggregate(e, ft)) { return a; }
+    return load(e, ft, a);
+}
+
+fn expr_index(e: &mut context::Emitter, h: i32) -> &str {
+    let a = place_addr(e, h);
+    let et = context::node_ty(e, h);
+    e.expr_ty = et;
+    if (et == types::TY_UNIT || context::is_aggregate(e, et)) { return a; }
+    return load(e, et, a);
+}
+
+fn expr_array_lit(e: &mut context::Emitter, h: i32) -> &str {
+    let n = node::get(&e.c.nodes, h);
+    let ty = context::node_ty(e, h);
+    let et = types::elem(&e.c.types, ty);
+    let slot = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, slot);
+    context::out(e, " = alloca ");
+    context::out(e, context::type_name(e, ty));
+    context::nl(e);
+    if (n.kids.len() > 0) {
+        let mut i: usize = 0;
+        while (i < n.kids.len()) {
+            let v = expr(e, *n.kids.get(i));
+            let idx = const_int(e, i as i64, types::TY_USIZE);
+            let a = array_gep_i64(e, slot, et, idx);
+            store_value(e, a, et, v);
+            i += 1;
+        }
+    } else if (n.a >= 0) {
+        let count = types::array_len(&e.c.types, ty);
+        let v = expr(e, n.a);
+        if (count <= 64) {
+            let mut i: usize = 0;
+            while (i < count as usize) {
+                let idx = const_int(e, i as i64, types::TY_USIZE);
+                let a = array_gep_i64(e, slot, et, idx);
+                store_value(e, a, et, v);
+                i += 1;
+            }
+        } else {
+            let cslot = context::new_reg(e);
+            context::out(e, "  ");
+            context::out(e, cslot);
+            context::out(e, " = alloca i64\n  store i64 0, ptr ");
+            context::out(e, cslot);
+            context::nl(e);
+            let condlbl = context::new_label(e, "fill.cond");
+            let bodylbl = context::new_label(e, "fill.body");
+            let endlbl = context::new_label(e, "fill.end");
+            context::out(e, "  br label %");
+            context::out(e, condlbl);
+            context::nl(e);
+            context::out(e, condlbl);
+            context::out(e, ":\n");
+            let c = load(e, types::TY_ISIZE, cslot);
+            let bound = const_int(e, count as i64, types::TY_ISIZE);
+            let cm = int_cmp(e, "<", types::TY_ISIZE, c, bound);
+            context::out(e, "  br i1 ");
+            context::out(e, cm);
+            context::out(e, ", label %");
+            context::out(e, bodylbl);
+            context::out(e, ", label %");
+            context::out(e, endlbl);
+            context::nl(e);
+            context::out(e, bodylbl);
+            context::out(e, ":\n");
+            let c3 = load(e, types::TY_ISIZE, cslot);
+            let a = array_gep_i64(e, slot, et, c3);
+            store_value(e, a, et, v);
+            let c2 = bin(e, "add", types::TY_ISIZE, c3, "1");
+            context::out(e, "  store i64 ");
+            context::out(e, c2);
+            context::out(e, ", ptr ");
+            context::out(e, cslot);
+            context::nl(e);
+            context::out(e, "  br label %");
+            context::out(e, condlbl);
+            context::nl(e);
+            context::out(e, endlbl);
+            context::out(e, ":\n");
+        }
+    }
+    e.expr_ty = ty;
+    return slot;
+}
+
+fn expr_struct_init(e: &mut context::Emitter, h: i32) -> &str {
+    let n = node::get(&e.c.nodes, h);
+    let ty = context::node_ty(e, h);
+    let slot = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, slot);
+    context::out(e, " = alloca ");
+    context::out(e, context::type_name(e, ty));
+    context::nl(e);
+    let mut i: usize = 0;
+    while (i < n.kids.len()) {
+        let fi = node::get(&e.c.nodes, *n.kids.get(i));
+        let mi = types::find_member(&e.c.types, ty, fi.sval);
+        if (mi < 0) { i += 1; continue; }
+        let ft = types::member_type(&e.c.types, ty, mi);
+        let v = expr(e, fi.a);
+        let a = struct_gep(e, slot, ty, mi);
+        store_value(e, a, ft, v);
+        i += 1;
+    }
+    e.expr_ty = ty;
+    return slot;
+}
+
+fn local_temp(e: &mut context::Emitter, ty: i32, v: &str) -> &str {
+    let slot = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, slot);
+    context::out(e, " = alloca ");
+    context::out(e, context::type_name(e, ty));
+    context::nl(e);
+    store_value(e, slot, ty, v);
+    return slot;
+}
+
+fn expr_borrow(e: &mut context::Emitter, h: i32) -> &str {
+    let n = node::get(&e.c.nodes, h);
+    if (n.a >= 0) {
+        let ix = node::get(&e.c.nodes, n.a);
+        if (ix.kind == node::AST_INDEX && ix.b >= 0) {
+            let r = node::get(&e.c.nodes, ix.b);
+            if (r.kind == node::AST_BINARY && (r.sval == ".." || r.sval == "..=")) {
+                return slice_pair(e, n.a);
+            }
+        }
+    }
+    let ty = context::node_ty(e, h);
+    if (types::type_kind(&e.c.types, ty) == types::CTY_SLICE
+        || types::type_kind(&e.c.types, ty) == types::CTY_STRREF) {
+        e.expr_ty = ty;
+        return expr(e, n.a);
+    }
+    if (!is_place(e, n.a)) {
+        let t = context::node_ty(e, n.a);
+        if (context::is_aggregate(e, t)) {
+            e.expr_ty = ty;
+            return expr(e, n.a);
+        }
+        let v = expr(e, n.a);
+        let slot = local_temp(e, t, v);
+        e.expr_ty = ty;
+        return slot;
+    }
+    e.expr_ty = ty;
+    return place_addr(e, n.a);
+}
+
+fn expr_raw(e: &mut context::Emitter, h: i32) -> &str {
+    let n = node::get(&e.c.nodes, h);
+    let v = expr(e, n.a);
+    e.expr_ty = context::node_ty(e, h);
+    return v;
+}
+
+fn expr_deref(e: &mut context::Emitter, h: i32) -> &str {
+    let n = node::get(&e.c.nodes, h);
+    let ptr = expr(e, n.a);
+    let ty = context::node_ty(e, h);
+    e.expr_ty = ty;
+    if (ty == types::TY_UNIT || context::is_aggregate(e, ty)) { return ptr; }
+    return load(e, ty, ptr);
+}
+
+fn expr_heap(e: &mut context::Emitter, h: i32) -> &str {
+    let n = node::get(&e.c.nodes, h);
+    let mut et = types::elem(&e.c.types, context::node_ty(e, h));
+    if (et == 0) { et = context::node_ty(e, n.a); }
+    let raw_ptr = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, raw_ptr);
+    context::out(e, " = call ptr @lc_alloc(i64 ");
+    context::out_i64(e, types::size(et, &mut e.c.types) as i64);
+    context::out(e, ")\n");
+    let v = expr(e, n.a);
+    if (context::is_aggregate(e, et)) {
+        context::out(e, "  call void @llvm.memcpy.p0.p0.i64(ptr align 8 ");
+        context::out(e, raw_ptr);
+        context::out(e, ", ptr align 8 ");
+        context::out(e, v);
+        context::out(e, ", i64 ");
+        context::out_i64(e, types::size(et, &mut e.c.types) as i64);
+        context::out(e, ", i1 false)\n");
+    } else {
+        context::out(e, "  store ");
+        context::out(e, context::type_name(e, et));
+        context::out(e, " ");
+        context::out(e, v);
+        context::out(e, ", ptr ");
+        context::out(e, raw_ptr);
+        context::nl(e);
+    }
+    e.expr_ty = context::node_ty(e, h);
+    return raw_ptr;
+}
+
+fn expr_cast(e: &mut context::Emitter, h: i32) -> &str {
+    let n = node::get(&e.c.nodes, h);
+    let v = expr(e, n.a);
+    let mut from = e.expr_ty;
+    let to = context::node_ty(e, h);
+    e.expr_ty = to;
+    if (types::is_untyped_lit(from)) { from = to; }
+    if (from == to) { return v; }
+    if (context::is_integer_or_char(from) && context::is_integer_or_char(to)) {
+        return int_convert(e, v, from, to);
+    }
+    if (types::is_integer(from) && context::is_float_ty(to)) {
+        return fp_convert(e, v, from, to, false);
+    }
+    if (context::is_float_ty(from) && context::is_float_ty(to)) {
+        return fp_convert(e, v, from, to, true);
+    }
+    if (types::is_ptr(&e.c.types, from) && types::is_integer(to)) {
+        let r = context::new_reg(e);
+        context::out(e, "  ");
+        context::out(e, r);
+        context::out(e, " = ptrtoint ptr ");
+        context::out(e, v);
+        context::out(e, " to ");
+        context::out(e, context::type_name(e, to));
+        context::nl(e);
+        return int_convert(e, r, types::TY_I64, to);
+    }
+    if (types::is_integer(from) && types::is_ptr(&e.c.types, to)) {
+        let wide = int_convert(e, v, from, types::TY_I64);
+        let r = context::new_reg(e);
+        context::out(e, "  ");
+        context::out(e, r);
+        context::out(e, " = inttoptr i64 ");
+        context::out(e, wide);
+        context::out(e, " to ptr\n");
+        return r;
+    }
+    return v;
+}
+
+// The expression entry point.
+fn expr(e: &mut context::Emitter, h: i32) -> &str {
+    if (h < 0) {
+        e.expr_ty = types::TY_UNIT;
+        return "0";
+    }
+    let n = node::get(&e.c.nodes, h);
+    let k = n.kind;
+    if (k == node::AST_BOOL_LIT) {
+        e.expr_ty = types::TY_BOOL;
+        if (n.ival != 0) { return "true"; }
+        return "false";
+    }
+    if (k == node::AST_INT_LIT) {
+        let mut ty = n.ty;
+        if (ty == 0 || types::is_untyped_lit(ty)) {
+            if (n.sval != "") { ty = suffix_ty(n.sval); }
+            else { ty = types::TY_I32; }
+        }
+        e.expr_ty = ty;
+        if (types::is_unsigned(ty)) {
+            return uint_const(e, n.ival as u64);
+        }
+        return const_int(e, n.ival, ty);
+    }
+    if (k == node::AST_FLOAT_LIT) {
+        let mut ft = n.ty;
+        if (ft == 0 || types::is_untyped_lit(ft)) { ft = types::TY_F64; }
+        e.expr_ty = ft;
+        if (ft == types::TY_F32) {
+            let r = context::new_reg(e);
+            context::out(e, "  ");
+            context::out(e, r);
+            context::out(e, " = fptrunc double ");
+            context::out(e, float_spelling(n.sval));
+            context::out(e, " to float\n");
+            return r;
+        }
+        return float_spelling(n.sval);
+    }
+    if (k == node::AST_CHAR_LIT) {
+        e.expr_ty = types::TY_CHAR;
+        return const_int(e, n.ival, types::TY_CHAR);
+    }
+    if (k == node::AST_STRING_LIT) { return str_literal(e, n.sval); }
+    if (k == node::AST_UNIT_LIT) {
+        e.expr_ty = types::TY_UNIT;
+        return "0";
+    }
+    if (k == node::AST_PATH) { return expr_path(e, h); }
+    if (k == node::AST_BINARY) { return expr_binary(e, h); }
+    if (k == node::AST_UNARY) { return expr_unary(e, h); }
+    if (k == node::AST_FIELD_ACC) { return expr_field(e, h); }
+    if (k == node::AST_INDEX) { return expr_index(e, h); }
+    if (k == node::AST_CALL) { return expr_call(e, h); }
+    if (k == node::AST_AS) { return expr_cast(e, h); }
+    if (k == node::AST_STRUCT_INIT) { return expr_struct_init(e, h); }
+    if (k == node::AST_BORROW) { return expr_borrow(e, h); }
+    if (k == node::AST_RAW_EXPR) { return expr_raw(e, h); }
+    if (k == node::AST_DEREF) { return expr_deref(e, h); }
+    if (k == node::AST_HEAP) { return expr_heap(e, h); }
+    if (k == node::AST_ARRAY_LIT) { return expr_array_lit(e, h); }
+    if (k == node::AST_SIZEOF) {
+        e.expr_ty = types::TY_USIZE;
+        return const_int(e, n.ival, types::TY_USIZE);
+    }
+    e.expr_ty = context::node_ty(e, h);
+    return context::zero_of(e, e.expr_ty);
+}
+
+// ---- statements ------------------------------------------------------------
+
+export fn block(e: &mut context::Emitter, h: i32) {
+    if (h < 0) { return; }
+    context::scope_push(e);
+    let n = node::get(&e.c.nodes, h);
+    let mut i: usize = 0;
+    while (i < n.kids.len()) {
+        stmt(e, *n.kids.get(i));
+        i += 1;
+    }
+    context::scope_pop(e);
+}
+
+fn compound_op(op: &str) -> &str {
+    if (op == "+=") { return "+"; }
+    if (op == "-=") { return "-"; }
+    if (op == "*=") { return "*"; }
+    if (op == "/=") { return "/"; }
+    if (op == "%=") { return "%"; }
+    if (op == "&=") { return "&"; }
+    if (op == "|=") { return "|"; }
+    if (op == "^=") { return "^"; }
+    if (op == "<<=") { return "<<"; }
+    if (op == ">>=") { return ">>"; }
+    return "";
+}
+
+fn stmt_let(e: &mut context::Emitter, h: i32) {
+    let n = node::get(&e.c.nodes, h);
+    let ty = context::node_ty(e, h);
+    let slot = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, slot);
+    context::out(e, " = alloca ");
+    context::out(e, context::type_name(e, ty));
+    context::nl(e);
+    if (n.b >= 0) {
+        let v = expr(e, n.b);
+        store_value(e, slot, ty, v);
+    }
+    if (n.sval != "_") { context::local_declare(e, n.sval, slot, ty); }
+}
+
+fn stmt_assign(e: &mut context::Emitter, h: i32) {
+    let n = node::get(&e.c.nodes, h);
+    let lhs = node::get(&e.c.nodes, n.a);
+    let mut slot = "";
+    let mut ty = types::TY_INVALID;
+    if (lhs.kind == node::AST_PATH) {
+        slot = context::local_slot(e, lhs.sval);
+        ty = context::local_ty(e, lhs.sval);
+    } else {
+        slot = place_addr(e, n.a);
+        ty = context::node_ty(e, n.a);
+    }
+    if (slot == "") { return; }
+    if (n.sval == "=") {
+        let v = expr(e, n.b);
+        let vty = e.expr_ty;
+        if (context::is_aggregate(e, vty)) {
+            context::out(e, "  call void @llvm.memcpy.p0.p0.i64(ptr align 8 ");
+            context::out(e, slot);
+            context::out(e, ", ptr align 8 ");
+            context::out(e, v);
+            context::out(e, ", i64 ");
+            context::out_i64(e, types::size(vty, &mut e.c.types) as i64);
+            context::out(e, ", i1 false)\n");
+            return;
+        }
+        context::out(e, "  store ");
+        context::out(e, context::type_name(e, ty));
+        context::out(e, " ");
+        context::out(e, v);
+        context::out(e, ", ptr ");
+        context::out(e, slot);
+        context::nl(e);
+        return;
+    }
+    // Compound assignment: `x op= y` becomes `x = x op y`.
+    if (types::type_kind(&e.c.types, ty) == types::CTY_STRUCT
+        || types::is_array(&e.c.types, ty)) { return; }
+    let cur = load(e, ty, slot);
+    let rhs = expr(e, n.b);
+    let op = compound_op(n.sval);
+    if (op == "") { return; }
+    let v = checked_bin(e, op, ty, h, cur, rhs);
+    context::out(e, "  store ");
+    context::out(e, context::type_name(e, ty));
+    context::out(e, " ");
+    context::out(e, v);
+    context::out(e, ", ptr ");
+    context::out(e, slot);
+    context::nl(e);
+}
+
+fn stmt_if(e: &mut context::Emitter, h: i32) {
+    let n = node::get(&e.c.nodes, h);
+    let cond = expr(e, n.a);
+    e.terminated = 0;
+    let thenlbl = context::new_label(e, "if.then");
+    let elselbl = context::new_label(e, "if.else");
+    let endlbl = context::new_label(e, "if.end");
+    context::out(e, "  br i1 ");
+    context::out(e, cond);
+    context::out(e, ", label %");
+    if (n.c >= 0) {
+        context::out(e, thenlbl);
+        context::out(e, ", label %");
+        context::out(e, elselbl);
+    } else {
+        context::out(e, thenlbl);
+        context::out(e, ", label %");
+        context::out(e, endlbl);
+    }
+    context::nl(e);
+    label(e, thenlbl);
+    block(e, n.b);
+    if (e.terminated == 0) {
+        context::out(e, "  br label %");
+        context::out(e, endlbl);
+        context::nl(e);
+    }
+    if (n.c >= 0) {
+        label(e, elselbl);
+        let els = node::get(&e.c.nodes, n.c);
+        if (els.kind == node::AST_BLOCK) { block(e, n.c); }
+        else { stmt_if(e, n.c); }
+        if (e.terminated == 0) {
+            context::out(e, "  br label %");
+            context::out(e, endlbl);
+            context::nl(e);
+        }
+    }
+    label(e, endlbl);
+    e.terminated = 0;
+}
+
+fn stmt_while(e: &mut context::Emitter, h: i32) {
+    let n = node::get(&e.c.nodes, h);
+    let condlbl = context::new_label(e, "while.cond");
+    let bodylbl = context::new_label(e, "while.body");
+    let endlbl = context::new_label(e, "while.end");
+    context::out(e, "  br label %");
+    context::out(e, condlbl);
+    context::nl(e);
+    label(e, condlbl);
+    let cond = expr(e, n.a);
+    context::out(e, "  br i1 ");
+    context::out(e, cond);
+    context::out(e, ", label %");
+    context::out(e, bodylbl);
+    context::out(e, ", label %");
+    context::out(e, endlbl);
+    context::nl(e);
+    label(e, bodylbl);
+    e.loops.push(context::LoopTarget { .brk = endlbl, .cont = condlbl });
+    e.terminated = 0;
+    block(e, n.b);
+    e.loops.pop();
+    if (e.terminated == 0) {
+        context::out(e, "  br label %");
+        context::out(e, condlbl);
+        context::nl(e);
+    }
+    label(e, endlbl);
+    e.terminated = 0;
+}
+
+fn stmt_for_range(e: &mut context::Emitter, h: i32) {
+    let n = node::get(&e.c.nodes, h);
+    let range = node::get(&e.c.nodes, n.a);
+    let ty = context::node_ty(e, n.a);
+    let esz = context::type_name(e, ty);
+    let inclusive = range.sval == "..=";
+    let lo = expr(e, range.a);
+    let hi = expr(e, range.b);
+    let islot = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, islot);
+    context::out(e, " = alloca ");
+    context::out(e, esz);
+    context::nl(e);
+    context::out(e, "  store ");
+    context::out(e, esz);
+    context::out(e, " ");
+    context::out(e, lo);
+    context::out(e, ", ptr ");
+    context::out(e, islot);
+    context::nl(e);
+    context::local_declare(e, n.sval, islot, ty);
+    let hslot = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, hslot);
+    context::out(e, " = alloca ");
+    context::out(e, esz);
+    context::nl(e);
+    context::out(e, "  store ");
+    context::out(e, esz);
+    context::out(e, " ");
+    context::out(e, hi);
+    context::out(e, ", ptr ");
+    context::out(e, hslot);
+    context::nl(e);
+    let condlbl = context::new_label(e, "for.cond");
+    let bodylbl = context::new_label(e, "for.body");
+    let steplbl = context::new_label(e, "for.step");
+    let endlbl = context::new_label(e, "for.end");
+    context::out(e, "  br label %");
+    context::out(e, condlbl);
+    context::nl(e);
+    label(e, condlbl);
+    let cur = load(e, ty, islot);
+    let hi2 = load(e, ty, hslot);
+    let mut op = "slt";
+    if (inclusive) { op = "sle"; }
+    if (types::is_unsigned(ty)) {
+        if (inclusive) { op = "ule"; } else { op = "ult"; }
+    }
+    let cm = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, cm);
+    context::out(e, " = icmp ");
+    context::out(e, op);
+    context::out(e, " ");
+    context::out(e, esz);
+    context::out(e, " ");
+    context::out(e, cur);
+    context::out(e, ", ");
+    context::out(e, hi2);
+    context::nl(e);
+    context::out(e, "  br i1 ");
+    context::out(e, cm);
+    context::out(e, ", label %");
+    context::out(e, bodylbl);
+    context::out(e, ", label %");
+    context::out(e, endlbl);
+    context::nl(e);
+    label(e, bodylbl);
+    e.loops.push(context::LoopTarget { .brk = endlbl, .cont = steplbl });
+    e.terminated = 0;
+    if (n.kids.len() > 0) { block(e, *n.kids.get(0)); }
+    e.loops.pop();
+    if (e.terminated == 0) {
+        context::out(e, "  br label %");
+        context::out(e, steplbl);
+        context::nl(e);
+    }
+    label(e, steplbl);
+    e.terminated = 0;
+    let cur2 = load(e, ty, islot);
+    let nxt = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, nxt);
+    context::out(e, " = add ");
+    context::out(e, esz);
+    context::out(e, " ");
+    context::out(e, cur2);
+    context::out(e, ", 1\n");
+    context::out(e, "  store ");
+    context::out(e, esz);
+    context::out(e, " ");
+    context::out(e, nxt);
+    context::out(e, ", ptr ");
+    context::out(e, islot);
+    context::nl(e);
+    context::out(e, "  br label %");
+    context::out(e, condlbl);
+    context::nl(e);
+    label(e, endlbl);
+    e.terminated = 0;
+}
+
+fn stmt_for(e: &mut context::Emitter, h: i32) {
+    let n = node::get(&e.c.nodes, h);
+    context::scope_push(e);
+    // A range or an iterable has a binding name; the C-style loop does not.
+    if (n.sval != "" && n.ival == 1) {
+        stmt_for_range(e, h);
+        context::scope_pop(e);
+        return;
+    }
+    if (n.sval != "") {
+        stmt_for_iter(e, h);
+        context::scope_pop(e);
+        return;
+    }
+    if (n.a >= 0) { stmt(e, n.a); }
+    let condlbl = context::new_label(e, "for.cond");
+    let bodylbl = context::new_label(e, "for.body");
+    let steplbl = context::new_label(e, "for.step");
+    let endlbl = context::new_label(e, "for.end");
+    context::out(e, "  br label %");
+    context::out(e, condlbl);
+    context::nl(e);
+    label(e, condlbl);
+    if (n.b >= 0) {
+        let cond = expr(e, n.b);
+        context::out(e, "  br i1 ");
+        context::out(e, cond);
+        context::out(e, ", label %");
+        context::out(e, bodylbl);
+        context::out(e, ", label %");
+        context::out(e, endlbl);
+        context::nl(e);
+    } else {
+        context::out(e, "  br label %");
+        context::out(e, bodylbl);
+        context::nl(e);
+    }
+    label(e, bodylbl);
+    e.loops.push(context::LoopTarget { .brk = endlbl, .cont = steplbl });
+    e.terminated = 0;
+    if (n.kids.len() > 0) { block(e, *n.kids.get(0)); }
+    e.loops.pop();
+    if (e.terminated == 0) {
+        context::out(e, "  br label %");
+        context::out(e, steplbl);
+        context::nl(e);
+    }
+    label(e, steplbl);
+    e.terminated = 0;
+    if (n.c >= 0) { stmt(e, n.c); }
+    context::out(e, "  br label %");
+    context::out(e, condlbl);
+    context::nl(e);
+    label(e, endlbl);
+    e.terminated = 0;
+    context::scope_pop(e);
+}
+
+fn stmt_break(e: &mut context::Emitter) {
+    if (e.loops.len() == 0) { return; }
+    let t = *e.loops.get(e.loops.len() - 1);
+    context::out(e, "  br label %");
+    context::out(e, t.brk);
+    context::nl(e);
+    e.terminated = 1;
+}
+
+fn stmt_continue(e: &mut context::Emitter) {
+    if (e.loops.len() == 0) { return; }
+    let t = *e.loops.get(e.loops.len() - 1);
+    context::out(e, "  br label %");
+    context::out(e, t.cont);
+    context::nl(e);
+    e.terminated = 1;
+}
+
+fn stmt_return(e: &mut context::Emitter, h: i32) {
+    let n = node::get(&e.c.nodes, h);
+    if (e.sret_on != 0) {
+        let retty = e.sret_ty;
+        let v = expr(e, n.a);
+        context::out(e, "  call void @llvm.memcpy.p0.p0.i64(ptr align 8 %sret, ptr align 8 ");
+        context::out(e, v);
+        context::out(e, ", i64 ");
+        context::out_i64(e, types::size(retty, &mut e.c.types) as i64);
+        context::out(e, ", i1 false)\n");
+        context::out(e, "  ret void\n");
+        e.terminated = 1;
+        return;
+    }
+    if (n.a >= 0) {
+        let v = expr(e, n.a);
+        let ty = e.expr_ty;
+        context::out(e, "  ret ");
+        context::out(e, context::type_name(e, ty));
+        context::out(e, " ");
+        context::out(e, v);
+        context::nl(e);
+    } else {
+        context::out(e, "  ret void\n");
+    }
+    e.terminated = 1;
+}
+
+fn stmt(e: &mut context::Emitter, h: i32) {
+    if (h < 0) { return; }
+    if (e.terminated != 0) { return; }
+    let n = node::get(&e.c.nodes, h);
+    let k = n.kind;
+    if (k == node::AST_LET) { stmt_let(e, h); return; }
+    if (k == node::AST_ASSIGN) { stmt_assign(e, h); return; }
+    if (k == node::AST_EXPR_STMT) { expr(e, n.a); return; }
+    if (k == node::AST_IF) { stmt_if(e, h); return; }
+    if (k == node::AST_WHILE) { stmt_while(e, h); return; }
+    if (k == node::AST_FOR) { stmt_for(e, h); return; }
+    if (k == node::AST_RETURN) { stmt_return(e, h); return; }
+    if (k == node::AST_BREAK) { stmt_break(e); return; }
+    if (k == node::AST_CONTINUE) { stmt_continue(e); return; }
+    if (k == node::AST_BLOCK) { block(e, h); return; }
+    if (k == node::AST_UNCHECKED) { block(e, n.a); return; }
+    if (k == node::AST_SWITCH) { stmt_switch(e, h); return; }
+    expr(e, h);
+}
+
+// The `next` method on an iterator type (§8.5).
+fn find_next_method(e: &mut context::Emitter, it_ty: i32) -> i32 {
+    let mut core = it_ty;
+    while (types::is_ref(&e.c.types, core) || types::is_heap(&e.c.types, core)) {
+        core = types::elem(&e.c.types, core);
+    }
+    let mut i: usize = 0;
+    while (i < e.c.fns.len()) {
+        let fh = *e.c.fns.get(i);
+        let f = node::get(&e.c.nodes, fh);
+        if (f.self_ty == core && f.sfx == "next") { return fh; }
+        i += 1;
+    }
+    return -1;
+}
+
+// `for (x : it)` over the iteration protocol.
+fn stmt_for_iter(e: &mut context::Emitter, h: i32) {
+    let n = node::get(&e.c.nodes, h);
+    let it_ty = context::node_ty(e, n.a);
+    let m = find_next_method(e, it_ty);
+    if (m < 0) { return; }
+    let ret_ty = node::get(&e.c.nodes, m).ty;
+    if (ret_ty == 0 || types::type_kind(&e.c.types, ret_ty) != types::CTY_ENUM) { return; }
+    let mut has_vi = types::find_member(&e.c.types, ret_ty, "Has");
+    if (has_vi < 0) { has_vi = 0; }
+    let it_slot = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, it_slot);
+    context::out(e, " = alloca ");
+    context::out(e, context::type_name(e, it_ty));
+    context::nl(e);
+    let v = expr(e, n.a);
+    store_value(e, it_slot, it_ty, v);
+    let head = context::new_label(e, "for.iter.next");
+    let body = context::new_label(e, "for.iter.body");
+    let endlbl = context::new_label(e, "for.iter.end");
+    context::out(e, "  br label %");
+    context::out(e, head);
+    context::nl(e);
+    label(e, head);
+    e.terminated = 0;
+    let sslot = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, sslot);
+    context::out(e, " = alloca ");
+    context::out(e, context::type_name(e, ret_ty));
+    context::nl(e);
+    context::out(e, "  call void @");
+    context::out(e, context::method_symbol(e, it_ty, "next"));
+    context::out(e, "(ptr sret(");
+    context::out(e, context::type_name(e, ret_ty));
+    context::out(e, ") ");
+    context::out(e, sslot);
+    context::out(e, ", ptr ");
+    context::out(e, it_slot);
+    context::out(e, ")\n");
+    let tagp = struct_gep(e, sslot, ret_ty, 0);
+    let tag = load(e, types::TY_I32, tagp);
+    let isbody = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, isbody);
+    context::out(e, " = icmp eq i32 ");
+    context::out(e, tag);
+    context::out(e, ", ");
+    context::out_i64(e, has_vi as i64);
+    context::nl(e);
+    context::out(e, "  br i1 ");
+    context::out(e, isbody);
+    context::out(e, ", label %");
+    context::out(e, body);
+    context::out(e, ", label %");
+    context::out(e, endlbl);
+    context::nl(e);
+    label(e, body);
+    e.loops.push(context::LoopTarget { .brk = endlbl, .cont = head });
+    e.terminated = 0;
+    // Bind the `Has` payload to the loop variable.
+    let pid = types::member_type(&e.c.types, ret_ty, has_vi);
+    let pty = types::member_type(&e.c.types, pid, 0);
+    let payload_addr = offset_addr(e, sslot, 8 + types::field_offset(pid, 0, &mut e.c.types));
+    let bind_slot = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, bind_slot);
+    context::out(e, " = alloca ");
+    context::out(e, context::type_name(e, pty));
+    context::nl(e);
+    if (context::is_aggregate(e, pty)) {
+        store_value(e, bind_slot, pty, payload_addr);
+    } else {
+        let pv = load(e, pty, payload_addr);
+        store_value(e, bind_slot, pty, pv);
+    }
+    context::local_declare(e, n.sval, bind_slot, pty);
+    if (n.kids.len() > 0) { block(e, *n.kids.get(0)); }
+    e.loops.pop();
+    if (e.terminated == 0) {
+        context::out(e, "  br label %");
+        context::out(e, head);
+        context::nl(e);
+    }
+    label(e, endlbl);
+    e.terminated = 0;
+}
+
+// ---- switch ----------------------------------------------------------------
+
+fn enum_tag_test(e: &mut context::Emitter, enum_ty: i32, subjslot: &str,
+                 index: i32) -> &str {
+    let tp = struct_gep(e, subjslot, enum_ty, 0);
+    let tag = load(e, types::TY_I32, tp);
+    let c = const_int(e, index as i64, types::TY_I32);
+    return cmp(e, "icmp eq", types::TY_I32, tag, c);
+}
+
+fn pattern_test(e: &mut context::Emitter, p_h: i32, st: i32,
+                subjslot: &str) -> &str {
+    if (p_h < 0) { return ""; }
+    let p = node::get(&e.c.nodes, p_h);
+    if (p.kind == node::AST_PAT_WILD) { return ""; }
+    if (p.kind == node::AST_PAT_BIND) {
+        if (types::type_kind(&e.c.types, st) == types::CTY_ENUM) {
+            let cut = rfind_colons(p.sval);
+            let mut vname = p.sval;
+            if (cut >= 0) { vname = &p.sval[cut + 2..p.sval.len()]; }
+            let vi = types::find_member(&e.c.types, st, vname);
+            if (vi >= 0) { return enum_tag_test(e, st, subjslot, vi); }
+        }
+        return "";
+    }
+    if (p.kind == node::AST_PAT_VARIANT) {
+        let cut = rfind_colons(p.sval);
+        let mut vname = p.sval;
+        if (cut >= 0) { vname = &p.sval[cut + 2..p.sval.len()]; }
+        let mut vi = types::find_member(&e.c.types, st, vname);
+        if (vi < 0) { vi = 0; }
+        return enum_tag_test(e, st, subjslot, vi);
+    }
+    if (p.kind == node::AST_PAT_LIT) {
+        let v = expr(e, p.a);
+        let cur = load(e, st, subjslot);
+        if (context::is_float_ty(st)) { return cmp(e, "fcmp oeq", st, cur, v); }
+        return cmp(e, "icmp eq", st, cur, v);
+    }
+    if (p.kind == node::AST_PAT_RANGE) {
+        let cur2 = load(e, st, subjslot);
+        let lo = expr(e, p.a);
+        let hi = expr(e, p.b);
+        let a = cmp(e, "icmp sge", st, cur2, lo);
+        let b = cmp(e, "icmp sle", st, cur2, hi);
+        return bin(e, "and", types::TY_BOOL, a, b);
+    }
+    return "";
+}
+
+fn bind_pattern(e: &mut context::Emitter, pats: &vec::Vec<i32>, st: i32,
+                subjslot: &str) {
+    if (types::type_kind(&e.c.types, st) != types::CTY_ENUM) { return; }
+    let mut k: usize = 0;
+    while (k < pats.len()) {
+        let p = node::get(&e.c.nodes, *pats.get(k));
+        if (p.kind == node::AST_PAT_VARIANT && p.kids.len() > 0) {
+            let cut = rfind_colons(p.sval);
+            let mut vname = p.sval;
+            if (cut >= 0) { vname = &p.sval[cut + 2..p.sval.len()]; }
+            let vi = types::find_member(&e.c.types, st, vname);
+            if (vi >= 0) {
+                let pid = types::member_type(&e.c.types, st, vi);
+                let mut j: usize = 0;
+                while (j < p.kids.len() && j < types::member_count(&e.c.types, pid)) {
+                    let sub = node::get(&e.c.nodes, *p.kids.get(j));
+                    let ft = types::member_type(&e.c.types, pid, j as i32);
+                    let a = offset_addr(e, subjslot, 8 + types::field_offset(pid, j as usize, &mut e.c.types));
+                    let v = load(e, ft, a);
+                    if (sub.kind == node::AST_PAT_BIND) {
+                        let slot = context::new_reg(e);
+                        context::out(e, "  ");
+                        context::out(e, slot);
+                        context::out(e, " = alloca ");
+                        context::out(e, context::type_name(e, ft));
+                        context::nl(e);
+                        context::out(e, "  store ");
+                        context::out(e, context::type_name(e, ft));
+                        context::out(e, " ");
+                        context::out(e, v);
+                        context::out(e, ", ptr ");
+                        context::out(e, slot);
+                        context::nl(e);
+                        context::local_declare(e, sub.sval, slot, ft);
+                    }
+                    j += 1;
+                }
+            }
+        }
+        k += 1;
+    }
+}
+
+fn switch_test(e: &mut context::Emitter, pats: &vec::Vec<i32>, st: i32,
+               subjslot: &str, armlbl: &str, nextlbl: &str) {
+    let mut acc = "";
+    let mut k: usize = 0;
+    while (k < pats.len()) {
+        let t = pattern_test(e, *pats.get(k), st, subjslot);
+        if (t == "") {
+            context::out(e, "  br label %");
+            context::out(e, armlbl);
+            context::nl(e);
+            return;
+        }
+        if (acc == "") { acc = t; }
+        else { acc = bin(e, "or", types::TY_BOOL, acc, t); }
+        k += 1;
+    }
+    if (acc == "") { acc = "false"; }
+    context::out(e, "  br i1 ");
+    context::out(e, acc);
+    context::out(e, ", label %");
+    context::out(e, armlbl);
+    context::out(e, ", label %");
+    context::out(e, nextlbl);
+    context::nl(e);
+}
+
+fn stmt_switch(e: &mut context::Emitter, h: i32) {
+    let n = node::get(&e.c.nodes, h);
+    let mut st = node::get(&e.c.nodes, n.a).ty;
+    let subj = expr(e, n.a);
+    while (types::is_ref(&e.c.types, st) || types::is_heap(&e.c.types, st)) {
+        st = types::elem(&e.c.types, st);
+    }
+    let mut subjslot = "";
+    if (context::is_aggregate(e, st)) {
+        let slot = context::new_reg(e);
+        context::out(e, "  ");
+        context::out(e, slot);
+        context::out(e, " = alloca ptr\n");
+        context::out(e, "  store ptr ");
+        context::out(e, subj);
+        context::out(e, ", ptr ");
+        context::out(e, slot);
+        context::nl(e);
+        subjslot = load_ptr(e, slot);
+    } else {
+        let slot = context::new_reg(e);
+        context::out(e, "  ");
+        context::out(e, slot);
+        context::out(e, " = alloca ");
+        context::out(e, context::type_name(e, st));
+        context::nl(e);
+        context::out(e, "  store ");
+        context::out(e, context::type_name(e, st));
+        context::out(e, " ");
+        context::out(e, subj);
+        context::out(e, ", ptr ");
+        context::out(e, slot);
+        context::nl(e);
+        subjslot = slot;
+    }
+    let endlbl = context::new_label(e, "switch.end");
+    let mut has_default = false;
+    let mut deflbl = "";
+    let mut i: usize = 0;
+    while (i < n.kids.len()) {
+        let arm = node::get(&e.c.nodes, *n.kids.get(i));
+        if (arm.kids.len() == 0) {
+            has_default = true;
+            deflbl = context::new_label(e, "switch.default");
+        }
+        i += 1;
+    }
+    if (!has_default) { deflbl = endlbl; }
+    i = 0;
+    while (i < n.kids.len()) {
+        let arm = node::get(&e.c.nodes, *n.kids.get(i));
+        if (arm.kids.len() == 0) {
+            context::out(e, "  br label %");
+            context::out(e, deflbl);
+            context::nl(e);
+            label(e, deflbl);
+            block(e, arm.b);
+            if (e.terminated == 0) {
+                context::out(e, "  br label %");
+                context::out(e, endlbl);
+                context::nl(e);
+            }
+            e.terminated = 0;
+            label(e, endlbl);
+            e.terminated = 0;
+            return;
+        }
+        let armlbl = context::new_label(e, "switch.arm");
+        let nextlbl = context::new_label(e, "switch.test");
+        switch_test(e, &arm.kids, st, subjslot, armlbl, nextlbl);
+        label(e, armlbl);
+        bind_pattern(e, &arm.kids, st, subjslot);
+        block(e, arm.b);
+        if (e.terminated == 0) {
+            context::out(e, "  br label %");
+            context::out(e, endlbl);
+            context::nl(e);
+        }
+        e.terminated = 0;
+        label(e, nextlbl);
+        i += 1;
+    }
+    context::out(e, "  br label %");
+    context::out(e, deflbl);
+    context::nl(e);
+    if (!has_default) {
+        label(e, endlbl);
+        e.terminated = 0;
+    }
+}
+
+// APPEND

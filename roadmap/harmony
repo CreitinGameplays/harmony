@@ -198,7 +198,9 @@ is unit-tested on its own.
   (NAME-04), and `module::name` flattening of imported items. The merged
   program is one flat item list: imported items renamed, then root items.
   Only names a module declares top-level are renamed; a method's own fn name
-  is exempt (its identity is `(receiver type, name)`).
+  is exempt (its identity is `(receiver type, name)`). Syntax diagnostics from
+  imported modules are preserved, and a module is merged **after** its
+  imports, matching harmony-base's IR-visible definition order.
 - [x] `harmony/sema/resolve.hr`: scoped symbol table (flat array + scope
   marks -> shadowing and duplicate detection), NAME-01/03. Declarations are
   collected in a first pass so item order does not matter.
@@ -247,7 +249,7 @@ rule; it is recorded here rather than hidden.
   `[&str; N]` element-read quirk in harmony-base is fixed, so the batch
   drivers can embed their corpus directly in an array.
 
-### R6 — LLVM codegen [/]
+### R6 — LLVM codegen [x]
 
 - [x] `harmony/codegen/llvm/context.hr`: the emitter state (output buffer,
   SSA/label counters, local environment, string pool, format-string parser),
@@ -268,15 +270,14 @@ rule; it is recorded here rather than hidden.
   template body left its expression types and call targets stamped for
   whichever instance was checked first.
 - [x] Gate: `tests/harmony-final/irdiff.py` compares the rewrite's IR with
-  harmony-base's byte for byte. The 85 single-file programs in the codegen
-  corpus are **identical (0 mismatches)**. The emitter is compiled once into a
-  batch driver; the whole comparison takes about 10 s to build and 0.3 s to
-  diff.
-- [ ] The multi-module corpus still needs the rewrite's module loader wired
-  into the IR driver (file IO arrives with R7). The 85 single-file programs
-  cover the complete M1 language surface, including generics and methods.
+  harmony-base's byte for byte. All **93 programs** in the codegen corpus,
+  including the eight multi-module programs, are **identical (0 mismatches)**.
+  The emitter is compiled once into a batch driver; the whole comparison takes
+  about 9–15 s to build and 0.3 s to diff. Multi-module sources are embedded
+  as a bounded chunk graph (no file IO yet), so large imported library files
+  are covered too.
 
-The R6 byte-diff found six rewrite-only bugs, all fixed at the source:
+The R6 byte-diff found ten rewrite-only bugs, all fixed at the source:
 
 - The rewrite lexer accumulated integer literals in signed `i64`, so
   `18446744073709551615u64` trapped halfway through the scan. It now
@@ -296,6 +297,15 @@ The R6 byte-diff found six rewrite-only bugs, all fixed at the source:
 - Range bounds were not stamped as `isize`, and a range `for` did not stamp
   its element type. The backend consequently widened i32 bounds at each use
   and lowered `usize`/`u8` ranges at i32 width.
+- The module loader discarded syntax diagnostics from imported files, making
+  malformed modules look empty, and it registered a module before its imports.
+  Diagnostics now survive, and depth-first merge order matches harmony-base
+  (function-definition order is observable in the IR).
+- Generic functions imported under a qualified name (`geometry::id`) were not
+  instantiated. `ordinary_call` now recognizes qualified generic templates.
+- Struct fields were added as their types resolved, so a generic field's
+  instance members interleaved with the enclosing struct's members. All field
+  types now resolve first, then all members are added, matching harmony-base.
 
 ### R7 — Driver parity and self-host [ ]
 

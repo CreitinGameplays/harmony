@@ -6,6 +6,7 @@
 // the whole corpus.
 import "../../library/core/mem.hr";
 import "../../library/core/vec.hr";
+import "../../library/core/str.hr";
 import "../../harmony/ast/node.hr";
 import "../../harmony/lexer/token.hr";
 import "../../harmony/lexer/ctx.hr";
@@ -13,6 +14,7 @@ import "../../harmony/lexer/scan.hr";
 import "../../harmony/parser/pctx.hr";
 import "../../harmony/parser/parse.hr";
 import "../../harmony/parser/item.hr";
+import "../../harmony/driver/loader.hr";
 import "../../harmony/sema/check.hr";
 import "../../harmony/sema/types.hr";
 import "../../harmony/codegen/llvm/emit.hr";
@@ -59,10 +61,71 @@ fn parse_usize(s: &str) -> usize {
 
 fn main() -> i32 {
     let sources: [&str; 1] = ["fn main() -> i32 { return 0; }"];
+    let module_paths: [&str; 1] = ["main.harmony"];
+    let module_chunks: [&str; 1] = ["fn main() -> i32 { return 0; }"];
+    let chunk_starts: [i32; 1] = [0];
+    let chunk_ends: [i32; 1] = [1];
+    let module_roots: [&str; 1] = ["main.harmony"];
+    let module_starts: [i32; 1] = [0];
+    let module_ends: [i32; 1] = [1];
     let av = args();
     if (av.len() < 2) { return 2; }
     let index = parse_usize(av[1]);
-    if (index >= sources.len()) { return 2; }
-    run_one(index, sources[index]);
+    if (index < sources.len()) {
+        run_one(index, sources[index]);
+        return 0;
+    }
+    let case_index = index - sources.len();
+    if (case_index >= module_roots.len()) { return 2; }
+
+    // Multi-module case: load the embedded module graph, check the merged
+    // program, and emit its IR.
+    let mut arena: mem::Arena = mem::Arena { .cur = Raw::null() };
+    let mut ns: node::Nodes = node::nodes_make();
+    let mut mods: vec::Vec<loader::Module> = vec::Vec<loader::Module>::make();
+    let mut mi: usize = module_starts[case_index] as usize;
+    let end: usize = module_ends[case_index] as usize;
+    while (mi < end) {
+        // A module source is stored in bounded chunks: Harmony's string
+        // literals have a fixed maximum length, and an imported library file
+        // can exceed it.
+        let mut text: str::String = str::String::make();
+        let mut ci: usize = chunk_starts[mi] as usize;
+        let cend: usize = chunk_ends[mi] as usize;
+        while (ci < cend) {
+            text.push(module_chunks[ci]);
+            ci += 1;
+        }
+        mods.push(loader::Module {
+            .path = module_paths[mi], .src = text.as_str(),
+        });
+        mi += 1;
+    }
+    let root = module_roots[case_index];
+    let loaded = loader::load(&mut ns, &mut arena, &mods, root);
+    print("@@@CASE {}\n", index);
+    let mut di: usize = 0;
+    while (di < loaded.diags.len()) {
+        print("DIAG {} at {}:{}: {}\n", loaded.diags.get(di).code,
+              loaded.diags.get(di).line, loaded.diags.get(di).col,
+              loaded.diags.get(di).summary);
+        di += 1;
+    }
+    if (loaded.program >= 0 && loaded.diags.len() == 0) {
+        let mut c = check::make(ns, root);
+        check::check_program(&mut c, loaded.program);
+        if (c.diags.len() == 0) {
+            let ir = emit::emit_module(&mut c, loaded.program);
+            print("@@@IR\n");
+            print("{}", ir);
+        } else {
+            di = 0;
+            while (di < c.diags.len()) {
+                print("DIAG {}: {}\n", c.diags.get(di).code, c.diags.get(di).summary);
+                di += 1;
+            }
+        }
+    }
+    print("@@@END {}\n", index);
     return 0;
 }

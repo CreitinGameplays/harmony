@@ -2189,6 +2189,18 @@ fn ordinary_call(c: &mut Checker, at: i32, name: &str, args: &vec::Vec<i32>) -> 
             check_args(c, at, name, sym_decl(&*c, sym), args, false);
             return sym_ty(&*c, sym);
         }
+        // A generic function imported from another module keeps its qualified
+        // name (`geometry::id`). It is a template, not a callable symbol, so
+        // infer its arguments and instantiate it like a local generic call.
+        let gfi = find_gen_fn(&*c, name);
+        if (gfi >= 0) {
+            let inst = infer_fn(c, gfi, at, args);
+            if (inst < 0) { return types::TY_INVALID; }
+            set_target(c, at, inst);
+            node::set_b(&mut c.nodes, at, inst);
+            check_args(c, at, name, inst, args, false);
+            return node::get(&c.nodes, inst).ty;
+        }
         let cut = rfind_colons(name);
         if (cut >= 0) {
             let tname = prefix(name, cut as usize);
@@ -3373,11 +3385,24 @@ fn fill_struct(c: &mut Checker, h: i32) {
     let sym = lookup(&*c, n.sval);
     if (sym < 0) { return; }
     let id = sym_ty(&*c, sym);
+    // Resolve every field type before adding any member. Resolving a generic
+    // field type instantiates it, and that instance appends its own members
+    // to the same flat table. Adding ours one at a time interleaved the two
+    // lists, so the second field of `Big { kind, data: Vec<u8> }` was read at
+    // the instance's first member.
+    let mut resolved: vec::Vec<i32> = vec::Vec<i32>::make();
     let mut i: usize = 0;
     while (i < n.kids2.len()) {
         let f = node::get(&c.nodes, *n.kids2.get(i));
-        let ft = resolve_type(c, f.a);
-        types::add_member(&mut c.types, id, f.sval, ft);
+        let mut ft = resolve_type(c, f.a);
+        if (ft == types::TY_INVALID) { ft = types::TY_I32; }
+        resolved.push(ft);
+        i += 1;
+    }
+    i = 0;
+    while (i < n.kids2.len()) {
+        let f = node::get(&c.nodes, *n.kids2.get(i));
+        types::add_member(&mut c.types, id, f.sval, *resolved.get(i));
         i += 1;
     }
 }

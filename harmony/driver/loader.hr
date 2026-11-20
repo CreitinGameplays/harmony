@@ -332,11 +332,21 @@ fn rename_node(nodes: &mut node::Nodes, h: i32, pre: &str,
 // ---- parse, expand, merge ------------------------------------------------
 
 fn parse_one(nodes: &mut node::Nodes, arena: &mut mem::Arena,
-             src: &str, path: &str) -> i32 {
+             src: &str, path: &str, l: &mut Loaded) -> i32 {
     let mut lx: ctx::Ctx = ctx::make(src, path);
     scan::scan(&mut lx, arena);
     let mut p: pctx::Parser = pctx::make(nodes, lx.toks, path);
-    return item::parse_program(&mut p);
+    let program = item::parse_program(&mut p);
+    // A module's syntax errors belong to the load result. Dropping them made
+    // a malformed imported module look like an empty one: the merged program
+    // silently lost its items.
+    let mut i: usize = 0;
+    while (i < p.diags.len()) {
+        let d = *p.diags.get(i);
+        l.diags.push(d);
+        i += 1;
+    }
+    return program;
 }
 
 fn expand(nodes: &mut node::Nodes, arena: &mut mem::Arena,
@@ -364,8 +374,7 @@ fn expand(nodes: &mut node::Nodes, arena: &mut mem::Arena,
     }
     chain.push(idx as i32);
     let path = modules.get(idx).path;
-    let root = parse_one(nodes, arena, modules.get(idx).src, path);
-    infos.push(ModuleInfo { .path = path, .name = base_name(path), .root = root });
+    let root = parse_one(nodes, arena, modules.get(idx).src, path, l);
     let imps = imports(&*nodes, root);
     let mut i: usize = 0;
     while (i < imps.len) {
@@ -388,6 +397,11 @@ fn expand(nodes: &mut node::Nodes, arena: &mut mem::Arena,
         }
         i += 1;
     }
+    // The module's own contribution follows its imports, matching
+    // harmony-base's depth-first merge order. The order is observable in the
+    // emitted IR (function-definition order), so it is part of the backend
+    // contract, not an incidental detail.
+    infos.push(ModuleInfo { .path = path, .name = base_name(path), .root = root });
     chain.pop();
 }
 

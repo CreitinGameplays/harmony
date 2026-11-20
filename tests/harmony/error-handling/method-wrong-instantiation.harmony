@@ -1,0 +1,19 @@
+// WANT: TYPE-02
+// A method declared in `methods Box<u8> { ... }` belongs to that one
+// instantiation. Calling it on a `Box<i32>` must be a stop, not a silent
+// miscompile.
+//
+// The parser dropped a methods header's receiver arguments (they were parsed
+// into `kids2`, which the function list then overwrote) and the stray empty
+// `kids` list made the block look generic, so the method was registered as a
+// template for every `Box<T>`. `Box<i32>` then ran `Box<u8>`'s body.
+struct Box<T> { v: T; }
+
+methods Box<u8> {
+    export fn only_u8(&self) -> i32 { return 8; }
+}
+
+fn main() -> i32 {
+    let b: Box<i32> = Box<i32> { .v = 1 };
+    return b.only_u8();
+}

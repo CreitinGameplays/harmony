@@ -1,0 +1,59 @@
+// EXPECT: 42
+// Generic inference must survive *nesting*: a generic call used as the
+// argument of another generic call.
+//
+// `ck_infer_generic_call` pins template parameters into a small global
+// scratch table (`g_infer_targs` / `g_infer_names` / `g_infer_n`). Checking an
+// argument recurses into `check_expr`, so an inner generic call reset and
+// filled that same table. When control returned to the outer call, its slot
+// already looked "inferred" (holding the inner call's `T`), so the outer never
+// unified its own parameter. `wrap(wrap(42))` therefore built `wrap<i32>` for
+// the outer call and reported
+//
+//     type mismatch: argument: expected `i32`, found `Box__i32`
+//
+// The fix saves and restores the scratch table around the recursive argument
+// check, so each call level owns its own slots.
+struct Box<T> { v: T; }
+struct Pair<A, B> { a: A; b: B; }
+
+fn wrap<T>(x: T) -> Box<T> { return Box<T> { .v = x }; }
+fn pair<A, B>(a: A, b: B) -> Pair<A, B> { return Pair<A, B> { .a = a, .b = b }; }
+fn dup<T>(x: T) -> Pair<T, T> { return Pair<T, T> { .a = x, .b = x }; }
+fn add<T>(a: Box<T>, b: Box<T>) -> T { return a.v + b.v; }
+fn split<A, B>(a: Box<Box<A>>, b: Box<B>) -> i32 { return a.v.v + b.v; }
+
+fn main() -> i32 {
+    // Two levels, no annotation at all.
+    let b = wrap(wrap(42));
+    if (b.v.v != 42) { return 1; }
+
+    // Three levels: each nesting level must keep its own slot.
+    let c = wrap(wrap(wrap(42)));
+    if (c.v.v.v != 42) { return 2; }
+
+    // A two-parameter generic nested inside a one-parameter generic.
+    let p = dup(dup(7));
+    if (p.a.a != 7) { return 3; }
+    if (p.b.a != 7) { return 4; }
+
+    // Two-parameter calls nested on both sides.
+    let q = pair(pair(1, 2), pair(3, 4));
+    if (q.a.a + q.a.b + q.b.a + q.b.b != 10) { return 5; }
+
+    // A nested call in argument position 2, where position 1 already pinned
+    // `T` -- the outer call must not pick up the sibling's value.
+    if (add(wrap(20), wrap(22)) != 42) { return 6; }
+
+    // Sibling arguments must still pin the *same* parameter.
+    if (add(wrap(20), wrap(22)) != 42) { return 7; }
+
+    // Mixed nesting depths in one call.
+    if (split(wrap(wrap(20)), wrap(22)) != 42) { return 8; }
+
+    // Eight levels deep.
+    let d = wrap(wrap(wrap(wrap(wrap(wrap(wrap(wrap(42))))))));
+    if (d.v.v.v.v.v.v.v.v != 42) { return 9; }
+
+    return 42;
+}

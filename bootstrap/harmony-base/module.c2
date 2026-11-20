@@ -342,6 +342,15 @@ void mod_rename_node(struct AstNode* n, char* pre, char** names, int nnames) {
         }
         g_mod_in_methods = saved_in_methods;
     }
+    if (n->kids3 != 0) {
+        // A methods block's receiver type arguments (`methods<T> ns::Box<T>`):
+        // rename the head like any other type reference.
+        i = 0;
+        while (i < n->kids3->len) {
+            mod_rename_node(n->kids3->items[i], pre, names, nnames);
+            i = i + 1;
+        }
+    }
 }
 
 // Collects a module's top-level declared names (pre-rename) into `names`.

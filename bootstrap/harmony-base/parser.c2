@@ -952,11 +952,13 @@ int methods_type_args(struct AstNode* onto) {
         struct AstNode* targ;
         targ = parse_type();
         if (targ == 0) { return 0; }
-        if (onto->kids == 0) { onto->kids = ast_list_new(); }
-        // Methods type args go into an auxiliary list (kids already holds
-        // the methods generics, if any).
-        if (onto->kids2 == 0) { onto->kids2 = ast_list_new(); }
-        ast_list_push(onto->kids2, targ);
+        // The receiver's type arguments go into `kids3`: `kids` holds the
+        // block's own generics and `kids2` holds the function list, so this is
+        // the only free slot. Writing them into `kids2` (as this used to) lost
+        // them the moment the function list was built, and the stray empty
+        // `kids` list made the block look generic.
+        if (onto->kids3 == 0) { onto->kids3 = ast_list_new(); }
+        ast_list_push(onto->kids3, targ);
         if (p_eat(TOK_COMMA)) { continue; }
         break;
     }

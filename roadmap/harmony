@@ -350,9 +350,47 @@ starting the rewrite):
   inferred argument that is itself an instance, `wrap(inner)`) gave NAME-01
   "no type named `Box__i32`". It now rebuilds `Box<i32>` from the instance
   tables. Same regression.
+- **Nested generic inference.** `ck_infer_generic_call` pins template
+  parameters into a small global scratch table (`g_infer_targs`,
+  `g_infer_names`, `g_infer_n`). Checking an argument recurses through
+  `ck_expr`, so an inner generic call reset and filled the same table; when
+  control returned, the outer call's slot already looked inferred and its own
+  parameter was never unified. `wrap(wrap(42))` therefore built `wrap<i32>`
+  for the outer call and rejected with "argument: expected `i32`, found
+  `Box__i32`". The scratch table is now saved and restored around the
+  recursive argument check. Regression `nested-generic-inference` (two to
+  eight levels, multi-parameter generics, mixed depths, sibling arguments).
+- **`methods` receiver arguments were dropped.** The parser parsed a methods
+  header's `<...>` into `kids2` and then immediately overwrote that list with
+  the function list; it also created an empty `kids` list, which made every
+  `methods Box<...>` header look *generic*. So `methods Box<u8> { fn tag }`
+  registered `tag` for every `Box<T>`: callable on a `Box<i32>`, running the
+  `Box<u8>` body against it — a silent miscompile. harmony-base's node now
+  has a third child list (`kids3`, matching the rewrite's `Node.kids3`), the
+  header arguments live there, and `ck_register_methods` resolves them to one
+  concrete receiver. Regression `method-wrong-instantiation` (error-handling)
+  and `methods-instantiation`.
+- **Several `methods` blocks on one base shadowed each other.** Generic method
+  lookup matched only (receiver base name, method name), so
+  `methods<T> Box<T> { fn get }` and `methods<T> Box<Box<T>> { fn get }`
+  always resolved to whichever was registered first; `b.get()` on a
+  `Box<Box<i32>>` got the shallow one and failed with a spurious TYPE-01.
+  Lookup now scores each candidate by how specific its receiver pattern is
+  and prefers the deepest match. Same regressions.
+- **A block's own generic parameters were not bound.** `methods<U> Box<U>`
+  substituted with the *type template's* parameter names, so `U` was left
+  unresolved ("no type named `U`"); `methods<T> Box<Box<T>>` likewise failed
+  to instantiate for a nested receiver. The block's own parameters are now
+  unified from the concrete receiver before substitution.
+- **Bare constructor in a method returning a nested instance.**
+  `fn wrap(x: T) -> Box<Box<T>> { return Box { .v = Box { ... } } }` stamped
+  the receiver's arguments on *both* bare `Box` literals, so the outer one
+  became `Box<i32>` instead of `Box<Box<i32>>`. Auto-stamped arguments are now
+  marked inferred (`ival == 1`) and yield to an expected type that names an
+  instance of the same template.
 
-Known limitation (pre-existing, not introduced here): a *fully inferred*
-double-nesting (`wrap(wrap(42))` with no annotation on the outer binding)
-still mis-infers the outer `T` as the inner argument type. Writing the outer
-binding's type (`let o: Box<Box<i32>> = wrap(...)`) works. This is tracked for
-the R6 work; it does not affect any corpus program.
+The last two are mirrored in the rewrite checker (`harmony/sema/check.hr`), so
+the type differential stays at 0 mismatches. The fuzzer's `specials` engine
+also grew an `// EXPECT: <exit code>` oracle: opt-level agreement cannot see a
+value that *every* level gets consistently wrong, which is exactly the shape
+of the fat-element and `methods` bugs above.

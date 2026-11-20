@@ -54,6 +54,14 @@ void print_node(struct AstNode* n, int depth) {
             i = i + 1;
         }
     }
+    if (n->kids3 != 0) {
+        int i;
+        i = 0;
+        while (i < ast_list_len(n->kids3)) {
+            print_node(ast_list_get(n->kids3, i), depth + 1);
+            i = i + 1;
+        }
+    }
 }
 
 // Entry: dumps the whole program.

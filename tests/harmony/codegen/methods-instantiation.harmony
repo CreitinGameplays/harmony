@@ -1,0 +1,64 @@
+// EXPECT: 42
+// Methods on ONE instantiation of a generic type must stay on that
+// instantiation, and several blocks on the same base must not shadow each
+// other.
+//
+// The parser used to parse a `methods` header's receiver arguments into
+// `kids2` and then overwrite that list with the function list, so
+// `methods Box<u8> { ... }` lost the `u8` *and* left a stray empty `kids`
+// list that made the block look generic. A method declared for `Box<u8>` was
+// therefore registered for every `Box<T>`: callable on a `Box<i32>`, a silent
+// miscompile (`recvargs3`/`leak`: `Box__i32 has no field only_u8` is now the
+// correct answer). The receiver's arguments now live in `kids3`.
+//
+// A second bug fell out of the same area: `ck_find_gtmeth` matched only
+// (base name, method name), so `methods<T> Box<T>` and
+// `methods<T> Box<Box<T>>` declaring the same method always resolved to
+// whichever was registered first. Lookup now prefers the most specific
+// receiver pattern that matches.
+struct Box<T> { v: T; }
+
+methods<T> Box<T> {
+    export fn make(x: T) -> Box<T> { return Box<T> { .v = x }; }
+    export fn get(&self) -> T { return self.v; }
+    export fn tag(&self) -> i32 { return 1; }
+}
+
+// A second block on the same base, with a nested receiver pattern. Its
+// `get` must win for a `Box<Box<i32>>` receiver only.
+methods<T> Box<Box<T>> {
+    export fn get(&self) -> T { return self.v.v; }
+}
+
+// A block pinned to one concrete instantiation.
+methods Box<u8> {
+    export fn tag(&self) -> i32 { return 8; }
+}
+
+fn main() -> i32 {
+    // The generic block serves every instantiation.
+    let a: Box<i32> = Box<i32>::make(41);
+    if (a.get() != 41) { return 1; }
+    if (a.tag() != 1) { return 2; }
+
+    // The nested block's `get` is chosen for a nested receiver.
+    let n: Box<Box<i32>> = Box<Box<i32>>::make(Box<i32>::make(42));
+    if (n.get() != 42) { return 3; }
+
+    // The concrete block's `tag` overrides the generic one for `Box<u8>`.
+    let u: Box<u8> = Box<u8>::make(7u8);
+    if (u.tag() != 8) { return 4; }
+
+    // A generic method returning a nested instantiation, written with a bare
+    // constructor: the outer `Box { ... }` must take the *expected* type
+    // (`Box<Box<i32>>`), not the receiver's argument list.
+    let w: Box<Box<i32>> = nest(42);
+    if (w.get() != 42) { return 5; }
+
+    return 42;
+}
+
+// Returns `Box<Box<T>>` from a *bare* (unparameterized) nested literal. The
+// inner `Box` is `Box<T>`; the outer one must be `Box<Box<T>>`, which only the
+// expected return type can say.
+fn nest<T>(x: T) -> Box<Box<T>> { return Box { .v = Box<T> { .v = x } }; }

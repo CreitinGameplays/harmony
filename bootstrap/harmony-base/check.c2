@@ -74,6 +74,7 @@ int ck_find_ty_template(char* name);
 char* ck_payload_name(int j);
 int ck_template_kind(struct AstNode* tmpl);
 void ck_register_gtmeth(struct AstNode* blk, struct AstNode* f);
+void ck_shape_self_param(struct AstNode* f, int recv);
 int ck_find_gtmeth(char* base, char* name);
 void ck_subst_ctor_args(struct AstNode* n, char* base, struct AstList* targs);
 void ck_register_const(struct AstNode* n);
@@ -400,9 +401,11 @@ int* g_tyinst_args;        // g_tyinst_args[i * 16 .. +nargs)
 struct AstNode** g_gtmeth_fn;
 char** g_gtmeth_base;
 char** g_gtmeth_name;
+struct AstNode** g_gtmeth_blk;   // the methods block (its `kids` are its own generics)
 int g_gtmeth_cap;
 int g_gtmeth_name_cap;
 int g_gtmeth_base_cap;
+int g_gtmeth_blk_cap;
 int g_ngtmeth;
 
 int* g_meth_ty;                    // receiver type id per method
@@ -2228,6 +2231,34 @@ void ck_register_methods(struct AstNode* n) {
     int base;
     int recv;
     struct AstList* fns;
+    // `methods Box<u8> { ... }` with no block generics: the receiver's type
+    // arguments pin the block to ONE instantiation. Without this case the
+    // header was treated as a generic template (a stray empty `kids` list and
+    // the arguments dropped), so a method declared for `Box<u8>` was
+    // registered for every `Box<T>` -- callable on a `Box<i32>`, a silent
+    // miscompile. Resolve the receiver type here and register ordinary
+    // methods on it, exactly like `methods Box { ... }`.
+    if (n->kids == 0 && n->kids3 != 0 && n->kids3->len > 0) {
+        recv = ck_instantiate_type(n, n->sval, n->kids3);
+        if (recv == TY_INVALID) { return; }
+        fns = n->kids2;
+        if (fns == 0) { return; }
+        i = 0;
+        while (i < fns->len) {
+            struct AstNode* f;
+            f = fns->items[i];
+            ck_meth_reserve();
+            g_meth_ty[g_nmeth] = recv;
+            g_meth_name[g_nmeth] = f->sval;
+            g_meth_fn[g_nmeth] = g_nfn;
+            g_nmeth = g_nmeth + 1;
+            ck_register_method_fn(f);
+            if (g_nfn > 0) { g_fn_self_ty[g_nfn - 1] = recv; }
+            ck_shape_self_param(f, recv);
+            i = i + 1;
+        }
+        return;
+    }
     // A methods block on a *generic* type template (`methods<T> Box<T>`) or
     // with its own generic parameters: each method is a template instantiated
     // once per concrete receiver (`b.get()` on `Box<i32>` instantiates it).
@@ -2263,19 +2294,26 @@ void ck_register_methods(struct AstNode* n) {
         // Record the receiver type on the (just-registered) function, and
         // give its `self` parameter the right reference shape.
         if (g_nfn > 0) { g_fn_self_ty[g_nfn - 1] = recv; }
-        {
-            struct AstList* ps;
-            ps = f->kids2;
-            if (ps != 0 && ps->len > 0 && ps->items[0]->sval != 0) {
-                struct AstNode* sp;
-                sp = ps->items[0];
-                if (str_eq(sp->sval, "self")) { sp->ty = recv; }
-                else if (str_eq(sp->sval, "mut self")) { sp->ty = recv; }
-                else if (str_eq(sp->sval, "&self")) { sp->ty = ty_new(CTY_REF, ck_ref_name("&", recv), recv, 0); }
-                else if (str_eq(sp->sval, "&mut self")) { sp->ty = ty_new(CTY_MUTREF, ck_ref_name("&mut", recv), recv, 0); }
-            }
-        }
+        ck_shape_self_param(f, recv);
         i = i + 1;
+    }
+}
+
+// Gives a method's `self` parameter the type its spelling implies, for a
+// known receiver type. `self`/`mut self` take the receiver by value; `&self`
+// and `&mut self` take a reference to it.
+void ck_shape_self_param(struct AstNode* f, int recv) {
+    struct AstList* ps;
+    ps = f->kids2;
+    if (ps == 0 || ps->len == 0) { return; }
+    if (ps->items[0]->sval == 0) { return; }
+    {
+        struct AstNode* sp;
+        sp = ps->items[0];
+        if (str_eq(sp->sval, "self")) { sp->ty = recv; }
+        else if (str_eq(sp->sval, "mut self")) { sp->ty = recv; }
+        else if (str_eq(sp->sval, "&self")) { sp->ty = ty_new(CTY_REF, ck_ref_name("&", recv), recv, 0); }
+        else if (str_eq(sp->sval, "&mut self")) { sp->ty = ty_new(CTY_MUTREF, ck_ref_name("&mut", recv), recv, 0); }
     }
 }
 
@@ -2291,13 +2329,20 @@ void ck_register_gtmeth(struct AstNode* blk, struct AstNode* f) {
     if (g_ngtmeth >= g_gtmeth_base_cap) {
         ck_grow((char**) &g_gtmeth_base, &g_gtmeth_base_cap, 8, g_ngtmeth + 1);
     }
+    if (g_ngtmeth >= g_gtmeth_blk_cap) {
+        ck_grow((char**) &g_gtmeth_blk, &g_gtmeth_blk_cap, 8, g_ngtmeth + 1);
+    }
     g_gtmeth_fn[g_ngtmeth] = f;
     g_gtmeth_name[g_ngtmeth] = f->sval;
     g_gtmeth_base[g_ngtmeth] = blk->sval;
+    g_gtmeth_blk[g_ngtmeth] = blk;
     g_ngtmeth = g_ngtmeth + 1;
 }
 
 // Looks up a generic method template by receiver base name + method name.
+// When a base declares the same method in several blocks, prefer the one whose
+// receiver header pattern is the most specific match for `recv` (see
+// `ck_find_gtmeth_for`); this entry point is the name-only fallback.
 int ck_find_gtmeth(char* base, char* name) {
     int i;
     i = 0;
@@ -2308,6 +2353,83 @@ int ck_find_gtmeth(char* base, char* name) {
         i = i + 1;
     }
     return -1;
+}
+
+// Structural match of one receiver header pattern against a concrete
+// instance type, returning the nesting depth of the match (-1 = no match).
+//
+// A header's `kids3` holds the receiver's *arguments* (`methods<T> Box<T>`
+// has `kids3 = [T]`), so the pattern is the pair (block name, those args).
+// A bare argument (`T`, a block parameter) matches anything; a nested generic
+// argument (`Box<T>` in `methods<T> Box<Box<T>>`) constrains the next level
+// down and so counts as one level of depth.
+int ck_gtmeth_hdr_match(char* head, struct AstList* pat, int t) {
+    char* ibase;
+    struct AstList* at;
+    int best;
+    int j;
+    ibase = ck_ty_instance_base(t);
+    if (ibase == 0 || !str_eq(ibase, head)) { return -1; }
+    if (pat == 0 || pat->len == 0) { return 0; }
+    at = ck_ty_instance_targs(t);
+    if (at == 0 || at->len != pat->len) { return -1; }
+    best = 0;
+    j = 0;
+    while (j < pat->len) {
+        struct AstNode* a;
+        int bt;
+        a = pat->items[j];
+        bt = at->items[j]->ty;
+        if (a->kind == AST_TYPE_NAME && a->kids != 0 && a->kids->len > 0) {
+            int sub;
+            sub = ck_gtmeth_hdr_match(a->sval, a->kids, bt);
+            if (sub < 0) { return -1; }
+            if (sub + 1 > best) { best = sub + 1; }
+        }
+        j = j + 1;
+    }
+    return best;
+}
+
+// Depth of the block's receiver pattern for `recv` (-1 = no match). Used to
+// prefer the most specific block when a base declares a method more than once.
+int ck_gtmeth_pattern_depth(int gi, int recv) {
+    struct AstNode* blk;
+    int t;
+    if (gi < 0 || gi >= g_ngtmeth) { return -1; }
+    blk = g_gtmeth_blk[gi];
+    if (blk == 0) { return -1; }
+    t = recv;
+    while (ty_is_ref(t) || ty_is_heap(t)) { t = ty_elem(t); }
+    return ck_gtmeth_hdr_match(blk->sval, blk->kids3, t);
+}
+
+// Best generic-method template for `recv`: among the blocks with this base and
+// method name, pick the most specific receiver pattern that matches. Without
+// this, two blocks on one base (`methods<T> Box<T> { fn get }` and
+// `methods<T> Box<Box<T>> { fn get }`) always resolved to whichever was
+// registered first, so `b.get()` on a `Box<Box<i32>>` returned the inner
+// value's type and failed with a spurious TYPE-01.
+int ck_find_gtmeth_for(char* base, char* name, int recv) {
+    int i;
+    int best;
+    int best_depth;
+    best = -1;
+    best_depth = -1;
+    i = 0;
+    while (i < g_ngtmeth) {
+        if (str_eq(g_gtmeth_base[i], base) && str_eq(g_gtmeth_name[i], name)
+            && ck_gtmeth_pattern_depth(i, recv) >= 0) {
+            int d;
+            d = ck_gtmeth_pattern_depth(i, recv);
+            if (d > best_depth) {
+                best = i;
+                best_depth = d;
+            }
+        }
+        i = i + 1;
+    }
+    return best;
 }
 
 // True when a generic method template matches a receiver type (the receiver
@@ -2339,6 +2461,14 @@ void ck_subst_ctor_args(struct AstNode* n, char* base, struct AstList* targs) {
     if (n->kind == AST_STRUCT_INIT && n->sval != 0 && str_eq(n->sval, base)
         && (n->kids2 == 0 || n->kids2->len == 0)) {
         n->kids2 = targs;
+        // Mark these arguments as *inferred* rather than written by hand. A
+        // method whose return type is a nested instantiation
+        // (`fn wrap(x: T) -> Box<Box<T>> { return Box { .v = Box { ... } } }`)
+        // has two bare `Box` literals: the receiver's arguments fit the inner
+        // one but not the outer. `ck_expr_struct_init` prefers the expected
+        // type when it names an instance of this template, and falls back to
+        // these arguments only when there is no expected type.
+        n->ival = 1;
     }
     if (n->kind == AST_CALL && n->a != 0 && n->a->kind == AST_PATH
         && n->a->sval != 0 && (n->a->kids == 0 || n->a->kids->len == 0)) {
@@ -2393,7 +2523,7 @@ int ck_find_next_method(int it) {
         ibase = ck_ty_instance_base(t);
         if (ibase != 0) {
             int gi;
-            gi = ck_find_gtmeth(ibase, "next");
+            gi = ck_find_gtmeth_for(ibase, "next", t);
             if (gi >= 0) { ck_instantiate_gtmeth(gi, t); }
         }
     }
@@ -2441,22 +2571,47 @@ int ck_instantiate_gtmeth(int gi, int recv_ty) {
     }
     inst = ast_clone(f);
     inst->sval = f->sval;
-    // Substitute the type parameters in the signature and body. The template
-    // here is the *type* template so its `T` names line up.
+    // Substitute the type parameters in the signature and body.
+    //
+    // Two naming schemes have to line up here:
+    //   * `methods<T> Box<T>` declares nothing of its own; the template's `T`
+    //     *is* the type template's parameter, so substitute with the type
+    //     template's names (the common case).
+    //   * `methods<U> Box<U>` declares `U`, which is unrelated to the type
+    //     template's `T`. Substituting with the *type* template's names there
+    //     left `U` unresolved ("no type named `U`"). Bind the block's own
+    //     parameters from the concrete receiver first, and substitute with
+    //     those when the block declares any.
     {
-        struct AstNode* tytmpl;
-        int ti;
-        ti = ck_find_ty_template(base);
-        tytmpl = ck_ty_template_decl(ti);
-        if (tytmpl == 0) { return -1; }
-        if (inst->a != 0 && !ck_subst_type(inst->a, tytmpl, targs, ntargs)) { return -1; }
-        if (inst->b != 0 && !ck_subst_type(inst->b, tytmpl, targs, ntargs)) { return -1; }
+        struct AstNode* subst_tmpl;
+        struct AstList* subst_args;
+        int subst_n;
+        struct AstList* own;
+        own = 0;
+        if (g_gtmeth_blk[gi] != 0) { own = g_gtmeth_blk[gi]->kids; }
+        if (own != 0 && own->len > 0) {
+            struct AstList* bound;
+            bound = ck_gtmeth_bind(gi, recv_core);
+            if (bound == 0) { return -1; }
+            subst_tmpl = g_gtmeth_blk[gi];
+            subst_args = bound;
+            subst_n = bound->len;
+        } else {
+            int ti;
+            ti = ck_find_ty_template(base);
+            subst_tmpl = ck_ty_template_decl(ti);
+            subst_args = targs;
+            subst_n = ntargs;
+        }
+        if (subst_tmpl == 0) { return -1; }
+        if (inst->a != 0 && !ck_subst_type(inst->a, subst_tmpl, subst_args, subst_n)) { return -1; }
+        if (inst->b != 0 && !ck_subst_type(inst->b, subst_tmpl, subst_args, subst_n)) { return -1; }
         if (inst->kids2 != 0) {
             i = 0;
             while (i < inst->kids2->len) {
                 struct AstNode* p;
                 p = inst->kids2->items[i];
-                if (!ck_subst_type(p->a, tytmpl, targs, ntargs)) { return -1; }
+                if (!ck_subst_type(p->a, subst_tmpl, subst_args, subst_n)) { return -1; }
                 i = i + 1;
             }
         }
@@ -2474,18 +2629,7 @@ int ck_instantiate_gtmeth(int gi, int recv_ty) {
     g_meth_fn[g_nmeth] = idx;
     g_nmeth = g_nmeth + 1;
     if (g_nfn > 0) { g_fn_self_ty[idx] = recv_core; }
-    {
-        struct AstList* ps;
-        ps = inst->kids2;
-        if (ps != 0 && ps->len > 0 && ps->items[0]->sval != 0) {
-            struct AstNode* sp;
-            sp = ps->items[0];
-            if (str_eq(sp->sval, "self")) { sp->ty = recv_core; }
-            else if (str_eq(sp->sval, "mut self")) { sp->ty = recv_core; }
-            else if (str_eq(sp->sval, "&self")) { sp->ty = ty_new(CTY_REF, ck_ref_name("&", recv_core), recv_core, 0); }
-            else if (str_eq(sp->sval, "&mut self")) { sp->ty = ty_new(CTY_MUTREF, ck_ref_name("&mut", recv_core), recv_core, 0); }
-        }
-    }
+    ck_shape_self_param(inst, recv_core);
     // Record the instance for emission like any other generic function.
     if (g_ngen_inst >= g_gen_inst_cap) {
         ck_grow((char**) &g_gen_inst, &g_gen_inst_cap, 8, g_ngen_inst + 1);

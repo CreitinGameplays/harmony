@@ -76,6 +76,10 @@ void audit_count(struct AstNode* n, struct SourceFile* sf) {
         i = 0;
         while (i < n->kids2->len) { audit_count(n->kids2->items[i], sf); i = i + 1; }
     }
+    if (n->kids3 != 0) {
+        i = 0;
+        while (i < n->kids3->len) { audit_count(n->kids3->items[i], sf); i = i + 1; }
+    }
 }
 
 // Prints one JSON string literal (quoted) with the same minimal escaping the
@@ -164,6 +168,13 @@ int audit_print_walk(struct AstNode* n, struct SourceFile* sf, int first) {
         i = 0;
         while (i < n->kids2->len) {
             first = audit_print_walk(n->kids2->items[i], sf, first);
+            i = i + 1;
+        }
+    }
+    if (n->kids3 != 0) {
+        i = 0;
+        while (i < n->kids3->len) {
+            first = audit_print_walk(n->kids3->items[i], sf, first);
             i = i + 1;
         }
     }

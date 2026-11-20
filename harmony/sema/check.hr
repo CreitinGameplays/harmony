@@ -62,6 +62,7 @@ export struct Checker {
     gtmpls: vec::Vec<i32>;      // generic method templates (methods<T> T<T>)
     gtbases: vec::Vec<str::String>;  // their receiver base name ("Box")
     gtnames: vec::Vec<str::String>;  // their method name ("make")
+    gtblks: vec::Vec<i32>;           // the methods block (its kids3 = receiver args)
     unchecked_depth: i32;
     deny_unchecked: i32;
     in_place: i32;              // assignment LHS: suppress uninit reads
@@ -93,6 +94,7 @@ export fn make(nodes: node::Nodes, path: &str) -> Checker {
         .gtmpls = vec::Vec<i32>::make(),
         .gtbases = vec::Vec<str::String>::make(),
         .gtnames = vec::Vec<str::String>::make(),
+        .gtblks = vec::Vec<i32>::make(),
         .unchecked_depth = 0,
         .deny_unchecked = 0,
         .in_place = 0,
@@ -1370,6 +1372,38 @@ fn enum_construct_unqualified(c: &mut Checker, at: i32, name: &str,
     return fty;
 }
 
+// Structural match of a methods-block receiver pattern against a concrete
+// instance type. The header's `kids3` holds the receiver's *arguments*
+// (`methods<T> Box<T>` has `kids3 = [T]`), so the pattern is (block name,
+// those args). Returns the nesting depth of the match (-1 = no match).
+fn hdr_match(c: &Checker, head: &str, pat: &vec::Vec<i32>, t: i32) -> i32 {
+    if (instance_base(&*c, t) != head) { return -1; }
+    if (pat.len() == 0) { return 0; }
+    let at = instance_targs(&*c, t);
+    if (at.len() != pat.len()) { return -1; }
+    let mut best: i32 = 0;
+    let mut j: usize = 0;
+    while (j < pat.len()) {
+        let a = node::get(&c.nodes, *pat.get(j));
+        let bt = *at.get(j);
+        if (a.kind == node::AST_TYPE_NAME && a.kids.len() > 0) {
+            let sub = hdr_match(&*c, a.sval, &a.kids, bt);
+            if (sub < 0) { return -1; }
+            if (sub + 1 > best) { best = sub + 1; }
+        }
+        j += 1;
+    }
+    return best;
+}
+
+// Depth of a generic method template's receiver pattern for `recv`
+// (-1 = no match). Used to prefer the most specific block when one base
+// declares a method in several blocks.
+fn gtmpl_match_depth(c: &Checker, gi: usize, recv: i32) -> i32 {
+    let blk = node::get(&c.nodes, *c.gtblks.get(gi));
+    return hdr_match(&*c, blk.sval, &blk.kids3, recv);
+}
+
 // Finds a method (recv type, name) and returns its fn handle (-1 if absent).
 fn find_method(c: &mut Checker, recv: i32, name: &str) -> i32 {
     let mut i: usize = 0;
@@ -1383,15 +1417,26 @@ fn find_method(c: &mut Checker, recv: i32, name: &str) -> i32 {
     }
     // No concrete instance: try a generic method template whose base matches
     // the receiver's instantiation (the receiver is `Box__i32` for `Box<i32>`).
+    // When several blocks declare the same method on one base, pick the most
+    // specific receiver pattern that matches (`methods<T> Box<Box<T>>` beats
+    // `methods<T> Box<T>` for a nested receiver). Matching only on
+    // (base, name) made the first-registered block shadow the others.
     let ibase = instance_base(&*c, recv);
     if (ibase != "") {
+        let mut best: i32 = -1;
+        let mut best_depth: i32 = -1;
         i = 0;
         while (i < c.gtmpls.len()) {
             if (c.gtbases.get(i).as_str() == ibase && c.gtnames.get(i).as_str() == name) {
-                return instantiate_gt(c, *c.gtmpls.get(i), recv);
+                let d = gtmpl_match_depth(&*c, i, recv);
+                if (d >= 0 && d > best_depth) {
+                    best = i as i32;
+                    best_depth = d;
+                }
             }
             i += 1;
         }
+        if (best >= 0) { return instantiate_gt(c, *c.gtmpls.get(best as usize), recv); }
     }
     return -1;
 }
@@ -1925,7 +1970,17 @@ fn check_call(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
 // A `Type { .field = value }` struct literal.
 fn check_struct_init(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
     let mut ty: i32 = types::TY_INVALID;
-    if (n.kids2.len() > 0) {
+    // `ival == 1` marks type arguments that were *inferred* by the enclosing
+    // `methods` block rather than written in the source. When the expected
+    // type names a concrete instance of the same template, prefer it: a method
+    // returning `Box<Box<T>>` writes `Box { .v = Box { ... } }`, and the
+    // receiver's `T` only fits the inner literal.
+    let mut inferred: bool = false;
+    if (n.kids2.len() > 0 && n.ival == 1 && c.expected != 0) {
+        let eb = instance_base(&*c, c.expected);
+        if (eb != "" && eb == n.sval) { inferred = true; }
+    }
+    if (n.kids2.len() > 0 && !inferred) {
         let ti = find_gen_ty(&*c, n.sval);
         if (ti < 0) { err_unknown(c, h, n.sval, true); return types::TY_INVALID; }
         ty = instantiate_type(c, ti, h, &n.kids2);
@@ -1934,14 +1989,30 @@ fn check_struct_init(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
         let sym = lookup(&*c, n.sval);
         if (sym < 0 || sym_kind(&*c, sym) != SK_TYPE) {
             if (find_gen_ty(&*c, n.sval) >= 0) {
-                add_diag(c, "TYPE-01", "a generic type needs type arguments",
-                         "Write the instantiation: `Box<i32> { ... }`.", h);
+                if (c.expected != 0) {
+                    let eb = instance_base(&*c, c.expected);
+                    if (eb != "" && eb == n.sval) {
+                        ty = c.expected;
+                        if (n.kids2.len() > 0) {
+                            // fall through to field checking below
+                        }
+                    } else {
+                        add_diag(c, "TYPE-01", "a generic type needs type arguments",
+                                 "Write the instantiation: `Box<i32> { ... }`.", h);
+                        return types::TY_INVALID;
+                    }
+                } else {
+                    add_diag(c, "TYPE-01", "a generic type needs type arguments",
+                             "Write the instantiation: `Box<i32> { ... }`.", h);
+                    return types::TY_INVALID;
+                }
+            } else {
+                err_unknown(c, h, n.sval, true);
                 return types::TY_INVALID;
             }
-            err_unknown(c, h, n.sval, true);
-            return types::TY_INVALID;
+        } else {
+            ty = sym_ty(&*c, sym);
         }
-        ty = sym_ty(&*c, sym);
     }
     let mut i: usize = 0;
     while (i < n.kids.len()) {
@@ -3146,6 +3217,52 @@ fn register_const(c: &mut Checker, h: i32) {
 
 fn register_methods(c: &mut Checker, h: i32) {
     let n = node::get(&c.nodes, h);
+    // `methods Box<u8> { ... }` with no block generics: the receiver's type
+    // arguments pin the block to ONE instantiation. Treating it as a generic
+    // template (the old behaviour, since the arguments were dropped by the
+    // parser) registered its methods for every `Box<T>`, so a method declared
+    // for `Box<u8>` was callable on a `Box<i32>` -- a silent miscompile.
+    if (n.kids.len() == 0 && n.kids3.len() > 0) {
+        let mut args: vec::Vec<i32> = vec::Vec<i32>::make();
+        let mut k: usize = 0;
+        while (k < n.kids3.len()) {
+            let at = resolve_type(c, *n.kids3.get(k));
+            if (at == types::TY_INVALID) { return; }
+            args.push(at);
+            k += 1;
+        }
+        let ti = find_gen_ty(&*c, n.sval);
+        if (ti < 0) { err_unknown(c, h, n.sval, true); return; }
+        let recv = instantiate_type(c, ti, h, &args);
+        if (recv == types::TY_INVALID) { return; }
+        let mut i: usize = 0;
+        while (i < n.kids2.len()) {
+            let f = *n.kids2.get(i);
+            let mut fnode = node::get(&c.nodes, f);
+            fnode.sfx = fnode.sval;      // method name for lookup
+            fnode.ival = recv as i64;    // receiver type
+            node::put(&mut c.nodes, f, fnode);
+            let fp = node::get(&c.nodes, f);
+            if (fp.kids2.len() > 0) {
+                let sp = *fp.kids2.get(0);
+                let sn = node::get(&c.nodes, sp);
+                if (is_self_param(&sn.sval)) {
+                    let mut st: i32 = recv;
+                    if (sn.sval == "&self") {
+                        st = types::new_type(&mut c.types, types::CTY_REF,
+                            concat3("&", types::tname(&c.types, recv), ""), recv, 0);
+                    } else if (sn.sval == "&mut self") {
+                        st = types::new_type(&mut c.types, types::CTY_MUTREF,
+                            concat3("&mut ", types::tname(&c.types, recv), ""), recv, 0);
+                    }
+                    set_ty(c, sp, st);
+                }
+            }
+            prepare_fn_sig(c, f);
+            i += 1;
+        }
+        return;
+    }
     if (n.kids.len() > 0) {
         // `methods<T> Box<T>`: each method is a template instantiated once per
         // concrete receiver (`Box<i32>`, `Box<u8>`), with `self`, the return
@@ -3161,6 +3278,7 @@ fn register_methods(c: &mut Checker, h: i32) {
             c.gtbases.push(b);
             let mut nm: str::String = str::String::make(); nm.push(fnode.sfx);
             c.gtnames.push(nm);
+            c.gtblks.push(h);
             i += 1;
         }
         return;

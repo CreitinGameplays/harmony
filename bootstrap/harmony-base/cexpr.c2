@@ -638,6 +638,74 @@ struct AstNode* g_infer_targs[16];   // pinned type node per parameter (or 0)
 char* g_infer_names[16];             // parameter name per slot
 int g_infer_n;
 
+int ck_unify(struct AstNode* tn, int ty);
+int ck_unify_named(char* name, int ty);
+
+// Binds a generic methods block's OWN parameters (`methods<U> Box<U>`) from
+// the concrete receiver type, by unifying the header's receiver pattern
+// (`Box<U>`, or just `Box` when the block declares nothing) against `recv`.
+// Returns the type-argument list to substitute with, or 0 when the block
+// declares no parameters of its own (the common `methods<T> Box<T>` form,
+// where the type template's `T` is the one that needs substituting).
+struct AstList* ck_gtmeth_bind(int gi, int recv) {
+    struct AstNode* blk;
+    struct AstList* own;
+    struct AstList* targs;
+    int i;
+    int saved_n;
+    struct AstNode* saved_targs[16];
+    char* saved_names[16];
+
+    if (gi < 0 || gi >= g_ngtmeth) { return 0; }
+    blk = g_gtmeth_blk[gi];
+    if (blk == 0 || blk->kids == 0 || blk->kids->len == 0) { return 0; }
+    own = blk->kids;
+    if (own->len > 16) { return 0; }
+
+    // Reuse the generic-call inference scratch to pin the block's parameters:
+    // they are the same "name -> concrete type" job.
+    saved_n = g_infer_n;
+    i = 0;
+    while (i < 16) {
+        saved_targs[i] = g_infer_targs[i];
+        saved_names[i] = g_infer_names[i];
+        i = i + 1;
+    }
+    g_infer_n = own->len;
+    i = 0;
+    while (i < own->len) {
+        g_infer_names[i] = ck_template_param(blk, i);
+        g_infer_targs[i] = 0;
+        i = i + 1;
+    }
+    // The receiver pattern: `Box<U>` in the header, else the bare name.
+    if (blk->kids3 != 0) {
+        struct AstNode* pat;
+        pat = ast_node_new(AST_TYPE_NAME);
+        pat->sval = blk->sval;
+        pat->kids = blk->kids3;
+        ck_unify(pat, recv);
+    } else {
+        ck_unify_named(blk->sval, recv);
+    }
+    targs = 0;
+    i = 0;
+    while (i < own->len) {
+        if (g_infer_targs[i] == 0) { targs = 0; break; }
+        if (targs == 0) { targs = ast_list_new(); }
+        ast_list_push(targs, g_infer_targs[i]);
+        i = i + 1;
+    }
+    g_infer_n = saved_n;
+    i = 0;
+    while (i < 16) {
+        g_infer_targs[i] = saved_targs[i];
+        g_infer_names[i] = saved_names[i];
+        i = i + 1;
+    }
+    return targs;
+}
+
 // Pins template parameters in `tn` from the concrete argument type `ty`.
 // Returns 1 (unification is best-effort; a structural mismatch just leaves the
 // parameter unpinned, and the caller reports "cannot infer").
@@ -709,6 +777,23 @@ int ck_unify(struct AstNode* tn, int ty) {
     if (k == AST_TYPE_RAW) {
         if (ty_is_ptr(ty)) { return ck_unify(tn->a, ty_elem(ty)); }
         return 1;
+    }
+    return 1;
+}
+
+// Pins the parameter named `name` (if any is open) to `ty`. Used to bind a
+// methods block's own generics when its header names the receiver without
+// arguments (`methods<U> Box<U>` binds through `kids3`, but a bare
+// `methods<U> Box` has to match the head name alone).
+int ck_unify_named(char* name, int ty) {
+    int i;
+    i = 0;
+    while (i < g_infer_n) {
+        if (g_infer_names[i] != 0 && str_eq(name, g_infer_names[i])) {
+            if (g_infer_targs[i] == 0) { g_infer_targs[i] = ck_ty_to_ast(ty); }
+            return 1;
+        }
+        i = i + 1;
     }
     return 1;
 }
@@ -807,8 +892,35 @@ int ck_infer_generic_call(struct AstNode* n, struct AstNode* callee, struct AstL
                 g_expected_ty = pt;
             }
         }
-        at = ck_expr(args->items[i]);
-        g_expected_ty = saved_expected;
+        // Checking an argument can recurse into ANOTHER generic call, which
+        // resets and fills the same `g_infer_targs` scratch slots. Save ours
+        // across the recursion: in `wrap(wrap(42))` the inner call left its
+        // `T = i32` pinned, so the outer call saw a slot that was already
+        // "inferred" and never unified it against `Box<i32>` -- the outer
+        // instance was built as `wrap<i32>` and the program was rejected.
+        {
+            struct AstNode* saved_targs[16];
+            char* saved_names[16];
+            int saved_inn;
+            int q;
+            saved_inn = g_infer_n;
+            q = 0;
+            while (q < 16) {
+                saved_targs[q] = g_infer_targs[q];
+                saved_names[q] = g_infer_names[q];
+                q = q + 1;
+            }
+            at = ck_expr(args->items[i]);
+            g_expected_ty = saved_expected;
+            // Restore our own slot table (the recursive call clobbered it).
+            g_infer_n = saved_inn;
+            q = 0;
+            while (q < 16) {
+                g_infer_targs[q] = saved_targs[q];
+                g_infer_names[q] = saved_names[q];
+                q = q + 1;
+            }
+        }
         if (at == TY_UINT_LIT) { ck_stamp_lits(args->items[i], TY_I32); at = TY_I32; }
         else if (at == TY_FLOAT_LIT) { ck_stamp_lits(args->items[i], TY_F64); at = TY_F64; }
         if (at != TY_INVALID) { ck_unify(params->items[i]->a, at); }
@@ -1441,7 +1553,7 @@ int ck_expr_method_call(struct AstNode* n, struct AstNode* callee, struct AstLis
         int gi;
         ibase = ck_ty_instance_base(rt);
         if (ibase != 0) {
-            gi = ck_find_gtmeth(ibase, callee->sval);
+            gi = ck_find_gtmeth_for(ibase, callee->sval, rt);
             if (gi >= 0) {
                 int midx;
                 midx = ck_instantiate_gtmeth(gi, rt);
@@ -1650,7 +1762,7 @@ int ck_assoc_call_ty(struct AstNode* n, int ty, char* mname, struct AstList* arg
         ibase = ck_ty_instance_base(ty);
         if (ibase != 0) {
             int gi;
-            gi = ck_find_gtmeth(ibase, mname);
+            gi = ck_find_gtmeth_for(ibase, mname, ty);
             if (gi >= 0) {
                 // Only an associated (no-receiver) can be reached here; the
                 // instance is keyed by receiver type, so ensure one exists.
@@ -1742,23 +1854,47 @@ int ck_expr_struct_init(struct AstNode* n) {
     struct AstList* inits;
     // A generic struct literal (`Box<i32> { .v = 1 }`): the parser stores the
     // type arguments in `n->kids2` (the field initializers are in `kids`).
-    if (n->kids2 != 0 && n->kids2->len > 0) {
+    // `ival == 1` means those arguments were *inferred* by the enclosing
+    // `methods` block rather than written in the source, so an expected type
+    // that names a concrete instance of the same template wins (see
+    // `ck_subst_ctor_args`).
+    if (n->kids2 != 0 && n->kids2->len > 0
+        && !(n->ival == 1 && g_expected_ty != 0
+             && ck_ty_instance_base(g_expected_ty) != 0
+             && str_eq(ck_ty_instance_base(g_expected_ty), n->sval))) {
         ty = ck_instantiate_type(n, n->sval, n->kids2);
         if (ty == TY_INVALID) { return TY_INVALID; }
     } else {
         sym = ck_lookup(n->sval);
         if (sym < 0 || g_sym_kind[sym] != SK_TYPE) {
-            // A generic template name without arguments: a clear stop.
+            // A bare generic constructor whose arguments are not written
+            // (`Box { .v = ... }`). Inside a `methods` block that is the
+            // receiver (`methods<T> Box<T>`), whose arguments
+            // `ck_subst_ctor_args` stamps onto the node. When the expected type
+            // is a concrete instance of the same template, prefer IT: a
+            // method returning `Box<Box<T>>` builds the outer `Box { ... }`
+            // with an inner `Box { ... }` field, and stamping the receiver's
+            // `T` on both made the outer one `Box<i32>` instead of
+            // `Box<Box<i32>>`.
+            ty = TY_INVALID;
             if (ck_find_ty_template(n->sval) >= 0) {
-                diag_stop("TYPE-01", "a generic type needs type arguments",
-                          "Write the instantiation: `Box<i32> { ... }` (§5.8).",
-                          diag_file(n->file), n->start, n->end);
+                if (g_expected_ty != 0
+                    && ck_ty_instance_base(g_expected_ty) != 0
+                    && str_eq(ck_ty_instance_base(g_expected_ty), n->sval)) {
+                    ty = g_expected_ty;
+                } else {
+                    diag_stop("TYPE-01", "a generic type needs type arguments",
+                              "Write the instantiation: `Box<i32> { ... }` (§5.8).",
+                              diag_file(n->file), n->start, n->end);
+                    return TY_INVALID;
+                }
+            } else {
+                ck_err_unknown_type(n->sval, n);
                 return TY_INVALID;
             }
-            ck_err_unknown_type(n->sval, n);
-            return TY_INVALID;
+        } else {
+            ty = g_sym_ty[sym];
         }
-        ty = g_sym_ty[sym];
     }
     inits = n->kids;
     if (inits != 0) {

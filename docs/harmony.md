@@ -502,6 +502,8 @@ Rules:
 
 - `methods Type { ... }` may appear several times per type, in the same module as the type.
 - Generic form: `methods<T> Stack<T> { ... }`; with lives: `methods<life a> Words<life(a)> { ... }`.
+- A methods block may also name one instantiation: `methods Box<u8> { ... }`. Its methods exist only on `Box<u8>` — calling one on a `Box<i32>` is a type error, not a coercion.
+- When several blocks declare the same method name on one generic type, a nested receiver pattern is more specific: `methods<T> Box<Box<T>> { fn get }` wins for a `Box<Box<i32>>` receiver over `methods<T> Box<T> { fn get }`.
 - **Method call resolution** for `x.m(...)`: (1) look up `m` on the type of `x`, auto-dereferencing through `&`, `&mut`, and `Heap`; (2) auto-borrow to match the method's `self` form. `&self` borrows shared, `&mut self` requires `x` to be a mutable place (`let mut`, or already a `&mut`), and plain `self` moves (or copies, for `copy` types).
 - The special method **`cleanup(&mut self)`** is the destructor hook (§12.6). The special method **`next(&mut self) -> Maybe<T>`** makes a type iterable by `for` (§8.5).
 

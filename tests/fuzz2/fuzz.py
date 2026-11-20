@@ -833,6 +833,7 @@ def specials(rng):
     # was dropped), because the backend dispatched on the result type instead
     # of the index shape. These shapes keep the class covered.
     add("array-of-str",
+        '// EXPECT: 12\n'
         'fn main() -> i32 {\n'
         'let a: [&str; 3] = ["aa", "bbb", "cccc"];\n'
         'let mut t = 0;\n'
@@ -843,11 +844,13 @@ def specials(rng):
         'if (a[0] != "aa") { return 1; }\n'
         'return t;\n}\n')
     add("array-of-slices",
+        '// EXPECT: 5\n'
         'fn main() -> i32 {\n'
         'let x: [i32; 4] = [1, 2, 3, 4];\n'
         'let p: [&[i32]; 2] = [&x[0..2], &x[2..4]];\n'
         'return p[1][0] + p[0].len() as i32;\n}\n')
     add("fat-struct-fields",
+        '// EXPECT: 7\n'
         'copy struct W { s: &str; n: i32; }\n'
         'fn main() -> i32 {\n'
         'let a: [W; 2] = [W { .s = "one", .n = 1 }, W { .s = "tt", .n = 2 }];\n'
@@ -855,10 +858,48 @@ def specials(rng):
         'w.s = "abcd";\n'
         'return w.s.len() as i32 + a[0].s.len() as i32;\n}\n')
     add("heap-of-str-array",
+        '// EXPECT: 5\n'
         'fn main() -> i32 {\n'
         'let h = heap(["ab", "cde"]);\n'
         'let s = &h[1..];\n'
         'return h[0].len() as i32 + s[0].len() as i32;\n}\n')
+
+    # Nested generic inference: a generic call used as another generic call's
+    # argument. The inference scratch slots are shared globals, so an inner
+    # call used to clobber the outer call's `T`.
+    add("nested-generic-call",
+        '// EXPECT: 1\n'
+        'struct B<T> { v: T; }\n'
+        'fn w<T>(x: T) -> B<T> { return B<T> { .v = x }; }\n'
+        'fn main() -> i32 { let b = w(w(w(1))); return b.v.v.v; }\n')
+    add("nested-generic-multi-param",
+        '// EXPECT: 10\n'
+        'struct P<A, B> { a: A; b: B; }\n'
+        'fn pr<A, B>(a: A, b: B) -> P<A, B> { return P<A, B> { .a = a, .b = b }; }\n'
+        'fn main() -> i32 {\n'
+        'let q = pr(pr(1, 2), pr(3, 4));\n'
+        'return q.a.a + q.a.b + q.b.a + q.b.b;\n}\n')
+
+    # `methods` headers: receiver arguments (`methods Box<u8>`) and several
+    # blocks on one base declaring the same method (a nested receiver pattern
+    # must win for a nested receiver).
+    add("methods-concrete-receiver",
+        '// EXPECT: 9\n'
+        'struct B<T> { v: T; }\n'
+        'methods<T> B<T> { export fn tag(&self) -> i32 { return 1; } }\n'
+        'methods B<u8> { export fn tag(&self) -> i32 { return 8; } }\n'
+        'fn main() -> i32 {\n'
+        'let a: B<i32> = B<i32> { .v = 1 };\n'
+        'let u: B<u8> = B<u8> { .v = 1u8 };\n'
+        'return a.tag() + u.tag();\n}\n')
+    add("methods-nested-receiver",
+        '// EXPECT: 7\n'
+        'struct B<T> { v: T; }\n'
+        'methods<T> B<T> { export fn get(&self) -> T { return self.v; } }\n'
+        'methods<T> B<B<T>> { export fn get(&self) -> T { return self.v.v; } }\n'
+        'fn main() -> i32 {\n'
+        'let n: B<B<i32>> = B<B<i32>> { .v = B<i32> { .v = 7 } };\n'
+        'return n.get();\n}\n')
 
     return out
 
@@ -1273,6 +1314,28 @@ def engine_specials(args, tmpdir, findings):
             n_find += 1
             if n_find >= args.max_findings:
                 break
+            continue
+        # An opt-level agreement oracle cannot see a value that every level
+        # gets consistently wrong (a method registered for the wrong
+        # instantiation, an index that silently reads the whole array). A
+        # shape may therefore state its answer: `// EXPECT: <exit code>`.
+        # This is what makes the fat-element and `methods` shapes load-bearing
+        # rather than merely crash-free.
+        for line in text.splitlines():
+            line = line.strip()
+            if line.startswith("// EXPECT:"):
+                want = int(line.split(":", 1)[1].strip())
+                rc, _, _ = run_hb(["run", path], timeout=TIMEOUT_RUN)
+                if rc != want:
+                    fnd = Finding("O5-expect",
+                                  text.encode("utf-8", "replace"),
+                                  "exit %r, expected %d" % (rc, want))
+                    record_finding(findings, "spec-%s" % name, fnd,
+                                   text.encode("utf-8", "replace"), tmpdir)
+                    n_find += 1
+                break
+        if n_find >= args.max_findings:
+            break
     print("engine specials: %d shapes, %d findings" % (len(shp), n_find))
 
 

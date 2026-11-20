@@ -779,6 +779,18 @@ directly into its binary and (b) support **multi-core compilation by default**.
     around them.
   - Added the `str` lang item (`str::from_parts`), which §19.8.9 reserves,
     so a compiler can build a `&str` from owned bytes.
+  - Three more harmony-base bugs found while locking in nested inference and
+    probing `methods` headers, each with a regression that fails if the fix is
+    reverted: fat-element indexing (`array-of-fat-elements`), generic
+    parameters used as type arguments (`generic-param-as-type-arg`), and
+    `ck_ty_to_ast` spelling an instance by its mangled name. See
+    `roadmap/harmony` for the full list (including nested inference and the
+    methods-header family).
+  - The fuzzer's `specials` engine now honours `// EXPECT: <exit code>`: an
+    opt-level agreement oracle cannot see a value that every optimisation
+    level gets consistently wrong, which is the exact shape of the
+    fat-element and `methods` bugs. The class is now guarded by the fuzzer,
+    not only by the codegen corpus.
 - [ ] Integrate LLVM IR emission directly into the compiler binary (AGENTS.md).
 - [ ] Multi-core compilation by default (AGENTS.md).
 - [ ] Byte-deterministic self-hosting milestone.

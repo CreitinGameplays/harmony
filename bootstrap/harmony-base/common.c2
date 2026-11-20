@@ -412,6 +412,15 @@ struct AstNode {
     struct AstNode* c;   // third child
     struct AstList* kids;   // primary child list
     struct AstList* kids2;  // secondary child list
+    // Tertiary child list. `methods` blocks keep their receiver's type
+    // arguments here (`methods<T> Stack<T>` / `methods Box<u8>`): `kids` holds
+    // the block's own generics and `kids2` holds the function list, so there is
+    // nowhere else for them. They were previously parsed into `kids2` and then
+    // overwritten by the function list, which made every `methods Box<...>`
+    // header look like a *generic* block -- a method declared for `Box<u8>`
+    // was registered as a template for all `Box<T>`, so it was callable on
+    // `Box<i32>`.
+    struct AstList* kids3;
     int   ty;        // resolved type id (filled by the checker; 0 = unset)
     char* sfx;       // float-literal suffix ("f32"/"f64"); 0 when unsuffixed
     char* abi;       // ABI of an `extern` declaration ("C"); 0 on other nodes
@@ -516,7 +525,7 @@ int          p_peek_is_kw(char* kw, int n);
 
 // Byte sizes as fixed literals (c2x-seed needs literal array dimensions and
 // uses an 8-byte field ABI, so every field is one qword).
-const int AST_NODE_SIZE = 112;   // 14 fields * 8
+const int AST_NODE_SIZE = 120;   // 15 fields * 8
 const int AST_LIST_SIZE = 24;    // len, cap, items
 const int AST_NODE_PTR_SIZE = 8;
 
@@ -647,6 +656,7 @@ int ck_find_ty_template(char* name);
 char* ck_ty_instance_base(int id);
 struct AstList* ck_ty_instance_targs(int id);
 int ck_find_gtmeth(char* base, char* name);
+int ck_find_gtmeth_for(char* base, char* name, int recv);
 int ck_instantiate_gtmeth(int gi, int recv_ty);
 int ck_nty_instances(void);
 int ck_ty_instance_at(int i);
@@ -654,6 +664,7 @@ struct AstNode* ck_template_decl(int ti);  // the AST_FN template at index ti
 int ck_template_nparams(struct AstNode* tmpl);   // count of `T` parameters
 char* ck_template_param(struct AstNode* tmpl, int i); // i-th param name (T)
 struct AstNode* ck_ty_to_ast(int ty);      // type id -> a synthetic type AST
+struct AstList* ck_gtmeth_bind(int gi, int recv);  // bind a methods block's own generics
 int ty_array_len(int id);                  // array length (CTY_ARRAY), else 0
 int ck_check_format(struct AstNode* n, char* fname, struct AstList* args);
 int ck_builtin_trap(struct AstNode* n, struct AstList* args);

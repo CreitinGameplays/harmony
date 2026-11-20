@@ -40,6 +40,11 @@ fn print_node(ns: &node::Nodes, out: &mut str::String, h: i32, depth: usize) {
         print_node(ns, out, *n.kids2.get(i), depth + 1);
         i += 1;
     }
+    i = 0;
+    while (i < n.kids3.len()) {
+        print_node(ns, out, *n.kids3.get(i), depth + 1);
+        i += 1;
+    }
 }
 
 export fn dump(ns: &node::Nodes, root: i32) -> str::String {

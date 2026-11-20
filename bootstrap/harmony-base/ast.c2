@@ -97,6 +97,7 @@ struct AstNode* ast_node_new(int kind) {
     n->c = 0;
     n->kids = 0;
     n->kids2 = 0;
+    n->kids3 = 0;
     n->ty = 0;
     n->sfx = 0;
     n->abi = 0;
@@ -194,6 +195,14 @@ struct AstNode* ast_clone(struct AstNode* n) {
         i = 0;
         while (i < n->kids2->len) {
             ast_list_push(c->kids2, ast_clone(n->kids2->items[i]));
+            i = i + 1;
+        }
+    }
+    if (n->kids3 != 0) {
+        c->kids3 = ast_list_new();
+        i = 0;
+        while (i < n->kids3->len) {
+            ast_list_push(c->kids3, ast_clone(n->kids3->items[i]));
             i = i + 1;
         }
     }

@@ -380,16 +380,17 @@ The R6 byte-diff found ten rewrite-only bugs, all fixed at the source:
   the guard to be `bool`; codegen emits a conditional branch from the arm
   label to the arm body or the next arm's test. A non-bool guard is
   `TYPE-03`.
-  - Current limitation: a guarded arm does not satisfy exhaustiveness on its
-    own, so a `default` is still required unless unguarded arms cover every
-    variant. This is stricter than §20.3 item 2 but never accepts an
-    unhandled value.
+  - Exhaustiveness follows §20.3 item 2: a guarded arm counts only when its
+    pattern alone is irrefutable for that variant (`A(x)`, bare `A`), so
+    `A(5) if (...)` still needs a `default`. Scalar switches always need a
+    `default`.
 - [ ] Remaining v1 features: `Shared<T>`/weak handles, threads, `try`,
   named enum payload fields and struct patterns, function pointers, and
   `abilities`.
 
-`tests/harmony-final/v1.sh` runs the batch: four accepted programs, one
-`TYPE-03` rejection, and both audit formats. harmony-base is unchanged.
+`tests/harmony-final/v1.sh` runs the batch: five accepted programs, a
+`TYPE-03` rejection, a `CASE-01` rejection, and both audit formats.
+harmony-base is unchanged.
 
 ## What harmony-base must still grow (feed it back)
 

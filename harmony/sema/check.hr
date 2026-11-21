@@ -2992,6 +2992,28 @@ fn check_switch_pattern(c: &mut Checker, h: i32, st: i32, seen: &mut vec::Vec<i3
     }
 }
 
+// A guarded arm can still cover a variant for exhaustiveness when its
+// pattern alone is irrefutable for that variant (§20.3 item 2): `A(x)` and
+// bare `A` match every `A`, but `A(5)` does not.
+fn pattern_irrefutable_for_variant(c: &Checker, h: i32, st: i32) -> i32 {
+    if (h < 0) { return 0; }
+    let n = node::get(&c.nodes, h);
+    if (n.kind == node::AST_PAT_WILD || n.kind == node::AST_PAT_BIND) { return 1; }
+    if (n.kind == node::AST_PAT_VARIANT) {
+        let mut i: usize = 0;
+        while (i < n.kids.len()) {
+            let sub = node::get(&c.nodes, *n.kids.get(i));
+            if (sub.kind != node::AST_PAT_BIND && sub.kind != node::AST_PAT_WILD) {
+                return 0;
+            }
+            i += 1;
+        }
+        return 1;
+    }
+    if (n.kind == node::AST_PAT_LIT || n.kind == node::AST_PAT_RANGE) { return 0; }
+    return 0;
+}
+
 fn note_variant(seen: &mut vec::Vec<i32>, vi: i32) {
     let mut k: usize = 0;
     while (k < seen.len()) {
@@ -3180,9 +3202,15 @@ fn check_stmt(c: &mut Checker, h: i32) {
                 saw_default = true;
             } else {
                 scope_push(c);
+                let mut guarded_seen: vec::Vec<i32> = vec::Vec<i32>::make();
                 let mut j: usize = 0;
                 while (j < arm.kids.len()) {
-                    check_switch_pattern(c, *arm.kids.get(j), st, &mut seen);
+                    let pat = *arm.kids.get(j);
+                    if (arm.c >= 0 && pattern_irrefutable_for_variant(&*c, pat, st) == 0) {
+                        check_switch_pattern(c, pat, st, &mut guarded_seen);
+                    } else {
+                        check_switch_pattern(c, pat, st, &mut seen);
+                    }
                     j += 1;
                 }
             }

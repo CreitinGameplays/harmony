@@ -37,6 +37,15 @@ run_case structured-reason 42
 run_case structured-reason-fn 42
 run_case switch-guard 42
 run_case switch-guard-false 42
+run_case guarded-exhaustive 42
+
+"$HC" check "$DIR/guarded-refutable.harmony" >"$TMP/refutable.out" 2>&1
+refutable_rc=$?
+if [ "$refutable_rc" -ne 0 ] && grep -q 'CASE-01' "$TMP/refutable.out"; then
+    ok "a refutable guarded arm needs a default"
+else
+    bad "a refutable guarded arm needs a default (exit $refutable_rc)"
+fi
 
 "$HC" check "$DIR/guard-not-bool.harmony" >"$TMP/guard.out" 2>&1
 guard_rc=$?

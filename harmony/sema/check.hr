@@ -3050,54 +3050,164 @@ fn note_variant(seen: &mut vec::Vec<i32>, vi: i32) {
     seen.push(vi);
 }
 
-// v1 §20.3 item 5: the payload types of an `Outcome<T, E>` instance. An enum
-// instance's members are its variants; each variant's member is a one-field
-// payload struct (§R5 instantiate_type), so `Good`/`Bad` carry T and E at
-// field 0. Returns 0 for anything that is not an Outcome.
-fn outcome_payload(c: &Checker, ty: i32, variant: &str) -> i32 {
+// v1 `else` clauses (§20.3 item 5, redesigned: no keyword). The only types
+// with a known success/failure pair are the prelude enums Maybe<T> and
+// Outcome<T, E>. An enum instance's members are its variants; each variant's
+// member is a one-field payload struct (instantiate_type), so the payload
+// type lives at field 0. Every other type has valid == 0.
+fn fallible_is_maybe(c: &Checker, ty: i32) -> i32 {
+    if (instance_base(&*c, ty) == "Maybe") { return 1; }
+    return 0;
+}
+
+fn is_fallible(c: &Checker, ty: i32) -> i32 {
     if (ty <= 0 || types::type_kind(&c.types, ty) != types::CTY_ENUM) { return 0; }
-    if (instance_base(&*c, ty) != "Outcome") { return 0; }
-    let vi = types::find_member(&c.types, ty, variant);
+    let base = instance_base(&*c, ty);
+    if (base == "Maybe") { return 1; }
+    if (base == "Outcome") { return 1; }
+    return 0;
+}
+
+fn fallible_ok(c: &Checker, ty: i32) -> i32 {
+    let mut name: &str = "Good";
+    if (fallible_is_maybe(c, ty) != 0) { name = "Has"; }
+    let vi = types::find_member(&c.types, ty, name);
     if (vi < 0) { return 0; }
     let pt = types::member_type(&c.types, ty, vi);
+    if (pt <= 0) { return 0; }
     return types::member_type(&c.types, pt, 0);
 }
 
-fn outcome_error_type(c: &Checker, ty: i32) -> i32 {
-    return outcome_payload(c, ty, "Bad");
+fn fallible_err(c: &Checker, ty: i32) -> i32 {
+    if (fallible_is_maybe(c, ty) != 0) { return 0; }
+    let vi = types::find_member(&c.types, ty, "Bad");
+    if (vi < 0) { return 0; }
+    let pt = types::member_type(&c.types, ty, vi);
+    if (pt <= 0) { return 0; }
+    return types::member_type(&c.types, pt, 0);
 }
 
-// `let [mut] x = try f();`. On `Good(x)` the payload binds x; on `Bad(e)` the
-// function returns `Bad(e)` immediately. Both the initializer and the
-// enclosing function must be `Outcome` with the same error type.
-fn check_try_let(c: &mut Checker, h: i32, n: &node::Node) {
-    let ity = check_expr(c, n.b);
-    let vty = outcome_payload(&*c, ity, "Good");
-    let ety = outcome_error_type(&*c, ity);
-    if (vty == 0 || ety == 0) {
-        add_diag(c, "TYPE-01", "`try` needs an `Outcome` value",
-                 "Write `let x = try f();` where `f` returns `Outcome<T, E>`.", h);
-        set_ty(c, h, types::TY_INVALID);
+// True when a statement cannot fall through to the next one. Exits are
+// `return`, `break`, `continue`, a never-typed call (`trap`, `exit`), or a
+// block/if/switch whose every path exits. Used for FLOW-01.
+fn never_stmt(c: &Checker, h: i32) -> bool {
+    if (h < 0) { return false; }
+    let n = node::get(&c.nodes, h);
+    let k = n.kind;
+    if (k == node::AST_RETURN || k == node::AST_BREAK || k == node::AST_CONTINUE) {
+        return true;
+    }
+    if (k == node::AST_EXPR_STMT && n.ty == types::TY_NEVER) { return true; }
+    if (k == node::AST_UNCHECKED) { return never_stmt(c, n.a); }
+    if (k == node::AST_BLOCK) {
+        let len = n.kids.len();
+        if (len == 0) { return false; }
+        return never_stmt(c, *n.kids.get(len - 1));
+    }
+    if (k == node::AST_IF) {
+        if (n.c < 0) { return false; }
+        return never_stmt(c, n.b) && never_stmt(c, n.c);
+    }
+    if (k == node::AST_SWITCH) {
+        if (n.kids.len() == 0) { return false; }
+        let mut i: usize = 0;
+        while (i < n.kids.len()) {
+            let arm = node::get(&c.nodes, *n.kids.get(i));
+            if (!never_stmt(c, arm.b)) { return false; }
+            i += 1;
+        }
+        return true;
+    }
+    return false;
+}
+
+// Checks the exit of an `else` clause. `ity` is the scrutinee's type. The
+// clause must never fall through (FLOW-01); `else return;` additionally needs
+// a return type that can carry the failure (FLOW-02/03).
+fn check_else_clause(c: &mut Checker, els: i32, ity: i32) {
+    let n = node::get(&c.nodes, els);
+    let form = n.ival as i32;
+    let maybe = fallible_is_maybe(&*c, ity);
+    let errty = fallible_err(&*c, ity);
+    if (form == 0) {
+        if (n.b >= 0) {
+            let saved = c.expected;
+            c.expected = c.ret_ty;
+            let t = check_expr(c, n.b);
+            c.expected = saved;
+            if (t != types::TY_INVALID && c.ret_ty > 0 && !coercible(c, c.ret_ty, t)) {
+                mismatch(c, n.b, c.ret_ty, t, "`else return` value");
+            }
+            return;
+        }
+        // Forwarding: same shape, and an identical error type for Outcome.
+        if (is_fallible(&*c, c.ret_ty) == 0) {
+            add_diag(c, "FLOW-03", "no return type can carry this failure",
+                     "`else return` needs a function returning `Maybe` or `Outcome`, or the failure would vanish.", els);
+            return;
+        }
+        let ret_maybe = fallible_is_maybe(&*c, c.ret_ty);
+        if (ret_maybe != maybe
+            || (maybe == 0 && !types::eq(errty, fallible_err(&*c, c.ret_ty), &c.types))) {
+            add_diag(c, "FLOW-02", "cannot forward this failure",
+                     "The enclosing function's `Maybe`/`Outcome` must have the same shape and the same error type.", els);
+        }
         return;
     }
-    let ret_ety = outcome_error_type(&*c, c.ret_ty);
-    if (ret_ety == 0) {
-        add_diag(c, "TYPE-01", "`try` needs an `Outcome`-returning function",
-                 "A `Bad` must be returned from this function, so its return type must be `Outcome<T, E>`.", h);
-    } else if (!types::eq(ety, ret_ety, &c.types)) {
-        add_diag(c, "TYPE-01", "error types disagree",
-                 "The `Bad` payload of `try` and of this function's return type must be the same type.", h);
-    }
-    let mut ty: i32 = vty;
-    if (n.a >= 0) {
-        let declared = resolve_type(c, n.a);
-        if (declared > 0 && declared != types::TY_INVALID) {
-            if (!types::eq(declared, vty, &c.types)) {
-                mismatch(c, h, declared, vty, "`try` binding");
-            } else {
-                ty = declared;
-            }
+    if (form == 1 || form == 2) { return; }   // continue / break
+    if (form == 3) {
+        if (n.sval != "" && maybe != 0) {
+            add_diag(c, "TYPE-01", "Maybe has no failure payload",
+                     "Write `else { ... };` for a Maybe; only `Outcome` has a `Bad(e)` payload.", els);
         }
+        if (n.sval != "" && maybe == 0) {
+            scope_push(c);
+            let idx = declare(c, els, n.sval, SK_LET, errty, 0);
+            if (idx >= 0) {
+                let mut s = *c.syms.get(idx as usize);
+                s.init = 1;
+                c.syms.set(idx as usize, s);
+            }
+            check_stmt_block(c, n.a);
+            scope_pop(c);
+        } else {
+            check_stmt_block(c, n.a);
+        }
+        if (!never_stmt(&*c, n.a)) {
+            add_diag(c, "FLOW-01", "the else clause falls through",
+                     "End every path with `return`, `break`, `continue`, `trap(...)` or `exit(...)`.", els);
+        }
+        return;
+    }
+    // form == 4: a terminal call expression.
+    let t = check_expr(c, n.a);
+    if (t != types::TY_NEVER) {
+        add_diag(c, "FLOW-01", "the else clause falls through",
+                 "Use a call that never returns, such as `trap(...)` or `exit(...)`.", els);
+    }
+}
+
+// `let [mut] x = scrutinee else ... ;` — x is bound to the success payload.
+fn check_let_else(c: &mut Checker, h: i32, n: &node::Node) {
+    let mut declared: i32 = 0;
+    if (n.a >= 0) { declared = resolve_type(c, n.a); }
+    let saved = c.expected;
+    c.expected = 0;   // the annotation names the payload, not the whole enum
+    let ity = check_expr(c, n.b);
+    c.expected = saved;
+    let ok = fallible_ok(&*c, ity);
+    let mut ty: i32 = declared;
+    if (is_fallible(&*c, ity) != 0 && ok > 0) {
+        if (declared > 0 && declared != types::TY_INVALID
+            && !types::eq(declared, ok, &c.types)) {
+            mismatch(c, h, declared, ok, "`let` binding");
+        }
+        ty = ok;
+    } else {
+        add_diag(c, "TYPE-01", "`else` needs a `Maybe` or `Outcome`",
+                 "Only these two prelude enums have a failure variant; use `switch` for other enums.", n.c);
+        if (ty <= 0 || ty == types::TY_INVALID) { ty = ity; }
+        if (ty <= 0 || ty == types::TY_INVALID) { ty = types::TY_I32; }
     }
     set_ty(c, h, ty);
     let mut mutbl: i32 = 0;
@@ -3108,6 +3218,38 @@ fn check_try_let(c: &mut Checker, h: i32, n: &node::Node) {
         s.init = 1;
         c.syms.set(idx as usize, s);
     }
+    check_else_clause(c, n.c, ity);
+}
+
+// `place = scrutinee else ... ;` — only plain `=` is allowed so the success
+// payload can be stored without re-evaluating the scrutinee.
+fn check_assign_else(c: &mut Checker, h: i32, n: &node::Node) {
+    if (n.sval != "=") {
+        add_diag(c, "TYPE-01", "`else` needs plain assignment",
+                 "Use `place = f() else ...;` — compound assignment cannot unwrap a failure.", n.c);
+    }
+    let lt = check_place(c, n.a);
+    let ity = check_expr(c, n.b);
+    let ok = fallible_ok(&*c, ity);
+    if (is_fallible(&*c, ity) == 0 || ok == 0) {
+        add_diag(c, "TYPE-01", "`else` needs a `Maybe` or `Outcome`",
+                 "Only these two prelude enums have a failure variant; use `switch` for other enums.", n.c);
+    } else if (lt != types::TY_INVALID && !coercible(c, lt, ok)) {
+        mismatch(c, h, lt, ok, "assignment");
+    }
+    set_ty(c, h, types::TY_UNIT);
+    check_else_clause(c, n.c, ity);
+}
+
+// `scrutinee else ... ;` — the success value is discarded.
+fn check_expr_stmt_else(c: &mut Checker, h: i32, n: &node::Node) {
+    let t = check_expr(c, n.a);
+    set_ty(c, h, t);
+    if (is_fallible(&*c, t) == 0) {
+        add_diag(c, "TYPE-01", "`else` needs a `Maybe` or `Outcome`",
+                 "Only these two prelude enums have a failure variant; use `switch` for other enums.", n.c);
+    }
+    check_else_clause(c, n.c, t);
 }
 
 fn check_stmt(c: &mut Checker, h: i32) {
@@ -3115,7 +3257,7 @@ fn check_stmt(c: &mut Checker, h: i32) {
     let n = node::get(&c.nodes, h);
     let k = n.kind;
     if (k == node::AST_LET) {
-        if ((n.ival & 4) != 0) { check_try_let(c, h, &n); return; }
+        if (n.c >= 0) { check_let_else(c, h, &n); return; }
         let mut ty: i32 = 0;
         if (n.a >= 0) {
             ty = resolve_type(c, n.a);
@@ -3158,6 +3300,7 @@ fn check_stmt(c: &mut Checker, h: i32) {
             c.syms.set(idx as usize, s);
         }
     } else if (k == node::AST_ASSIGN) {
+        if (n.c >= 0) { check_assign_else(c, h, &n); return; }
         let lt = check_place(c, n.a);
         let saved = c.expected;
         c.expected = lt;
@@ -3178,6 +3321,7 @@ fn check_stmt(c: &mut Checker, h: i32) {
             }
         }
     } else if (k == node::AST_EXPR_STMT) {
+        if (n.c >= 0) { check_expr_stmt_else(c, h, &n); return; }
         let t = check_expr(c, n.a);
         set_ty(c, h, t);
     } else if (k == node::AST_BLOCK) {

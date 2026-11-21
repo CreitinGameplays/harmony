@@ -1992,10 +1992,160 @@ fn compound_op(op: &str) -> &str {
     return "";
 }
 
-// v1 `let x = try f();`. The initializer is an `Outcome<T, E>` aggregate:
-// `Bad` is rebuilt directly in the function's sret slot and returns, `Good`
-// binds its payload to x and execution continues in a fresh block.
-fn stmt_try_let(e: &mut context::Emitter, h: i32) {
+// ---- v1 `else` clauses -----------------------------------------------------
+//
+// A fallible simple statement evaluates its scrutinee once, splits on the
+// failure variant, and runs an exit block that must not fall through (the
+// checker enforces FLOW-01). The success payload is then bound/stored on the
+// `else.ok` path. Maybe is the same shape with `Has`/`Empty` and no payload
+// on the failure side.
+
+fn is_maybe_ir(e: &mut context::Emitter, ty: i32) -> i32 {
+    if (types::find_member(&e.c.types, ty, "Empty") >= 0) { return 1; }
+    return 0;
+}
+
+fn good_vi_ir(e: &mut context::Emitter, ty: i32) -> i32 {
+    if (is_maybe_ir(e, ty) != 0) { return types::find_member(&e.c.types, ty, "Has"); }
+    return types::find_member(&e.c.types, ty, "Good");
+}
+
+fn fail_vi_ir(e: &mut context::Emitter, ty: i32) -> i32 {
+    if (is_maybe_ir(e, ty) != 0) { return types::find_member(&e.c.types, ty, "Empty"); }
+    return types::find_member(&e.c.types, ty, "Bad");
+}
+
+fn good_ty_ir(e: &mut context::Emitter, ty: i32) -> i32 {
+    let vi = good_vi_ir(e, ty);
+    let pt = types::member_type(&e.c.types, ty, vi);
+    if (pt > 0) { return types::member_type(&e.c.types, pt, 0); }
+    return types::TY_UNIT;
+}
+
+fn fail_ty_ir(e: &mut context::Emitter, ty: i32) -> i32 {
+    if (is_maybe_ir(e, ty) != 0) { return 0; }
+    let vi = fail_vi_ir(e, ty);
+    let pt = types::member_type(&e.c.types, ty, vi);
+    if (pt > 0) { return types::member_type(&e.c.types, pt, 0); }
+    return 0;
+}
+
+fn payload_addr(e: &mut context::Emitter, base: &str, ty: i32, vi: i32) -> &str {
+    let pt = types::member_type(&e.c.types, ty, vi);
+    return offset_addr(e, base, 8 + types::field_offset(pt, 0, &mut e.c.types));
+}
+
+fn payload_value(e: &mut context::Emitter, base: &str, ty: i32, vi: i32,
+                 pty: i32) -> &str {
+    let addr = payload_addr(e, base, ty, vi);
+    if (context::is_aggregate(e, pty)) { return addr; }
+    return load(e, pty, addr);
+}
+
+// Shared `return` lowering, also used by `else return expr;`.
+fn emit_return_expr(e: &mut context::Emitter, a: i32) {
+    if (e.sret_on != 0) {
+        let retty = e.sret_ty;
+        let v = expr(e, a);
+        context::out(e, "  call void @llvm.memcpy.p0.p0.i64(ptr align 8 %sret, ptr align 8 ");
+        context::out(e, v);
+        context::out(e, ", i64 ");
+        context::out_i64(e, types::size(retty, &mut e.c.types) as i64);
+        context::out(e, ", i1 false)\n");
+        context::out(e, "  ret void\n");
+        e.terminated = 1;
+        return;
+    }
+    if (a >= 0) {
+        let v = expr(e, a);
+        let ty = e.expr_ty;
+        context::out(e, "  ret ");
+        context::out(e, context::type_name(e, ty));
+        context::out(e, " ");
+        context::out(e, v);
+        context::nl(e);
+    } else {
+        context::out(e, "  ret void\n");
+    }
+    e.terminated = 1;
+}
+
+// Evaluate the clause on the failure path. Returns the label the caller
+// continues on for success; the failure path always emits a terminator.
+fn emit_else_split(e: &mut context::Emitter, els_h: i32, v: &str, oty: i32) -> &str {
+    let fvi = fail_vi_ir(e, oty);
+    let fty = fail_ty_ir(e, oty);
+    let maybe = is_maybe_ir(e, oty);
+    let tag = load(e, types::TY_I32, struct_gep(e, v, oty, 0));
+    let is_fail = cmp(e, "icmp eq", types::TY_I32, tag,
+                      const_int(e, fvi as i64, types::TY_I32));
+    let faillbl = context::new_label(e, "else.fail");
+    let oklbl = context::new_label(e, "else.ok");
+    context::out(e, "  br i1 ");
+    context::out(e, is_fail);
+    context::out(e, ", label %"); context::out(e, faillbl);
+    context::out(e, ", label %"); context::out(e, oklbl);
+    context::nl(e);
+    e.terminated = 1;
+
+    label(e, faillbl);
+    let els = node::get(&e.c.nodes, els_h);
+    let form = els.ival as i32;
+    if (form == 0) {
+        if (els.b >= 0) {
+            emit_return_expr(e, els.b);
+        } else {
+            // Forward: rebuild Bad(e) / Empty directly in the return slot.
+            let stag = struct_gep(e, "%sret", e.sret_ty, 0);
+            context::out(e, "  store i32 ");
+            context::out_i64(e, fvi as i64);
+            context::out(e, ", ptr ");
+            context::out(e, stag);
+            context::nl(e);
+            if (maybe == 0 && fty > 0) {
+                let dpt = types::member_type(&e.c.types, e.sret_ty, fvi);
+                let dst = offset_addr(e, "%sret",
+                                      8 + types::field_offset(dpt, 0, &mut e.c.types));
+                let src = payload_value(e, v, oty, fvi, fty);
+                store_value(e, dst, fty, src);
+            }
+            context::out(e, "  ret void\n");
+            e.terminated = 1;
+        }
+    } else if (form == 1) {
+        stmt_continue(e);
+        if (e.terminated == 0) {
+            context::out(e, "  unreachable\n");
+            e.terminated = 1;
+        }
+    } else if (form == 2) {
+        stmt_break(e);
+        if (e.terminated == 0) {
+            context::out(e, "  unreachable\n");
+            e.terminated = 1;
+        }
+    } else if (form == 3) {
+        if (els.sval != "" && fty > 0) {
+            let addr = payload_addr(e, v, oty, fvi);
+            context::local_declare(e, els.sval, addr, fty);
+        }
+        block(e, els.a);
+        if (e.terminated == 0) {
+            context::out(e, "  unreachable\n");
+            e.terminated = 1;
+        }
+    } else {
+        expr(e, els.a);
+        if (e.terminated == 0) {
+            context::out(e, "  unreachable\n");
+            e.terminated = 1;
+        }
+    }
+    label(e, oklbl);
+    return oklbl;
+}
+
+fn stmt_let_else(e: &mut context::Emitter, h: i32) {
     let n = node::get(&e.c.nodes, h);
     let ty = context::node_ty(e, h);
     let oty = context::node_ty(e, n.b);
@@ -2006,59 +2156,56 @@ fn stmt_try_let(e: &mut context::Emitter, h: i32) {
     context::out(e, context::type_name(e, ty));
     context::nl(e);
     let v = expr(e, n.b);
-    let tag = load(e, types::TY_I32, struct_gep(e, v, oty, 0));
-    let bad_vi = types::find_member(&e.c.types, oty, "Bad");
-    let good_vi = types::find_member(&e.c.types, oty, "Good");
-    let is_bad = cmp(e, "icmp eq", types::TY_I32, tag,
-                     const_int(e, bad_vi as i64, types::TY_I32));
-    let badlbl = context::new_label(e, "try.bad");
-    let goodlbl = context::new_label(e, "try.good");
-    context::out(e, "  br i1 ");
-    context::out(e, is_bad);
-    context::out(e, ", label %"); context::out(e, badlbl);
-    context::out(e, ", label %"); context::out(e, goodlbl);
-    context::nl(e);
-    e.terminated = 1;
-
-    // Bad: write the tag and payload into %sret, then return, just like
-    // `return Bad(e);` but without parsing a synthetic AST node.
-    label(e, badlbl);
-    let stag = struct_gep(e, "%sret", e.sret_ty, 0);
-    context::out(e, "  store i32 ");
-    context::out_i64(e, bad_vi as i64);
-    context::out(e, ", ptr ");
-    context::out(e, stag);
-    context::nl(e);
-    let bpt = types::member_type(&e.c.types, oty, bad_vi);
-    let bety = types::member_type(&e.c.types, bpt, 0);
-    let bsrc = offset_addr(e, v, 8 + types::field_offset(bpt, 0, &mut e.c.types));
-    let dpt = types::member_type(&e.c.types, e.sret_ty, bad_vi);
-    let dety = types::member_type(&e.c.types, dpt, 0);
-    let daddr = offset_addr(e, "%sret", 8 + types::field_offset(dpt, 0, &mut e.c.types));
-    let mut bv: &str = bsrc;
-    if (!context::is_aggregate(e, bety)) { bv = load(e, bety, bsrc); }
-    store_value(e, daddr, dety, bv);
-    context::out(e, "  ret void\n");
-    e.terminated = 1;
-
-    // Good: the payload becomes the binding, and the following statements
-    // continue in this block.
-    label(e, goodlbl);
-    let gpt = types::member_type(&e.c.types, oty, good_vi);
-    let gty = types::member_type(&e.c.types, gpt, 0);
-    let gaddr = offset_addr(e, v, 8 + types::field_offset(gpt, 0, &mut e.c.types));
-    if (context::is_aggregate(e, gty)) {
-        store_value(e, slot, gty, gaddr);
-    } else {
-        let gv = load(e, gty, gaddr);
-        store_value(e, slot, gty, gv);
-    }
+    emit_else_split(e, n.c, v, oty);
+    let gvi = good_vi_ir(e, oty);
+    let gty = good_ty_ir(e, oty);
+    let src = payload_value(e, v, oty, gvi, gty);
+    store_value(e, slot, ty, src);
     if (n.sval != "_") { context::local_declare(e, n.sval, slot, ty); }
+}
+
+fn stmt_assign_else(e: &mut context::Emitter, h: i32) {
+    let n = node::get(&e.c.nodes, h);
+    let oty = context::node_ty(e, n.b);
+    let v = expr(e, n.b);
+    emit_else_split(e, n.c, v, oty);
+    let lhs = node::get(&e.c.nodes, n.a);
+    let mut slot: &str = "";
+    let mut ty: i32 = types::TY_INVALID;
+    if (lhs.kind == node::AST_PATH) {
+        slot = context::local_slot(e, lhs.sval);
+        ty = context::local_ty(e, lhs.sval);
+    } else {
+        slot = place_addr(e, n.a);
+        ty = context::node_ty(e, n.a);
+    }
+    if (slot == "") { return; }
+    let gvi = good_vi_ir(e, oty);
+    let gty = good_ty_ir(e, oty);
+    let src = payload_value(e, v, oty, gvi, gty);
+    if (context::is_aggregate(e, gty)) {
+        store_value(e, slot, ty, src);
+    } else {
+        context::out(e, "  store ");
+        context::out(e, context::type_name(e, ty));
+        context::out(e, " ");
+        context::out(e, src);
+        context::out(e, ", ptr ");
+        context::out(e, slot);
+        context::nl(e);
+    }
+}
+
+fn stmt_expr_stmt_else(e: &mut context::Emitter, h: i32) {
+    let n = node::get(&e.c.nodes, h);
+    let oty = context::node_ty(e, n.a);
+    let v = expr(e, n.a);
+    emit_else_split(e, n.b, v, oty);
 }
 
 fn stmt_let(e: &mut context::Emitter, h: i32) {
     let n = node::get(&e.c.nodes, h);
-    if ((n.ival & 4) != 0) { stmt_try_let(e, h); return; }
+    if (n.c >= 0) { stmt_let_else(e, h); return; }
     let ty = context::node_ty(e, h);
     let slot = context::new_reg(e);
     context::out(e, "  ");
@@ -2075,6 +2222,7 @@ fn stmt_let(e: &mut context::Emitter, h: i32) {
 
 fn stmt_assign(e: &mut context::Emitter, h: i32) {
     let n = node::get(&e.c.nodes, h);
+    if (n.c >= 0) { stmt_assign_else(e, h); return; }
     let lhs = node::get(&e.c.nodes, n.a);
     let mut slot = "";
     let mut ty = types::TY_INVALID;
@@ -2380,30 +2528,7 @@ fn stmt_continue(e: &mut context::Emitter) {
 
 fn stmt_return(e: &mut context::Emitter, h: i32) {
     let n = node::get(&e.c.nodes, h);
-    if (e.sret_on != 0) {
-        let retty = e.sret_ty;
-        let v = expr(e, n.a);
-        context::out(e, "  call void @llvm.memcpy.p0.p0.i64(ptr align 8 %sret, ptr align 8 ");
-        context::out(e, v);
-        context::out(e, ", i64 ");
-        context::out_i64(e, types::size(retty, &mut e.c.types) as i64);
-        context::out(e, ", i1 false)\n");
-        context::out(e, "  ret void\n");
-        e.terminated = 1;
-        return;
-    }
-    if (n.a >= 0) {
-        let v = expr(e, n.a);
-        let ty = e.expr_ty;
-        context::out(e, "  ret ");
-        context::out(e, context::type_name(e, ty));
-        context::out(e, " ");
-        context::out(e, v);
-        context::nl(e);
-    } else {
-        context::out(e, "  ret void\n");
-    }
-    e.terminated = 1;
+    emit_return_expr(e, n.a);
 }
 
 fn stmt(e: &mut context::Emitter, h: i32) {
@@ -2413,7 +2538,11 @@ fn stmt(e: &mut context::Emitter, h: i32) {
     let k = n.kind;
     if (k == node::AST_LET) { stmt_let(e, h); return; }
     if (k == node::AST_ASSIGN) { stmt_assign(e, h); return; }
-    if (k == node::AST_EXPR_STMT) { expr(e, n.a); return; }
+    if (k == node::AST_EXPR_STMT) {
+        if (n.b >= 0) { stmt_expr_stmt_else(e, h); }
+        else { expr(e, n.a); }
+        return;
+    }
     if (k == node::AST_IF) { stmt_if(e, h); return; }
     if (k == node::AST_WHILE) { stmt_while(e, h); return; }
     if (k == node::AST_FOR) { stmt_for(e, h); return; }
@@ -2506,7 +2635,7 @@ fn stmt_for_iter(e: &mut context::Emitter, h: i32) {
     // Bind the `Has` payload to the loop variable.
     let pid = types::member_type(&e.c.types, ret_ty, has_vi);
     let pty = types::member_type(&e.c.types, pid, 0);
-    let payload_addr = offset_addr(e, sslot, 8 + types::field_offset(pid, 0, &mut e.c.types));
+    let pa = offset_addr(e, sslot, 8 + types::field_offset(pid, 0, &mut e.c.types));
     let bind_slot = context::new_reg(e);
     context::out(e, "  ");
     context::out(e, bind_slot);
@@ -2514,9 +2643,9 @@ fn stmt_for_iter(e: &mut context::Emitter, h: i32) {
     context::out(e, context::type_name(e, pty));
     context::nl(e);
     if (context::is_aggregate(e, pty)) {
-        store_value(e, bind_slot, pty, payload_addr);
+        store_value(e, bind_slot, pty, pa);
     } else {
-        let pv = load(e, pty, payload_addr);
+        let pv = load(e, pty, pa);
         store_value(e, bind_slot, pty, pv);
     }
     context::local_declare(e, n.sval, bind_slot, pty);

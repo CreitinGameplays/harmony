@@ -1,0 +1,51 @@
+// v1 `else` clauses: convert an error in a bound block, and forward it with
+// the shortest spelling `else return;` (Outcome -> Outcome, same E).
+enum ParseError { NoInput, BadChar(char), }
+enum AppError { Parse(ParseError), }
+
+fn parse_u8(text: &str) -> Outcome<u8, ParseError> {
+    if (text.len() == 0) { return Bad(ParseError::NoInput); }
+    let b = text.as_bytes()[0];
+    if (b < 48u8 || b > 57u8) { return Bad(ParseError::BadChar('x')); }
+    return Good(b - 48u8);
+}
+
+fn load_port(text: &str) -> Outcome<u16, AppError> {
+    let n = parse_u8(text) else (e) { return Bad(AppError::Parse(e)); };
+    return Good(n as u16 + 1000u16);
+}
+
+fn read_pair(a: &str, b: &str) -> Outcome<u32, ParseError> {
+    let x = parse_u8(a) else return;
+    let y = parse_u8(b) else return;
+    return Good(x as u32 + y as u32);
+}
+
+fn main() -> i32 {
+    let r1 = load_port("7");
+    switch (r1) {
+        case Good(v): { if (v != 1007u16) { return 1; } }
+        case Bad(e): { return 2; }
+    }
+    let r2 = load_port("x");
+    switch (r2) {
+        case Good(v): { return 3; }
+        case Bad(e): { }
+    }
+    let r3 = read_pair("4", "0");
+    switch (r3) {
+        case Good(v): { if (v != 4u32) { return 4; } }
+        case Bad(e): { return 5; }
+    }
+    let r4 = read_pair("", "1");
+    switch (r4) {
+        case Good(v): { return 6; }
+        case Bad(e): {
+            switch (e) {
+                case NoInput: { return 42; }
+                default: { return 7; }
+            }
+        }
+    }
+    return 8;
+}

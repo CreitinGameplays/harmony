@@ -1,0 +1,8 @@
+// FLOW-01: an else clause must not fall through.
+enum E { Fail, }
+fn parse(text: &str) -> Outcome<u8, E> { return Good(1u8); }
+fn bad(text: &str) -> Outcome<i32, E> {
+    let n = parse(text) else (e) { println("no exit here"); };
+    return Good(n as i32);
+}
+fn main() -> i32 { return 0; }

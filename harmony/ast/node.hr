@@ -47,6 +47,10 @@ const AST_RETURN: i32 = 39;
 const AST_BREAK: i32 = 40;
 const AST_CONTINUE: i32 = 41;
 const AST_UNCHECKED: i32 = 42;
+// v1: the `else` clause on a fallible simple statement (let/assignment/
+// expression statement). ival selects its exit form, sval names the payload
+// binding, a holds a block or a terminal call, b an optional `return` value.
+const AST_ELSE: i32 = 43;
 const AST_INT_LIT: i32 = 50;
 const AST_FLOAT_LIT: i32 = 51;
 const AST_STRING_LIT: i32 = 52;

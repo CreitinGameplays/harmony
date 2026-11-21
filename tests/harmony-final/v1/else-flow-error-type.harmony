@@ -1,10 +1,9 @@
-// The `Bad` payload of the initializer and of the function must agree.
+// FLOW-02: forwarding needs the same error type.
 enum E { Fail, }
-enum F { Nope, }
-
+enum F { Other, }
 fn inner() -> Outcome<i32, E> { return Good(1); }
 fn outer() -> Outcome<i32, F> {
-    let v = try inner();
+    let v = inner() else return;
     return Good(v);
 }
 fn main() -> i32 { return 0; }

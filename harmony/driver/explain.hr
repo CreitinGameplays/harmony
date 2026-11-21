@@ -18,6 +18,9 @@ fn known(code: &str) -> bool {
     if (code == "CFG-01") { return true; }
     if (code == "FFI-01") { return true; }
     if (code == "CONST-01") { return true; }
+    if (code == "FLOW-01") { return true; }
+    if (code == "FLOW-02") { return true; }
+    if (code == "FLOW-03") { return true; }
     return false;
 }
 
@@ -156,12 +159,55 @@ fn lex01() {
     print("SEE    docs/harmony.md - 4.3, 16.10 Code catalogue\n\n");
 }
 
+fn flow01() {
+    print("FLOW-01 - the else clause falls through\n\n");
+    print("WHAT   An `else` clause is an exit, not an alternative body.\n");
+    print("       Every path through it must end in `return`, `break`,\n");
+    print("       `continue`, `trap(...)` or `exit(...)` (§20.3 item 5).\n");
+    print("WHY    The failure case must not continue with a binding that was\n");
+    print("       never made. A visual exit is the whole point of the form.\n");
+    print("BAD    let x = f() else (e) {{ println(\"oops\"); }};\n");
+    print("GOOD   let x = f() else (e) {{ return Bad(e); }};\n");
+    print("NOTE   `else return;` forwards the failure; `else continue;` and\n");
+    print("       `else break;` work inside loops.\n");
+    print("SEE    docs/harmony.md - 14.4, 16.10 Code catalogue\n\n");
+}
+
+fn flow02() {
+    print("FLOW-02 - cannot forward this failure\n\n");
+    print("WHAT   `else return;` forwards Bad(e) (or Empty) to the caller,\n");
+    print("       so the enclosing function must return the same shape with\n");
+    print("       an identical error type (§20.3 item 5).\n");
+    print("WHY    Otherwise the error would silently change meaning or vanish\n");
+    print("       at a type boundary; convert it explicitly with a block.\n");
+    print("BAD    fn f() -> Outcome<i32, F> {{ let x = g() else return; ... }}\n");
+    print("       // g() returns Outcome<i32, E>, E != F\n");
+    print("GOOD   let x = g() else (e) {{ return Bad(F::from(e)); }};\n");
+    print("NOTE   For `Maybe`, the enclosing function must also return `Maybe`.\n");
+    print("SEE    docs/harmony.md - 14.4, 16.10 Code catalogue\n\n");
+}
+
+fn flow03() {
+    print("FLOW-03 - no return type can carry this failure\n\n");
+    print("WHAT   `else return;` needs an enclosing function that returns\n");
+    print("       `Maybe` or `Outcome`; a plain return type has nowhere for\n");
+    print("       the failure to go (§20.3 item 5).\n");
+    print("WHY    Silently dropping a failure is the bug this form prevents.\n");
+    print("BAD    fn main() -> i32 {{ let x = g() else return; ... }}\n");
+    print("GOOD   let x = g() else (e) {{ trap(\"unexpected failure\"); }};\n");
+    print("NOTE   An explicit block can always exit with `trap` or `exit`.\n");
+    print("SEE    docs/harmony.md - 14.4, 16.10 Code catalogue\n\n");
+}
+
 // Returns 0 for a known code, or -1 for an unknown one.
 export fn run(code: &str) -> i32 {
     if (!known(code)) { return -1; }
     if (code == "ICE-01") { ice01(); return 0; }
     if (code == "FFI-01") { ffi01(); return 0; }
     if (code == "CONST-01") { const01(); return 0; }
+    if (code == "FLOW-01") { flow01(); return 0; }
+    if (code == "FLOW-02") { flow02(); return 0; }
+    if (code == "FLOW-03") { flow03(); return 0; }
     if (code == "SYN-01") { syn01(); return 0; }
     if (code == "SYN-02") { syn02(); return 0; }
     if (code == "SYN-03") { syn03(); return 0; }

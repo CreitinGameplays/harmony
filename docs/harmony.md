@@ -59,7 +59,7 @@ File extension: `.harmony`
 | impl (rewrite) | R8 native LLVM-C backend | `build`/`run` now link against `libLLVM` directly through `extern "C"` bindings (`library/std/llvm.hr`) and emit objects in parallel without spawning clang. `--backend=clang` keeps the old text/IR path for debugging, and `emit-llvm` is unchanged. |
 | impl (rewrite) | v1 batch 1 | The final compiler accepts structured `unchecked(tag, "reason")` forms, guarded `switch` arms, and `Shared<T>`/`Weak<T>` from `library/std/shared.hr`. Audit reports tags; guards see bindings; shared ownership uses a control block with explicit `release` and `Maybe`-returning `upgrade`. These forms are final-language only; harmony-base stays v0. |
 | impl (rewrite) | v1 threads | `library/std/thread.hr` adds joined and detached threads over raw `clone(2)` + futex hooks in `library/runtime/rt.c`. The `Share<T>` capability marker mints an opaque `ThreadArg` that `spawn` requires; `fnptr(f)` is the small final-only intrinsic for a function address. All three v1 gates pass; harmony-base stays v0. |
-| impl (rewrite) | v1 `try` | The final compiler accepts `let x = try f();`: `Good` binds `x`, `Bad` returns from the enclosing `Outcome`-returning function. The word stays contextual (no lexer keyword), so harmony-base's token stream and v0 IR remain byte-identical. |
+| impl (rewrite) | v1 `else` clause | The final compiler accepts `let x = f() else return;`, `else (e) { ... };`, `else continue;`, `else break;` and `else trap(...);` on `let`, plain `=` assignment, and expression statements. `try` is not a keyword; the success payload binds the target, `else return` forwards `Bad(e)`/`Empty`, and FLOW-01/02/03 reject fallthrough, mismatched errors, and impossible forwarding. These forms are final-language only; harmony-base stays v0. |
 | impl (rewrite) | R6 LLVM backend | The self-hosted compiler now has its own LLVM IR emitter (`harmony/codegen/llvm/`). On all 95 programs in the codegen corpus, its IR is **byte-identical** to harmony-base's, including checked arithmetic, traps, slices, aggregates, generics, methods, enums, switches, formatting calls, and multi-module programs. |
 
 ### 1.2 Bug fixed in v0.3
@@ -214,7 +214,7 @@ ordinary library code begins is spelled out in the **split rule** (§19.8).
 
 `life` is **contextual**, so `player.life -= 1;` still compiles. (A game developer's most-typed identifier survives.)
 
-**Reserved for the future:** `abilities` `async` `await` `macro` `try`.
+**Reserved for the future:** `abilities` `async` `await` `macro`. (`try` was dropped from the list in v1: early exit is an `else` clause, not a keyword — §20.3 item 5.)
 (`trait` is **not** reserved — the v1 trait-like feature is spelled
 `abilities`, see §20.4. `spawn` and `send` are deliberately **not** reserved
 either — v1 concurrency will use ordinary method-style names, not keywords;
@@ -1476,7 +1476,7 @@ fn parse_u8(text: &str) -> Outcome<u8, ParseError> {
 }
 ```
 
-There is no `?` operator in v0. Errors are handled with `switch`, which keeps control flow visible. (A `try` statement **is decided for v1** — `let x = try parse(s);` returns early on `Bad`; the word is reserved for it, see §20.3 item 5. *Implemented in the final compiler:* the initializer must be an `Outcome<T, E>`, the enclosing function must return `Outcome<R, E>` with the same error type, and on `Bad` its payload is written into the return slot immediately.)
+There is no `?` operator in v0. Errors are handled with `switch`, which keeps control flow visible. *Implemented in the final compiler for v1 (§20.3 item 5):* an `else` clause on `let`, plain `=` assignment, and expression statements. `let n = parse_u8(text) else return;` binds the `Good` payload to `n` and forwards `Bad(e)` from an `Outcome`-returning function (or `Empty` from a `Maybe`-returning one). `let n = parse(s) else (e) { return Bad(AppError::Parse(e)); };` converts the error in an explicit block. The clause must not fall through: `return`, `break`, `continue`, `trap(...)` and `exit(...)` are legal exits (FLOW-01). Forwarding needs the same shape and error type (FLOW-02/03). The clause ends with `;`, keeping the "every simple statement ends with `;`" rule. `try` is **not** a keyword in the final design.
 
 ---
 
@@ -2072,6 +2072,9 @@ SEE    Language guide § Ownership and moves
 | `FMT-01` | stop | format string mismatch | `println("{} {}", x)` | match arguments to `{}` |
 | `FFI-01` | stop | unknown ABI | `extern "Win64" fn ...` | use the C ABI: `extern "C" fn ...` |
 | `CONST-01` | stop | not a compile-time constant | `const A: i32 = compute();` | use a literal, another constant, or a `let` |
+| `FLOW-01` | stop | `else` clause falls through | `let x = f() else (e) { };` | end every path with `return`/`break`/`continue`/`trap(...)`/`exit(...)` |
+| `FLOW-02` | stop | cannot forward this failure | `Outcome<E>` into a function returning `Outcome<F>` | convert with an explicit block |
+| `FLOW-03` | stop | no return type can carry the failure | `else return;` in a function returning `i32` | use an explicit `trap`/`exit` block |
 | `MUT-01` | stop | assigning to a read-only binding | `let x = 1; x = 2;` | `let mut` |
 | `MUT-02` | warn | `let mut` never changed | unused `mut` | remove `mut` |
 | `MUT-03` | stop | `&mut` of a read-only binding | `&mut x` where `x` isn't `mut` | `let mut` |
@@ -2962,7 +2965,7 @@ These were open in the v0.3 draft; they are now decided, to be implemented in v1
 2. **`switch` guards: yes.** `case Has(x) if (x > 3):` is accepted; a guarded case still counts for exhaustiveness only when its pattern alone is irrefutable for that variant, and guards never suppress the `default`-required rule on open domains. *Implemented in the final compiler (v1 batch 1).* A guarded `A(x)` covers variant `A`; a guarded `A(5)` does not, and scalar switches still need `default`.
 3. **Shared ownership: yes.** v1 adds `Shared<T>` — non-atomic, single-threaded, with `weak` handles — deliberately boring and visibly costly. *Implemented in the final compiler: `library/std/shared.hr` provides `Shared<T>::make`, `clone`, `get`, `downgrade`, explicit `release`, and `Weak<T>::upgrade -> Maybe<Shared<T>>`. Since drop glue is not implemented, owners call `release` explicitly; the last strong owner destroys the value and the last weak owner frees the control block.*
 4. **Concurrency: yes, including detached threads.** Threads come with share-style capability markers (ordinary words, not reserved keywords) and **support detached threads** (a thread not tied to a structured scope), not just structured scopes. *Implemented in the final compiler: `library/std/thread.hr` provides `thread::spawn`, `Thread::join`, and `Thread::detach` over `clone(2)`/futex hooks in the runtime. `Share<T>::as_raw()` mints an opaque `ThreadArg`, the capability marker `spawn` requires; `fnptr(f)` supplies the entry address. A thread entry is `fn(raw u8) -> i64`; its result is published by `join`. A detached thread's stack is reclaimed at process exit (it cannot unmap the page it is running on).* No libc or pthread is used, so the freestanding link still works.
-5. **`try` statement: yes.** `let x = try parse(s);` returns early on `Bad`, removing the most common boilerplate without hiding control flow. *Implemented in the final compiler as a contextual `let`-initializer form (no lexer keyword change), so harmony-base's token stream stays byte-identical. The checker requires an `Outcome<T, E>` initializer and an `Outcome<R, E>` return type with the same `E`; codegen binds the `Good` payload and rebuilds `Bad(e)` in the sret slot on the early-return path.*
+5. **Early exit on failure: yes, as an `else` clause on a simple statement.** The original `let x = try parse(s);` spelling was redesigned: there is **no `try` keyword**. Instead `let x = parse(s) else ... ;`, `x = parse(s) else ... ;` and `parse(s) else ... ;` all work. The scrutinee must be a `Maybe` or `Outcome` (other enums keep using `switch`). The success payload binds the target (or is discarded for an expression statement); the failure payload is moved into the optional `(e)` binding, visible only inside the clause block. `else return;` forwards `Bad(e)`/`Empty` and is only legal when the enclosing function returns the same shape with an identical error type. Other exits (`break`, `continue`, `trap(...)`, `exit(...)`) are written out, and every path must exit (FLOW-01). Implemented in the final compiler only; harmony-base stays v0.
 6. **Named fields in enum payloads and struct patterns in `switch`: yes.** Both are accepted; struct patterns also soften the "no partial moves" limitation.
 7. **Function pointers: yes.** `fn(i32) -> i32` is safe and cheap and comes in v1; it is "enough" without closures.
 8. **Unsuffixed integer literals: `i32`.** C-like and predictable; aggressive `usize` inference for indices is not done.
@@ -2977,7 +2980,7 @@ These were open in the v0.3 draft; they are now decided, to be implemented in v1
 - The concept matches how the language already speaks: the v0 bounds (`copy`, `eq`, `ord`) are *abilities a type has*, so a user-defined one is declared in an `abilities` block — `abilities Shape { ... }` — parallel to `methods Type { ... }`, and consumed as the same bound syntax (`<T: Drawable + ord>`).
 - `trait` (like `impl`, `match`, `Box`) becomes a **recognized foreign word**: writing it earns a `NAME-02` translation hint (`trait Shape { ... }` → `abilities Shape { ... }`), never a bare "unknown name".
 
-Three keyword reservations are **dropped**: `spawn`, `send`, and (per the rename above) `trait`. Concurrency in v1 will use ordinary names (e.g. `thread.spawn(...)`-style methods or contextual words), not reserved keywords. The reserved-for-the-future list in §4.2 is therefore `abilities` `async` `await` `macro` `try`.
+Four keyword reservations are **dropped**: `spawn`, `send`, `try`, and (per the rename above) `trait`. Concurrency in v1 uses ordinary names (e.g. `thread.spawn(...)`-style methods), and early exit on failure is an `else` clause; neither needs a keyword. The reserved-for-the-future list in §4.2 is therefore `abilities` `async` `await` `macro`.
 
 ---
 

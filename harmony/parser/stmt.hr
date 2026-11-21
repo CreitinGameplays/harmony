@@ -83,7 +83,75 @@ export fn parse_unck_head(p: &mut pctx::Parser) -> UnckHead {
     return UnckHead { .ok = 1, .tag = tag, .reason = reason };
 }
 
-// let [mut] name [: type] [= expr] ";"
+// The v1 `else` clause on a fallible simple statement (§20.3 item 5,
+// redesign: no keyword). Parsed before the caller consumes the final `;`,
+// so `let x = f() else return;` stays one simple statement.
+//
+//   else return;            forward the failure unchanged
+//   else return expr;       explicit return value
+//   else continue; / break;
+//   else (e) { ... };       bind the failure payload (Outcome)
+//   else { ... };           no payload to bind (Maybe)
+//   else trap("...");       any terminal call expression
+fn parse_else_clause(p: &mut pctx::Parser) -> i32 {
+    if (!pctx::at_kw(&*p, "else")) { return -1; }
+    let start = pctx::cur(&*p).start;
+    pctx::advance(p);
+    let h = pctx::node_at(p, node::AST_ELSE, start);
+    if (pctx::at_kw(&*p, "return")) {
+        pctx::advance(p);
+        node::set_ival(p.nodes, h, 0);
+        if (!pctx::at(&*p, token::TokKind::Semi)) {
+            let v = parse::parse_expr(p);
+            if (v < 0) { return -1; }
+            node::set_b(p.nodes, h, v);
+        }
+        return h;
+    }
+    if (pctx::at_kw(&*p, "continue")) {
+        pctx::advance(p);
+        node::set_ival(p.nodes, h, 1);
+        return h;
+    }
+    if (pctx::at_kw(&*p, "break")) {
+        pctx::advance(p);
+        node::set_ival(p.nodes, h, 2);
+        return h;
+    }
+    if (pctx::at(&*p, token::TokKind::LParen)) {
+        pctx::advance(p);
+        if (!pctx::at(&*p, token::TokKind::Ident)) {
+            pctx::syntax_stop(p, "SYN-05", "the else binding needs a name",
+                              "Write `else (e) { ... };` to bind the failure payload.");
+            return -1;
+        }
+        node::set_sval(p.nodes, h, pctx::cur_word(p));
+        pctx::advance(p);
+        if (!pctx::expect(p, token::TokKind::RParen, "add `)` after the else binding")) {
+            return -1;
+        }
+        let body = parse_block(p);
+        if (body < 0) { return -1; }
+        node::set_a(p.nodes, h, body);
+        node::set_ival(p.nodes, h, 3);
+        return h;
+    }
+    if (pctx::at(&*p, token::TokKind::LBrace)) {
+        let body = parse_block(p);
+        if (body < 0) { return -1; }
+        node::set_a(p.nodes, h, body);
+        node::set_ival(p.nodes, h, 3);
+        return h;
+    }
+    // A terminal call expression: `else trap("...");`, `else exit(1);`.
+    let e = parse::parse_expr(p);
+    if (e < 0) { return -1; }
+    node::set_a(p.nodes, h, e);
+    node::set_ival(p.nodes, h, 4);
+    return h;
+}
+
+// let [mut] name [: type] [= expr] [else-clause] ";"
 fn parse_let(p: &mut pctx::Parser) -> i32 {
     let start = pctx::cur(&*p).start;
     pctx::advance(p);   // let
@@ -106,17 +174,11 @@ fn parse_let(p: &mut pctx::Parser) -> i32 {
         node::set_a(p.nodes, h, t);
     }
     if (pctx::eat(p, token::TokKind::Assign)) {
-        // v1: `let x = try f();` — `try` is a contextual word here (§20.3
-        // item 5), not a lexer keyword, so harmony-base's token stream stays
-        // byte-identical. Bit 2 of `ival` marks the initializer as a
-        // fallible unwrap; bit 0 still means `mut`.
-        if (pctx::at(&*p, token::TokKind::Ident) && pctx::cur_word(p) == "try") {
-            pctx::advance(p);
-            node::set_ival(p.nodes, h, node::get(&*p.nodes, h).ival | 4);
-        }
         let e = parse::parse_expr(p);
         if (e < 0) { return -1; }
         node::set_b(p.nodes, h, e);
+        let els = parse_else_clause(p);
+        if (els >= 0) { node::set_c(p.nodes, h, els); }
     }
     if (!pctx::expect_semi(p)) { return -1; }
     pctx::end_at(p, h, pctx::prev(&*p).end);
@@ -532,12 +594,16 @@ fn parse_stmt_core(p: &mut pctx::Parser) -> i32 {
         let v = parse::parse_expr(p);
         if (v < 0) { return -1; }
         node::set_b(p.nodes, h, v);
+        let els = parse_else_clause(p);
+        if (els >= 0) { node::set_c(p.nodes, h, els); }
         if (!pctx::expect_semi(p)) { return -1; }
         pctx::end_at(p, h, pctx::prev(&*p).end);
         return h;
     }
     let h = pctx::node_at(p, node::AST_EXPR_STMT, node::get(&*p.nodes, e).start);
     node::set_a(p.nodes, h, e);
+    let els = parse_else_clause(p);
+    if (els >= 0) { node::set_b(p.nodes, h, els); }
     if (!pctx::expect_semi(p)) { return -1; }
     pctx::end_at(p, h, pctx::prev(&*p).end);
     return h;

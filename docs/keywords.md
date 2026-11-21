@@ -29,11 +29,11 @@ heap form is the built-in `heap(x)` (docs/harmony.md §12.2).
 `extern fn` without one is a syntax error — and `"C"` is the only ABI the
 backend implements (`FFI-01` for any other name).
 
-**Reserved for the future:** `abilities` `async` `await` `macro` `try`.
-Dropped reservations (v0.3.1): `spawn`, `send` (concurrency will use
-ordinary method-style names), and `trait` (the v1 trait-like feature is
-spelled `abilities`, see docs/harmony.md §20.4). Dropped keyword (v0.3.2):
-`new` — the heap form is `heap(x)`.
+**Reserved for the future:** `abilities` `async` `await` `macro`. (`try` was dropped: v1 early exit is an `else` clause.)
+Dropped reservations: `spawn`, `send` (concurrency uses ordinary method-style
+names), `trait` (the v1 trait-like feature is spelled `abilities`, see
+docs/harmony.md §20.4), and `try` (v1 early exit is an `else` clause, §20.3
+item 5). Dropped keyword (v0.3.2): `new` — the heap form is `heap(x)`.
 
 **Recognized foreign words** (not keywords; the compiler knows them and emits
 a `NAME-02` translation hint): `unsafe` `impl` `match` `trait` `pub` `use`
@@ -53,7 +53,7 @@ a `NAME-02` translation hint): `unsafe` `impl` `match` `trait` `pub` `use`
 | `.own()` `.or_trap()` `.clone()` `.take()` | methods |
 | `sizeof(T)` `heap(x)` `raw(x)` | built-in forms |
 | `fnptr(name)` | v1 final-compiler intrinsic: address of a declared function as `raw u8`, used for thread entries; harmony-base does not parse it |
-| `try` | v1 final-compiler contextual word in `let x = try f();`; not a lexer keyword, so v0 token streams are unchanged |
+| `else` (on a simple statement) | v1 final-compiler clause: `let x = f() else return;`, `x = f() else (e) { ... };`, `f() else trap("...");`. Only `Maybe`/`Outcome`; see FLOW-01/02/03 |
 | `str::from_parts(p, len)` | the `str` lang item (§19.8.9): build a `&str` from owned bytes + length; needs `unchecked` because the pointer is unchecked. Used by `library/core`'s `String::as_str`. |
 | `Type::make()` | constructor convention (a named `make`, not a keyword) |
 

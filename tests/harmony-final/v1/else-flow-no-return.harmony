@@ -1,0 +1,7 @@
+// FLOW-03: a function with no fallible return type cannot forward a failure.
+enum E { Fail, }
+fn parse(text: &str) -> Outcome<u8, E> { return Good(1u8); }
+fn main() -> i32 {
+    let n = parse("x") else return;
+    return n as i32;
+}

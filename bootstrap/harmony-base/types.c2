@@ -522,7 +522,12 @@ int ty_find_member(int id, char* name) {
     if (id <= 0 || id >= g_ntypes) { return -1; }
     i = 0;
     while (i < g_types[id].nmembers) {
-        if (str_eq(g_members[g_types[id].mstart + i].name, name)) { return i; }
+        int mi = g_types[id].mstart + i;
+        // A stale/primitive type id in a struct initializer must be reported
+        // as "no such member", not read past the flat member table (the
+        // checker has already stopped on the bad type in that case).
+        if (mi < 0 || mi >= g_nmembers) { return -1; }
+        if (str_eq(g_members[mi].name, name)) { return i; }
         i = i + 1;
     }
     return -1;

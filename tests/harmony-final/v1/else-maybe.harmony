@@ -1,0 +1,36 @@
+// `else return;` forwards Empty for Maybe, and `else { ... };` has no
+// payload binding. The success payload becomes the binding after the clause.
+import "../../../library/core/vec.hr";
+
+fn head(v: &vec::Vec<i32>) -> Maybe<i32> {
+    if (v.len() == 0) { return Empty; }
+    return Has(*v.get(0));
+}
+
+fn tail(v: &vec::Vec<i32>) -> Maybe<i32> {
+    if (v.len() == 0) { return Empty; }
+    return Has(*v.get(v.len() - 1));
+}
+
+fn middle(v: &vec::Vec<i32>) -> Maybe<i32> {
+    let first = head(v) else return;
+    let last = tail(v) else return;
+    return Has((first + last) / 2);
+}
+
+fn main() -> i32 {
+    let mut v: vec::Vec<i32> = vec::Vec<i32>::make();
+    v.push(10);
+    v.push(20);
+    v.push(30);
+    switch (middle(&v)) {
+        case Has(x): { if (x != 20) { return 1; } }
+        case Empty: { return 2; }
+    }
+    let mut empty: vec::Vec<i32> = vec::Vec<i32>::make();
+    switch (middle(&empty)) {
+        case Has(x): { return 3; }
+        case Empty: { return 42; }
+    }
+    return 4;
+}

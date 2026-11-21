@@ -278,6 +278,17 @@ fn resolve_pattern(r: &mut Resolver, nodes: &node::Nodes, h: i32) {
     while (i < n.kids.len()) { resolve_pattern(r, nodes, *n.kids.get(i)); i += 1; }
 }
 
+// The v1 `else` clause: its binding is visible only inside the exit block.
+fn resolve_else(r: &mut Resolver, nodes: &node::Nodes, h: i32) {
+    if (h < 0) { return; }
+    let n = node::get(nodes, h);
+    push_scope(r);
+    if (n.sval != "") { declare(r, nodes, h, n.sval, SK_LET); }
+    resolve_stmt(r, nodes, n.a);
+    resolve_expr(r, nodes, n.b);
+    pop_scope(r);
+}
+
 fn resolve_stmt(r: &mut Resolver, nodes: &node::Nodes, h: i32) {
     if (h < 0) { return; }
     let n = node::get(nodes, h);
@@ -285,6 +296,7 @@ fn resolve_stmt(r: &mut Resolver, nodes: &node::Nodes, h: i32) {
     if (k == node::AST_LET) {
         resolve_type(r, nodes, n.a);
         resolve_expr(r, nodes, n.b);
+        resolve_else(r, nodes, n.c);
         if (n.sval != "") { declare(r, nodes, h, n.sval, SK_LET); }
     } else if (k == node::AST_BLOCK) {
         push_scope(r);
@@ -321,6 +333,13 @@ fn resolve_stmt(r: &mut Resolver, nodes: &node::Nodes, h: i32) {
         }
     } else if (k == node::AST_UNCHECKED) {
         resolve_stmt(r, nodes, n.a);
+    } else if (k == node::AST_ASSIGN) {
+        resolve_expr(r, nodes, n.a);
+        resolve_expr(r, nodes, n.b);
+        resolve_else(r, nodes, n.c);
+    } else if (k == node::AST_EXPR_STMT) {
+        resolve_expr(r, nodes, n.a);
+        resolve_else(r, nodes, n.b);
     } else {
         resolve_expr(r, nodes, h);
     }

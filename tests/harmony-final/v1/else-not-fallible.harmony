@@ -1,0 +1,5 @@
+// `else` is only for Maybe and Outcome; another enum needs `switch`.
+fn main() -> i32 {
+    let n = 42 else return;
+    return n;
+}

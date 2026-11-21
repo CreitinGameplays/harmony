@@ -410,24 +410,30 @@ The R6 byte-diff found ten rewrite-only bugs, all fixed at the source:
     address; the checker stores the declaration handle in `b` and codegen
     emits `@harmony__f`. It is deliberately not a general function-pointer
     type — that remains a separate v1 item.
-- [x] **`try` statement (§20.3 item 5).** `let x = try f();` is a contextual
-  `let`-initializer form: bit 2 of the `AST_LET` node's `ival` marks it, so no
-  lexer keyword is needed and harmony-base's token stream stays identical.
-  The checker requires an `Outcome<T, E>` initializer and an `Outcome<R, E>`
-  function return with the same error type (`TYPE-01` otherwise); the binding
-  takes `T`. Codegen reads the variant tag, binds the `Good` payload in a
-  fresh `try.good` block, and on `Bad` writes the tag plus payload into
-  `%sret` and returns immediately. It works inside nested blocks and with
-  aggregate error payloads.
+- [x] **Early exit on failure via an `else` clause (§20.3 item 5, redesigned).**
+  The `try` keyword was removed entirely. A new `AST_ELSE` node (kind 43)
+  attaches to `let`, plain `=` assignment and expression statements; the
+  parser accepts `else return;`, `else return expr;`, `else continue;`,
+  `else break;`, `else (e) { ... };`, `else { ... };` and a terminal call such
+  as `else trap("...");`. The scrutinee must be `Maybe` or `Outcome`; the
+  checker binds the success payload to the target, scopes `(e)` to the clause
+  block, requires an exit on every path (FLOW-01), and checks forwarding
+  shape/error types (FLOW-02/03). Codegen evaluates the scrutinee once,
+  splits on the failure tag, rebuilds `Bad(e)`/`Empty` in `%sret` on
+  forwarding, and binds the success payload on the `else.ok` path.
+- [x] **harmony-base fix:** `ty_find_member` now bounds-checks the flat member
+  table before reading a field name. A stale/primitive type id in a struct
+  initializer used to read past the table and segfault the compiler; it now
+  reports "no such member" like any other unknown field.
 - [ ] Remaining v1 features: named enum payload fields and struct patterns,
   function pointers (as a first-class type), and `abilities`. Channels
   (§19.8.8) are also still future work; the current primitive is a `Share<T>`
   box plus `join`.
 
-`tests/harmony-final/v1.sh` runs the batch: seventeen accepted programs, a
-`TYPE-03` rejection, a `CASE-01` rejection, five v1 type rejections (`fnptr`,
-the thread capability, and three `try` checks), and both audit formats.
-harmony-base is unchanged.
+`tests/harmony-final/v1.sh` runs the batch: fifteen accepted programs, a
+`TYPE-03` rejection, a `CASE-01` rejection, six v1 type rejections (`fnptr`,
+the thread capability, and four `else`/FLOW checks), and both audit formats.
+harmony-base is unchanged apart from the `ty_find_member` bounds guard.
 
 ## What harmony-base must still grow (feed it back)
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # V1 features for the final compiler: structured unchecked reasons, guarded
-# switch arms, Shared<T>/Weak<T>, threads with `fnptr`, and the `try` let
-# form. The syntax forms are final-language only, so they are checked
-# directly through `build/harmony`.
+# switch arms, Shared<T>/Weak<T>, threads with `fnptr`, and `else` clauses on
+# fallible simple statements. The syntax forms are final-language only, so
+# they are checked directly through `build/harmony`.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -45,12 +45,10 @@ run_case shared-expired 42
 run_case thread-join 42
 run_case thread-detached 42
 run_case thread-multi 90
-run_case try-good 42
-run_case try-bad 42
-run_case try-chained 42
-run_case try-nested 42
-run_case try-loop 42
-run_case try-aggregate 42
+run_case else-forward 42
+run_case else-maybe 42
+run_case else-exits 42
+run_case else-nested-exit 42
 
 "$HC" check "$DIR/guarded-refutable.harmony" >"$TMP/refutable.out" 2>&1
 refutable_rc=$?
@@ -84,28 +82,36 @@ else
     bad "spawn requires the opaque Share capability (exit $cap_rc)"
 fi
 
-"$HC" check "$DIR/try-not-outcome.harmony" >"$TMP/try1.out" 2>&1
-try1_rc=$?
-if [ "$try1_rc" -ne 0 ] && grep -q 'try.*needs an `Outcome` value' "$TMP/try1.out"; then
-    ok "try rejects a non-Outcome initializer"
+"$HC" check "$DIR/else-flow-fallthrough.harmony" >"$TMP/flow1.out" 2>&1
+flow1_rc=$?
+if [ "$flow1_rc" -ne 0 ] && grep -q 'FLOW-01' "$TMP/flow1.out"; then
+    ok "FLOW-01 rejects a falling-through else clause"
 else
-    bad "try rejects a non-Outcome initializer (exit $try1_rc)"
+    bad "FLOW-01 rejects a falling-through else clause (exit $flow1_rc)"
 fi
 
-"$HC" check "$DIR/try-wrong-return.harmony" >"$TMP/try2.out" 2>&1
-try2_rc=$?
-if [ "$try2_rc" -ne 0 ] && grep -q 'Outcome.-returning function' "$TMP/try2.out"; then
-    ok "try rejects a non-Outcome-returning function"
+"$HC" check "$DIR/else-flow-error-type.harmony" >"$TMP/flow2.out" 2>&1
+flow2_rc=$?
+if [ "$flow2_rc" -ne 0 ] && grep -q 'FLOW-02' "$TMP/flow2.out"; then
+    ok "FLOW-02 rejects mismatched error types"
 else
-    bad "try rejects a non-Outcome-returning function (exit $try2_rc)"
+    bad "FLOW-02 rejects mismatched error types (exit $flow2_rc)"
 fi
 
-"$HC" check "$DIR/try-error-type.harmony" >"$TMP/try3.out" 2>&1
-try3_rc=$?
-if [ "$try3_rc" -ne 0 ] && grep -q 'error types disagree' "$TMP/try3.out"; then
-    ok "try rejects mismatched error types"
+"$HC" check "$DIR/else-flow-no-return.harmony" >"$TMP/flow3.out" 2>&1
+flow3_rc=$?
+if [ "$flow3_rc" -ne 0 ] && grep -q 'FLOW-03' "$TMP/flow3.out"; then
+    ok "FLOW-03 rejects forwarding from a non-fallible return"
 else
-    bad "try rejects mismatched error types (exit $try3_rc)"
+    bad "FLOW-03 rejects forwarding from a non-fallible return (exit $flow3_rc)"
+fi
+
+"$HC" check "$DIR/else-not-fallible.harmony" >"$TMP/notfallible.out" 2>&1
+nf_rc=$?
+if [ "$nf_rc" -ne 0 ] && grep -q 'needs a `Maybe` or `Outcome`' "$TMP/notfallible.out"; then
+    ok "else rejects a non-Maybe/Outcome scrutinee"
+else
+    bad "else rejects a non-Maybe/Outcome scrutinee (exit $nf_rc)"
 fi
 
 "$HC" audit --format=json "$DIR/structured-reason.harmony" >"$TMP/audit.json" 2>/dev/null

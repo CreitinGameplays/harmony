@@ -1,0 +1,74 @@
+// The exit is written out: continue, break, trap, plain assignment and an
+// expression statement can all carry an else clause. Each still ends with ;
+enum E { Fail, }
+
+fn parse(text: &str) -> Outcome<u8, E> {
+    if (text.len() == 0) { return Bad(E::Fail); }
+    return Good(text.as_bytes()[0] - 48u8);
+}
+
+fn sum_lines(lines: &[&str]) -> u32 {
+    let mut total: u32 = 0;
+    let mut i: usize = 0;
+    while (i < lines.len()) {
+        let line = lines[i];
+        i += 1;                       // advance before the clause, so continue loops
+        let n = parse(line) else continue;
+        total = total + n as u32;
+    }
+    return total;
+}
+
+fn good_prefix(lines: &[&str]) -> usize {
+    let mut i: usize = 0;
+    while (i < lines.len()) {
+        let n = parse(lines[i]) else break;
+        i += 1;
+    }
+    return i;
+}
+
+fn via_assign(text: &str) -> Outcome<i32, E> {
+    let mut n: u8 = 0;
+    n = parse(text) else return;
+    return Good(n as i32 + 1);
+}
+
+fn via_expr_stmt(text: &str) -> Outcome<i32, E> {
+    parse(text) else return;
+    return Good(7);
+}
+
+fn via_trap(text: &str) -> i32 {
+    let n = parse(text) else trap("bad config");
+    return n as i32;
+}
+
+fn via_block_trap(text: &str) -> Outcome<i32, E> {
+    let n = parse(text) else (e) { trap("bad config"); };
+    return Good(n as i32);
+}
+
+fn main() -> i32 {
+    let lines = ["1", "x", "2", ""];
+    if (sum_lines(&lines[0..4]) != 75u32) { return 1; }
+    if (good_prefix(&lines[0..4]) != 3usize) { return 2; }
+    switch (via_assign("7")) {
+        case Good(v): { if (v != 8) { return 3; } }
+        case Bad(e): { return 4; }
+    }
+    switch (via_assign("")) {
+        case Good(v): { return 5; }
+        case Bad(e): { }
+    }
+    switch (via_expr_stmt("5")) {
+        case Good(v): { if (v != 7) { return 6; } }
+        case Bad(e): { return 7; }
+    }
+    if (via_trap("3") != 3) { return 8; }
+    switch (via_block_trap("9")) {
+        case Good(v): { if (v != 9) { return 9; } }
+        case Bad(e): { return 10; }
+    }
+    return 42;
+}

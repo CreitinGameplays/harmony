@@ -858,11 +858,15 @@ directly into its binary and (b) support **multi-core compilation by default**.
     function address. The allocator is spinlocked and process exits use
     `SYS_exit_group`; no libc or pthread is needed. `tests/harmony-final/v1.sh`
     covers join, detach, three concurrent threads, and two error cases.
-  - V1 `try` (final compiler only): `let x = try f();` unwraps `Good` into the
-    binding and returns `Bad` from the enclosing `Outcome`-returning function.
-    The word is contextual (no lexer change), the checker enforces matching
-    error types, and codegen rebuilds `Bad(e)` in `%sret` on the early return.
-    `tests/harmony-final/v1.sh` covers Good/Bad, chained uses, nested blocks,
-    aggregate payloads, and three `TYPE-01` rejections. Remaining v1 features
-    (named fields/struct patterns, first-class function pointers, `abilities`)
-    are still unimplemented.
+  - V1 early exit (final compiler only): the `try` keyword was removed and
+    replaced by an `else` clause on `let`, plain `=` assignment, and expression
+    statements. `else return;` forwards `Bad(e)`/`Empty`; `else (e) { ... };`
+    converts; `else continue;`/`else break;`/`else trap(...);` are written out.
+    The scrutinee must be `Maybe`/`Outcome`, every clause path must exit
+    (FLOW-01), and forwarding needs matching shape/error type (FLOW-02/03).
+    `tests/harmony-final/v1.sh` covers all forms plus four rejections.
+  - harmony-base: `ty_find_member` now bounds-checks the flat member table;
+    a stale/primitive type id in a struct initializer used to segfault the
+    compiler. It reports "no such member" instead.
+  - Remaining v1 features (named fields/struct patterns, first-class function
+    pointers, `abilities`) are still unimplemented.

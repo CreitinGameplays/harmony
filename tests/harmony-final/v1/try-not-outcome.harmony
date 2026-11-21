@@ -1,5 +1,0 @@
-// `try` only unwraps an `Outcome`; a plain value has no `Bad` to propagate.
-fn main() -> i32 {
-    let v = try 42;
-    return 0;
-}

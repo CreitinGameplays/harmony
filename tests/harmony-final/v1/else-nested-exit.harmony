@@ -1,0 +1,20 @@
+// A bound block may exit through if/else on every path; FLOW-01 accepts it.
+enum E { Fail, }
+fn parse(n: i32) -> Outcome<i32, E> {
+    if (n < 0) { return Bad(E::Fail); }
+    return Good(n);
+}
+fn outer(n: i32) -> Outcome<i32, E> {
+    let v = parse(n) else (e) {
+        if (n == -1) { return Bad(E::Fail); }
+        else { trap("unexpected"); }
+    };
+    return Good(v + 1);
+}
+fn main() -> i32 {
+    switch (outer(41)) {
+        case Good(v): { return v; }
+        case Bad(e): { return 1; }
+    }
+    return 2;
+}

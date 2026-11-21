@@ -439,7 +439,7 @@ The R6 byte-diff found ten rewrite-only bugs, all fixed at the source:
 - [ ] Remaining v1 features: function pointers (as a first-class type) and
   `abilities`. Channels (§19.8.8) are also still future work; the current
   primitive is a `Share<T>` box plus `join`.
-- [ ] **Scoped AST macros (future, v2): design documented, not implemented.**
+- [ ] **Scoped AST macros (future): design documented, not implemented.**
   docs/harmony.md §20.5 records the planned model: expansion at stage 3.5,
   `#name(...)` calls with `#` and `...` as reserved tokens, contextual
   `expr`/`code`/`block`/`type`/`ident` parameter kinds, hygienic scopes with

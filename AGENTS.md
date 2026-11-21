@@ -91,6 +91,7 @@ library/
 bootstrap/ <- the stage 0 compilers.
 ├── c2x-seed/...
 └── harmony-base/...
+chord/... <- A future package manager/build tool
 tests/... <- the current tests
 roadmap/... <- the language roadmap
 docs/... <- language documentations

@@ -2678,8 +2678,10 @@ also made self-contained (shared preamble plus declarations of sibling
 symbols). The default backend parses each chunk with the LLVM C API, runs
 `default<O2>` and emits an object entirely in-process; a forked worker owns
 each libLLVM instance. Objects are linked with `ld` directly, using the host
-crt/libc paths captured at build time in `build/host-link.txt`. No `.ll` file
-and no clang process are used for the default path. `--backend=clang` keeps
+crt/libc paths discovered by LLD itself from the host filesystem. No `.ll`
+file and no external tool (clang, ld, or a generated link script) is used for
+the default path; a self rebuild executes no child process at all.
+`--backend=clang` keeps
 the previous clang text path for debugging, and `emit-llvm` always prints the
 unchanged byte-deterministic IR. Small programs take the single-process path.
 The default worker count is three per CPU in the process's affinity mask

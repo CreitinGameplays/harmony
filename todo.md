@@ -837,7 +837,8 @@ directly into its binary and (b) support **multi-core compilation by default**.
     backend schedule and stay byte-identical.
   - R8 adds a native LLVM-C backend: `library/std/llvm.hr` binds the C API
     through `extern "C"` (pointers and integers only), `library/runtime/llvmc.c`
-    parses/emits objects in-process, and `ld` links with a build-time template.
+    parses/optimises/emits objects in-process, and embedded LLD links them
+    without spawning clang, ld, or reading a generated link script.
     It is the default for `build`/`run`; `--backend=clang` and `emit-llvm`
     keep the debug path. The runtime directory moved to `library/runtime/`.
   - The rewrite checker's `stamp_lits` now only descends into untyped literal

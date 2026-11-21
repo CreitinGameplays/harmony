@@ -40,7 +40,7 @@ make version            # regenerate the VERSION file
 ## Toolchain (debian)
 ```bash
 sudo apt update
-sudo apt install make gcc clang llvm-dev file python3 qemu-system-x86 python-is-python3 afl++ linux-perf xxd nano gdb valgrind strace nasm fasm git ripgrep llvm -y
+sudo apt install make gcc clang llvm-dev file liblld-dev python3 qemu-system-x86 python-is-python3 afl++ linux-perf xxd nano gdb valgrind strace nasm fasm git ripgrep llvm -y
 ```
 Also install (for fuzzing tests): https://github.com/google/honggfuzz
 

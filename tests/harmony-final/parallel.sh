@@ -128,6 +128,14 @@ if command -v strace >/dev/null 2>&1; then
     else
         ok "default build does not spawn clang"
     fi
+    timeout 300 strace -f -e trace=execve \
+        "$HC" build harmony/main.hr -o "$TMP/self-native" >/dev/null 2>"$TMP/self-exec.trace"
+    child_execs=$(grep -c 'execve(' "$TMP/self-exec.trace" || true)
+    if [ "${child_execs:-0}" -le 1 ]; then
+        ok "self rebuild spawns no external tools ($child_execs exec)"
+    else
+        bad "self rebuild spawns no external tools ($child_execs execs)"
+    fi
 fi
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"

@@ -45,12 +45,12 @@ HARMONY_OUT := build/harmony
 LLVM_LIBDIR   := $(shell llvm-config --libdir)
 LLVM_MAJOR    := $(shell llvm-config --version | cut -d. -f1)
 LLVM_CFLAGS   := $(shell llvm-config --cflags)
-LLVM_SYSLIBS  := $(shell llvm-config --system-libs)
-LLVM_LINK     := -L$(LLVM_LIBDIR) -Wl,-rpath,$(LLVM_LIBDIR) -lLLVM-$(LLVM_MAJOR) $(LLVM_SYSLIBS)
+LLVM_SYSLIBS  := $(shell llvm-config --link-static --system-libs)
+LLVM_LINK     := -L$(LLVM_LIBDIR) -Wl,-rpath,$(LLVM_LIBDIR) -llldELF -llldCommon -lLLVM-$(LLVM_MAJOR) $(LLVM_SYSLIBS)
+CXXFLAGS      := -std=c++17 -O2 $(LLVM_CFLAGS)
 LLVMC_OBJ     := build/llvmc.o
 HOSTRT_OBJ    := build/hostrt.o
 HOSTMAIN_OBJ  := build/hostmain.o
-HOSTLINK_CFG  := build/host-link.txt
 
 .PHONY: all clean test test-final test-fuzz test-fuzz2 fuzz2-deep test-seed test-lisp seed harmony harmony-base lisp version
 
@@ -78,8 +78,8 @@ harmony-base: $(SEED) $(HB_SRC)
 	$(SEED) -o $(HB_OUT) $(HB_SRC)
 	@bash tools/version.sh >/dev/null 2>&1 || true
 
-$(LLVMC_OBJ): library/runtime/llvmc.c
-	clang -O2 -fPIC $(LLVM_CFLAGS) -c $< -o $@
+$(LLVMC_OBJ): library/runtime/llvmc.cpp library/runtime/llvmc_core.cpp
+	clang++ $(CXXFLAGS) -fPIC -c $< -o $@
 
 # Rename `_start` so the C runtime startup can initialise libc before libLLVM
 # is used. The wrapper in hostmain.c supplies the real `main`.
@@ -89,17 +89,14 @@ $(HOSTRT_OBJ): library/runtime/rt.c
 $(HOSTMAIN_OBJ): library/runtime/hostmain.c
 	clang -O2 -c $< -o $@
 
-$(HOSTLINK_CFG): tools/gen-hostlink.py
-	python3 $<
-
 # The self-hosted compiler is linked against libLLVM once by the build tools,
 # then rebuilt by itself through the native LLVM-C backend. That extra stage
 # keeps stage 1, stage 2 and stage 3 byte-identical.
 HARMONY_STAGE0 := build/harmony-stage0
 HARMONY_STAGE0_IR := build/harmony-stage0.ll
-harmony: harmony-base $(HARMONY_SRC) $(LLVMC_OBJ) $(HOSTRT_OBJ) $(HOSTMAIN_OBJ) $(HOSTLINK_CFG)
+harmony: harmony-base $(HARMONY_SRC) $(LLVMC_OBJ) $(HOSTRT_OBJ) $(HOSTMAIN_OBJ)
 	$(HB_OUT) emit-llvm harmony/main.hr > $(HARMONY_STAGE0_IR)
-	clang -x ir $(HARMONY_STAGE0_IR) -x none $(LLVMC_OBJ) $(HOSTRT_OBJ) $(HOSTMAIN_OBJ) -o $(HARMONY_STAGE0) $(LLVM_LINK)
+	clang++ -x ir $(HARMONY_STAGE0_IR) -x none $(LLVMC_OBJ) $(HOSTRT_OBJ) $(HOSTMAIN_OBJ) -o $(HARMONY_STAGE0) $(LLVM_LINK)
 	$(HARMONY_STAGE0) build harmony/main.hr -o $(HARMONY_OUT)
 	rm -f $(HARMONY_STAGE0) $(HARMONY_STAGE0_IR)
 

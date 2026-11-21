@@ -342,15 +342,17 @@ The R6 byte-diff found ten rewrite-only bugs, all fixed at the source:
   sequential. `--jobs=1` / `--sequential` are the explicit single-core paths.
   `tests/harmony-final/parallel.sh` diffs every job count against
   harmony-base and traces actual forks on the compiler's own source.
-- [x] **R8 native LLVM-C backend.** `build`/`run` now link against `libLLVM`
-  through `extern "C"` bindings in `library/std/llvm.hr`. The shim
-  `library/runtime/llvmc.c` parses the deterministic IR text, runs LLVM's
-  `default<O2>` pipeline and emits a relocatable object; forked workers do
-  this per chunk, and `ld` links the objects with the host crt/libc paths in
-  `build/host-link.txt`. No clang process is spawned. `--backend=clang`
-  keeps the previous path for debugging and `emit-llvm` remains byte-identical.
-  `parallel.sh` checks both backends and traces the absence of clang in the
-  default path. The runtime directory moved from `bootstrap/runtime/` to
+- [x] **R8 native LLVM-C + embedded LLD backend.** `build`/`run` link against
+  `libLLVM` through `extern "C"` bindings in `library/std/llvm.hr`. The shim
+  `library/runtime/llvmc.cpp` parses the deterministic IR text, runs LLVM's
+  `default<O2>` pipeline, emits a relocatable object, and links with LLD in
+  process. Forked workers do the parse/optimise/emit step per chunk; the
+  parent links in stable order. LLD discovers the host crt/libc paths itself,
+  so there is no generated `host-link.txt` and no external tool. A self
+  rebuild executes no child process at all. `--backend=clang` keeps the
+  previous path for debugging and `emit-llvm` remains byte-identical.
+  `parallel.sh` checks both backends and traces self rebuilds for external
+  executions. The runtime directory moved from `bootstrap/runtime/` to
   `library/runtime/`; `hostmain.c` provides the hosted entry point that
   initialises libc before libLLVM is used.
   - Module checking and monomorphization themselves remain sequential: they

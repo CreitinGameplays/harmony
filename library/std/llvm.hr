@@ -1,15 +1,19 @@
-// library/std/llvm.hr — the native LLVM-C backend surface.
+// library/std/llvm.hr — the native LLVM-C + embedded LLD surface.
 //
-// The C symbols live in `library/runtime/llvmc.c`, which is linked into the
+// The C symbols live in `library/runtime/llvmc.cpp`, which is linked into the
 // compiler binary. Only pointers and integers cross the FFI boundary; C
 // structs never do. The `unchecked` promise is kept in one auditable place
 // here instead of at every call site (§13).
-import "../../library/core/mem.hr";
+import "../../library/core/str.hr";
+import "../../library/core/vec.hr";
+import "../../library/std/sys.hr";
 
 extern "C" fn hc_llvm_parse_c(text: raw u8, len: usize) -> raw u8;
 extern "C" fn hc_llvm_object_c(module: raw u8, obj: raw u8, opt: raw u8) -> i32;
 extern "C" fn hc_llvm_dispose_c(module: raw u8);
 extern "C" fn hc_llvm_error_c() -> raw u8;
+extern "C" fn hc_lld_link(nobj: i32, objs: raw u8, output: raw u8,
+                          flags: i32, err: raw u8, errlen: usize) -> i32;
 
 export fn parse(text: raw u8, len: usize) -> raw u8 {
     unchecked("libLLVM copies the NUL-terminated IR text into its own buffer") {
@@ -29,4 +33,35 @@ export fn dispose(module: raw u8) {
     unchecked("the parsed module is released exactly once") {
         hc_llvm_dispose_c(module);
     }
+}
+
+// Links objects in-process with embedded LLD. `flags`: 1 = include the
+// embedded host runtime, 2 = also include the small LLVM-C core object for a
+// compiler self-rebuild.
+export fn link(objs: &vec::Vec<str::String>, output: &str, flags: i32) -> i32 {
+    let mut ptrs: raw mut i64 = Raw::null<i64>();
+    unchecked("one extra slot holds the NULL terminator of argv") {
+        ptrs = alloc<i64>(objs.len() + 1);
+        let mut i: usize = 0;
+        while (i < objs.len()) {
+            ptrs.plus(i).write(sys::cstr(objs.get(i).as_str()) as i64);
+            i += 1;
+        }
+        ptrs.plus(objs.len()).write(0);
+    }
+    let out_path = sys::cstr(output);
+    let mut err: [u8; 4096] = [0u8; 4096];
+    let mut rc: i32 = 0;
+    unchecked("the shim writes at most errlen bytes into err") {
+        rc = hc_lld_link(objs.len() as i32, ptrs as raw u8, raw(out_path),
+                         flags, raw(&mut err[0]), err.len());
+    }
+    if (rc != 0) {
+        let mut n: usize = 0;
+        while (n < err.len() && err[n] != 0u8) { n += 1; }
+        unchecked("err[0..n] was written by the shim as text") {
+            eprintln("harmony: {}", str::from_parts(raw(&mut err[0]) as raw u8, n));
+        }
+    }
+    return rc;
 }

@@ -94,6 +94,18 @@ fn discover(root: &str) -> Discovery {
     return d;
 }
 
+// True when the module graph declares the LLVM-C shim. This is cheaper and
+// safer than scanning multi-megabyte IR chunks: source modules are small and
+// always NUL-terminated by the loader.
+fn uses_llvmc(mods: &vec::Vec<loader::Module>) -> i32 {
+    let mut i: usize = 0;
+    while (i < mods.len()) {
+        if (str::find(mods.get(i).src, "hc_llvm_") >= 0) { return 1; }
+        i += 1;
+    }
+    return 0;
+}
+
 // The parser's import list is the authority for discovery; the loader then
 // reparses the same modules and expands them in dependency order.
 fn print_clang_error(log_path: &str) {
@@ -351,48 +363,24 @@ fn compile_chunks(chunks: &vec::Vec<str::String>, output: &str,
 // Linking uses `ld` with the host's crt/libc paths discovered at build time;
 // no clang process is spawned. `emit-llvm` keeps the original text path.
 
-fn link_llvm_objects(objs: &vec::Vec<str::String>, output: &str) -> i32 {
-    let cfg = sys::read_file("build/host-link.txt");
-    if (cfg.ok != 0) {
-        eprintln("harmony: missing build/host-link.txt (run make harmony)");
-        return process::EXIT_STOP;
-    }
-    let mut a = process::args_make();
-    let bytes = cfg.data.as_bytes();
+fn link_llvm_objects(objs: &vec::Vec<str::String>, output: &str,
+                     need_core: i32) -> i32 {
+    let mut all: vec::Vec<str::String> = vec::Vec<str::String>::make();
+    let mut rt: str::String = str::String::make(); rt.push("build/llvmc.o"); all.push(rt);
+    let mut hm: str::String = str::String::make(); hm.push("build/hostrt.o"); all.push(hm);
+    let mut mn: str::String = str::String::make(); mn.push("build/hostmain.o"); all.push(mn);
     let mut i: usize = 0;
-    while (i < cfg.data.len()) {
-        while (i < cfg.data.len() && (bytes[i] == 32u8 || bytes[i] == 9u8
-               || bytes[i] == 10u8 || bytes[i] == 13u8)) { i += 1; }
-        if (i >= cfg.data.len()) { break; }
-        if (bytes[i] == 35u8) {   // '#' comment
-            while (i < cfg.data.len() && bytes[i] != 10u8) { i += 1; }
-            continue;
-        }
-        let start = i;
-        while (i < cfg.data.len() && bytes[i] != 32u8 && bytes[i] != 9u8
-               && bytes[i] != 10u8 && bytes[i] != 13u8) { i += 1; }
-        let tok = &cfg.data[start..i];
-        if (tok == "<OUT>") { process::args_push(&mut a, output); }
-        else if (tok == "<LLVMC>") { process::args_push(&mut a, "build/llvmc.o"); }
-        else if (tok == "<OBJ>") {
-            let mut k: usize = 0;
-            while (k < objs.len()) {
-                process::args_push(&mut a, objs.get(k).as_str());
-                k += 1;
-            }
-        }
-        else if (tok == "<HOSTRT>") { process::args_push(&mut a, "build/hostrt.o"); }
-        else if (tok == "<HOSTMAIN>") { process::args_push(&mut a, "build/hostmain.o"); }
-        else { process::args_push(&mut a, tok); }
+    while (i < objs.len()) {
+        let mut copy_s: str::String = str::String::make();
+        copy_s.push(objs.get(i).as_str());
+        all.push(copy_s);
+        i += 1;
     }
-    let log = temp_path(".ld.log", "");
-    let rc = process::spawn(&a, log);
-    if (rc != 0) { print_clang_error(log); }
-    sys::unlink_if_empty(log);
-    return rc;
+    let flags: i32 = 1 | (need_core * 2);
+    return llvm::link(&all, output, flags);
 }
 
-fn compile_llvmc(ir: &str, output: &str, opt: &str) -> i32 {
+fn compile_llvmc(ir: &str, output: &str, opt: &str, need_core: i32) -> i32 {
     let text = sys::cstr(ir);
     let obj = object_path("-llvm.o");
     let m: raw u8 = llvm::parse(raw(text), ir.len());
@@ -412,7 +400,7 @@ fn compile_llvmc(ir: &str, output: &str, opt: &str) -> i32 {
     let mut copy_obj: str::String = str::String::make();
     copy_obj.push(obj);
     objs.push(copy_obj);
-    let link_rc = link_llvm_objects(&objs, output);
+    let link_rc = link_llvm_objects(&objs, output, need_core);
     sys::unlink(obj);
     return link_rc;
 }
@@ -421,7 +409,7 @@ fn compile_llvmc(ir: &str, output: &str, opt: &str) -> i32 {
 // chunk in its own process; libLLVM is initialised after the fork, so there is
 // no shared mutable LLVM state. The parent links every object in order.
 fn compile_llvmc_chunks(chunks: &vec::Vec<str::String>, output: &str,
-                        opt: &str) -> i32 {
+                        opt: &str, need_core: i32) -> i32 {
     let mut pool = process::workers_make();
     let mut objs: vec::Vec<str::String> = vec::Vec<str::String>::make();
     let mut i: usize = 0;
@@ -454,7 +442,7 @@ fn compile_llvmc_chunks(chunks: &vec::Vec<str::String>, output: &str,
         while (k < objs.len()) { sys::unlink(objs.get(k).as_str()); k += 1; }
         return process::EXIT_STOP;
     }
-    let rc = link_llvm_objects(&objs, output);
+    let rc = link_llvm_objects(&objs, output, need_core);
     let mut k: usize = 0;
     while (k < objs.len()) { sys::unlink(objs.get(k).as_str()); k += 1; }
     return rc;
@@ -473,6 +461,7 @@ export fn run(cmd: i32, input: &str, output: &str, opt: &str,
         eprintln("harmony: module not found: {}", d.missing);
         return process::EXIT_USAGE;
     }
+    let need_core = uses_llvmc(&d.mods);
 
     let mut arena: mem::Arena = mem::Arena { .cur = Raw::null() };
     let mut ns: node::Nodes = node::nodes_make();
@@ -512,9 +501,9 @@ export fn run(cmd: i32, input: &str, output: &str, opt: &str,
     if (llvmc != 0) {
         let chunks = emit::emit_module_chunks(&mut c, loaded.program, jobs);
         if (chunks.len() > 1) {
-            rc = compile_llvmc_chunks(&chunks, binary, opt);
+            rc = compile_llvmc_chunks(&chunks, binary, opt, need_core);
         } else {
-            rc = compile_llvmc(chunks.get(0).as_str(), binary, opt);
+            rc = compile_llvmc(chunks.get(0).as_str(), binary, opt, need_core);
         }
     } else {
         // A program that calls the LLVM-C shim cannot use the freestanding
@@ -528,7 +517,7 @@ export fn run(cmd: i32, input: &str, output: &str, opt: &str,
             if (compile_clang_object(full, obj_name.as_str(), opt) == 0) {
                 let mut objs: vec::Vec<str::String> = vec::Vec<str::String>::make();
                 objs.push(obj_name);
-                rc = link_llvm_objects(&objs, binary);
+                rc = link_llvm_objects(&objs, binary, 1);
             } else {
                 rc = 1;
             }

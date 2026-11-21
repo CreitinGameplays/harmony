@@ -40,6 +40,18 @@ SEED_SRC  := $(wildcard bootstrap/c2x-seed/*.asm)
 HARMONY_SRC := $(shell find harmony library -name '*.hr' -o -name '*.harmony' 2>/dev/null)
 HARMONY_OUT := build/harmony
 
+# The final compiler links the LLVM C API directly for build/run. These are
+# build-time artifacts: the compiler itself never spawns clang for codegen.
+LLVM_LIBDIR   := $(shell llvm-config --libdir)
+LLVM_MAJOR    := $(shell llvm-config --version | cut -d. -f1)
+LLVM_CFLAGS   := $(shell llvm-config --cflags)
+LLVM_SYSLIBS  := $(shell llvm-config --system-libs)
+LLVM_LINK     := -L$(LLVM_LIBDIR) -Wl,-rpath,$(LLVM_LIBDIR) -lLLVM-$(LLVM_MAJOR) $(LLVM_SYSLIBS)
+LLVMC_OBJ     := build/llvmc.o
+HOSTRT_OBJ    := build/hostrt.o
+HOSTMAIN_OBJ  := build/hostmain.o
+HOSTLINK_CFG  := build/host-link.txt
+
 .PHONY: all clean test test-final test-fuzz test-fuzz2 fuzz2-deep test-seed test-lisp seed harmony harmony-base lisp version
 
 all: harmony-base harmony
@@ -66,15 +78,30 @@ harmony-base: $(SEED) $(HB_SRC)
 	$(SEED) -o $(HB_OUT) $(HB_SRC)
 	@bash tools/version.sh >/dev/null 2>&1 || true
 
-# The self-hosted compiler is built by harmony-base and then rebuilt once by
-# itself. The bootstrap binary uses one clang invocation; the self-built
-# compiler uses the parallel clang path, so this extra stage makes the
-# canonical `build/harmony` byte-identical to every later self-build.
+$(LLVMC_OBJ): library/runtime/llvmc.c
+	clang -O2 -fPIC $(LLVM_CFLAGS) -c $< -o $@
+
+# Rename `_start` so the C runtime startup can initialise libc before libLLVM
+# is used. The wrapper in hostmain.c supplies the real `main`.
+$(HOSTRT_OBJ): library/runtime/rt.c
+	clang -O2 -D_start=hc_unused_start -c $< -o $@
+
+$(HOSTMAIN_OBJ): library/runtime/hostmain.c
+	clang -O2 -c $< -o $@
+
+$(HOSTLINK_CFG): tools/gen-hostlink.py
+	python3 $<
+
+# The self-hosted compiler is linked against libLLVM once by the build tools,
+# then rebuilt by itself through the native LLVM-C backend. That extra stage
+# keeps stage 1, stage 2 and stage 3 byte-identical.
 HARMONY_STAGE0 := build/harmony-stage0
-harmony: harmony-base $(HARMONY_SRC)
-	$(HB_OUT) build harmony/main.hr -o $(HARMONY_STAGE0)
+HARMONY_STAGE0_IR := build/harmony-stage0.ll
+harmony: harmony-base $(HARMONY_SRC) $(LLVMC_OBJ) $(HOSTRT_OBJ) $(HOSTMAIN_OBJ) $(HOSTLINK_CFG)
+	$(HB_OUT) emit-llvm harmony/main.hr > $(HARMONY_STAGE0_IR)
+	clang -x ir $(HARMONY_STAGE0_IR) -x none $(LLVMC_OBJ) $(HOSTRT_OBJ) $(HOSTMAIN_OBJ) -o $(HARMONY_STAGE0) $(LLVM_LINK)
 	$(HARMONY_STAGE0) build harmony/main.hr -o $(HARMONY_OUT)
-	rm -f $(HARMONY_STAGE0)
+	rm -f $(HARMONY_STAGE0) $(HARMONY_STAGE0_IR)
 
 # Full test target: c2x-seed regression corpus + harmony-base driver tests.
 test: test-seed harmony-base harmony

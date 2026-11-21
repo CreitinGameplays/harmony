@@ -250,7 +250,7 @@ binary is `harmony-base` (the spec's `lc`).
       [Val::Nil; 64]`) into a `memset`/`memcpy` libcall, and under
       `-ffreestanding -nostdlib` there is no libc to resolve it, so the link
       failed with "undefined reference to `memset'". The freestanding runtime
-      (`bootstrap/runtime/rt.c`) now provides the standard `memset`/`memcpy`/
+      (`library/runtime/rt.c`) now provides the standard `memset`/`memcpy`/
       `memmove`/`memcmp` (and `__bzero`) so any IR the compiler emits links.
       Regression `tests/harmony/codegen/big-aggregate-init.harmony`.
       (3) *Comparison stored in a binding.* `let a = (1 < 2);` recursed
@@ -560,7 +560,7 @@ wrong exit code, or ICE) with a repro.
 - [x] **No runtime-sized allocation.** *(FIXED with the toolbox above.)*
       `alloc<T>(n) -> raw mut T` and `dealloc<T>(p, n)` now work: the count is
       scaled by `sizeof(T)` and lowered to `lc_alloc`/`lc_dealloc`. `lc_dealloc`
-      is a no-op for the M1 bump allocator (`bootstrap/runtime/rt.c`; the OS
+      is a no-op for the M1 bump allocator (`library/runtime/rt.c`; the OS
       reclaims at exit) and becomes real with the std allocator (§19.8.4). A
       growable buffer can now allocate a runtime-sized block instead of a fixed
       `Heap<[T; N]>`.
@@ -628,7 +628,7 @@ $HB run /tmp/ca.harmony; echo "rc=$? (bug: traps; IR has `getelementptr ... ptr 
       and byte-identical binaries vs the NASM build).
 - [x] **Repository layout reorganized to the AGENTS.md target.** The stage-0
       compilers moved under `bootstrap/`: `bootstrap/c2x-seed/` (NASM),
-      `bootstrap/harmony-base/` (c2x-seed), and `bootstrap/runtime/rt.c` (the
+      `bootstrap/harmony-base/` (c2x-seed), and `library/runtime/rt.c` (the
       freestanding runtime, was `src/stdlib/runtime/`). `src/` is gone; the
       self-hosted rewrite will live in the top-level `harmony/` (`lexer/`,
       `parser/`, `ast/`, `ir/`, `sema/`, `borrowck/`, `codegen/`, `driver/`,
@@ -666,7 +666,7 @@ implemented in the `harmony` compiler (written in harmony-base) under
 - `library/std/` (`*.hr`): the full standard library (HashMap, io, fs, net)
   that needs the OS.
 - `bootstrap/` holds the stage-0 compilers: `bootstrap/c2x-seed/` (NASM),
-  `bootstrap/harmony-base/` (c2x-seed), and `bootstrap/runtime/` (the
+  `bootstrap/harmony-base/` (c2x-seed), and `library/runtime/` (the
   freestanding runtime only harmony-base links).
 
 Also per AGENTS.md: the final `harmony` compiler must (a) integrate LLVM IR
@@ -824,7 +824,7 @@ directly into its binary and (b) support **multi-core compilation by default**.
     silently aliased later literals and broke the compiler's own `VERSION`
     read. `tests/harmony/string-pool.sh` guards it.
   - Multi-core compilation is on by default: `harmony/codegen/llvm/emit.hr`
-    forks `--jobs` workers (auto = two per available CPU, capped at 32) over
+    forks `--jobs` workers (auto = three per available CPU, capped at 32) over
     contiguous slices of the deterministic function order and merges their IR
     chunks in that same order. Large builds also pipe each chunk to its own
     clang and link the objects in stable order, cutting self-hosting from
@@ -833,8 +833,13 @@ directly into its binary and (b) support **multi-core compilation by default**.
     one type table whose ids and instantiation order are observable in the
     emitted IR; a safe split needs explicit stable id assignment (M2+ work).
   - `make harmony` now builds a harmony-base stage 0 and then rebuilds stage 1
-    with it, so canonical stage 1, stage 2 and stage 3 all use the parallel
-    clang schedule and stay byte-identical.
+    with it, so canonical stage 1, stage 2 and stage 3 all use the same native
+    backend schedule and stay byte-identical.
+  - R8 adds a native LLVM-C backend: `library/std/llvm.hr` binds the C API
+    through `extern "C"` (pointers and integers only), `library/runtime/llvmc.c`
+    parses/emits objects in-process, and `ld` links with a build-time template.
+    It is the default for `build`/`run`; `--backend=clang` and `emit-llvm`
+    keep the debug path. The runtime directory moved to `library/runtime/`.
   - The rewrite checker's `stamp_lits` now only descends into untyped literal
     children. The old walk stamped array-index operands with the enclosing
     result type, producing different widen instructions. Regression

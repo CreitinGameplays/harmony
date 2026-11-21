@@ -8,6 +8,7 @@ import "../../library/core/mem.hr";
 import "../../library/core/str.hr";
 import "../../library/core/vec.hr";
 import "../../library/std/sys.hr";
+import "../../library/std/llvm.hr";
 import "../../harmony/ast/node.hr";
 import "../../harmony/ast/print.hr";
 import "../../harmony/lexer/token.hr";
@@ -131,7 +132,7 @@ fn build_args(output: &str, opt: &str) -> process::ArgList {
     process::args_push(&mut a, "-");
     process::args_push(&mut a, "-x");
     process::args_push(&mut a, "c");
-    process::args_push(&mut a, "bootstrap/runtime/rt.c");
+    process::args_push(&mut a, "library/runtime/rt.c");
     process::args_push(&mut a, "-o");
     process::args_push(&mut a, output);
     process::args_push(&mut a, opt);
@@ -198,12 +199,38 @@ fn clang_chunk_args(obj: &str, opt: &str) -> process::ArgList {
     return a;
 }
 
+fn clang_object_args(obj: &str, opt: &str) -> process::ArgList {
+    let mut a = process::args_make();
+    process::args_push(&mut a, "/usr/bin/clang");
+    process::args_push(&mut a, "-x");
+    process::args_push(&mut a, "ir");
+    process::args_push(&mut a, "-");
+    process::args_push(&mut a, "-c");
+    process::args_push(&mut a, "-o");
+    process::args_push(&mut a, obj);
+    process::args_push(&mut a, opt);
+    process::args_push(&mut a, "-fPIC");
+    process::args_push(&mut a, "-ffreestanding");
+    process::args_push(&mut a, "-fno-stack-protector");
+    process::args_push(&mut a, "-Wno-override-module");
+    return a;
+}
+
+fn compile_clang_object(ir: &str, obj: &str, opt: &str) -> i32 {
+    let log = temp_path(".clang.log", "");
+    let a = clang_object_args(obj, opt);
+    let rc = process::spawn_with_input(&a, ir, log);
+    if (rc != 0) { print_clang_error(log); }
+    sys::unlink_if_empty(log);
+    return rc;
+}
+
 fn clang_runtime_args(obj: &str) -> process::ArgList {
     let mut a = process::args_make();
     process::args_push(&mut a, "/usr/bin/clang");
     process::args_push(&mut a, "-x");
     process::args_push(&mut a, "c");
-    process::args_push(&mut a, "bootstrap/runtime/rt.c");
+    process::args_push(&mut a, "library/runtime/rt.c");
     process::args_push(&mut a, "-c");
     process::args_push(&mut a, "-o");
     process::args_push(&mut a, obj);
@@ -317,9 +344,125 @@ fn compile_chunks(chunks: &vec::Vec<str::String>, output: &str,
     return rc;
 }
 
+// ---- native LLVM-C backend -------------------------------------------------
+//
+// The default build/run path parses the byte-identical IR text in-process,
+// runs LLVM's -O pipeline and emits a relocatable object through libLLVM.
+// Linking uses `ld` with the host's crt/libc paths discovered at build time;
+// no clang process is spawned. `emit-llvm` keeps the original text path.
+
+fn link_llvm_objects(objs: &vec::Vec<str::String>, output: &str) -> i32 {
+    let cfg = sys::read_file("build/host-link.txt");
+    if (cfg.ok != 0) {
+        eprintln("harmony: missing build/host-link.txt (run make harmony)");
+        return process::EXIT_STOP;
+    }
+    let mut a = process::args_make();
+    let bytes = cfg.data.as_bytes();
+    let mut i: usize = 0;
+    while (i < cfg.data.len()) {
+        while (i < cfg.data.len() && (bytes[i] == 32u8 || bytes[i] == 9u8
+               || bytes[i] == 10u8 || bytes[i] == 13u8)) { i += 1; }
+        if (i >= cfg.data.len()) { break; }
+        if (bytes[i] == 35u8) {   // '#' comment
+            while (i < cfg.data.len() && bytes[i] != 10u8) { i += 1; }
+            continue;
+        }
+        let start = i;
+        while (i < cfg.data.len() && bytes[i] != 32u8 && bytes[i] != 9u8
+               && bytes[i] != 10u8 && bytes[i] != 13u8) { i += 1; }
+        let tok = &cfg.data[start..i];
+        if (tok == "<OUT>") { process::args_push(&mut a, output); }
+        else if (tok == "<LLVMC>") { process::args_push(&mut a, "build/llvmc.o"); }
+        else if (tok == "<OBJ>") {
+            let mut k: usize = 0;
+            while (k < objs.len()) {
+                process::args_push(&mut a, objs.get(k).as_str());
+                k += 1;
+            }
+        }
+        else if (tok == "<HOSTRT>") { process::args_push(&mut a, "build/hostrt.o"); }
+        else if (tok == "<HOSTMAIN>") { process::args_push(&mut a, "build/hostmain.o"); }
+        else { process::args_push(&mut a, tok); }
+    }
+    let log = temp_path(".ld.log", "");
+    let rc = process::spawn(&a, log);
+    if (rc != 0) { print_clang_error(log); }
+    sys::unlink_if_empty(log);
+    return rc;
+}
+
+fn compile_llvmc(ir: &str, output: &str, opt: &str) -> i32 {
+    let text = sys::cstr(ir);
+    let obj = object_path("-llvm.o");
+    let m: raw u8 = llvm::parse(raw(text), ir.len());
+    if (m.is_null()) {
+        sys::unlink(obj);
+        return process::EXIT_STOP;
+    }
+    let obj_path = sys::cstr(obj);
+    let opt_flag = sys::cstr(opt);
+    let rc: i32 = llvm::object(m, raw(obj_path), raw(opt_flag));
+    llvm::dispose(m);
+    if (rc != 0) {
+        sys::unlink(obj);
+        return process::EXIT_STOP;
+    }
+    let mut objs: vec::Vec<str::String> = vec::Vec<str::String>::make();
+    let mut copy_obj: str::String = str::String::make();
+    copy_obj.push(obj);
+    objs.push(copy_obj);
+    let link_rc = link_llvm_objects(&objs, output);
+    sys::unlink(obj);
+    return link_rc;
+}
+
+// Parallel native backend. Each worker parses and optimises one self-contained
+// chunk in its own process; libLLVM is initialised after the fork, so there is
+// no shared mutable LLVM state. The parent links every object in order.
+fn compile_llvmc_chunks(chunks: &vec::Vec<str::String>, output: &str,
+                        opt: &str) -> i32 {
+    let mut pool = process::workers_make();
+    let mut objs: vec::Vec<str::String> = vec::Vec<str::String>::make();
+    let mut i: usize = 0;
+    while (i < chunks.len()) {
+        let obj = object_path("-llvm-");
+        let mut obj_name: str::String = str::String::make();
+        obj_name.push(obj);
+        obj_name.push_i64(i as i64);
+        obj_name.push(".o");
+        let spawned = process::worker_spawn(&mut pool, obj_name.as_str());
+        if (spawned < 0) { break; }
+        if (spawned == 1) {
+            let text = sys::cstr(chunks.get(i).as_str());
+            let obj_path = sys::cstr(obj_name.as_str());
+            let opt_flag = sys::cstr(opt);
+            let m = llvm::parse(raw(text), chunks.get(i).as_str().len());
+            if (m.is_null()) { sys::exit(1); }
+            let rc = llvm::object(m, raw(obj_path), raw(opt_flag));
+            llvm::dispose(m);
+            if (rc != 0) { sys::exit(1); }
+            process::worker_exit();
+        }
+        objs.push(obj_name);
+        i += 1;
+    }
+    let mut bad = process::worker_join(&pool);
+    if (objs.len() != chunks.len()) { bad = 1; }
+    if (bad != 0) {
+        let mut k: usize = 0;
+        while (k < objs.len()) { sys::unlink(objs.get(k).as_str()); k += 1; }
+        return process::EXIT_STOP;
+    }
+    let rc = link_llvm_objects(&objs, output);
+    let mut k: usize = 0;
+    while (k < objs.len()) { sys::unlink(objs.get(k).as_str()); k += 1; }
+    return rc;
+}
+
 // Runs the full compiler pipeline for one command.
 export fn run(cmd: i32, input: &str, output: &str, opt: &str,
-             opt_given: i32, format: i32, jobs: i32) -> i32 {
+             opt_given: i32, format: i32, jobs: i32, llvmc: i32) -> i32 {
     if (input == "") {
         eprintln("harmony: no input file");
         return process::EXIT_USAGE;
@@ -365,26 +508,53 @@ export fn run(cmd: i32, input: &str, output: &str, opt: &str,
         return rc;
     }
 
-    let chunks = emit::emit_module_chunks(&mut c, loaded.program, jobs);
     let mut rc: i32 = 0;
-    if (chunks.len() > 1) {
-        rc = compile_chunks(&chunks, binary, opt);
-        if (rc == -1) {
-            // Fork or spawn failed before any object was linked: retry with
-            // the original single-module clang invocation.
-            let full = emit::emit_module(&mut c, loaded.program, jobs);
-            let log = temp_path(".clang.log", "");
-            let a = build_args(binary, opt);
-            rc = process::spawn_with_input(&a, full, log);
-            if (rc != 0) { print_clang_error(log); }
-            sys::unlink_if_empty(log);
+    if (llvmc != 0) {
+        let chunks = emit::emit_module_chunks(&mut c, loaded.program, jobs);
+        if (chunks.len() > 1) {
+            rc = compile_llvmc_chunks(&chunks, binary, opt);
+        } else {
+            rc = compile_llvmc(chunks.get(0).as_str(), binary, opt);
         }
     } else {
-        let log = temp_path(".clang.log", "");
-        let a = build_args(binary, opt);
-        rc = process::spawn_with_input(&a, chunks.get(0).as_str(), log);
-        if (rc != 0) { print_clang_error(log); }
-        sys::unlink_if_empty(log);
+        // A program that calls the LLVM-C shim cannot use the freestanding
+        // runtime link; clang compiles it to an object and the host link
+        // template supplies libLLVM and the host entry point.
+        let full = emit::emit_module(&mut c, loaded.program, jobs);
+        if (str::find(full, "hc_llvm_") >= 0) {
+            let obj = object_path("-clang.o");
+            let mut obj_name: str::String = str::String::make();
+            obj_name.push(obj);
+            if (compile_clang_object(full, obj_name.as_str(), opt) == 0) {
+                let mut objs: vec::Vec<str::String> = vec::Vec<str::String>::make();
+                objs.push(obj_name);
+                rc = link_llvm_objects(&objs, binary);
+            } else {
+                rc = 1;
+            }
+            sys::unlink(obj);
+        } else {
+            let chunks = emit::emit_module_chunks(&mut c, loaded.program, jobs);
+            if (chunks.len() > 1) {
+                rc = compile_chunks(&chunks, binary, opt);
+                if (rc == -1) {
+                    // Fork or spawn failed before any object was linked:
+                    // retry with the original single-module clang invocation.
+                    let again = emit::emit_module(&mut c, loaded.program, jobs);
+                    let log = temp_path(".clang.log", "");
+                    let a = build_args(binary, opt);
+                    rc = process::spawn_with_input(&a, again, log);
+                    if (rc != 0) { print_clang_error(log); }
+                    sys::unlink_if_empty(log);
+                }
+            } else {
+                let log = temp_path(".clang.log", "");
+                let a = build_args(binary, opt);
+                rc = process::spawn_with_input(&a, chunks.get(0).as_str(), log);
+                if (rc != 0) { print_clang_error(log); }
+                sys::unlink_if_empty(log);
+            }
+        }
     }
     if (rc != 0) { return process::EXIT_STOP; }
     if (cmd == 0) { return process::EXIT_OK; }   // build

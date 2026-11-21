@@ -92,6 +92,21 @@ else
     head -10 "$TMP/self.err" | sed 's/^/     /'
 fi
 
+# `--backend=clang` stays available for debugging: it must still produce the
+# same byte-identical IR text, and a clang-compiled program must still run.
+if "$HC" emit-llvm --jobs=1 "$BIG" > "$TMP/big-serial" 2>/dev/null \
+   && "$HC" emit-llvm --backend=clang "$BIG" > "$TMP/clang-ir" 2>/dev/null \
+   && cmp -s "$TMP/clang-ir" "$TMP/big-serial"; then
+    ok "clang backend keeps the same emit-llvm bytes"
+else bad "clang backend keeps the same emit-llvm bytes"; fi
+if "$HC" build --backend=clang --jobs=1 "$SMALL" -o "$TMP/clang-built" >/dev/null 2>&1 \
+   && [ -x "$TMP/clang-built" ]; then
+    "$TMP/clang-built"
+    clang_rc=$?
+    if [ "$clang_rc" -eq 42 ]; then ok "clang debug backend still works"
+    else bad "clang debug backend returned $clang_rc"; fi
+else bad "clang debug backend still works"; fi
+
 # Optional: prove the default really forks. strace is a measuring tool, not a
 # build dependency, so this check is skipped when it is not installed.
 if command -v strace >/dev/null 2>&1; then
@@ -102,6 +117,16 @@ if command -v strace >/dev/null 2>&1; then
         ok "default large compile forks multiple workers ($forks)"
     else
         bad "default large compile forks multiple workers (got $forks)"
+    fi
+fi
+
+if command -v strace >/dev/null 2>&1; then
+    timeout 120 strace -f -e trace=execve \
+        "$HC" build "$SMALL" -o "$TMP/native" >/dev/null 2>"$TMP/exec.trace"
+    if grep -q 'execve("/usr/bin/clang"' "$TMP/exec.trace"; then
+        bad "default build does not spawn clang"
+    else
+        ok "default build does not spawn clang"
     fi
 fi
 

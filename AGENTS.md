@@ -86,11 +86,11 @@ library/
 ├── core/... <- (*.hr) allowed to use with freestanding (e.g primitive types, slices, iterators... no allocator).
 ├── alloc/... <- (*.hr) allocator hook.
 ├── std/... (HashMap/io/fs/net...) <- (*.hr) the full standard library, needs the OS.
+├── runtime/... <- the freestanding runtime and host/LLVM-C shims linked into compilers.
 └── (others...)
 bootstrap/ <- the stage 0 compilers.
 ├── c2x-seed/...
-├── harmony-base/...
-└── runtime/... <- only for harmony-base
+└── harmony-base/...
 tests/... <- the current tests
 roadmap/... <- the language roadmap
 docs/... <- language documentations

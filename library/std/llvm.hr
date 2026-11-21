@@ -1,0 +1,32 @@
+// library/std/llvm.hr — the native LLVM-C backend surface.
+//
+// The C symbols live in `library/runtime/llvmc.c`, which is linked into the
+// compiler binary. Only pointers and integers cross the FFI boundary; C
+// structs never do. The `unchecked` promise is kept in one auditable place
+// here instead of at every call site (§13).
+import "../../library/core/mem.hr";
+
+extern "C" fn hc_llvm_parse_c(text: raw u8, len: usize) -> raw u8;
+extern "C" fn hc_llvm_object_c(module: raw u8, obj: raw u8, opt: raw u8) -> i32;
+extern "C" fn hc_llvm_dispose_c(module: raw u8);
+extern "C" fn hc_llvm_error_c() -> raw u8;
+
+export fn parse(text: raw u8, len: usize) -> raw u8 {
+    unchecked("libLLVM copies the NUL-terminated IR text into its own buffer") {
+        return hc_llvm_parse_c(text, len);
+    }
+    return Raw::null<u8>() as raw u8;
+}
+
+export fn object(module: raw u8, obj: raw u8, opt: raw u8) -> i32 {
+    unchecked("libLLVM owns the parsed module and writes one object file") {
+        return hc_llvm_object_c(module, obj, opt);
+    }
+    return 1;
+}
+
+export fn dispose(module: raw u8) {
+    unchecked("the parsed module is released exactly once") {
+        hc_llvm_dispose_c(module);
+    }
+}

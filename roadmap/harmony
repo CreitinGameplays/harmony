@@ -40,9 +40,10 @@ not a goal statement.
    must accept exactly what `harmony-base check` accepts, and reject with the
    same code on the error corpus. Wording may differ (it is being moved to
    the library per §19.8.7); codes may not.
-3. **Freestanding.** `harmony` links against `bootstrap/runtime/rt.c` only —
-   no libc, no std beyond `library/`. It reaches the OS through
-   `lc_syscall3`, exactly as harmony-base does.
+3. **Freestanding programs.** Generated programs still link the freestanding
+   `library/runtime/rt.c` through the clang debug path. The compiler binary
+   itself is now hosted because the default LLVM-C backend requires libc and
+   libLLVM; its runtime sources stay in `library/runtime/`.
 4. **Multi-core compilation by default** in the final driver (AGENTS.md),
    while `harmony-base` stays optimized for single-core. Function and
    monomorphized-instance LLVM lowering is split across forked workers; the
@@ -333,7 +334,7 @@ The R6 byte-diff found ten rewrite-only bugs, all fixed at the source:
   Regression `tests/harmony/string-pool.sh`.
 - [x] **Deterministic multi-core lowering by default.** `emit.hr` builds the
   exact sequential function order (free functions, non-generic methods, then
-  monomorphized instances), then forks `--jobs` workers (default: two per CPU
+  monomorphized instances), then forks `--jobs` workers (default: three per CPU
   in this process's affinity mask, via `sched_getaffinity(2)`, capped at 32)
   over contiguous slices. Workers inherit the checked program through
   copy-on-write and write their IR chunk to a private `/tmp` file; the parent
@@ -341,14 +342,17 @@ The R6 byte-diff found ten rewrite-only bugs, all fixed at the source:
   sequential. `--jobs=1` / `--sequential` are the explicit single-core paths.
   `tests/harmony-final/parallel.sh` diffs every job count against
   harmony-base and traces actual forks on the compiler's own source.
-- [x] **Deterministic multi-core clang.** LLVM's `-O2` pipeline is
-  single-threaded and dominated self-hosting. For large programs
-  `emit_module_chunks` emits each chunk as a self-contained module (shared
-  preamble + declarations of sibling symbols), the driver pipes one chunk to
-  each clang in parallel, compiles `rt.c` once, and links the objects in
-  stable chunk order. Self-hosting dropped from ~9.3 s to ~5.6 s here. No
-  `.ll` file is written. `--jobs=1` keeps the original one-clang path.
-  `parallel.sh` runs `build`/`run` through both paths.
+- [x] **R8 native LLVM-C backend.** `build`/`run` now link against `libLLVM`
+  through `extern "C"` bindings in `library/std/llvm.hr`. The shim
+  `library/runtime/llvmc.c` parses the deterministic IR text, runs LLVM's
+  `default<O2>` pipeline and emits a relocatable object; forked workers do
+  this per chunk, and `ld` links the objects with the host crt/libc paths in
+  `build/host-link.txt`. No clang process is spawned. `--backend=clang`
+  keeps the previous path for debugging and `emit-llvm` remains byte-identical.
+  `parallel.sh` checks both backends and traces the absence of clang in the
+  default path. The runtime directory moved from `bootstrap/runtime/` to
+  `library/runtime/`; `hostmain.c` provides the hosted entry point that
+  initialises libc before libLLVM is used.
   - Module checking and monomorphization themselves remain sequential: they
     mutate one shared type table whose ids and first-instantiation order are
     observable in the IR. Splitting them safely needs an explicit dependency

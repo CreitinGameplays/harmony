@@ -55,7 +55,7 @@ Also install (for fuzzing tests): https://github.com/google/honggfuzz
 | `bootstrap/c2x-seed-nasm/` | Pre-migration NASM sources (reference only). |
 | `bootstrap/tools/` | Migration helpers (e.g. `nasm_to_fasm.py`). |
 | `bootstrap/harmony-base/` | First Harmony compiler, written in c2x-seed. |
-| `bootstrap/runtime/` | The freestanding runtime `harmony-base` links in. |
+| `library/runtime/` | The freestanding runtime `harmony-base` links in. |
 | `harmony/` | Self-hosted rewrite (`*.hr`); phase plan in `roadmap/harmony`. |
 | `library/core/`, `library/alloc/`, `library/std/` | Standard library for the final language. `core` (arena, `Vec`, `String`) is started. |
 | `tests/` | Test suites and fuzzing. |

@@ -712,6 +712,13 @@ static int install_stack_guard(void) {
 static long g_argc;
 static char **g_argv;
 
+// Host-linked builds use the C runtime's `main` instead of the freestanding
+// `_start`; the wrapper calls this before `harmony_main` so `args()` works.
+void lc_host_init(int argc, char **argv) {
+    g_argc = argc;
+    g_argv = argv;
+}
+
 #define LC_MAX_ARGS 4096
 static struct { const char *p; long n; } g_arg_pairs[LC_MAX_ARGS];
 static struct { const void *p; long n; } g_args_slice;

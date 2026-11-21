@@ -1,6 +1,6 @@
 // library/std/sys.hr — the small Linux surface the compiler driver needs.
 //
-// The final compiler is freestanding: it links `bootstrap/runtime/rt.c`, not
+// The final compiler is freestanding: it links `library/runtime/rt.c`, not
 // libc. Every kernel call goes through the runtime's three-argument hook,
 // `lc_syscall3` (docs/harmony.md §19.8.4). This module contains no mutable
 // globals and keeps the raw-pointer plumbing in one auditable place.

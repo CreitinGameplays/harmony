@@ -20,13 +20,9 @@ export struct Vec<T> {
     cap: usize;         // allocated slots; 0 or a power of two
 }
 
-methods<T> Vec<T> {
-    // An empty vector allocates nothing.
-    export fn make() -> Vec<T> {
-        return Vec { .ptr = Raw::null(), .len = 0, .cap = 0 };
-    }
-
-    // Builds a vector of `n` copies of `v`. Used for small fixed tables.
+// `filled` duplicates its value n times, so it requires a copy element. A
+// separate block keeps the rest of Vec usable with non-copy elements (M2).
+methods<T: copy> Vec<T> {
     export fn filled(n: usize, v: T) -> Vec<T> {
         let mut out: Vec<T> = Vec<T>::make();
         let mut i: usize = 0;
@@ -35,6 +31,13 @@ methods<T> Vec<T> {
             i += 1;
         }
         return out;
+    }
+}
+
+methods<T> Vec<T> {
+    // An empty vector allocates nothing.
+    export fn make() -> Vec<T> {
+        return Vec { .ptr = Raw::null(), .len = 0, .cap = 0 };
     }
 
     export fn len(&self) -> usize { return self.len; }

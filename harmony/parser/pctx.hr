@@ -174,13 +174,18 @@ export fn node_here(p: &mut Parser, kind: i32) -> i32 {
     let t = cur(&*p);
     let h = node::new_node(p.nodes, kind);
     node::set_span(p.nodes, h, t.start, t.end);
+    node::set_loc(p.nodes, h, p.path, t.line, t.col);
     return h;
 }
 
 // A fresh node with an explicit start (used when the span began earlier).
 export fn node_at(p: &mut Parser, kind: i32, start: usize) -> i32 {
+    let t = cur(&*p);
     let h = node::new_node(p.nodes, kind);
     node::set_span(p.nodes, h, start, start);
+    // The loader refines line/col from `start` once the whole source is known;
+    // the token's location is the fallback for single-source driver users.
+    node::set_loc(p.nodes, h, p.path, t.line, t.col);
     return h;
 }
 

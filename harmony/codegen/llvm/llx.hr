@@ -579,7 +579,12 @@ fn expr_path(e: &mut context::Emitter, h: i32) -> &str {
     // v1: a function name used as a value lowers to its LLVM global address.
     // The checker stamps `target` with the declaration for exactly this case.
     let pty = context::node_ty(e, h);
-    if (types::is_fn(&e.c.types, pty) && n.target >= 0) {
+    // M2: local places carry their declaration in `target` for move analysis,
+    // so only a real function declaration denotes a function address here.
+    let is_fn_decl = n.target >= 0
+        && (node::get(&e.c.nodes, n.target).kind == node::AST_FN
+            || node::get(&e.c.nodes, n.target).kind == node::AST_EXTERN_FN);
+    if (types::is_fn(&e.c.types, pty) && is_fn_decl) {
         let mut s: str::String = str::String::make();
         s.push("@");
         s.push(context::fn_symbol(e, n.target));

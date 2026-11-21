@@ -87,7 +87,11 @@ struct AstNode* ast_node_new(int kind) {
     struct AstNode* n;
     n = arena_alloc(AST_NODE_SIZE);
     n->kind = kind;
-    n->file = 0;
+    // The loader registers each module's SourceFile before parsing it, so the
+    // newest registration is the file this node belongs to. The parser used to
+    // leave file = 0 on every node, making checker stops in imported modules
+    // render under the root module with the root file's line/column.
+    n->file = diag_file_count() - 1;
     n->start = 0;
     n->end = 0;
     n->ival = 0;

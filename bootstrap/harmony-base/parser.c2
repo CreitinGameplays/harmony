@@ -231,7 +231,11 @@ int parser_stop_count(void) {
 struct AstNode* p_node(int kind) {
     struct AstNode* n;
     n = ast_node_new(kind);
-    n->file = 0;      // single module for now; stage 3 (resolve) adds more
+    // The loader registers each SourceFile with diagnostics BEFORE parsing it,
+    // so the newest registration is the file this node belongs to. Using 0 for
+    // every node made checker stops in imported modules render under the root
+    // module's path (and with the wrong line/column).
+    n->file = diag_file_count() - 1;
     n->start = p_cur()->start;
     n->end = p_cur()->end;
     return n;

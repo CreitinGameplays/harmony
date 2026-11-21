@@ -113,17 +113,22 @@ export fn make(nodes: node::Nodes, path: &str) -> Checker {
 fn add_diag(c: &mut Checker, code: &str, title: &str, summary: &str, at: i32) {
     let mut line: u32 = 0;
     let mut col: u32 = 0;
+    let mut file: &str = c.path;
     if (at >= 0) {
         let n = node::get(&c.nodes, at);
-        line = n.start as u32;
-        col = n.end as u32;
+        // Nodes carry their module path and resolved line/column. Using the
+        // byte span here (an old bug) printed offsets as line/column and
+        // blamed the root module for errors in imported files.
+        line = n.line;
+        col = n.col;
+        if (n.src_path != "") { file = n.src_path; }
     }
     c.diags.push(fmt::Diag {
         .code = code,
         .severity = fmt::Severity::Stop,
         .title = title,
         .summary = summary,
-        .file = c.path,
+        .file = file,
         .line = line,
         .col = col,
     });
@@ -679,6 +684,204 @@ fn check_ability_bounds(c: &mut Checker, tmpl: i32,
         }
         i += 1;
     }
+}
+
+// ---- M2 copy/drop properties ----------------------------------------------
+//
+// These are properties of the checked type table, not parser flags. Nominal
+// types are copy only when marked `copy` AND every field is copy; built-ins
+// follow §5.6. A type needs drop glue exactly when destruction can run code
+// (cleanup, Vec/String elements, Heap pointees, or a nested owning field).
+
+fn genparam_has_bound(c: &Checker, ty: i32, want: &str) -> bool {
+    let d = types::tdecl(&c.types, ty);
+    if (d < 0) { return false; }
+    let names = bound_names(node::get(&c.nodes, d).sval);
+    let mut i: usize = 0;
+    while (i < names.len()) {
+        if (names.get(i).as_str() == want) { return true; }
+        i += 1;
+    }
+    return false;
+}
+
+fn is_owning_collection(t: &types::Types, id: i32) -> bool {
+    let name = types::tname(t, id);
+    return str::starts_with(name, "vec::Vec")
+        || str::starts_with(name, "str::String");
+}
+
+fn has_cleanup(c: &Checker, ty: i32) -> bool {
+    let mut i: usize = 0;
+    while (i < c.fns.len()) {
+        let f = node::get(&c.nodes, *c.fns.get(i));
+        if (f.sfx == "cleanup" && f.self_ty == ty) { return true; }
+        i += 1;
+    }
+    return false;
+}
+
+fn copy_visit(c: &Checker, ty: i32, seen: &mut vec::Vec<i32>) -> bool {
+    if (ty == types::TY_INVALID) { return false; }
+    if (types::is_primitive(ty) || ty == types::TY_UNIT || types::is_untyped_lit(ty)) {
+        return true;
+    }
+    if (ty == types::TY_NEVER || types::is_heap(&c.types, ty)
+        || types::type_kind(&c.types, ty) == types::CTY_MUTREF) {
+        return false;
+    }
+    let k = types::type_kind(&c.types, ty);
+    if (k == types::CTY_REF || k == types::CTY_STRREF || k == types::CTY_SLICE
+        || k == types::CTY_PTR || k == types::CTY_MUTPTR || k == types::CTY_FN) {
+        return true;
+    }
+    if (k == types::CTY_GENPARAM) { return genparam_has_bound(c, ty, "copy"); }
+    let mut i: usize = 0;
+    while (i < seen.len()) {
+        if (*seen.get(i) == ty) { return true; }   // recursive structural type
+        i += 1;
+    }
+    seen.push(ty);
+    if (k == types::CTY_ARRAY) {
+        return copy_visit(c, types::elem(&c.types, ty), seen);
+    }
+    if (k == types::CTY_STRUCT || k == types::CTY_ENUM) {
+        let d = types::tdecl(&c.types, ty);
+        if (d < 0) { return false; }
+        let dn = node::get(&c.nodes, d);
+        // Enum payload structs are synthetic and have no `copy` marker of
+        // their own; the owning enum's marker governs them.
+        if (dn.kind != node::AST_VARIANT && (dn.ival & 1) == 0) { return false; }
+        let mut j: usize = 0;
+        while (j < types::member_count(&c.types, ty)) {
+            if (!copy_visit(c, types::member_type(&c.types, ty, j as i32), seen)) {
+                return false;
+            }
+            j += 1;
+        }
+        return true;
+    }
+    return false;
+}
+
+// Public copy query used by the move checker and the backend.
+export fn is_copy(c: &Checker, ty: i32) -> bool {
+    let mut seen: vec::Vec<i32> = vec::Vec<i32>::make();
+    return copy_visit(c, ty, &mut seen);
+}
+
+fn drop_visit(c: &Checker, ty: i32, seen: &mut vec::Vec<i32>) -> bool {
+    if (ty <= 0 || types::is_primitive(ty) || ty == types::TY_UNIT
+        || types::is_untyped_lit(ty) || ty == types::TY_NEVER) {
+        return false;
+    }
+    let k = types::type_kind(&c.types, ty);
+    if (k == types::CTY_REF || k == types::CTY_STRREF || k == types::CTY_SLICE
+        || k == types::CTY_PTR || k == types::CTY_MUTPTR || k == types::CTY_MUTREF
+        || k == types::CTY_FN) {
+        return false;
+    }
+    if (k == types::CTY_GENPARAM) { return true; }   // unknown until instantiated
+    if (types::is_heap(&c.types, ty)) { return true; }
+    let mut i: usize = 0;
+    while (i < seen.len()) {
+        if (*seen.get(i) == ty) { return false; }   // recursion goes through Heap
+        i += 1;
+    }
+    seen.push(ty);
+    if (is_owning_collection(&c.types, ty)) { return true; }
+    if (has_cleanup(c, ty)) { return true; }
+    if (k == types::CTY_ARRAY) {
+        return drop_visit(c, types::elem(&c.types, ty), seen);
+    }
+    if (k == types::CTY_STRUCT || k == types::CTY_ENUM) {
+        let mut j: usize = 0;
+        while (j < types::member_count(&c.types, ty)) {
+            if (drop_visit(c, types::member_type(&c.types, ty, j as i32), seen)) {
+                return true;
+            }
+            j += 1;
+        }
+    }
+    return false;
+}
+
+// Public drop-glue query. Shared<T> has only a raw control pointer, so no
+// automatic release is generated for it (owners call `release` explicitly).
+export fn needs_drop(c: &Checker, ty: i32) -> bool {
+    let mut seen: vec::Vec<i32> = vec::Vec<i32>::make();
+    return drop_visit(c, ty, &mut seen);
+}
+
+// Structural clone is available when every part can be duplicated. Raw
+// pointers and shared references are bit-copied; &mut is never cloned.
+export fn cloneable(c: &Checker, ty: i32) -> bool {
+    if (ty == types::TY_NEVER || types::type_kind(&c.types, ty) == types::CTY_MUTREF) {
+        return false;
+    }
+    if (types::type_kind(&c.types, ty) == types::CTY_GENPARAM) {
+        return genparam_has_bound(c, ty, "copy");
+    }
+    let mut seen: vec::Vec<i32> = vec::Vec<i32>::make();
+    let mut i: usize = 0;
+    while (i < seen.len()) {
+        if (*seen.get(i) == ty) { return true; }
+        i += 1;
+    }
+    seen.push(ty);
+    let k = types::type_kind(&c.types, ty);
+    if (k == types::CTY_ARRAY) { return cloneable(c, types::elem(&c.types, ty)); }
+    if (k == types::CTY_STRUCT || k == types::CTY_ENUM) {
+        let mut j: usize = 0;
+        while (j < types::member_count(&c.types, ty)) {
+            if (!cloneable(c, types::member_type(&c.types, ty, j as i32))) { return false; }
+            j += 1;
+        }
+    }
+    return true;
+}
+
+fn bound_visit(c: &Checker, ty: i32, bound: &str, seen: &mut vec::Vec<i32>) -> bool {
+    let k = types::type_kind(&c.types, ty);
+    if (k == types::CTY_GENPARAM) {
+        return genparam_has_bound(c, ty, bound)
+            || (bound == "eq" && genparam_has_bound(c, ty, "ord"));
+    }
+    if (types::is_untyped_lit(ty) || types::is_integer(ty) || types::is_float(ty)
+        || types::is_char(ty) || ty == types::TY_BOOL || ty == types::TY_UNIT
+        || k == types::CTY_STRREF || k == types::CTY_REF
+        || k == types::CTY_PTR || k == types::CTY_MUTPTR || k == types::CTY_FN) {
+        return true;
+    }
+    let mut i: usize = 0;
+    while (i < seen.len()) {
+        if (*seen.get(i) == ty) { return true; }
+        i += 1;
+    }
+    seen.push(ty);
+    if (k == types::CTY_ARRAY) {
+        return bound_visit(c, types::elem(&c.types, ty), bound, seen);
+    }
+    if (k == types::CTY_STRUCT || k == types::CTY_ENUM) {
+        let mut j: usize = 0;
+        while (j < types::member_count(&c.types, ty)) {
+            if (!bound_visit(c, types::member_type(&c.types, ty, j as i32), bound, seen)) {
+                return false;
+            }
+            j += 1;
+        }
+        return true;
+    }
+    return false;
+}
+
+fn satisfies_builtin(c: &Checker, ty: i32, bound: &str) -> bool {
+    if (bound == "copy") { return is_copy(c, ty); }
+    if (bound == "eq" || bound == "ord") {
+        let mut seen: vec::Vec<i32> = vec::Vec<i32>::make();
+        return bound_visit(c, ty, bound, &mut seen);
+    }
+    return true;
 }
 
 // v1 function pointers. A `fn(A) -> R` type is structural: the return type is
@@ -1468,7 +1671,11 @@ fn check_path(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
     let name = n.sval;
     if (name == "self") {
         let sym = lookup(&*c, "self");
-        if (sym >= 0) { return sym_ty(&*c, sym); }
+        if (sym >= 0) {
+            // M2: local places carry their declaration for move analysis.
+            set_target(c, h, sym_decl(&*c, sym));
+            return sym_ty(&*c, sym);
+        }
         err_unknown(c, h, name, false);
         return types::TY_INVALID;
     }
@@ -1522,7 +1729,9 @@ fn check_path(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
         return types::TY_INVALID;
     }
     if (kind == SK_CONST || kind == SK_LET || kind == SK_PARAM || kind == SK_SELF) {
-        if (kind == SK_CONST) { set_target(c, h, sym_decl(&*c, sym)); }
+        if (kind == SK_CONST || kind == SK_LET || kind == SK_PARAM || kind == SK_SELF) {
+            set_target(c, h, sym_decl(&*c, sym));
+        }
         if ((kind == SK_LET || kind == SK_PARAM) && c.syms.get(sym as usize).init == 0
             && c.in_place == 0) {
             let mut s: str::String = str::String::make();
@@ -1563,6 +1772,19 @@ fn check_binary(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
         if ((op == "&&" || op == "||") && !types::eq(lt, types::TY_BOOL, &c.types)) {
             mismatch(c, n.a, types::TY_BOOL, lt, "logical operand");
             return types::TY_INVALID;
+        }
+        // M2: comparison needs the eq/ord ability. For a generic parameter
+        // the bound must be present; for concrete types it is structural.
+        let mut need: &str = "ord";
+        if (op == "==" || op == "!=") { need = "eq"; }
+        if (op != "&&" && op != "||" && !satisfies_builtin(&*c, lt, need)) {
+            let mut s: str::String = str::String::make();
+            s.push("`");
+            s.push(types::tname(&c.types, lt));
+            s.push("` does not have bound `");
+            s.push(need);
+            s.push("`");
+            add_diag(c, "TYPE-06", "bound not satisfied", s.as_str(), h);
         }
         return types::TY_BOOL;
     }
@@ -2227,8 +2449,27 @@ fn method_call(c: &mut Checker, at: i32, recv_h: i32, recv_ty: i32,
                 concat3("&", types::tname(&c.types, el), ""), el, 0);
         }
     }
+    // M2: structural clone is generated when the type has no hand-written
+    // method. A sentinel target tells codegen to emit glue instead of a call.
+    if (name == "clone") {
+        let user = find_method(c, rt, "clone");
+        if (user < 0) {
+            if (!cloneable(&*c, rt)) {
+                add_diag(c, "TYPE-05", "type is not cloneable",
+                         "This type contains a field or payload that cannot be cloned.", at);
+                return types::TY_INVALID;
+            }
+            set_target(c, at, -2);
+            return rt;
+        }
+    }
     let fh = find_method(c, rt, name);
     if (fh < 0) { err_no_field(c, at, rt, name); return types::TY_INVALID; }
+    if (name == "cleanup") {
+        add_diag(c, "DROP-01", "cleanup cannot be called directly",
+                 "The compiler runs it exactly once when the value is dropped; use `drop(x)`.", at);
+        return node::get(&c.nodes, fh).ty;
+    }
     set_target(c, at, fh);
     check_args(c, at, name, fh, args, true);
     return node::get(&c.nodes, fh).ty;
@@ -4444,6 +4685,33 @@ fn check_main(c: &mut Checker) {
     }
 }
 
+// M2 §5.7: a `copy` declaration is accepted only when all fields are copy,
+// no field is `&mut T`, and the type has no cleanup hook.
+fn validate_copy_type(c: &mut Checker, decl: i32, ty: i32) {
+    let n = node::get(&c.nodes, decl);
+    if ((n.ival & 1) == 0) { return; }
+    if (has_cleanup(&*c, ty)) {
+        add_diag(c, "TYPE-05", "invalid copy type",
+                 "A type with a `cleanup` method cannot be `copy`.", decl);
+        return;
+    }
+    let mut i: usize = 0;
+    while (i < types::member_count(&c.types, ty)) {
+        let ft = types::member_type(&c.types, ty, i as i32);
+        if (types::type_kind(&c.types, ft) == types::CTY_MUTREF) {
+            add_diag(c, "TYPE-05", "invalid copy type",
+                     "A `copy` type cannot contain an `&mut` field.", decl);
+            return;
+        }
+        if (!is_copy(&*c, ft)) {
+            add_diag(c, "TYPE-05", "invalid copy type",
+                     "A `copy` type cannot contain an owning field.", decl);
+            return;
+        }
+        i += 1;
+    }
+}
+
 // Checks a whole merged program. Returns the number of diagnostics.
 export fn check_program(c: &mut Checker, program: i32) -> i32 {
     if (program < 0) { return 0; }
@@ -4491,6 +4759,29 @@ export fn check_program(c: &mut Checker, program: i32) -> i32 {
             validate_bounds(c, *gtn.kids.get(j));
             j += 1;
         }
+        i += 1;
+    }
+    // M2: validate copy markings once every method and instantiation is known.
+    i = 0;
+    while (i < p.kids.len()) {
+        let h = *p.kids.get(i);
+        let n = node::get(&c.nodes, h);
+        if (n.kind == node::AST_STRUCT || n.kind == node::AST_ENUM) {
+            if (n.kids.len() == 0) {
+                let sym = lookup(&*c, n.sval);
+                if (sym >= 0 && sym_kind(&*c, sym) == SK_TYPE) {
+                    validate_copy_type(c, h, sym_ty(&*c, sym));
+                }
+            }
+        }
+        i += 1;
+    }
+    let insts = type_instance_ids(&*c);
+    i = 0;
+    while (i < insts.len()) {
+        let id = *insts.get(i);
+        let d = types::tdecl(&c.types, id);
+        if (d >= 0) { validate_copy_type(c, d, id); }
         i += 1;
     }
     check_main(c);

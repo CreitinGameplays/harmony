@@ -138,16 +138,16 @@ fn normalize(path: &str) -> &str {
         lens.push(len);
     }
     let mut out: str::String = str::String::make();
-    let mut has_seg = false;
-    if (absolute) { out.push("/"); has_seg = true; }
+    if (absolute) { out.push("/"); }
+    let mut first = true;
     let mut s: usize = 0;
     while (s < lens.len()) {
-        if (has_seg) { out.push("/"); }
+        if (!first) { out.push("/"); }
+        first = false;
         let st = *segs.get(s);
         let ln = *lens.get(s);
         let mut j: usize = 0;
         while (j < ln) { out.push_byte(b[st + j]); j += 1; }
-        has_seg = true;
         s += 1;
     }
     return out.as_str();
@@ -355,10 +355,44 @@ fn rename_node(nodes: &mut node::Nodes, h: i32, pre: &str,
     }
 }
 
+// ---- source locations -----------------------------------------------------
+
+copy struct Loc { line: u32; col: u32; }
+
+struct LineMap { starts: vec::Vec<usize>; }
+
+fn line_map_make(src: &str) -> LineMap {
+    let mut starts: vec::Vec<usize> = vec::Vec<usize>::make();
+    starts.push(0);
+    let b = src.as_bytes();
+    let mut i: usize = 0;
+    while (i < b.len()) {
+        if (b[i] == 10u8) { starts.push(i + 1); }
+        i += 1;
+    }
+    return LineMap { .starts = starts };
+}
+
+// Byte offset -> 1-based line / 0-based column, like harmony-base's
+// `source_line_col`. A binary search keeps this cheap even for the large
+// compiler sources with tens of thousands of nodes.
+fn locate(m: &LineMap, off: usize, out: &mut Loc) {
+    let mut lo: usize = 0;
+    let mut hi: usize = m.starts.len() - 1;
+    while (lo < hi) {
+        let mid = (lo + hi + 1) / 2;
+        if (*m.starts.get(mid) <= off) { lo = mid; }
+        else { hi = mid - 1; }
+    }
+    out.line = lo as u32 + 1;
+    out.col = (off - *m.starts.get(lo)) as u32;
+}
+
 // ---- parse, expand, merge ------------------------------------------------
 
 fn parse_one(nodes: &mut node::Nodes, arena: &mut mem::Arena,
-             src: &str, path: &str, l: &mut Loaded) -> i32 {
+             src: &str, path: &str, file: i32, l: &mut Loaded) -> i32 {
+    let first = node::len(&*nodes);
     let mut lx: ctx::Ctx = ctx::make(src, path);
     scan::scan(&mut lx, arena);
     let mut p: pctx::Parser = pctx::make(nodes, lx.toks, path);
@@ -370,6 +404,19 @@ fn parse_one(nodes: &mut node::Nodes, arena: &mut mem::Arena,
     while (i < p.diags.len()) {
         let d = *p.diags.get(i);
         l.diags.push(d);
+        i += 1;
+    }
+    // The parser knows token-relative line/col, but `node_at` can start a node
+    // at an earlier token. Resolve every node's `start` against this module's
+    // source so checker diagnostics point at the right file AND line.
+    let map = line_map_make(src);
+    i = first;
+    while (i < node::len(&*nodes)) {
+        let h = i as i32;
+        let mut loc = Loc { .line = 1, .col = 0 };
+        locate(&map, node::start_of(&*nodes, h), &mut loc);
+        node::set_loc(nodes, h, path, loc.line, loc.col);
+        node::set_file(nodes, h, file);
         i += 1;
     }
     return program;
@@ -400,7 +447,7 @@ fn expand(nodes: &mut node::Nodes, arena: &mut mem::Arena,
     }
     chain.push(idx as i32);
     let path = modules.get(idx).path;
-    let root = parse_one(nodes, arena, modules.get(idx).src, path, l);
+    let root = parse_one(nodes, arena, modules.get(idx).src, path, idx as i32, l);
     let imps = imports(&*nodes, root);
     let mut i: usize = 0;
     while (i < imps.len) {

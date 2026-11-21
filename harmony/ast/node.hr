@@ -98,8 +98,11 @@ const AST_PAT_FIELD: i32 = 86;
 struct Node {
     kind: i32;
     file: i32;       // source-file index (0 until the loader assigns one)
+    src_path: &str;  // module path for diagnostics (set by the parser)
     start: usize;
     end: usize;
+    line: u32;       // 1-based, resolved from `start` by the loader
+    col: u32;        // 0-based
     ty: i32;
     // Semantic links used by LLVM lowering. They are deliberately outside the
     // parser-visible payload: `target` is a resolved fn/const declaration,
@@ -107,6 +110,9 @@ struct Node {
     target: i32;
     self_ty: i32;
     instance: i32;
+    // M2: set on a place expression whose value is moved. Codegen uses it to
+    // clear the local's drop flag after copying the value out.
+    own: i32;
     ival: i64;
     sval: &str;
     sfx: &str;       // literal type suffix (`42u8` -> "u8"), else ""
@@ -137,12 +143,16 @@ export fn new_node(ns: &mut Nodes, kind: i32) -> i32 {
     ns.items.push(Node {
         .kind = kind,
         .file = 0,
+        .src_path = "",
         .start = 0,
         .end = 0,
+        .line = 0,
+        .col = 0,
         .ty = 0,
         .target = -1,
         .self_ty = 0,
         .instance = 0,
+        .own = 0,
         .ival = 0,
         .sval = "",
         .sfx = "",
@@ -155,6 +165,15 @@ export fn new_node(ns: &mut Nodes, kind: i32) -> i32 {
         .kids3 = vec::Vec<i32>::make(),
     });
     return ns.items.len() as i32 - 1;
+}
+
+export fn len(ns: &Nodes) -> usize { return ns.items.len(); }
+
+// Scalar accessor: callers iterating over every node must not call `get`,
+// whose struct return reserves stack space on each call (enough iterations
+// would overflow the stack).
+export fn start_of(ns: &Nodes, h: i32) -> usize {
+    return ns.items.get(h as usize).start;
 }
 
 export fn get(ns: &Nodes, h: i32) -> Node { return *ns.items.get(h as usize); }
@@ -172,12 +191,16 @@ export fn clone(ns: &mut Nodes, h: i32) -> i32 {
     let out = new_node(ns, old.kind);
     let mut n = get(&*ns, out);
     n.file = old.file;
+    n.src_path = old.src_path;
     n.start = old.start;
     n.end = old.end;
+    n.line = old.line;
+    n.col = old.col;
     n.ty = old.ty;
     n.target = old.target;
     n.self_ty = old.self_ty;
     n.instance = old.instance;
+    n.own = old.own;
     n.ival = old.ival;
     n.sval = old.sval;
     n.sfx = old.sfx;
@@ -202,6 +225,20 @@ export fn clone(ns: &mut Nodes, h: i32) -> i32 {
         i += 1;
     }
     return out;
+}
+
+export fn set_loc(ns: &mut Nodes, h: i32, path: &str, line: u32, col: u32) {
+    let mut n = get(&*ns, h);
+    n.src_path = path;
+    n.line = line;
+    n.col = col;
+    put(ns, h, n);
+}
+
+export fn set_file(ns: &mut Nodes, h: i32, file: i32) {
+    let mut n = get(&*ns, h);
+    n.file = file;
+    put(ns, h, n);
 }
 
 export fn set_sval(ns: &mut Nodes, h: i32, s: &str) {

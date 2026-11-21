@@ -1,8 +1,13 @@
 # Harmony language
 File Extension: .harmony (default), .hr (secondary)
 
-# Rules
+# The "Never Forget" Rule
+- Always ensure that you are following all the instructions in this file correctly.
+
+# Project Rules
+- Don't use sub-agents.
 - Read the project layout first.
+- **Never** hardcode host/user home filepaths in the source code. Repo should work in any machine.
 - **Read important parts of the harmony.md docs (but not everything at once)**.
 - **Never** hardcode "/opencode/" in any part of the source code.
 - **Final `harmony` and its future compiler updates will use Semantic Versioning 2.0.0 (and all of its rules) and**
@@ -19,6 +24,7 @@ File Extension: .harmony (default), .hr (secondary)
   harmony: full rewrite in harmony-base itself.
   Milestone: harmony is byte deterministic.
 - Fix any c2x-seed bug if you find any there (don't suppress).
+- Remove the `.gitkeep` file(s) once the target dir has real content(s).
 - Keep source code files and subdirs well organized.
 - Temp files must go outside repo dir (use `/tmp` instead).
 - Also fix any other bug before reporting success.
@@ -35,12 +41,12 @@ File Extension: .harmony (default), .hr (secondary)
 - If the information in the documentation contradicts the actual implementation, reconsider and **choose the safer long-term option** (updating either the code or the documentation).
 - Split big source files into smaller, organized files (they can be inside subdirs in the source 
   code for better organization) instead of huge single files (only exception is c2x-seed src).
-- Always add new or update todo.md and docs/*.md if some info got stale, this includes updating harmony language reference/keywords.
+- **Always add new or update the todo.md, roadmap/* and docs/*.md if some info got stale, this includes updating harmony language reference/keywords!**
 - Use makefile to build harmony lang. build.sh builds the c2x-seed, which is written in assembly.
 - **Always make or update tests for any new implementation/feature, code fixes,**
   **as well as fuzzing/aggressive and more importantly, error-handling tests, put them all to make test!**
 - **Critical: it's very important to have as many edge cases/error tests as possible here! Never forget it.**
-- **ALWAYS** use your edit tool to edit source files *instead of shell scripts (including python)*.
+- **Critical: You must ALWAYS** use your **edit tool** to edit source files *instead of shell scripts (including python)*.
 - Always measure the speed of your manual shell fuzz tests.
 - Never guess at bugs (harmony/c2x-seed), always reproduce:
   use any available debugger in the system (such as gdb, valgrind, strace, etc) to find the bug and fix them.

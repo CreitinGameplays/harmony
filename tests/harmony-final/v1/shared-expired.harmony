@@ -1,0 +1,14 @@
+import "../../../library/std/shared.hr";
+
+fn main() -> i32 {
+    let mut a = shared::Shared<i32>::make(1);
+    let mut w = a.downgrade();
+    a.release();
+    if (!w.is_expired()) { return 1; }
+    let mut up = w.upgrade();
+    switch (up) {
+        case Has(mut s): { s.release(); return 2; }
+        case Empty: { w.release(); return 42; }
+    }
+    return 3;
+}

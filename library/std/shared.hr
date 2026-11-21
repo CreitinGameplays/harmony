@@ -1,0 +1,117 @@
+// library/std/shared.hr — v1 Shared<T> and Weak<T>.
+//
+// Non-atomic, single-threaded shared ownership. The reference counts live in
+// a separate control block:
+//
+//   strong  number of live Shared<T> handles
+//   weak    number of Weak<T> handles plus 1 while strong > 0
+//
+// `Shared::release` and `Weak::release` are explicit: the v0/M1 compiler has
+// no drop glue yet, so the cost of ownership is deliberately visible at the
+// call site. Upgrade returns `Maybe<Shared<T>>` and never resurrects an
+// expired control block.
+struct Control<T> {
+    strong: usize;
+    weak: usize;
+    value: T;
+}
+
+export copy struct Shared<T> {
+    ptr: raw mut Control<T>;
+}
+
+export copy struct Weak<T> {
+    ptr: raw mut Control<T>;
+}
+
+methods<T> Shared<T> {
+    export fn make(value: T) -> Shared<T> {
+        unchecked("the heap box owns one strong count and one implicit weak count") {
+            let h = heap(Control<T> { .strong = 1, .weak = 1, .value = value });
+            return Shared<T> { .ptr = Heap::into_raw(h) };
+        }
+        unreachable();
+    }
+
+    export fn clone(&self) -> Shared<T> {
+        unchecked("self owns a live control block and the strong count fits") {
+            (*self.ptr).strong = (*self.ptr).strong + 1;
+            return Shared<T> { .ptr = self.ptr };
+        }
+        unreachable();
+    }
+
+    export fn get(&self) -> &T {
+        unchecked("a live Shared handle keeps the control block and value alive") {
+            return &(*self.ptr).value;
+        }
+        unreachable();
+    }
+
+    export fn strong_count(&self) -> usize {
+        unchecked("a live Shared handle keeps the control block alive") {
+            return (*self.ptr).strong;
+        }
+        unreachable();
+    }
+
+    export fn weak_count(&self) -> usize {
+        unchecked("a live Shared handle keeps the control block alive") {
+            return (*self.ptr).weak;
+        }
+        unreachable();
+    }
+
+    export fn downgrade(&self) -> Weak<T> {
+        unchecked("the new weak handle needs its own count") {
+            (*self.ptr).weak = (*self.ptr).weak + 1;
+            return Weak<T> { .ptr = self.ptr };
+        }
+        unreachable();
+    }
+
+    // Explicit release: the last strong owner destroys the value and drops
+    // the implicit weak count; the last weak owner frees the block.
+    export fn release(&mut self) {
+        unchecked("this handle is released exactly once") {
+            let p = self.ptr;
+            (*p).strong = (*p).strong - 1;
+            if ((*p).strong == 0) {
+                (*p).weak = (*p).weak - 1;
+                if ((*p).weak == 0) {
+                    dealloc<Control<T>>(p, 1);
+                }
+            }
+            self.ptr = Raw::null<Control<T>>() as raw mut Control<T>;
+        }
+    }
+}
+
+methods<T> Weak<T> {
+    export fn upgrade(&self) -> Maybe<Shared<T>> {
+        unchecked("the caller keeps the weak handle live during upgrade") {
+            let p = self.ptr;
+            if ((*p).strong == 0) { return Empty; }
+            (*p).strong = (*p).strong + 1;
+            (*p).weak = (*p).weak + 1;
+            return Has(Shared<T> { .ptr = p });
+        }
+        unreachable();
+    }
+
+    export fn is_expired(&self) -> bool {
+        unchecked("a live weak handle keeps the control block alive") {
+            return (*self.ptr).strong == 0;
+        }
+        unreachable();
+    }
+
+    export fn release(&mut self) {
+        unchecked("this weak handle is released exactly once") {
+            let p = self.ptr;
+            (*p).weak = (*p).weak - 1;
+            if ((*p).weak == 0) { dealloc<Control<T>>(p, 1); }
+            self.ptr = Raw::null<Control<T>>() as raw mut Control<T>;
+        }
+    }
+}

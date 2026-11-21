@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# First v1 batch for the final compiler: structured unchecked reasons and
-# guarded switch arms. These forms are final-language only; harmony-base does
-# not parse them, so they are checked directly through `build/harmony`.
+# V1 features for the final compiler: structured unchecked reasons, guarded
+# switch arms, and Shared<T>/Weak<T>. The syntax forms are final-language
+# only, so they are checked directly through `build/harmony`.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -38,6 +38,9 @@ run_case structured-reason-fn 42
 run_case switch-guard 42
 run_case switch-guard-false 42
 run_case guarded-exhaustive 42
+run_case shared 42
+run_case shared-counts 42
+run_case shared-expired 42
 
 "$HC" check "$DIR/guarded-refutable.harmony" >"$TMP/refutable.out" 2>&1
 refutable_rc=$?

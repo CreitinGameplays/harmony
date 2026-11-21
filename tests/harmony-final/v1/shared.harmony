@@ -1,0 +1,27 @@
+import "../../../library/std/shared.hr";
+
+// v1 Shared<T>: one control block, two strong owners, one weak handle.
+// `upgrade` succeeds while strong > 0 and returns Empty after the last
+// strong release. Counts are explicit because drop glue is not implemented.
+fn main() -> i32 {
+    let mut a = shared::Shared<i32>::make(40);
+    let mut b = a.clone();
+    let mut w = a.downgrade();
+    let mut up = w.upgrade();
+    let mut val: i32 = 0;
+    switch (up) {
+        case Has(mut s): {
+            val = *s.get();
+            s.release();
+        }
+        case Empty: {
+            val = 1;
+        }
+    }
+    a.release();
+    if (w.is_expired()) { return 2; }
+    b.release();
+    if (!w.is_expired()) { return 3; }
+    w.release();
+    return val + 2;
+}

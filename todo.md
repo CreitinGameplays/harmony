@@ -847,7 +847,8 @@ directly into its binary and (b) support **multi-core compilation by default**.
     result type, producing different widen instructions. Regression
     `stamp-lits-index-operand` is in the byte-identical IR corpus.
   - V1 batch 1 (final compiler only): structured `unchecked(tag, "reason")`
-    forms with tagged audit output, and guarded `switch` arms that see pattern
-    bindings, require a `bool`, and branch to the next arm when false.
-    `tests/harmony-final/v1.sh` covers both, plus the `TYPE-03` rejection.
-    Remaining v1 features are still unimplemented.
+    forms with tagged audit output, guarded `switch` arms that see pattern
+    bindings, require a `bool`, and branch to the next arm when false, and
+    `Shared<T>`/`Weak<T>` in `library/std/shared.hr` with explicit `release`
+    and `Maybe`-returning `upgrade`. `tests/harmony-final/v1.sh` covers all
+    three. Remaining v1 features are still unimplemented.

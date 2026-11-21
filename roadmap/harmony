@@ -384,11 +384,18 @@ The R6 byte-diff found ten rewrite-only bugs, all fixed at the source:
     pattern alone is irrefutable for that variant (`A(x)`, bare `A`), so
     `A(5) if (...)` still needs a `default`. Scalar switches always need a
     `default`.
-- [ ] Remaining v1 features: `Shared<T>`/weak handles, threads, `try`,
-  named enum payload fields and struct patterns, function pointers, and
-  `abilities`.
+- [x] **`Shared<T>` and `Weak<T>`.** `library/std/shared.hr` implements a
+  non-atomic control block (`strong`, `weak`, `value`) over `heap`. `make`,
+  `clone`, `get`, `strong_count`, `weak_count`, `downgrade`, and explicit
+  `release` cover the strong side; `upgrade -> Maybe<Shared<T>>`,
+  `is_expired`, and `release` cover the weak side. The last strong owner
+  destroys the value and drops the implicit weak count; the last weak owner
+  frees the block. Drop glue is not implemented yet, so `release` is visible
+  at the call site — the "visibly costly" part of §20.3 item 3.
+- [ ] Remaining v1 features: threads, `try`, named enum payload fields and
+  struct patterns, function pointers, and `abilities`.
 
-`tests/harmony-final/v1.sh` runs the batch: five accepted programs, a
+`tests/harmony-final/v1.sh` runs the batch: eight accepted programs, a
 `TYPE-03` rejection, a `CASE-01` rejection, and both audit formats.
 harmony-base is unchanged.
 

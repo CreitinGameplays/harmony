@@ -1,0 +1,14 @@
+import "../../../library/std/shared.hr";
+
+fn main() -> i32 {
+    let mut a = shared::Shared<i32>::make(10);
+    let mut b = a.clone();
+    let mut w = a.downgrade();
+    let s1 = a.strong_count();
+    let w1 = a.weak_count();
+    let s2 = b.strong_count();
+    a.release();
+    b.release();
+    w.release();
+    return ((s1 + w1 + s2) as i32) + 36;
+}

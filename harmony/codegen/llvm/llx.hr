@@ -1467,11 +1467,94 @@ fn format_call(e: &mut context::Emitter, h: i32, args: &vec::Vec<i32>) -> &str {
     return "0";
 }
 
+// Builtins whose call node has no callee child. They must be dispatched
+// before the ordinary-call path dereferences `n.a`.
+fn builtin_no_callee(e: &mut context::Emitter, h: i32, marker: i32,
+                     retty: i32) -> &str {
+    let n = node::get(&e.c.nodes, h);
+    if (marker == 16) {
+        e.expr_ty = retty;
+        return "null";
+    }
+    if (marker == 10 || marker == 11) {
+        let mut elem = types::TY_U8;
+        if (n.b >= 0) { elem = node::get(&e.c.nodes, n.b).ty; }
+        let mut esz = types::size(elem, &mut e.c.types);
+        if (esz == 0) { esz = 1; }
+        let mut count_index: usize = 0;
+        if (marker == 11) { count_index = 1; }
+        let count_h = *n.kids.get(count_index);
+        let mut count2 = expr(e, count_h);
+        count2 = index_to_i64(e, count2);
+        let bytes = context::new_reg(e);
+        context::out(e, "  ");
+        context::out(e, bytes);
+        context::out(e, " = mul i64 ");
+        context::out(e, count2);
+        context::out(e, ", ");
+        context::out_i64(e, esz as i64);
+        context::nl(e);
+        if (marker == 10) {
+            let r = context::new_reg(e);
+            context::out(e, "  ");
+            context::out(e, r);
+            context::out(e, " = call ptr @lc_alloc(i64 ");
+            context::out(e, bytes);
+            context::out(e, ")\n");
+            e.expr_ty = retty;
+            return r;
+        }
+        let p = expr(e, *n.kids.get(0));
+        context::out(e, "  call void @lc_dealloc(ptr ");
+        context::out(e, p);
+        context::out(e, ", i64 ");
+        context::out(e, bytes);
+        context::out(e, ")\n");
+        e.expr_ty = types::TY_UNIT;
+        return "0";
+    }
+    // reinterpret<T, U>(x)
+    let v = expr(e, *n.kids.get(0));
+    let mut from = e.expr_ty;
+    let mut to = retty;
+    if (n.b >= 0) {
+        let tb = node::get(&e.c.nodes, n.b);
+        from = tb.ival as i32;
+        to = tb.ty;
+    }
+    e.expr_ty = to;
+    if (types::is_ptr(&e.c.types, from) && types::is_integer(to)) {
+        let r = context::new_reg(e);
+        context::out(e, "  ");
+        context::out(e, r);
+        context::out(e, " = ptrtoint ptr ");
+        context::out(e, v);
+        context::out(e, " to ");
+        context::out(e, context::type_name(e, to));
+        context::nl(e);
+        return r;
+    }
+    if (types::is_integer(from) && types::is_ptr(&e.c.types, to)) {
+        let r = context::new_reg(e);
+        context::out(e, "  ");
+        context::out(e, r);
+        context::out(e, " = inttoptr i64 ");
+        context::out(e, v);
+        context::out(e, " to ptr\n");
+        return r;
+    }
+    if (from == to) { return v; }
+    return reinterpret_cast(e, v, from, to);
+}
+
 // A call expression.
 fn expr_call(e: &mut context::Emitter, h: i32) -> &str {
     let n = node::get(&e.c.nodes, h);
     let retty = context::node_ty(e, h);
     let marker = n.ival as i32;
+    if (marker == 10 || marker == 11 || marker == 12 || marker == 16) {
+        return builtin_no_callee(e, h, marker, retty);
+    }
     // An explicit or inferred generic call has no callee path; the checker
     // stored the concrete instance in `b`.
     if (n.a < 0 && marker != 10 && marker != 11 && marker != 12 && marker != 16) {
@@ -1538,83 +1621,6 @@ fn expr_call(e: &mut context::Emitter, h: i32) -> &str {
         context::nl(e);
         e.expr_ty = retty;
         return slot;
-    }
-    // `Raw::null<T>()`.
-    if (marker == 16) {
-        e.expr_ty = retty;
-        return "null";
-    }
-    // `alloc<T>(n)` / `dealloc<T>(p, n)`.
-    if (marker == 10 || marker == 11) {
-        let mut elem = types::TY_U8;
-        if (n.b >= 0) { elem = node::get(&e.c.nodes, n.b).ty; }
-        let mut esz = types::size(elem, &mut e.c.types);
-        if (esz == 0) { esz = 1; }
-        let mut count_index: usize = 0;
-        if (marker == 11) { count_index = 1; }
-        let count_h = *n.kids.get(count_index);
-        let mut count2 = expr(e, count_h);
-        count2 = index_to_i64(e, count2);
-        let bytes = context::new_reg(e);
-        context::out(e, "  ");
-        context::out(e, bytes);
-        context::out(e, " = mul i64 ");
-        context::out(e, count2);
-        context::out(e, ", ");
-        context::out_i64(e, esz as i64);
-        context::nl(e);
-        if (marker == 10) {
-            let r = context::new_reg(e);
-            context::out(e, "  ");
-            context::out(e, r);
-            context::out(e, " = call ptr @lc_alloc(i64 ");
-            context::out(e, bytes);
-            context::out(e, ")\n");
-            e.expr_ty = retty;
-            return r;
-        }
-        let p = expr(e, *n.kids.get(0));
-        context::out(e, "  call void @lc_dealloc(ptr ");
-        context::out(e, p);
-        context::out(e, ", i64 ");
-        context::out(e, bytes);
-        context::out(e, ")\n");
-        e.expr_ty = types::TY_UNIT;
-        return "0";
-    }
-    // `reinterpret<T, U>(x)`.
-    if (marker == 12) {
-        let v = expr(e, *n.kids.get(0));
-        let mut from = e.expr_ty;
-        let mut to = retty;
-        if (n.b >= 0) {
-            let tb = node::get(&e.c.nodes, n.b);
-            from = tb.ival as i32;
-            to = tb.ty;
-        }
-        e.expr_ty = to;
-        if (types::is_ptr(&e.c.types, from) && types::is_integer(to)) {
-            let r = context::new_reg(e);
-            context::out(e, "  ");
-            context::out(e, r);
-            context::out(e, " = ptrtoint ptr ");
-            context::out(e, v);
-            context::out(e, " to ");
-            context::out(e, context::type_name(e, to));
-            context::nl(e);
-            return r;
-        }
-        if (types::is_integer(from) && types::is_ptr(&e.c.types, to)) {
-            let r = context::new_reg(e);
-            context::out(e, "  ");
-            context::out(e, r);
-            context::out(e, " = inttoptr i64 ");
-            context::out(e, v);
-            context::out(e, " to ptr\n");
-            return r;
-        }
-        if (from == to) { return v; }
-        return reinterpret_cast(e, v, from, to);
     }
     // An ordinary call.
     let mut symbol = "";

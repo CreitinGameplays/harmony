@@ -55,7 +55,7 @@ File extension: `.harmony`
 | v0.3.2 | Heap form | The heap keyword `new` (a prefix operator: `new 42`) is replaced by the `sizeof`-styled built-in form **`heap(x)`**. It reads like the allocation it is, cannot be mistaken for a constructor, and lets the compiler construct the value **in place** (`heap([0u8; 8_000_000])`). `new` and `delete` join the recognized foreign words. |
 | v0.3.3 | Split rule | §19.8 makes the compiler-vs-library boundary explicit: the compiler keeps only what soundness or syntax requires (analyses, traps, indexing, `heap(x)`, about a dozen intrinsics). Types, collections, formatting, I/O, the runtime's entry/allocator/trap formatting, protocol implementations, diagnostic wording, and lints all move to the library or tooling. |
 | impl | M1 in harmony-base | The bootstrap compiler now **runs the language**: lexer → parser → type checker → LLVM IR text → clang + freestanding runtime → executable. Checked arithmetic (T-OVERFLOW), division/shift traps (T-DIV0, T-SHIFT), bounds-checked indexing (T-INDEX), `heap(x)` allocation, structs/enums by value (sret), methods with `Type__method` mangling, `switch` on scalars and enums, and references all work under `run` with trap status 70 (§14.3). `emit-llvm` output is byte-deterministic. |
-| impl (rewrite) | R6 LLVM backend | The self-hosted compiler now has its own LLVM IR emitter (`harmony/codegen/llvm/`). On all 93 programs in the codegen corpus, its IR is **byte-identical** to harmony-base's, including checked arithmetic, traps, slices, aggregates, generics, methods, enums, switches, formatting calls, and multi-module programs. |
+| impl (rewrite) | R6 LLVM backend | The self-hosted compiler now has its own LLVM IR emitter (`harmony/codegen/llvm/`). On all 94 programs in the codegen corpus, its IR is **byte-identical** to harmony-base's, including checked arithmetic, traps, slices, aggregates, generics, methods, enums, switches, formatting calls, and multi-module programs. |
 
 ### 1.2 Bug fixed in v0.3
 
@@ -2907,6 +2907,7 @@ everything above it can be audited as ordinary code.
 | No user-defined abilities (traits), so no user-defined generic algorithms over behavior (e.g., a generic `sort` with a custom comparison) | Built-in `eq`/`ord` cover common cases. (`abilities` arrives in v1, §20.4.) |
 | No outlives bounds on `life` | Restructure; some advanced signatures are rejected. |
 | No partial moves | `replace`, `clone`, or consuming methods. (Struct patterns soften this in v1, §20.3 item 6.) |
+| A reference to a fat reference (`&&str`, `&&[T]`) collapses to the fat pair | Keep the pair itself (index into a raw slot buffer when a generic container must hold `&str`); nested references need the M2/M3 ownership work. Generic-call unification no longer mis-infers `T = u8` from `&T` against `&str`. |
 | No threads | Single-threaded by design in v0. (v1 adds threads with detached-thread support, §20.3 item 4.) |
 | No `?`-style propagation | Explicit `switch` on `Outcome`. |
 | Long list drops recurse | Hand-written iterative `cleanup` (`DROP-02` warns). |

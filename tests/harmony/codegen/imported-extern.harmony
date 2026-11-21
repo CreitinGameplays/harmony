@@ -1,0 +1,7 @@
+// EXPECT: 42
+import "imported-extern/env.hr";
+
+fn main() -> i32 {
+    if (env::pid() > 0) { return 42; }
+    return 1;
+}

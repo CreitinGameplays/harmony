@@ -761,6 +761,11 @@ int ck_unify(struct AstNode* tn, int ty) {
         // `&[T]` / `&str` are fat pairs; `&T` is thin. A slice arg is the pair
         // itself, so recurse into the element node against the slice type.
         if (ty_kind(ty) == CTY_SLICE) { return ck_unify(tn->a, ty); }
+        // `&str` is ALSO a reference kind, but its referent is the unsized
+        // `str`: it is not `&T` for any instantiable T. Treating it as a
+        // thin reference here pinned T to the byte element (`u8`), so
+        // `fn f<T>(x: &T)` called with `&str` silently became `f<u8>`.
+        if (ty_kind(ty) == CTY_STRREF) { return 1; }
         if (ty_is_ref(ty) || ty_is_ptr(ty) || ty_is_heap(ty)) {
             return ck_unify(tn->a, ty_elem(ty));
         }

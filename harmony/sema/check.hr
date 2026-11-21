@@ -2674,6 +2674,9 @@ fn unify(c: &mut Checker, tn_h: i32, ty: i32, names: &RawStrList,
             }
             return;
         }
+        // `&str` is a fat reference to the unsized `str`, not `&T` for any
+        // instantiable T. It used to pin T to the byte element (`u8`).
+        if (types::type_kind(&c.types, ty) == types::CTY_STRREF) { return; }
         if (types::is_ref(&c.types, ty) || types::is_ptr(&c.types, ty) || types::is_heap(&c.types, ty)) {
             unify(c, tn.a, types::elem(&c.types, ty), names, slots);
         }

@@ -8,9 +8,11 @@
 // harmony-base's model, so the checker and backend see the same shape.
 //
 // The rewrite has no file IO yet (R7), so the caller supplies the modules as
-// a slice. Strings are kept in raw growable buffers of `&str`: a `Vec<&str>`
-// would hit a generic-substitution quirk where `get` returns `&&str` inside
-// a method, while raw slots of `&str` work (the same shape as `args()`).
+// a slice. Strings are kept in raw growable buffers of `&str`: `Vec<&str>`
+// exposes an element as `&T`, which for `T = &str` would be `&&str`. A fat
+// reference is a pair carried by value, so `&` of one collapses back to the
+// pair; nested references need the M2/M3 ownership work. Raw slots of `&str`
+// yield the element itself and are the correct shape here (like `args()`).
 import "../../library/core/str.hr";
 import "../../library/core/vec.hr";
 import "../../library/core/fmt.hr";
@@ -160,6 +162,15 @@ fn join(dir: &str, path: &str) -> &str {
     return normalize(s.as_str());
 }
 
+// The normalized path of an import relative to its importing module.
+export fn resolve_path(dir: &str, path: &str) -> &str { return join(dir, path); }
+
+// The directory part of a normalized module path.
+export fn module_dir(path: &str) -> &str { return dir_of(path); }
+
+// The normalized identity of a root module path.
+export fn normalize_path(path: &str) -> &str { return normalize(path); }
+
 // ---- module table --------------------------------------------------------
 
 fn find_path(infos: &vec::Vec<ModuleInfo>, path: &str) -> i32 {
@@ -191,6 +202,21 @@ fn imports(nodes: &node::Nodes, root: i32) -> StrList {
     while (i < rn.kids.len()) {
         let it = node::get(nodes, *rn.kids.get(i));
         if (it.kind == node::AST_IMPORT) { sl_push(&mut out, it.sval); }
+        i += 1;
+    }
+    return out;
+}
+
+// The import paths of a parsed module, copied into owned strings so a driver
+// can discover the module graph before handing it to `load`.
+export fn import_names(nodes: &node::Nodes, root: i32) -> vec::Vec<str::String> {
+    let mut out: vec::Vec<str::String> = vec::Vec<str::String>::make();
+    let imps = imports(nodes, root);
+    let mut i: usize = 0;
+    while (i < imps.len) {
+        let mut s: str::String = str::String::make();
+        s.push(sl_at(&imps, i));
+        out.push(s);
         i += 1;
     }
     return out;
@@ -248,7 +274,7 @@ fn collect_names(nodes: &node::Nodes, root: i32) -> StrList {
         let it = node::get(nodes, *rn.kids.get(i));
         if (it.sval != "" && (it.kind == node::AST_STRUCT || it.kind == node::AST_ENUM
             || it.kind == node::AST_CONST || it.kind == node::AST_FN
-            || it.kind == node::AST_EXTERN_FN || it.kind == node::AST_METHODS)) {
+            || it.kind == node::AST_METHODS)) {
             sl_push(&mut out, it.sval);
         }
         i += 1;

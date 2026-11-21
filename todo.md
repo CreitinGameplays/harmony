@@ -795,7 +795,7 @@ directly into its binary and (b) support **multi-core compilation by default**.
     (deterministic emitter state and type spellings), `llx.hr`
     (mutually recursive expression/statement lowering), and `emit.hr` (module
     and function driver). `tests/harmony-final/irdiff.py` is the R6 gate: its
-    IR is **byte-identical** to harmony-base's on all 93 codegen programs,
+    IR is **byte-identical** to harmony-base's on all 94 codegen programs,
     including the eight multi-module programs (0 mismatches). The harness
     compiles the backend once and runs the corpus in isolated processes, so a
     trap in one program cannot hide the rest; build ~10s, diff ~0.3s. Imported
@@ -809,6 +809,12 @@ directly into its binary and (b) support **multi-core compilation by default**.
     wrong width. All are fixed at the source and covered by the IR gate.
     Module testing also fixed dropped syntax diagnostics, merge order,
     qualified generic functions, and generic-field member interleaving.
+  - Generic-call unification no longer treats `&str` as a thin `&T` and pins
+    `T = u8`; the call now stops with "cannot infer". Fixed in both compilers
+    with the `generic-ref-str-inference` regression. The related `&&str`
+    collapse is a representation limit documented in §20.1, not a substitution
+    bug: the loader keeps raw `&str` slots until nested-reference support lands
+    with the M2/M3 ownership work.
 - [ ] Integrate LLVM IR emission directly into the compiler binary (AGENTS.md).
 - [ ] Multi-core compilation by default (AGENTS.md).
 - [ ] Byte-deterministic self-hosting milestone.

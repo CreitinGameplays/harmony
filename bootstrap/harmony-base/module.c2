@@ -365,7 +365,7 @@ void mod_collect_names(struct AstNode* root, char** names, int* nnames) {
         it = items->items[i];
         if (it->kind == AST_STRUCT || it->kind == AST_ENUM
             || it->kind == AST_CONST || it->kind == AST_FN
-            || it->kind == AST_EXTERN_FN || it->kind == AST_METHODS) {
+            || it->kind == AST_METHODS) {
             if (it->sval != 0 && *nnames < MOD_MAXNAMES) {
                 names[*nnames] = it->sval;
                 *nnames = *nnames + 1;

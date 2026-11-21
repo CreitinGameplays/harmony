@@ -240,7 +240,7 @@ rule; it is recorded here rather than hidden.
   - `tests/harmony-final/typediff.py` — 32 hand-written cases (accept +
     reject).
   - `tests/harmony-final/typechecker_sh.py` — the 28 `checker.sh` snippets.
-  - `tests/harmony-final/typecorpus.py error-handling` — 59 files.
+  - `tests/harmony-final/typecorpus.py error-handling` — 60 files.
   - `tests/harmony-final/typecorpus.py codegen` — 85 files.
 - [x] **Speed**: compiling the rewrite's core modules takes ~5s, so the
   harness (`typeharness.py`) compiles the checker ONCE into a batch binary
@@ -270,7 +270,7 @@ rule; it is recorded here rather than hidden.
   template body left its expression types and call targets stamped for
   whichever instance was checked first.
 - [x] Gate: `tests/harmony-final/irdiff.py` compares the rewrite's IR with
-  harmony-base's byte for byte. All **93 programs** in the codegen corpus,
+  harmony-base's byte for byte. All **94 programs** in the codegen corpus,
   including the eight multi-module programs, are **identical (0 mismatches)**.
   The emitter is compiled once into a batch driver; the whole comparison takes
   about 9–15 s to build and 0.3 s to diff. Multi-module sources are embedded
@@ -443,6 +443,18 @@ starting the rewrite):
   became `Box<i32>` instead of `Box<Box<i32>>`. Auto-stamped arguments are now
   marked inferred (`ival == 1`) and yield to an expected type that names an
   instance of the same template.
+- **Generic `&T` inference against `&str`.** `ck_unify` treated `&str` as a
+  thin reference, so `fn f<T>(x: &T)` called with `&str` pinned `T` to the
+  pair's byte element (`u8`) and silently compiled `f<u8>`. `&str` is a fat
+  pair whose referent is unsized, so unification now leaves `T` unpinned and
+  the call stops with "cannot infer". Regression
+  `generic-ref-str-inference`. The remaining `&&str` collapse is a separate
+  representation limit (§20.1), not an inference bug.
+- **An `extern "C"` declaration in an imported module was namespaced.** The
+  module loader renamed it (and calls to it) to `mod::lc_syscall3`, although
+  the C ABI requires the raw symbol. The emitted `declare` was invalid IR.
+  Extern declarations are no longer collected as module-level names; calls
+  keep their raw spelling. Regression `imported-extern`.
 
 The last two are mirrored in the rewrite checker (`harmony/sema/check.hr`), so
 the type differential stays at 0 mismatches. The fuzzer's `specials` engine

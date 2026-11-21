@@ -1,0 +1,13 @@
+// WANT: TYPE-01
+// `fn f<T>(x: &T)` must not infer `T = u8` from a `&str` argument. `&str` is a
+// fat pair whose referent is the unsized `str`, not a thin `&T`, so there is
+// no instantiable T. Generic-call unification used to fall through to the
+// reference branch and pin T to the pair's byte element, silently compiling
+// the wrong function.
+fn idref<T>(x: &T) -> &T { return x; }
+
+fn main() -> i32 {
+    let s = "alpha";
+    let r = idref(&s);
+    return 0;
+}

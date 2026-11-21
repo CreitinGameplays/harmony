@@ -882,3 +882,9 @@ directly into its binary and (b) support **multi-core compilation by default**.
     `block`/`type`/`ident` parameter kinds, hygiene with provenance, variadic
     packs, `MACRO-01..04`. Requires `#` and `...` lexer tokens; `macro` is
     reserved. No implementation, no v1 tests — do not mark as v1 work.
+  - Editor grammar (Zed / tree-sitter): syntax highlight now covers all v1
+    forms and the future macro/reserved tokens. `~/tree-sitter-harmony` and
+    the nested `language-extension/zed/harmony/grammars/harmony` repo were
+    synced to the same commit, with regenerated parser artifacts and a
+    `test/corpus/v1.txt` gate (3/3). The Zed `highlights.scm`, indent config
+    and grammar rev in `extension.toml` were updated in this repo.

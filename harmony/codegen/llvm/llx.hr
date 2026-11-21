@@ -2642,6 +2642,19 @@ fn stmt_switch(e: &mut context::Emitter, h: i32) {
         switch_test(e, &arm.kids, st, subjslot, armlbl, nextlbl);
         label(e, armlbl);
         bind_pattern(e, &arm.kids, st, subjslot);
+        if (arm.c >= 0) {
+            let guard = expr(e, arm.c);
+            let true_lbl = context::new_label(e, "switch.guard");
+            context::out(e, "  br i1 ");
+            context::out(e, guard);
+            context::out(e, ", label %");
+            context::out(e, true_lbl);
+            context::out(e, ", label %");
+            context::out(e, nextlbl);
+            context::nl(e);
+            e.terminated = 0;
+            label(e, true_lbl);
+        }
         block(e, arm.b);
         if (e.terminated == 0) {
             context::out(e, "  br label %");

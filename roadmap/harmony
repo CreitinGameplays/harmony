@@ -369,6 +369,28 @@ The R6 byte-diff found ten rewrite-only bugs, all fixed at the source:
   exactly like harmony-base. Regression `stamp-lits-index-operand` (in the
   byte-identical IR corpus).
 
+### V1 batch 1 — final compiler only [/]
+
+- [x] **Structured `unchecked` reasons.** `unchecked(tag, "free text")`
+  is accepted for both blocks and `unchecked fn`. The tag is stored in the
+  node's `sfx` slot; `audit` prints `"tag"` in JSON and prefixes the tag in
+  pretty output only when present, so the v0 report is byte-identical.
+- [x] **Guarded `switch` arms.** `case P if (expr): { ... }` stores the guard
+  in the arm's `c` slot. The checker binds the pattern first, then requires
+  the guard to be `bool`; codegen emits a conditional branch from the arm
+  label to the arm body or the next arm's test. A non-bool guard is
+  `TYPE-03`.
+  - Current limitation: a guarded arm does not satisfy exhaustiveness on its
+    own, so a `default` is still required unless unguarded arms cover every
+    variant. This is stricter than §20.3 item 2 but never accepts an
+    unhandled value.
+- [ ] Remaining v1 features: `Shared<T>`/weak handles, threads, `try`,
+  named enum payload fields and struct patterns, function pointers, and
+  `abilities`.
+
+`tests/harmony-final/v1.sh` runs the batch: four accepted programs, one
+`TYPE-03` rejection, and both audit formats. harmony-base is unchanged.
+
 ## What harmony-base must still grow (feed it back)
 
 Any gap found while writing `harmony` is fixed in `harmony-base` first, with a

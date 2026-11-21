@@ -20,6 +20,7 @@ copy struct Site {
     kind: &str;
     lines: i32;
     reason: &str;
+    tag: &str;
 }
 
 fn line_at(src: &str, offset: usize) -> i32 {
@@ -41,6 +42,14 @@ fn site_reason(ns: &node::Nodes, h: i32) -> &str {
     return n.sval;
 }
 
+fn site_tag(ns: &node::Nodes, h: i32) -> &str {
+    let n = node::get(ns, h);
+    if ((n.kind == node::AST_FN || n.kind == node::AST_EXTERN_FN) && n.c >= 0) {
+        return node::get(ns, n.c).sfx;
+    }
+    return n.sfx;
+}
+
 fn collect_sites(ns: &node::Nodes, h: i32, src: &str,
                  out: &mut vec::Vec<Site>) {
     if (h < 0) { return; }
@@ -50,6 +59,7 @@ fn collect_sites(ns: &node::Nodes, h: i32, src: &str,
                 && (n.ival & 1) != 0;
     if (is_block || is_fn) {
         let reason = site_reason(ns, h);
+        let tag = site_tag(ns, h);
         let start_line = line_at(src, n.start);
         let mut lines: i32 = 1;
         if (is_block) {
@@ -64,6 +74,7 @@ fn collect_sites(ns: &node::Nodes, h: i32, src: &str,
             .kind = kind,
             .lines = lines,
             .reason = reason,
+            .tag = tag,
         });
     }
     collect_sites(ns, n.a, src, out);
@@ -146,8 +157,15 @@ export fn run(input: &str, format: i32) -> i32 {
             let s = sites.get(i);
             let kind = json_string(s.kind);
             let reason = json_string(s.reason);
-            print("{{\"file\":{},\"line\":{},\"kind\":{},\"lines\":{},\"reason\":{}}}",
-                  path.as_str(), s.line, kind.as_str(), s.lines, reason.as_str());
+            if (s.tag != "") {
+                let tag = json_string(s.tag);
+                print("{{\"file\":{},\"line\":{},\"kind\":{},\"lines\":{},\"tag\":{},\"reason\":{}}}",
+                      path.as_str(), s.line, kind.as_str(), s.lines,
+                      tag.as_str(), reason.as_str());
+            } else {
+                print("{{\"file\":{},\"line\":{},\"kind\":{},\"lines\":{},\"reason\":{}}}",
+                      path.as_str(), s.line, kind.as_str(), s.lines, reason.as_str());
+            }
             i += 1;
         }
         print("],\"total\":{},\"lines\":{},\"short\":{},\"oversized\":{}}}\n",
@@ -160,7 +178,11 @@ export fn run(input: &str, format: i32) -> i32 {
         i = 0;
         while (i < sites.len()) {
             let s = sites.get(i);
-            print("  {}:{}   {}   {}\n", input, s.line, s.kind, s.reason);
+            if (s.tag != "") {
+                print("  {}:{}   {}   {} {}\n", input, s.line, s.kind, s.tag, s.reason);
+            } else {
+                print("  {}:{}   {}   {}\n", input, s.line, s.kind, s.reason);
+            }
             i += 1;
         }
         print("\n  {} sites under 12 characters - {} sites over 10 lines\n", short, oversized);

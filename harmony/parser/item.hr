@@ -429,8 +429,8 @@ fn parse_item(p: &mut pctx::Parser, is_export: i64) -> i32 {
     // contract is stored on `c`, so `audit` and callers' diagnostics show it.
     if (pctx::at_kw(&*p, "unchecked")
         && pctx::peek(&*p, 1).kind == token::TokKind::LParen) {
-        let reason = stmt::parse_unck_head(p);
-        if (reason == "") { return -1; }
+        let head = stmt::parse_unck_head(p);
+        if (head.ok == 0) { return -1; }
         if (!pctx::at_kw(&*p, "fn")) {
             pctx::syntax_stop(p, "SYN-05", "an `unchecked` contract attaches to a function",
                              "Spell it `unchecked(\"why\") fn name(...) { ... }`; a bare block is `unchecked(\"why\") { ... }` (§13.1).");
@@ -442,7 +442,8 @@ fn parse_item(p: &mut pctx::Parser, is_export: i64) -> i32 {
         if (is_export != 0) { flags = 3; } // bit 1: exported
         node::set_ival(p.nodes, f, flags);
         let c = pctx::node_here(p, node::AST_STRING_LIT);
-        node::set_sval(p.nodes, c, reason);
+        node::set_sval(p.nodes, c, head.reason);
+        node::set_sfx(p.nodes, c, head.tag);
         node::set_c(p.nodes, f, c);
         return f;
     }

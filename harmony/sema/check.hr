@@ -3186,6 +3186,12 @@ fn check_stmt(c: &mut Checker, h: i32) {
                     j += 1;
                 }
             }
+            if (arm.c >= 0) {
+                let gt = check_expr(c, arm.c);
+                if (gt != types::TY_INVALID && !types::eq(gt, types::TY_BOOL, &c.types)) {
+                    err_condition(c, arm.c, gt, "switch guard");
+                }
+            }
             check_stmt(c, arm.b);
             if (arm.kids.len() != 0) { scope_pop(c); }
             i += 1;

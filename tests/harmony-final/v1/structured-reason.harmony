@@ -1,0 +1,6 @@
+fn main() -> i32 {
+    unchecked(index_checked, "i < len on line 5") {
+        return 42;
+    }
+    return 1;
+}

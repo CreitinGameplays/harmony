@@ -1,0 +1,8 @@
+enum E { A(i32), B }
+fn main() -> i32 {
+    let e = E::A(2);
+    switch (e) {
+        case A(x) if (x > 3): { return 1; }
+        default: { return 42; }
+    }
+}

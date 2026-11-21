@@ -194,6 +194,11 @@ export fn set_sval(ns: &mut Nodes, h: i32, s: &str) {
     n.sval = s;
     put(ns, h, n);
 }
+export fn set_sfx(ns: &mut Nodes, h: i32, s: &str) {
+    let mut n = get(&*ns, h);
+    n.sfx = s;
+    put(ns, h, n);
+}
 export fn set_abi(ns: &mut Nodes, h: i32, s: &str) {
     let mut n = get(&*ns, h);
     n.abi = s;

@@ -48,21 +48,39 @@ export fn assign_op_text(p: &pctx::Parser) -> &str {
     return "=";
 }
 
-// `unchecked` "(" STRING ")" — the reason is mandatory (§13.1).
-export fn parse_unck_head(p: &mut pctx::Parser) -> &str {
+copy struct UnckHead {
+    ok: i32;
+    tag: &str;
+    reason: &str;
+}
+
+// `unchecked` "(" [TAG ","] STRING ")" — the reason is mandatory. The v1
+// structured form adds a tag from the audit vocabulary before the free text;
+// the plain string form stays valid (§20.3 item 1).
+export fn parse_unck_head(p: &mut pctx::Parser) -> UnckHead {
+    let empty = UnckHead { .ok = 0, .tag = "", .reason = "" };
     pctx::advance(p);   // unchecked
     if (!pctx::expect(p, token::TokKind::LParen, "add `(` after `unchecked`")) {
-        return "";
+        return empty;
+    }
+    let mut tag: &str = "";
+    if (pctx::at(&*p, token::TokKind::Ident)
+        && pctx::peek(&*p, 1).kind == token::TokKind::Comma) {
+        tag = pctx::cur_word(p);
+        pctx::advance(p);
+        pctx::advance(p);   // comma
     }
     if (!pctx::at(&*p, token::TokKind::Str)) {
         pctx::syntax_stop(p, "SYN-05", "`unchecked` needs a reason",
-                         "Write `unchecked(\"why this is sound\") { ... }` (§13.1).");
-        return "";
+                          "Write `unchecked(\"why this is sound\") { ... }` or `unchecked(tag, \"why\") { ... }` (§13.1, §20.3).");
+        return empty;
     }
     let reason = pctx::cur(&*p).text;
     pctx::advance(p);
-    pctx::expect(p, token::TokKind::RParen, "add `)` after the reason");
-    return reason;
+    if (!pctx::expect(p, token::TokKind::RParen, "add `)` after the reason")) {
+        return empty;
+    }
+    return UnckHead { .ok = 1, .tag = tag, .reason = reason };
 }
 
 // let [mut] name [: type] [= expr] ";"
@@ -382,6 +400,16 @@ fn parse_switch(p: &mut pctx::Parser) -> i32 {
                              "Each arm is `case pattern: { ... }` or `default: { ... }` (§8.6).");
             return -1;
         }
+        // v1 switch guard: `case P if (expr): { ... }`. The guard sees the
+        // pattern bindings and must be a bool (§20.3 item 2).
+        if (pctx::at_kw(&*p, "if")) {
+            pctx::advance(p);
+            if (!pctx::expect(p, token::TokKind::LParen, "add `(` after `if`")) { return -1; }
+            let guard = parse::parse_expr(p);
+            if (guard < 0) { return -1; }
+            node::set_c(p.nodes, arm, guard);
+            if (!pctx::expect(p, token::TokKind::RParen, "add `)` after the guard")) { return -1; }
+        }
         if (!pctx::expect(p, token::TokKind::Colon, "add `:` after the pattern")) {
             return -1;
         }
@@ -465,15 +493,16 @@ fn parse_stmt_core(p: &mut pctx::Parser) -> i32 {
     if (pctx::at_kw(&*p, "switch")) { return parse_switch(p); }
 
     if (pctx::at_kw(&*p, "unchecked")) {
-        let reason = parse_unck_head(p);
-        if (reason == "") { return -1; }
+        let head = parse_unck_head(p);
+        if (head.ok == 0) { return -1; }
         if (!pctx::at(&*p, token::TokKind::LBrace)) {
             pctx::syntax_stop(p, "SYN-02", "the unchecked body needs braces",
                              "unchecked(\"why\") { ... } — the promise covers one braced block (§13.2).");
             return -1;
         }
         let h = pctx::node_at(p, node::AST_UNCHECKED, start);
-        node::set_sval(p.nodes, h, reason);
+        node::set_sval(p.nodes, h, head.reason);
+        node::set_sfx(p.nodes, h, head.tag);
         let body = parse_block(p);
         if (body < 0) { return -1; }
         node::set_a(p.nodes, h, body);

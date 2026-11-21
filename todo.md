@@ -598,6 +598,7 @@ $HB run /tmp/ca.harmony; echo "rc=$? (bug: traps; IR has `getelementptr ... ptr 
 # 4/5/6: all fixed — generic structs/enums/methods, `for (x : ...)` over an
 # iterator, and `alloc<T>(n)`/`dealloc` now compile and run (see the sections
 # above). `docs/harmony.md` §5.8 and §8.5 describe the implemented semantics.
+```
 
 ### Cross-cutting
 
@@ -836,7 +837,7 @@ directly into its binary and (b) support **multi-core compilation by default**.
     with it, so canonical stage 1, stage 2 and stage 3 all use the same native
     backend schedule and stay byte-identical.
   - R8 adds a native LLVM-C backend: `library/std/llvm.hr` binds the C API
-    through `extern "C"` (pointers and integers only), `library/runtime/llvmc.c`
+    through `extern "C"` (pointers and integers only), `library/runtime/llvmc.cpp`
     parses/optimises/emits objects in-process, and embedded LLD links them
     without spawning clang, ld, or reading a generated link script.
     It is the default for `build`/`run`; `--backend=clang` and `emit-llvm`
@@ -845,3 +846,8 @@ directly into its binary and (b) support **multi-core compilation by default**.
     children. The old walk stamped array-index operands with the enclosing
     result type, producing different widen instructions. Regression
     `stamp-lits-index-operand` is in the byte-identical IR corpus.
+  - V1 batch 1 (final compiler only): structured `unchecked(tag, "reason")`
+    forms with tagged audit output, and guarded `switch` arms that see pattern
+    bindings, require a `bool`, and branch to the next arm when false.
+    `tests/harmony-final/v1.sh` covers both, plus the `TYPE-03` rejection.
+    Remaining v1 features are still unimplemented.

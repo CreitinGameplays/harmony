@@ -1,0 +1,13 @@
+unchecked(raw_op, "raw pointer write stays inside the allocation") fn poke(p: raw mut i32, v: i32) {
+    unchecked("the caller owns p and v fits") {
+        p.write(v);
+    }
+}
+
+fn main() -> i32 {
+    let mut n: i32 = 0;
+    unchecked("n is a live stack slot") {
+        poke(raw(&mut n), 42);
+    }
+    return n;
+}

@@ -1,0 +1,48 @@
+// harmony/driver/diagnostics.hr — diagnostic rendering for the CLI.
+//
+// The compiler records structured diagnostics; this module turns them into
+// the three documented formats (§16.7). The detailed story/fix model grows
+// with the analyses, but the envelope — stable code, location, title,
+// summary, and learn hint — is already fixed.
+import "../../library/core/fmt.hr";
+import "../../library/core/str.hr";
+
+export const FORMAT_PRETTY: i32 = 0;
+export const FORMAT_LINE: i32 = 1;
+export const FORMAT_JSON: i32 = 2;
+
+export fn render(d: &fmt::Diag, format: i32) {
+    if (format == FORMAT_LINE) {
+        print("{}", fmt::render_line(*d).as_str());
+        return;
+    }
+    if (format == FORMAT_JSON) {
+        print("{}", fmt::render_json(*d).as_str());
+        return;
+    }
+    print("{}  {}  {}:{}:{}\n", fmt::severity_word(d.severity), d.code,
+          d.file, d.line, d.col);
+    print("{}\n", d.title);
+    if (d.summary != "") {
+        print("\n   {}\n", d.summary);
+    }
+    print("\n   learn: harmony explain {}\n", d.code);
+}
+
+export fn render_all(ds: &vec::Vec<fmt::Diag>, format: i32) {
+    let mut i: usize = 0;
+    while (i < ds.len()) {
+        render(ds.get(i), format);
+        i += 1;
+    }
+}
+
+export fn stop_count(ds: &vec::Vec<fmt::Diag>) -> i32 {
+    let mut n: i32 = 0;
+    let mut i: usize = 0;
+    while (i < ds.len()) {
+        if (ds.get(i).severity == fmt::Severity::Stop) { n += 1; }
+        i += 1;
+    }
+    return n;
+}

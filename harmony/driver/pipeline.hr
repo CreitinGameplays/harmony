@@ -1,0 +1,227 @@
+// harmony/driver/pipeline.hr — the compiler pipeline and build/run driver.
+//
+// The pipeline is the same shape as harmony-base's: load the module graph,
+// resolve, type-check, and (for build/run/emit-llvm) lower to LLVM IR. The
+// generated IR stays in memory and is piped to clang on stdin, so the default
+// path never creates a `.ll` temporary file (docs/harmony.md §19.4).
+import "../../library/core/mem.hr";
+import "../../library/core/str.hr";
+import "../../library/core/vec.hr";
+import "../../library/std/sys.hr";
+import "../../harmony/ast/node.hr";
+import "../../harmony/ast/print.hr";
+import "../../harmony/lexer/token.hr";
+import "../../harmony/lexer/ctx.hr";
+import "../../harmony/lexer/scan.hr";
+import "../../harmony/parser/pctx.hr";
+import "../../harmony/parser/parse.hr";
+import "../../harmony/parser/item.hr";
+import "../../harmony/driver/loader.hr";
+import "../../harmony/sema/check.hr";
+import "../../harmony/codegen/llvm/emit.hr";
+import "diagnostics.hr";
+import "process.hr";
+
+struct Discovery {
+    ok: i32;                    // 0 = all modules found
+    mods: vec::Vec<loader::Module>;
+    root: &str;
+    missing: &str;
+}
+
+fn already_seen(visited: &mut vec::Vec<str::String>, path: &str) -> bool {
+    let mut i: usize = 0;
+    while (i < visited.len()) {
+        if (visited.get(i).as_str() == path) { return true; }
+        i += 1;
+    }
+    return false;
+}
+
+// Parses one module only to discover its imports. The loader parses it again
+// when it builds the merged program.
+fn module_imports(src: &str, path: &str) -> vec::Vec<str::String> {
+    let mut arena: mem::Arena = mem::Arena { .cur = Raw::null() };
+    let mut ns: node::Nodes = node::nodes_make();
+    let mut lx: ctx::Ctx = ctx::make(src, path);
+    scan::scan(&mut lx, &mut arena);
+    let mut p: pctx::Parser = pctx::make(&mut ns, lx.toks, path);
+    let program = item::parse_program(&mut p);
+    return loader::import_names(&ns, program);
+}
+
+// Adds a module and its transitive imports. Returns 0, or -1 with `missing`
+// set to the path that could not be read.
+fn discover_module(path: &str, mods: &mut vec::Vec<loader::Module>,
+                   visited: &mut vec::Vec<str::String>,
+                   missing: &mut str::String) -> i32 {
+    if (already_seen(visited, path)) { return 0; }
+    let mut seen: str::String = str::String::make();
+    seen.push(path);
+    visited.push(seen);
+    let file = sys::read_file(path);
+    if (file.ok != 0) {
+        missing.clear();
+        missing.push(path);
+        return -1;
+    }
+    let imports = module_imports(file.data, path);
+    mods.push(loader::Module { .path = path, .src = file.data });
+    let dir = loader::module_dir(path);
+    let mut i: usize = 0;
+    while (i < imports.len()) {
+        let child = loader::resolve_path(dir, imports.get(i).as_str());
+        if (discover_module(child, mods, visited, missing) != 0) { return -1; }
+        i += 1;
+    }
+    return 0;
+}
+
+fn discover(root: &str) -> Discovery {
+    let mut d = Discovery {
+        .ok = 0,
+        .mods = vec::Vec<loader::Module>::make(),
+        .root = root,
+        .missing = "",
+    };
+    let mut visited: vec::Vec<str::String> = vec::Vec<str::String>::make();
+    let mut missing: str::String = str::String::make();
+    if (discover_module(root, &mut d.mods, &mut visited, &mut missing) != 0) {
+        d.ok = -1;
+        d.missing = missing.as_str();
+    }
+    return d;
+}
+
+// The parser's import list is the authority for discovery; the loader then
+// reparses the same modules and expands them in dependency order.
+fn print_clang_error(log_path: &str) {
+    let log = sys::read_file(log_path);
+    if (log.ok != 0) { return; }
+    let bytes = log.data.as_bytes();
+    let mut start: usize = 0;
+    while (start < log.data.len()) {
+        let mut end = start;
+        while (end < log.data.len() && bytes[end] != 10u8) { end += 1; }
+        let line = &log.data[start..end];
+        if (str::find(line, "error:") >= 0) {
+            eprintln("harmony: clang rejected the generated IR");
+            eprintln("{}", line);
+            return;
+        }
+        start = end + 1;
+    }
+    eprintln("harmony: clang rejected the generated IR");
+}
+
+fn temp_path(stem: &str, suffix: &str) -> &str {
+    let mut s: str::String = str::String::make();
+    s.push("/tmp/harmony-");
+    s.push_i64(sys::getpid() as i64);
+    s.push(stem);
+    s.push(suffix);
+    return s.as_str();
+}
+
+fn build_args(output: &str, opt: &str) -> process::ArgList {
+    let mut a = process::args_make();
+    process::args_push(&mut a, "/usr/bin/clang");
+    process::args_push(&mut a, "-x");
+    process::args_push(&mut a, "ir");
+    process::args_push(&mut a, "-");
+    process::args_push(&mut a, "-x");
+    process::args_push(&mut a, "c");
+    process::args_push(&mut a, "bootstrap/runtime/rt.c");
+    process::args_push(&mut a, "-o");
+    process::args_push(&mut a, output);
+    process::args_push(&mut a, opt);
+    process::args_push(&mut a, "-ffreestanding");
+    process::args_push(&mut a, "-fno-stack-protector");
+    process::args_push(&mut a, "-fstack-clash-protection");
+    process::args_push(&mut a, "-nostdlib");
+    process::args_push(&mut a, "-static");
+    process::args_push(&mut a, "-Wno-override-module");
+    return a;
+}
+
+fn optimize_args(opt: &str) -> process::ArgList {
+    let mut a = process::args_make();
+    process::args_push(&mut a, "/usr/bin/clang");
+    process::args_push(&mut a, "-x");
+    process::args_push(&mut a, "ir");
+    process::args_push(&mut a, "-");
+    process::args_push(&mut a, "-S");
+    process::args_push(&mut a, "-emit-llvm");
+    process::args_push(&mut a, "-o");
+    process::args_push(&mut a, "-");
+    process::args_push(&mut a, opt);
+    process::args_push(&mut a, "-Wno-override-module");
+    return a;
+}
+
+fn run_binary(path: &str) -> i32 {
+    let mut a = process::args_make();
+    process::args_push(&mut a, path);
+    return process::spawn(&a, "");
+}
+
+// Runs the full compiler pipeline for one command.
+export fn run(cmd: i32, input: &str, output: &str, opt: &str,
+             opt_given: i32, format: i32) -> i32 {
+    if (input == "") {
+        eprintln("harmony: no input file");
+        return process::EXIT_USAGE;
+    }
+    let root = loader::normalize_path(input);
+    let d = discover(root);
+    if (d.ok != 0) {
+        eprintln("harmony: module not found: {}", d.missing);
+        return process::EXIT_USAGE;
+    }
+
+    let mut arena: mem::Arena = mem::Arena { .cur = Raw::null() };
+    let mut ns: node::Nodes = node::nodes_make();
+    let loaded = loader::load(&mut ns, &mut arena, &d.mods, root);
+    diagnostics::render_all(&loaded.diags, format);
+    if (loaded.program < 0 || diagnostics::stop_count(&loaded.diags) != 0) {
+        return process::EXIT_STOP;
+    }
+
+    let mut c = check::make(ns, root);
+    check::check_program(&mut c, loaded.program);
+    diagnostics::render_all(&c.diags, format);
+    if (diagnostics::stop_count(&c.diags) != 0) {
+        return process::EXIT_STOP;
+    }
+    if (cmd == 2) { return process::EXIT_OK; }   // check
+
+    let ir = emit::emit_module(&mut c, loaded.program);
+    if (cmd == 3) {   // emit-llvm
+        if (opt_given == 0) {
+            print("{}", ir);
+            return process::EXIT_OK;
+        }
+        let log = temp_path(".clang.log", "");
+        let a = optimize_args(opt);
+        let rc = process::spawn_with_input(&a, ir, log);
+        if (rc != 0) { print_clang_error(log); }
+        sys::unlink_if_empty(log);
+        return rc;
+    }
+
+    let log = temp_path(".clang.log", "");
+    let mut binary = output;
+    let default_binary = temp_path(".bin", "");
+    if (binary == "") { binary = default_binary; }
+    let a = build_args(binary, opt);
+    let rc = process::spawn_with_input(&a, ir, log);
+    if (rc != 0) {
+        print_clang_error(log);
+        return process::EXIT_STOP;
+    }
+    sys::unlink_if_empty(log);
+    if (cmd == 0) { return process::EXIT_OK; }   // build
+    let run_rc = run_binary(binary);
+    if (output == "") { sys::unlink(binary); }
+    return run_rc;
+}

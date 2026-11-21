@@ -1,0 +1,43 @@
+// harmony/main.hr — the self-hosted compiler entry point.
+//
+// This binary is built by harmony-base from the Harmony sources in `harmony/`
+// and `library/`. The CLI and pipeline live in driver modules so `main` stays
+// a small, stable target for the self-hosting byte-identity gate.
+import "../library/core/str.hr";
+import "../library/std/sys.hr";
+import "driver/cli.hr";
+import "driver/pipeline.hr";
+import "driver/audit.hr";
+import "driver/explain.hr";
+import "driver/process.hr";
+
+fn print_version() -> i32 {
+    let f = sys::read_file("VERSION");
+    let mut v = f.data;
+    while (v.len() > 0 && (v.as_bytes()[v.len() - 1] == 10u8
+                           || v.as_bytes()[v.len() - 1] == 13u8)) {
+        v = &v[0..v.len() - 1];
+    }
+    if (v == "") { print("harmony (unknown version)\n"); }
+    else {
+        print("harmony ");
+        print("{}", v);
+        print("\n");
+    }
+    return 0;
+}
+
+fn main() -> i32 {
+    let parsed = cli::parse(args());
+    if (parsed.ok <= 0) { return process::EXIT_USAGE; }
+    let o = parsed.opts;
+    if (o.cmd == cli::CMD_VERSION) { return print_version(); }
+    if (o.cmd == cli::CMD_EXPLAIN) {
+        if (explain::run(o.code) == 0) { return process::EXIT_OK; }
+        eprintln("harmony: unknown diagnostic code: {}", o.code);
+        return process::EXIT_USAGE;
+    }
+    if (o.cmd == cli::CMD_AUDIT) { return audit::run(o.input, o.format); }
+    return pipeline::run(o.cmd, o.input, o.output, o.opt_flag, o.opt_given,
+                         o.format);
+}

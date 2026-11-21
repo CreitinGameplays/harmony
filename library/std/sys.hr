@@ -1,0 +1,213 @@
+// library/std/sys.hr — the small Linux surface the compiler driver needs.
+//
+// The final compiler is freestanding: it links `bootstrap/runtime/rt.c`, not
+// libc. Every kernel call goes through the runtime's three-argument hook,
+// `lc_syscall3` (docs/harmony.md §19.8.4). This module contains no mutable
+// globals and keeps the raw-pointer plumbing in one auditable place.
+import "../core/str.hr";
+import "../core/vec.hr";
+
+extern "C" fn lc_syscall3(n: i64, a: i64, b: i64, c: i64) -> i64;
+
+// Linux x86-64 syscall numbers used by the driver.
+export const SYS_READ: i64 = 0;
+export const SYS_WRITE: i64 = 1;
+export const SYS_OPEN: i64 = 2;
+export const SYS_CLOSE: i64 = 3;
+export const SYS_DUP2: i64 = 33;
+export const SYS_FORK: i64 = 57;
+export const SYS_EXECVE: i64 = 59;
+export const SYS_WAITPID: i64 = 61;
+export const SYS_UNLINK: i64 = 87;
+export const SYS_GETPID: i64 = 39;
+export const SYS_EXIT: i64 = 60;
+export const SYS_PIPE2: i64 = 293;
+
+export const FD_STDIN: i32 = 0;
+export const FD_STDOUT: i32 = 1;
+export const FD_STDERR: i32 = 2;
+export const O_RDONLY: i64 = 0;
+export const O_WRONLY: i64 = 1;
+export const O_CREAT: i64 = 64;
+export const O_TRUNC: i64 = 512;
+
+// A file read in full. `ok` is 0 on success, or a negative errno.
+copy struct File {
+    ok: i32;
+    data: &str;
+}
+
+// A NUL-terminated copy of a Harmony string, for the C/Linux ABI. The block
+// lives for the rest of the compilation, just like the rest of the compiler's
+// arena-backed data.
+export fn cstr(s: &str) -> raw mut u8 {
+    let mut p: raw mut u8 = Raw::null<u8>();
+    unchecked("the allocation has len+1 bytes and the copy stays inside it") {
+        p = alloc<u8>(s.len() + 1);
+        let src = s.as_bytes();
+        for (i : 0..s.len()) { p.plus(i).write(src[i]); }
+        p.plus(s.len()).write(0u8);
+    }
+    return p;
+}
+
+export fn read(fd: i32, buf: raw mut u8, count: usize) -> i64 {
+    unchecked("the caller supplies a writable buffer of `count` bytes") {
+        return lc_syscall3(SYS_READ, fd as i64, buf as usize as i64, count as i64);
+    }
+}
+
+export fn write(fd: i32, buf: raw u8, count: usize) -> i64 {
+    unchecked("the caller supplies a readable buffer of `count` bytes") {
+        return lc_syscall3(SYS_WRITE, fd as i64, buf as usize as i64, count as i64);
+    }
+}
+
+export fn open(path: &str, flags: i64, mode: i64) -> i32 {
+    let p = cstr(path);
+    unchecked("cstr returns a NUL-terminated path for open(2)") {
+        return lc_syscall3(SYS_OPEN, p as usize as i64, flags, mode) as i32;
+    }
+}
+
+export fn close(fd: i32) {
+    unchecked("fd is an open descriptor or close reports an error") {
+        lc_syscall3(SYS_CLOSE, fd as i64, 0, 0);
+    }
+}
+
+export fn dup2(oldfd: i32, newfd: i32) {
+    unchecked("dup2 reports any invalid descriptor") {
+        lc_syscall3(SYS_DUP2, oldfd as i64, newfd as i64, 0);
+    }
+}
+
+// pipe2 writes two little-endian 32-bit descriptors into `fds` (8 bytes).
+export fn pipe2(fds: raw mut u8) -> i64 {
+    unchecked("fds points to an 8-byte output pair") {
+        return lc_syscall3(SYS_PIPE2, fds as usize as i64, 0, 0);
+    }
+}
+
+export fn fork() -> i32 {
+    unchecked("fork returns twice, once per process") {
+        return lc_syscall3(SYS_FORK, 0, 0, 0) as i32;
+    }
+}
+
+// execve accepts the raw pointer arrays produced by the driver's argv builder.
+export fn execve(path: raw mut u8, argv: raw mut i64, envp: raw mut i64) -> i64 {
+    unchecked("the pointer arrays and every string in them are NUL-terminated") {
+        return lc_syscall3(SYS_EXECVE, path as usize as i64,
+                           argv as usize as i64, envp as usize as i64);
+    }
+}
+
+export fn waitpid(pid: i32, status: raw mut i32) -> i32 {
+    unchecked("status points to one writable 32-bit wait status") {
+        return lc_syscall3(SYS_WAITPID, pid as i64, status as usize as i64, 0) as i32;
+    }
+}
+
+export fn getpid() -> i32 {
+    unchecked("getpid cannot fail") { return lc_syscall3(SYS_GETPID, 0, 0, 0) as i32; }
+}
+
+export fn exit(code: i32) {
+    unchecked("exit does not return") {
+        lc_syscall3(SYS_EXIT, code as i64, 0, 0);
+    }
+}
+
+export fn unlink(path: &str) {
+    let p = cstr(path);
+    unchecked("cstr returns a NUL-terminated path for unlink(2)") {
+        lc_syscall3(SYS_UNLINK, p as usize as i64, 0, 0);
+    }
+}
+
+struct ByteBuf {
+    ptr: raw mut u8;
+    len: usize;
+    cap: usize;
+}
+
+fn bytes_grow(b: &mut ByteBuf) {
+    let mut nc: usize = 4096;
+    if (b.cap > 0) { nc = b.cap * 2; }
+    unchecked("the new block holds every live byte exactly once") {
+        let fresh: raw mut u8 = alloc<u8>(nc);
+        let mut i: usize = 0;
+        while (i < b.len) {
+            fresh.plus(i).write(b.ptr.plus(i).read());
+            i += 1;
+        }
+        if (b.cap > 0) { dealloc(b.ptr, b.cap); }
+        b.ptr = fresh;
+    }
+    b.cap = nc;
+}
+
+fn bytes_push(b: &mut ByteBuf, byte: u8) {
+    if (b.len == b.cap) { bytes_grow(b); }
+    unchecked("growth guarantees slot len is writable") {
+        b.ptr.plus(b.len).write(byte);
+    }
+    b.len += 1;
+}
+
+// Reads a whole regular file. The returned bytes live for the process (the
+// compiler is short-lived, so the final block is never freed). A raw buffer
+// is used instead of generic `Vec<u8>`: the driver is the largest Harmony
+// program built so far and needs this path to be as simple as possible.
+export fn read_file(path: &str) -> File {
+    let fd = open(path, O_RDONLY, 0);
+    if (fd < 0) { return File { .ok = fd, .data = "" }; }
+    let mut bytes = ByteBuf { .ptr = Raw::null<u8>(), .len = 0, .cap = 0 };
+    let mut buf: [u8; 4096] = [0u8; 4096];
+    while (true) {
+        let n = read(fd, raw(&mut buf[0]), buf.len());
+        if (n <= 0) { break; }
+        let mut i: usize = 0;
+        while (i < n as usize) {
+            bytes_push(&mut bytes, buf[i]);
+            i += 1;
+        }
+    }
+    close(fd);
+    let mut out: &str = "";
+    if (bytes.len > 0) {
+        unchecked("the block owns len valid bytes; str::from_parts borrows them") {
+            out = str::from_parts(bytes.ptr as raw u8, bytes.len);
+        }
+    }
+    return File { .ok = 0, .data = out };
+}
+
+// Writes a whole file, returning 0 or a negative errno.
+export fn write_file(path: &str, text: &str) -> i32 {
+    let fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 420);
+    if (fd < 0) { return fd; }
+    let bytes = text.as_bytes();
+    let mut off: usize = 0;
+    while (off < text.len()) {
+        let n = write(fd, raw(&bytes[off]), text.len() - off);
+        if (n <= 0) {
+            close(fd);
+            return -1;
+        }
+        off += n as usize;
+    }
+    close(fd);
+    return 0;
+}
+
+// Removes a file only when it is empty (used for clang's quiet log).
+export fn unlink_if_empty(path: &str) {
+    let fd = open(path, O_RDONLY, 0);
+    if (fd < 0) { return; }
+    let mut byte: u8 = 0;
+    let n = read(fd, raw(&mut byte), 1);
+    close(fd);
+    if (n == 0) { unlink(path); }
+}

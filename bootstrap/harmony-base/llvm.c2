@@ -482,18 +482,42 @@ int ll_sret_ty(void) { return g_sret_ty; }
 // pool dedups by bytes and is reset per module, so the emitted symbols are a
 // pure function of the input (determinism, §19.4).
 // ---------------------------------------------------------------------------
-const int LL_MAX_STRS = 1024;
-char* g_str_body[1024];      // the bytes (may contain NULs)
-int   g_str_len[1024];       // byte length
+char** g_str_body;           // the bytes (may contain NULs)
+int*  g_str_len;             // byte length
+int   g_str_cap;
 int   g_nstrs;
 
 void ll_strs_reset(void) { g_nstrs = 0; }
+
+// Grows the literal pool. The old fixed [1024] table made every literal past
+// entry 1023 silently alias `@.str.0`: the compiler's own driver has more
+// literals than that, so it opened the wrong file. Keep the table resizable.
+void ll_strs_grow(void) {
+    char** bodies;
+    int* lens;
+    int ncap;
+    int i;
+    ncap = 256;
+    if (g_str_cap > 0) { ncap = g_str_cap * 2; }
+    bodies = arena_alloc(ncap * 8);
+    lens = arena_alloc(ncap * 8);
+    i = 0;
+    while (i < g_nstrs) {
+        bodies[i] = g_str_body[i];
+        lens[i] = g_str_len[i];
+        i = i + 1;
+    }
+    g_str_body = bodies;
+    g_str_len = lens;
+    g_str_cap = ncap;
+}
 
 // Interns a literal; returns its index. The bytes are copied into a private
 // buffer (the source may live in a scratch arena that gets reused), and
 // deduped by (bytes, len).
 int ll_str_intern(char* body, int len) {
     int i;
+    if (g_str_cap == 0) { ll_strs_grow(); }
     i = 0;
     while (i < g_nstrs) {
         char* prev;
@@ -511,7 +535,7 @@ int ll_str_intern(char* body, int len) {
         }
         i = i + 1;
     }
-    if (g_nstrs >= LL_MAX_STRS) { return 0; }
+    if (g_nstrs >= g_str_cap) { ll_strs_grow(); }
     g_str_body[g_nstrs] = str_prefix(body, len);
     g_str_len[g_nstrs] = len;
     g_nstrs = g_nstrs + 1;

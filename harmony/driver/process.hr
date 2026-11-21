@@ -1,0 +1,116 @@
+// harmony/driver/process.hr — freestanding subprocess support.
+//
+// The driver runs clang and the compiled program without libc. It uses the
+// Linux process syscalls directly (library/std/sys.hr): fork, pipe2, dup2,
+// execve, waitpid. The child's stderr can be redirected to a log file; the
+// parent writes the IR through a pipe, so no `.ll` temporary file is needed.
+import "../../library/core/str.hr";
+import "../../library/core/vec.hr";
+import "../../library/std/sys.hr";
+
+export const EXIT_OK: i32 = 0;
+export const EXIT_STOP: i32 = 1;
+export const EXIT_USAGE: i32 = 2;
+export const EXIT_TRAP: i32 = 70;
+
+// A NULL-terminated argument vector for execve(2).
+export struct ArgList {
+    items: vec::Vec<str::String>;
+}
+
+export fn args_make() -> ArgList {
+    return ArgList { .items = vec::Vec<str::String>::make() };
+}
+
+export fn args_push(a: &mut ArgList, s: &str) {
+    let mut copy_s: str::String = str::String::make();
+    copy_s.push(s);
+    a.items.push(copy_s);
+}
+
+// Builds argv/envp as arrays of machine-word pointers. The C ABI's `char**`
+// is represented as `i64*`; every word is either a NUL-terminated string
+// pointer or zero.
+fn pointer_array(items: &vec::Vec<str::String>) -> raw mut i64 {
+    let mut out: raw mut i64 = Raw::null<i64>();
+    unchecked("the allocation has one extra word for the NULL terminator") {
+        out = alloc<i64>(items.len() + 1);
+        let mut i: usize = 0;
+        while (i < items.len()) {
+            let p = sys::cstr(items.get(i).as_str());
+            out.plus(i).write(p as i64);
+            i += 1;
+        }
+        out.plus(items.len()).write(0);
+    }
+    return out;
+}
+
+fn environment() -> raw mut i64 {
+    let mut envs: vec::Vec<str::String> = vec::Vec<str::String>::make();
+    let mut p: str::String = str::String::make();
+    p.push("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
+    envs.push(p);
+    return pointer_array(&envs);
+}
+
+// Closing 0/1/2 in a child would detach the pipe or the log we just
+// installed. Only real scratch descriptors need closing.
+fn close_scratch(fd: i32) {
+    if (fd > 2) { sys::close(fd); }
+}
+
+// Decodes the child's wait status into the shell convention.
+fn wait_status(status: i32) -> i32 {
+    let signal = status & 0x7f;
+    if (signal != 0) { return 128 + signal; }
+    return (status >> 8) & 0xff;
+}
+
+// Runs a program with `input` on stdin. `log_path` receives stderr; an empty
+// path keeps stderr inherited. Returns the child's exit status.
+export fn spawn_with_input(a: &ArgList, input: &str, log_path: &str) -> i32 {
+    if (a.items.len() == 0) { return 127; }
+    let mut pipe_bytes: [u8; 8] = [0u8; 8];
+    if (sys::pipe2(raw(&mut pipe_bytes[0])) < 0) { return 127; }
+    let read_fd = pipe_bytes[0] as i32 | ((pipe_bytes[1] as i32) << 8);
+    let write_fd = pipe_bytes[4] as i32 | ((pipe_bytes[5] as i32) << 8);
+    let pid = sys::fork();
+    if (pid < 0) { return 127; }
+    if (pid == 0) {
+        sys::dup2(read_fd, 0);
+        close_scratch(read_fd);
+        close_scratch(write_fd);
+        if (log_path != "") {
+            let fd = sys::open(log_path, sys::O_WRONLY | sys::O_CREAT | sys::O_TRUNC, 420);
+            if (fd >= 0) {
+                sys::dup2(fd, 2);
+                // If the log happened to open as fd 0 or 2, closing it here
+                // would close the child's new stdin or stderr.
+                close_scratch(fd);
+            }
+        }
+        let argv = pointer_array(&a.items);
+        let envp = environment();
+        let path = sys::cstr(a.items.get(0).as_str());
+        sys::execve(path, argv, envp);
+        sys::exit(127);
+    }
+    close_scratch(read_fd);
+    let bytes = input.as_bytes();
+    let mut off: usize = 0;
+    while (off < input.len()) {
+        let n = sys::write(write_fd, raw(&bytes[off]), input.len() - off);
+        if (n <= 0) { break; }
+        off += n as usize;
+    }
+    close_scratch(write_fd);
+    let mut status: i32 = 0;
+    sys::waitpid(pid, raw(&mut status));
+    return wait_status(status);
+}
+
+// Runs a program with no stdin payload.
+export fn spawn(a: &ArgList, log_path: &str) -> i32 {
+    return spawn_with_input(a, "", log_path);
+}

@@ -1,0 +1,151 @@
+// harmony/driver/cli.hr — command-line parsing (docs/harmony.md §19.5).
+import "../../library/core/str.hr";
+
+export const CMD_BUILD: i32 = 0;
+export const CMD_RUN: i32 = 1;
+export const CMD_CHECK: i32 = 2;
+export const CMD_EMIT_LLVM: i32 = 3;
+export const CMD_AUDIT: i32 = 4;
+export const CMD_EXPLAIN: i32 = 5;
+export const CMD_VERSION: i32 = 6;
+
+export const FORMAT_PRETTY: i32 = 0;
+export const FORMAT_LINE: i32 = 1;
+export const FORMAT_JSON: i32 = 2;
+
+export struct Options {
+    cmd: i32;
+    input: &str;
+    output: &str;
+    code: &str;
+    opt_flag: &str;
+    opt_given: i32;
+    format: i32;
+    verbose: i32;
+    all: i32;
+    strict: i32;
+}
+
+// ok: 1 = run, 0 = print usage, -1 = bad option.
+export struct ParseResult {
+    ok: i32;
+    opts: Options;
+}
+
+fn usage() {
+    eprintln("usage: harmony build <file.harmony> [-o out] [-O<level>]");
+    eprintln("       harmony run   <file.harmony> [-O<level>]");
+    eprintln("       harmony check <file.harmony>");
+    eprintln("       harmony emit-llvm <file.harmony> [-O<level>]");
+    eprintln("       harmony audit [file.harmony] [--format=json]");
+    eprintln("       harmony explain <CODE>");
+    eprintln("       harmony --version");
+    eprintln("-O<level>: -O0 -O1 -O2 -O3 -Os -Oz -Og -Ofast (default -O2)");
+}
+
+fn flag_value(a: &str, flag: &str) -> &str {
+    if (!str::starts_with(a, flag)) { return ""; }
+    if (a.len() <= flag.len()) { return ""; }
+    return &a[flag.len()..a.len()];
+}
+
+fn is_opt(a: &str) -> bool {
+    if (a == "-O0") { return true; }
+    if (a == "-O1") { return true; }
+    if (a == "-O2") { return true; }
+    if (a == "-O3") { return true; }
+    if (a == "-Os") { return true; }
+    if (a == "-Oz") { return true; }
+    if (a == "-Og") { return true; }
+    if (a == "-Ofast") { return true; }
+    return a == "-O";
+}
+
+export fn parse(av: &[&str]) -> ParseResult {
+    let mut o = Options {
+        .cmd = CMD_BUILD,
+        .input = "",
+        .output = "",
+        .code = "",
+        .opt_flag = "-O2",
+        .opt_given = 0,
+        .format = FORMAT_PRETTY,
+        .verbose = 0,
+        .all = 0,
+        .strict = 0,
+    };
+    if (av.len() < 2) { usage(); return ParseResult { .ok = 0, .opts = o }; }
+    let mut i: usize = 1;
+    while (i < av.len()) {
+        let a = av[i];
+        if (a == "build") { o.cmd = CMD_BUILD; i += 1; continue; }
+        if (a == "run") { o.cmd = CMD_RUN; i += 1; continue; }
+        if (a == "check") { o.cmd = CMD_CHECK; i += 1; continue; }
+        if (a == "emit-llvm") { o.cmd = CMD_EMIT_LLVM; i += 1; continue; }
+        if (a == "audit") { o.cmd = CMD_AUDIT; i += 1; continue; }
+        if (a == "explain") {
+            o.cmd = CMD_EXPLAIN;
+            if (i + 1 < av.len()) { o.code = av[i + 1]; i += 2; }
+            else { i += 1; }
+            continue;
+        }
+        if (a == "-h" || a == "--help") { usage(); return ParseResult { .ok = 0, .opts = o }; }
+        if (a == "-v" || a == "--verbose") { o.verbose = 1; i += 1; continue; }
+        if (a == "--all") { o.all = 1; i += 1; continue; }
+        if (a == "--strict") { o.strict = 1; i += 1; continue; }
+        if (a == "--version") { o.cmd = CMD_VERSION; i += 1; continue; }
+        if (a == "-o" && i + 1 < av.len()) {
+            o.output = av[i + 1];
+            i += 2;
+            continue;
+        }
+        if (is_opt(a)) {
+            o.opt_flag = a;
+            if (a == "-O") { o.opt_flag = "-O2"; }
+            o.opt_given = 1;
+            i += 1;
+            continue;
+        }
+        let fmt = flag_value(a, "--format=");
+        if (fmt != "") {
+            if (fmt == "pretty") { o.format = FORMAT_PRETTY; }
+            else if (fmt == "line") { o.format = FORMAT_LINE; }
+            else if (fmt == "json") { o.format = FORMAT_JSON; }
+            else {
+                eprintln("harmony: unknown format: {}", fmt);
+                return ParseResult { .ok = -1, .opts = o };
+            }
+            i += 1;
+            continue;
+        }
+        if (str::starts_with(a, "-")) {
+            if (str::starts_with(a, "-O")) { eprintln("harmony: unknown optimization level: {}", a); }
+            else { eprintln("harmony: unknown flag: {}", a); }
+            return ParseResult { .ok = -1, .opts = o };
+        }
+        if (o.cmd == CMD_EXPLAIN && o.code == "") {
+            o.code = a;
+            i += 1;
+            continue;
+        }
+        if (o.input == "") {
+            o.input = a;
+            i += 1;
+            continue;
+        }
+        eprintln("harmony: too many inputs: {}", a);
+        return ParseResult { .ok = -1, .opts = o };
+    }
+    if (o.cmd == CMD_VERSION || o.cmd == CMD_AUDIT) {
+        return ParseResult { .ok = 1, .opts = o };
+    }
+    if (o.cmd == CMD_EXPLAIN) {
+        if (o.code == "") { usage(); return ParseResult { .ok = 0, .opts = o }; }
+        return ParseResult { .ok = 1, .opts = o };
+    }
+    if (o.input == "") {
+        usage();
+        return ParseResult { .ok = 0, .opts = o };
+    }
+    return ParseResult { .ok = 1, .opts = o };
+}

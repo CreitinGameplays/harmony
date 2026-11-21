@@ -815,6 +815,13 @@ directly into its binary and (b) support **multi-core compilation by default**.
     collapse is a representation limit documented in §20.1, not a substitution
     bug: the loader keeps raw `&str` slots until nested-reference support lands
     with the M2/M3 ownership work.
-- [ ] Integrate LLVM IR emission directly into the compiler binary (AGENTS.md).
-- [ ] Multi-core compilation by default (AGENTS.md).
-- [ ] Byte-deterministic self-hosting milestone.
+  - The R7 driver (`harmony/driver/`, `library/std/sys.hr`) is built by
+    `make harmony`. It pipes IR to clang on stdin (no `.ll` temp file),
+    supports `build`/`run`/`check`/`emit-llvm`/`explain`/`audit`, and is
+    byte-identical to harmony-base on the driver smoke gate. Stage 1, stage 2,
+    and stage 3 compiler binaries are byte-identical (self-host milestone).
+  - harmony-base's LLVM string pool is resizable; the old 1024-entry cap
+    silently aliased later literals and broke the compiler's own `VERSION`
+    read. `tests/harmony/string-pool.sh` guards it.
+- [ ] Multi-core compilation by default (AGENTS.md): module checking and
+  monomorphization are still sequential in the final compiler.

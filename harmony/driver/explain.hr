@@ -1,0 +1,173 @@
+// harmony/driver/explain.hr — long-form diagnostic lessons.
+//
+// Lessons are data (§19.8.7). The compiler owns the stable code; this module
+// owns the prose, so the driver's `explain` output can be updated without
+// touching a lexer, parser, or checker.
+import "../../library/core/str.hr";
+
+fn known(code: &str) -> bool {
+    if (code == "ICE-01") { return true; }
+    if (code == "SYN-01") { return true; }
+    if (code == "SYN-02") { return true; }
+    if (code == "SYN-03") { return true; }
+    if (code == "SYN-04") { return true; }
+    if (code == "SYN-05") { return true; }
+    if (code == "LEX-01") { return true; }
+    if (code == "NAME-02") { return true; }
+    if (code == "USE-01") { return true; }
+    if (code == "CFG-01") { return true; }
+    if (code == "FFI-01") { return true; }
+    if (code == "CONST-01") { return true; }
+    return false;
+}
+
+fn stub(code: &str) {
+    print("{}\n\n", code);
+    print("WHAT   This diagnostic code exists but its long-form lesson has\n");
+    print("       not been written for this build yet.\n");
+    print("WHY    Stable codes, one lesson each (docs/harmony.md 16.8).\n");
+    print("SEE    docs/harmony.md - 16.10 Code catalogue\n\n");
+}
+
+fn ice01() {
+    print("ICE-01 - the compiler broke its own rules\n\n");
+    print("WHAT   The compiler hit a condition it promises is unreachable:\n");
+    print("       a stage failed before its output could be produced.\n");
+    print("WHY    The compiler's job is a verdict for every input; bail-outs\n");
+    print("       mean a bug in the compiler, not in your program.\n");
+    print("BAD    any input that ends in a compiler crash\n");
+    print("GOOD   the same input getting a diagnostic, or compiling\n");
+    print("NOTE   Please report it: the source that triggered it is the\n");
+    print("       most useful thing you can attach.\n");
+    print("SEE    docs/harmony.md - 16.10 Code catalogue\n\n");
+}
+
+fn ffi01() {
+    print("FFI-01 - unknown ABI\n\n");
+    print("WHAT   An `extern` declaration names the calling convention\n");
+    print("       it uses, in a string: `extern \"C\" fn ...`.\n");
+    print("WHY    The convention decides how arguments are passed, who\n");
+    print("       cleans the stack, and where the return value lands.\n");
+    print("       Only the C ABI is implemented, so any other name is a\n");
+    print("       promise the compiler cannot keep.\n");
+    print("BAD    extern \"Win64\" fn abs(x: i32) -> i32;\n");
+    print("GOOD   extern \"C\" fn abs(x: i32) -> i32;\n");
+    print("NOTE   The ABI string is mandatory: `extern fn ...` without\n");
+    print("       one is a syntax error (SYN-05), never a default.\n");
+    print("SEE    docs/harmony.md - 6.8, 16.10 Code catalogue\n\n");
+}
+
+fn const01() {
+    print("CONST-01 - not a compile-time constant\n\n");
+    print("WHAT   A `const` is inlined at every use site, so its value must\n");
+    print("       be known when the program is compiled.\n");
+    print("WHY    There is no storage for a constant to read at run time;\n");
+    print("       the initializer is copied into each use. A value that\n");
+    print("       depends on run-time work cannot be inlined.\n");
+    print("BAD    const N: i32 = compute();\n");
+    print("GOOD   const N: i32 = 42;   let n = compute();\n");
+    print("NOTE   Literals, arithmetic on literals, other constants, and\n");
+    print("       array/struct literals are all allowed.\n");
+    print("SEE    docs/harmony.md - 6.2, 16.10 Code catalogue\n\n");
+}
+
+fn syn01() {
+    print("SYN-01 - the condition needs parentheses\n\n");
+    print("WHAT   if, while, for, and switch write their condition in\n");
+    print("       parentheses, C-style. This keeps `Point {{ .x = 1 }}` and\n");
+    print("       other brace forms unambiguous inside a condition.\n");
+    print("WHY    Conditions in `if (x > 5) {{ return; }}` read the same as C;\n");
+    print("       the grammar never guesses where a condition ends.\n");
+    print("BAD    if x > 5 {{ return; }}\n");
+    print("GOOD   if (x > 5) {{ return; }}\n");
+    print("NOTE   The braces around the body are not optional either\n");
+    print("       (SYN-02). Two small rules, no surprises later.\n");
+    print("SEE    docs/harmony.md - 8.1, 16.10 Code catalogue\n\n");
+}
+
+fn syn02() {
+    print("SYN-02 - the body needs braces\n\n");
+    print("WHAT   Every if/else/while/for/switch body is a braced block.\n");
+    print("       There is no single-statement form.\n");
+    print("WHY    The goto-fail bug class (Apple's `goto fail;`) came from a\n");
+    print("       brace-less body. Mandatory braces make that mistake\n");
+    print("       impossible to write and invisible to diffs.\n");
+    print("BAD    if (x) return;\n");
+    print("GOOD   if (x) {{ return; }}\n");
+    print("NOTE   There is no `loop` keyword; `while (true) {{ ... }}` is the\n");
+    print("       infinite loop, with `break` to leave.\n");
+    print("SEE    docs/harmony.md - 8.1, 16.10 Code catalogue\n\n");
+}
+
+fn syn03() {
+    print("SYN-03 - assignment used as a condition\n\n");
+    print("WHAT   `=` assigns; it is a statement form and cannot appear\n");
+    print("       inside a condition.\n");
+    print("WHY    `if (x = 5)` compiles in C and silently overwrites x.\n");
+    print("       Here the grammar cannot express it, so the stop fires at\n");
+    print("       the `=` itself.\n");
+    print("BAD    if (x = 5) {{ ... }}\n");
+    print("GOOD   if (x == 5) {{ ... }}\n");
+    print("NOTE   All compound assignments (+=, -=, ...) are statements too.\n");
+    print("SEE    docs/harmony.md - 8.1, 16.10 Code catalogue\n\n");
+}
+
+fn syn04() {
+    print("SYN-04 - missing `;`\n\n");
+    print("WHAT   Simple statements (let, assignment, expression, return,\n");
+    print("       break, continue) end with `;`. Block statements (if,\n");
+    print("       while, for, switch, unchecked, bare `{{ }}`) do not.\n");
+    print("WHY    The rule from C, minus its exceptions: one look at the\n");
+    print("       line ending tells you whether the statement continues.\n");
+    print("BAD    let n = 5\n");
+    print("GOOD   let n = 5;\n");
+    print("NOTE   Struct fields also end with `;`; enum variants and struct\n");
+    print("       initializer fields are `,`-separated (trailing comma ok).\n");
+    print("SEE    docs/harmony.md - 4.4, 16.10 Code catalogue\n\n");
+}
+
+fn syn05() {
+    print("SYN-05 - unexpected token\n\n");
+    print("WHAT   This token does not fit the grammar at this position (or\n");
+    print("       a delimiter is unbalanced).\n");
+    print("WHY    One honest stop at the exact byte beats a cascade; the\n");
+    print("       parser recovers at the next `;` or `}}` and keeps going, so\n");
+    print("       several mistakes are reported per run.\n");
+    print("BAD    fn main() {{ return; )\n");
+    print("GOOD   fn main() {{ return; }}\n");
+    print("NOTE   Nested generics close the `>>` cleanly: Vec<Vec<i32>>.\n");
+    print("       Comparisons do not chain: write `a < b && b < c`.\n");
+    print("SEE    docs/harmony.md - 18, 16.10 Code catalogue\n\n");
+}
+
+fn lex01() {
+    print("LEX-01 - malformed literal or comment\n\n");
+    print("WHAT   A literal (number, char, byte, string) or a block comment\n");
+    print("       is not written in one of the legal forms.\n");
+    print("WHY    The token the rest of the compiler would see does not\n");
+    print("       exist, so naming the exact bytes is cheaper than a\n");
+    print("       confusing parse error downstream.\n");
+    print("BAD    'ab   1_000_   42q   \\q   \"unterminated   /* unclosed\n");
+    print("GOOD   'a'   1_000    42u8   \\n   \"closed\"       /* closed */\n");
+    print("NOTE   Numbers: `42`, `1_000_000`, `0xFF`, `0o17`, `0b1010`, a\n");
+    print("       suffix from the primitive types (42u8). Chars hold one\n");
+    print("       Unicode scalar: '\\n', '\\u{{1F980}}'. b'...' holds one byte.\n");
+    print("       Block comments nest.\n");
+    print("SEE    docs/harmony.md - 4.3, 16.10 Code catalogue\n\n");
+}
+
+// Returns 0 for a known code, or -1 for an unknown one.
+export fn run(code: &str) -> i32 {
+    if (!known(code)) { return -1; }
+    if (code == "ICE-01") { ice01(); return 0; }
+    if (code == "FFI-01") { ffi01(); return 0; }
+    if (code == "CONST-01") { const01(); return 0; }
+    if (code == "SYN-01") { syn01(); return 0; }
+    if (code == "SYN-02") { syn02(); return 0; }
+    if (code == "SYN-03") { syn03(); return 0; }
+    if (code == "SYN-04") { syn04(); return 0; }
+    if (code == "SYN-05") { syn05(); return 0; }
+    if (code == "LEX-01") { lex01(); return 0; }
+    stub(code);
+    return 0;
+}

@@ -1,0 +1,169 @@
+// harmony/driver/audit.hr — the `audit` command (docs/harmony.md §13.6).
+//
+// Audit is a read-only report: it parses the source and lists every
+// `unchecked` block and `unchecked fn` contract. It never type-checks, so a
+// site is visible even when the surrounding program does not compile.
+import "../../library/core/mem.hr";
+import "../../library/core/str.hr";
+import "../../library/core/vec.hr";
+import "../../library/std/sys.hr";
+import "../../harmony/ast/node.hr";
+import "../../harmony/lexer/token.hr";
+import "../../harmony/lexer/ctx.hr";
+import "../../harmony/lexer/scan.hr";
+import "../../harmony/parser/pctx.hr";
+import "../../harmony/parser/parse.hr";
+import "../../harmony/parser/item.hr";
+
+copy struct Site {
+    line: i32;
+    kind: &str;
+    lines: i32;
+    reason: &str;
+}
+
+fn line_at(src: &str, offset: usize) -> i32 {
+    let b = src.as_bytes();
+    let mut line: i32 = 1;
+    let mut i: usize = 0;
+    while (i < offset && i < src.len()) {
+        if (b[i] == 10u8) { line += 1; }
+        i += 1;
+    }
+    return line;
+}
+
+fn site_reason(ns: &node::Nodes, h: i32) -> &str {
+    let n = node::get(ns, h);
+    if ((n.kind == node::AST_FN || n.kind == node::AST_EXTERN_FN) && n.c >= 0) {
+        return node::get(ns, n.c).sval;
+    }
+    return n.sval;
+}
+
+fn collect_sites(ns: &node::Nodes, h: i32, src: &str,
+                 out: &mut vec::Vec<Site>) {
+    if (h < 0) { return; }
+    let n = node::get(ns, h);
+    let is_block = n.kind == node::AST_UNCHECKED;
+    let is_fn = (n.kind == node::AST_FN || n.kind == node::AST_EXTERN_FN)
+                && (n.ival & 1) != 0;
+    if (is_block || is_fn) {
+        let reason = site_reason(ns, h);
+        let start_line = line_at(src, n.start);
+        let mut lines: i32 = 1;
+        if (is_block) {
+            let end_line = line_at(src, n.end);
+            lines = end_line - start_line + 1;
+            if (lines < 1) { lines = 1; }
+        }
+        let mut kind: &str = "fn";
+        if (is_block) { kind = "block"; }
+        out.push(Site {
+            .line = start_line,
+            .kind = kind,
+            .lines = lines,
+            .reason = reason,
+        });
+    }
+    collect_sites(ns, n.a, src, out);
+    collect_sites(ns, n.b, src, out);
+    collect_sites(ns, n.c, src, out);
+    let mut i: usize = 0;
+    while (i < n.kids.len()) {
+        collect_sites(ns, *n.kids.get(i), src, out);
+        i += 1;
+    }
+    i = 0;
+    while (i < n.kids2.len()) {
+        collect_sites(ns, *n.kids2.get(i), src, out);
+        i += 1;
+    }
+    i = 0;
+    while (i < n.kids3.len()) {
+        collect_sites(ns, *n.kids3.get(i), src, out);
+        i += 1;
+    }
+}
+
+fn json_string(s: &str) -> str::String {
+    let mut out: str::String = str::String::make();
+    out.push("\"");
+    let b = s.as_bytes();
+    let mut i: usize = 0;
+    while (i < s.len()) {
+        let c = b[i];
+        if (c == 34u8) { out.push("\\\""); }
+        else if (c == 92u8) { out.push("\\\\"); }
+        else if (c == 10u8) { out.push("\\n"); }
+        else if (c == 9u8) { out.push("\\t"); }
+        else if (c == 13u8) { out.push("\\r"); }
+        else { out.push_byte(c); }
+        i += 1;
+    }
+    out.push("\"");
+    return out;
+}
+
+export fn run(input: &str, format: i32) -> i32 {
+    if (input == "") {
+        if (format == 2) {
+            print("{{\"file\":\"\",\"sites\":[],\"total\":0,\"lines\":0,\"short\":0,\"oversized\":0}}\n");
+        } else {
+            print("unchecked audit - 0 sites - 0 lines total\n");
+        }
+        return 0;
+    }
+    let file = sys::read_file(input);
+    if (file.ok != 0) {
+        eprintln("harmony: source not found: {}", input);
+        return 2;
+    }
+    let mut arena: mem::Arena = mem::Arena { .cur = Raw::null() };
+    let mut ns: node::Nodes = node::nodes_make();
+    let mut lx: ctx::Ctx = ctx::make(file.data, input);
+    scan::scan(&mut lx, &mut arena);
+    let mut p: pctx::Parser = pctx::make(&mut ns, lx.toks, input);
+    let program = item::parse_program(&mut p);
+    let mut sites: vec::Vec<Site> = vec::Vec<Site>::make();
+    collect_sites(&ns, program, file.data, &mut sites);
+    let mut total_lines: i32 = 0;
+    let mut short: i32 = 0;
+    let mut oversized: i32 = 0;
+    let mut i: usize = 0;
+    while (i < sites.len()) {
+        total_lines += sites.get(i).lines;
+        if (sites.get(i).reason.len() < 12) { short += 1; }
+        if (sites.get(i).lines > 10) { oversized += 1; }
+        i += 1;
+    }
+    if (format == 2) {
+        let path = json_string(input);
+        print("{{\"file\":{},\"sites\":[", path.as_str());
+        i = 0;
+        while (i < sites.len()) {
+            if (i > 0) { print(","); }
+            let s = sites.get(i);
+            let kind = json_string(s.kind);
+            let reason = json_string(s.reason);
+            print("{{\"file\":{},\"line\":{},\"kind\":{},\"lines\":{},\"reason\":{}}}",
+                  path.as_str(), s.line, kind.as_str(), s.lines, reason.as_str());
+            i += 1;
+        }
+        print("],\"total\":{},\"lines\":{},\"short\":{},\"oversized\":{}}}\n",
+              sites.len() as i32, total_lines, short, oversized);
+        return 0;
+    }
+    print("unchecked audit - {} sites - {} lines total\n", sites.len() as i32, total_lines);
+    if (sites.len() > 0) {
+        print("\n");
+        i = 0;
+        while (i < sites.len()) {
+            let s = sites.get(i);
+            print("  {}:{}   {}   {}\n", input, s.line, s.kind, s.reason);
+            i += 1;
+        }
+        print("\n  {} sites under 12 characters - {} sites over 10 lines\n", short, oversized);
+    }
+    return 0;
+}

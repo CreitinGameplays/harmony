@@ -35,10 +35,14 @@ HB_SRC    := \
 	bootstrap/harmony-base/pipeline.c2 \
 	bootstrap/harmony-base/main.c2
 SEED_SRC  := $(wildcard bootstrap/c2x-seed/*.asm)
+# The final compiler is built from every Harmony source module. Since Harmony
+# has no linker-level include graph at make time, any source change rebuilds it.
+HARMONY_SRC := $(shell find harmony library -name '*.hr' -o -name '*.harmony' 2>/dev/null)
+HARMONY_OUT := build/harmony
 
-.PHONY: all clean test test-final test-fuzz test-fuzz2 fuzz2-deep test-seed test-lisp seed harmony-base lisp version
+.PHONY: all clean test test-final test-fuzz test-fuzz2 fuzz2-deep test-seed test-lisp seed harmony harmony-base lisp version
 
-all: harmony-base
+all: harmony-base harmony
 
 seed: $(SEED)
 
@@ -62,8 +66,14 @@ harmony-base: $(SEED) $(HB_SRC)
 	$(SEED) -o $(HB_OUT) $(HB_SRC)
 	@bash tools/version.sh >/dev/null 2>&1 || true
 
+# The self-hosted compiler is built by harmony-base. Its source imports pull
+# in the rest of `harmony/` and `library/`; listing them as prerequisites keeps
+# incremental builds correct.
+harmony: harmony-base $(HARMONY_SRC)
+	$(HB_OUT) build harmony/main.hr -o $(HARMONY_OUT)
+
 # Full test target: c2x-seed regression corpus + harmony-base driver tests.
-test: test-seed harmony-base
+test: test-seed harmony-base harmony
 	bash tests/harmony/run.sh
 	bash tests/harmony/lexer.sh
 	bash tests/harmony/parser.sh
@@ -73,6 +83,7 @@ test: test-seed harmony-base
 	bash tests/harmony/scale.sh
 	bash tests/harmony/golden.sh
 	bash tests/harmony/determinism.sh
+	bash tests/harmony/string-pool.sh
 	bash tests/harmony/coverage.sh
 	bash tests/harmony/version.sh
 	bash tests/harmony/lisp.sh
@@ -85,6 +96,9 @@ test: test-seed harmony-base
 	python3 tests/harmony-final/typecorpus.py error-handling
 	python3 tests/harmony-final/typecorpus.py codegen
 	python3 tests/harmony-final/irdiff.py codegen
+	# determinism.sh cleans build/, so rebuild both compilers before the driver gate.
+	$(MAKE) harmony-base harmony
+	bash tests/harmony-final/driver.sh
 
 # c2x-seed regression corpus (guards the compiler bugs fixed during bring-up).
 test-seed: seed
@@ -102,7 +116,7 @@ test-lisp: harmony-base
 
 # The self-hosted compiler's own tests: library/core and, later, the phase
 # gates in roadmap/harmony. `make test` runs this too.
-test-final: harmony-base
+test-final: harmony-base harmony
 	bash tests/harmony-final/run.sh
 	python3 tests/harmony-final/difftest.py
 	python3 tests/harmony-final/parsediff.py
@@ -112,6 +126,7 @@ test-final: harmony-base
 	python3 tests/harmony-final/typecorpus.py error-handling
 	python3 tests/harmony-final/typecorpus.py codegen
 	python3 tests/harmony-final/irdiff.py codegen
+	bash tests/harmony-final/driver.sh
 
 test-fuzz: harmony-base
 	bash tests/harmony/fuzz.sh

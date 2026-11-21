@@ -1,0 +1,13 @@
+// EXPECT: 42
+import "../../library/std/sys.hr";
+
+fn main() -> i32 {
+    let path = "/tmp/opencode/harmony-sys-smoke.txt";
+    if (sys::write_file(path, "harmony") != 0) { return 1; }
+    let f = sys::read_file(path);
+    if (f.ok != 0) { return 2; }
+    if (f.data != "harmony") { return 3; }
+    sys::unlink(path);
+    if (sys::read_file(path).ok == 0) { return 4; }
+    return 42;
+}

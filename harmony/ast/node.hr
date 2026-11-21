@@ -77,6 +77,10 @@ const AST_PAT_LIT: i32 = 81;
 const AST_PAT_BIND: i32 = 82;
 const AST_PAT_VARIANT: i32 = 83;
 const AST_PAT_RANGE: i32 = 84;
+// v1: `{ field: pattern, ... }` pattern (enum payload or struct). Its kids
+// are AST_PAT_FIELD nodes: sval = field name, a = sub-pattern.
+const AST_PAT_STRUCT: i32 = 85;
+const AST_PAT_FIELD: i32 = 86;
 
 // One node. `kids` and `kids2` are arena-backed vectors of node handles;
 // using handles (int indices into a global table) instead of pointers keeps

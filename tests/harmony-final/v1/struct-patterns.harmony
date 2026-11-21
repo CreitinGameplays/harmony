@@ -1,0 +1,33 @@
+// v1 struct patterns: match a struct by field name, with literal tests and
+// bindings. Partial field lists are allowed; a `default` arm is still needed
+// because the subject is not an enum.
+struct Point { x: i32; y: i32; }
+struct Pair { tag: i32; name: &str; }
+
+fn classify(p: Point) -> i32 {
+    switch (p) {
+        case Point { x: 0, y: y }: { return y + 1; }
+        case Point { x, y: 0 }: { return x + 10; }
+        case Point { x, y }: { return x + y + 100; }
+        default: { return -1; }
+    }
+    return -1;
+}
+
+fn second(p: Pair) -> i32 {
+    switch (p) {
+        case Pair { tag: 7, name: name }: { return 7 + name.len() as i32; }
+        case Pair { tag, name: s }: { return tag + s.len() as i32; }
+        default: { return -1; }
+    }
+    return -1;
+}
+
+fn main() -> i32 {
+    if (classify(Point { .x = 0, .y = 41 }) != 42) { return 1; }
+    if (classify(Point { .x = 32, .y = 0 }) != 42) { return 2; }
+    if (classify(Point { .x = 20, .y = 22 }) != 142) { return 3; }
+    if (second(Pair { .tag = 7, .name = "abcdef" }) != 13) { return 4; }
+    if (second(Pair { .tag = 40, .name = "ab" }) != 42) { return 5; }
+    return 42;
+}

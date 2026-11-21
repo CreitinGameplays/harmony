@@ -1,0 +1,8 @@
+fn main() -> i32 {
+    let n = 5;
+    switch (n) {
+        case Point { x: 0 }: { return 1; }
+        default: { return 2; }
+    }
+    return 3;
+}

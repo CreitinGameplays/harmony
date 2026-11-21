@@ -1,0 +1,9 @@
+enum Shape { Circle { radius: f64 }, Dot, }
+fn f(s: Shape) -> i32 {
+    switch (s) {
+        case Circle { rad: r }: { return 1; }
+        case Dot: { return 2; }
+    }
+    return 3;
+}
+fn main() -> i32 { return 0; }

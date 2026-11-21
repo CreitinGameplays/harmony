@@ -251,7 +251,39 @@ export fn parse_enum(p: &mut pctx::Parser, is_copy: i64, start: usize) -> i32 {
         let v = pctx::node_here(p, node::AST_VARIANT);
         node::set_sval(p.nodes, v, pctx::cur_word(p));
         pctx::advance(p);
-        if (pctx::eat(p, token::TokKind::LParen)) {
+        if (pctx::eat(p, token::TokKind::LBrace)) {
+            // v1: named payload fields — `Variant { name: Type, ... }`. The
+            // variant keeps the types in `kids` (so positional construction
+            // still works) and the field names in `kids2` (AST_FIELD nodes).
+            node::set_ival(p.nodes, v, 1);
+            while (!pctx::at(&*p, token::TokKind::RBrace)
+                   && !pctx::at(&*p, token::TokKind::Eof)) {
+                if (!pctx::at(&*p, token::TokKind::Ident)) {
+                    pctx::syntax_stop(p, "SYN-05", "a payload field needs a name",
+                                     "Write `Variant { name: Type, ... }` (§20.3 item 6).");
+                    return -1;
+                }
+                let fname = pctx::cur_word(p);
+                let fstart = pctx::cur(&*p).start;
+                pctx::advance(p);
+                if (!pctx::expect(p, token::TokKind::Colon,
+                                 "add `:` after the payload field name")) {
+                    return -1;
+                }
+                let ft = parse::parse_type(p);
+                if (ft < 0) { return -1; }
+                let fnn = pctx::node_at(p, node::AST_FIELD, fstart);
+                node::set_sval(p.nodes, fnn, fname);
+                node::set_a(p.nodes, fnn, ft);
+                node::push_kid(p.nodes, v, ft);
+                node::push_kid2(p.nodes, v, fnn);
+                if (!pctx::eat(p, token::TokKind::Comma)) { break; }
+            }
+            if (!pctx::expect(p, token::TokKind::RBrace,
+                             "add `}` to close the payload fields")) {
+                return -1;
+            }
+        } else if (pctx::eat(p, token::TokKind::LParen)) {
             while (true) {
                 let pt = parse::parse_type(p);
                 if (pt < 0) { return -1; }

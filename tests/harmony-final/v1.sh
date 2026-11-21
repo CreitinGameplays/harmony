@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # V1 features for the final compiler: structured unchecked reasons, guarded
-# switch arms, Shared<T>/Weak<T>, threads with `fnptr`, and `else` clauses on
-# fallible simple statements. The syntax forms are final-language only, so
-# they are checked directly through `build/harmony`.
+# switch arms, Shared<T>/Weak<T>, threads with `fnptr`, `else` clauses, named
+# enum payload fields and struct patterns. The syntax forms are final-language
+# only, so they are checked directly through `build/harmony`.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -49,6 +49,9 @@ run_case else-forward 42
 run_case else-maybe 42
 run_case else-exits 42
 run_case else-nested-exit 42
+run_case named-enum-fields 42
+run_case struct-patterns 42
+run_case named-generic-enum 42
 
 "$HC" check "$DIR/guarded-refutable.harmony" >"$TMP/refutable.out" 2>&1
 refutable_rc=$?
@@ -112,6 +115,30 @@ if [ "$nf_rc" -ne 0 ] && grep -q 'needs a `Maybe` or `Outcome`' "$TMP/notfallibl
     ok "else rejects a non-Maybe/Outcome scrutinee"
 else
     bad "else rejects a non-Maybe/Outcome scrutinee (exit $nf_rc)"
+fi
+
+"$HC" check "$DIR/pattern-unknown-field.harmony" >"$TMP/pf.out" 2>&1
+pf_rc=$?
+if [ "$pf_rc" -ne 0 ] && grep -q 'no such field' "$TMP/pf.out"; then
+    ok "struct pattern rejects an unknown field"
+else
+    bad "struct pattern rejects an unknown field (exit $pf_rc)"
+fi
+
+"$HC" check "$DIR/ctor-unknown-field.harmony" >"$TMP/cf.out" 2>&1
+cf_rc=$?
+if [ "$cf_rc" -ne 0 ] && grep -q 'no such field' "$TMP/cf.out"; then
+    ok "named payload constructor rejects an unknown field"
+else
+    bad "named payload constructor rejects an unknown field (exit $cf_rc)"
+fi
+
+"$HC" check "$DIR/pattern-wrong-subject.harmony" >"$TMP/ps.out" 2>&1
+ps_rc=$?
+if [ "$ps_rc" -ne 0 ] && grep -q 'struct pattern needs a struct or enum' "$TMP/ps.out"; then
+    ok "struct pattern rejects a scalar subject"
+else
+    bad "struct pattern rejects a scalar subject (exit $ps_rc)"
 fi
 
 "$HC" audit --format=json "$DIR/structured-reason.harmony" >"$TMP/audit.json" 2>/dev/null

@@ -425,14 +425,25 @@ The R6 byte-diff found ten rewrite-only bugs, all fixed at the source:
   table before reading a field name. A stale/primitive type id in a struct
   initializer used to read past the table and segfault the compiler; it now
   reports "no such member" like any other unknown field.
-- [ ] Remaining v1 features: named enum payload fields and struct patterns,
-  function pointers (as a first-class type), and `abilities`. Channels
-  (§19.8.8) are also still future work; the current primitive is a `Share<T>`
-  box plus `join`.
+- [x] **Named enum payload fields and struct patterns (§20.3 item 6).**
+  `parse_enum` accepts `Variant { name: Type, ... }`: field types stay in the
+  variant's `kids` (so positional construction still works) and the names in
+  `kids2`, which `fill_enum`/`instantiate_type` copy onto the payload struct.
+  `Enum::Variant { .name = value }` constructs one (the checker stamps the
+  variant index in `ival`; codegen writes the tag and named payload fields).
+  A new `AST_PAT_STRUCT`/`AST_PAT_FIELD` pair parses `case Point { x: 0, y: y }:`
+  with optional shorthand binds; the checker resolves fields by name, and
+  codegen ANDs literal-field tests with the variant tag test (for enums) and
+  binds the remaining fields. Unknown fields are `TYPE-02`; a struct pattern
+  on a non-struct/enum subject is `TYPE-01`.
+- [ ] Remaining v1 features: function pointers (as a first-class type) and
+  `abilities`. Channels (§19.8.8) are also still future work; the current
+  primitive is a `Share<T>` box plus `join`.
 
-`tests/harmony-final/v1.sh` runs the batch: fifteen accepted programs, a
-`TYPE-03` rejection, a `CASE-01` rejection, six v1 type rejections (`fnptr`,
-the thread capability, and four `else`/FLOW checks), and both audit formats.
+`tests/harmony-final/v1.sh` runs the batch: eighteen accepted programs, a
+`TYPE-03` rejection, a `CASE-01` rejection, nine v1 type rejections (`fnptr`,
+the thread capability, four `else`/FLOW checks, and three field/pattern
+checks), and both audit formats.
 harmony-base is unchanged apart from the `ty_find_member` bounds guard.
 
 ## What harmony-base must still grow (feed it back)

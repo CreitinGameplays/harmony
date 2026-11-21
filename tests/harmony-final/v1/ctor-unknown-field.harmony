@@ -1,0 +1,5 @@
+enum Shape { Circle { radius: f64 }, Dot, }
+fn main() -> i32 {
+    let c = Shape::Circle { .rad = 2.0 };
+    return 0;
+}

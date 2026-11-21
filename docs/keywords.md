@@ -54,6 +54,7 @@ a `NAME-02` translation hint): `unsafe` `impl` `match` `trait` `pub` `use`
 | `sizeof(T)` `heap(x)` `raw(x)` | built-in forms |
 | `fnptr(name)` | v1 final-compiler intrinsic: address of a declared function as `raw u8`, used for thread entries; harmony-base does not parse it |
 | `else` (on a simple statement) | v1 final-compiler clause: `let x = f() else return;`, `x = f() else (e) { ... };`, `f() else trap("...");`. Only `Maybe`/`Outcome`; see FLOW-01/02/03 |
+| named payload / struct pattern | v1 final compiler: `enum E { V { f: T } }`, `E::V { .f = x }`, and `case V { f: p }:` / `case S { f: p }:` in `switch` |
 | `str::from_parts(p, len)` | the `str` lang item (§19.8.9): build a `&str` from owned bytes + length; needs `unchecked` because the pointer is unchecked. Used by `library/core`'s `String::as_str`. |
 | `Type::make()` | constructor convention (a named `make`, not a keyword) |
 

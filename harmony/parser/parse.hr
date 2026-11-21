@@ -817,6 +817,11 @@ fn parse_path_expr(p: &mut pctx::Parser) -> i32 {
                     full.push(pctx::cur_word(p));
                     pctx::advance(p);
                 }
+                // v1: `Pack<i32>::Boxed { .value = 40 }` — a named-field
+                // enum payload constructor after a generic path.
+                if (pctx::at(&*p, token::TokKind::LBrace)) {
+                    return parse_struct_init(p, full.as_str(), tyargs, start);
+                }
                 if (pctx::at(&*p, token::TokKind::LParen)) {
                     let args = parse_call_args(p);
                     let h = pctx::node_at(p, node::AST_CALL, start);

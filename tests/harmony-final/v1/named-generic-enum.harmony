@@ -1,0 +1,33 @@
+// Named payload fields on a generic enum, with a qualified pattern name and
+// a guarded field pattern.
+enum Pack<T> {
+    Boxed { value: T, count: usize },
+    Empty,
+}
+
+fn unwrap(p: Pack<i32>) -> i32 {
+    switch (p) {
+        case Pack::Boxed { value: v, count }: { return v + count as i32; }
+        case Pack::Empty: { return -1; }
+    }
+    return -2;
+}
+
+fn guarded(p: Pack<i32>) -> i32 {
+    switch (p) {
+        case Boxed { value: v, count: c } if (c > 0usize): { return v; }
+        case Boxed { value: v }: { return -v; }
+        case Empty: { return 0; }
+    }
+    return -3;
+}
+
+fn main() -> i32 {
+    let a = Pack<i32>::Boxed { .value = 40, .count = 2usize };
+    if (unwrap(a) != 42) { return 1; }
+    let b = Pack<i32>::Boxed { .value = 40, .count = 0usize };
+    if (guarded(b) != -40) { return 2; }
+    let c = Pack<i32>::Boxed { .value = 42, .count = 1usize };
+    if (guarded(c) != 42) { return 3; }
+    return 42;
+}

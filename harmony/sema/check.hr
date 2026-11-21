@@ -961,7 +961,11 @@ fn instantiate_type(c: &mut Checker, ti: i32, at: i32, args: &vec::Vec<i32>) -> 
                     let ft = subst_type(c, *m.kids.get(j), &params, &concrete);
                     let mut use_ft: i32 = ft;
                     if (use_ft == types::TY_INVALID) { use_ft = types::TY_I32; }
-                    types::add_member(&mut c.types, pt, "", use_ft);
+                    let mut fname: &str = "";
+                    if ((m.ival & 1) != 0 && j < m.kids2.len()) {
+                        fname = node::get(&c.nodes, *m.kids2.get(j)).sval;
+                    }
+                    types::add_member(&mut c.types, pt, fname, use_ft);
                     j += 1;
                 }
             }
@@ -2326,6 +2330,54 @@ fn check_call(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
 
 // A `Type { .field = value }` struct literal.
 fn check_struct_init(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
+    // v1: `Enum::Variant { .field = value, ... }` constructs a named-payload
+    // variant. The payload struct carries the field names, so codegen only
+    // needs the variant index (stored in `ival`) and the member index.
+    if (has_colons(n.sval)) {
+        let cut = rfind_colons(n.sval);
+        let owner = prefix(n.sval, cut as usize);
+        let vname = suffix(n.sval, cut as usize + 2);
+        let mut ety: i32 = 0;
+        let osym = lookup(&*c, owner);
+        if (osym >= 0 && sym_kind(&*c, osym) == SK_TYPE) {
+            ety = sym_ty(&*c, osym);
+        } else if (n.kids2.len() > 0) {
+            // `Pack<i32>::Boxed { ... }`: instantiate the generic enum from
+            // the type arguments the parser stored in `kids2`.
+            let mut base = owner;
+            let mut i: usize = 0;
+            while (i < owner.len()) {
+                if (owner.as_bytes()[i] == 60u8) { base = prefix(owner, i); break; }
+                i += 1;
+            }
+            let ti = find_gen_ty(&*c, base);
+            if (ti >= 0) { ety = instantiate_type(c, ti, h, &n.kids2); }
+        }
+        if (ety > 0 && types::is_enum(&c.types, ety)) {
+            let vi = types::find_member(&c.types, ety, vname);
+            if (vi >= 0) {
+                let pid = types::member_type(&c.types, ety, vi);
+                let mut k: usize = 0;
+                while (k < n.kids.len()) {
+                    let fi = node::get(&c.nodes, *n.kids.get(k));
+                    let mi = types::find_member(&c.types, pid, fi.sval);
+                    if (mi < 0) {
+                        err_no_field(c, *n.kids.get(k), pid, fi.sval);
+                    } else {
+                        let want = types::member_type(&c.types, pid, mi);
+                        let got = check_expr(c, fi.a);
+                        if (got != types::TY_INVALID && !coercible(c, want, got)) {
+                            mismatch(c, fi.a, want, got, "payload field");
+                        }
+                        stamp_lits(c, fi.a, want);
+                    }
+                    k += 1;
+                }
+                node::set_ival(&mut c.nodes, h, vi as i64);
+                return ety;
+            }
+        }
+    }
     let mut ty: i32 = types::TY_INVALID;
     // `ival == 1` marks type arguments that were *inferred* by the enclosing
     // `methods` block rather than written in the source. When the expected
@@ -3011,6 +3063,45 @@ fn check_switch_pattern(c: &mut Checker, h: i32, st: i32, seen: &mut vec::Vec<i3
         }
         return;
     }
+    if (n.kind == node::AST_PAT_STRUCT) {
+        // v1: `{ field: pattern }` against an enum payload or a struct.
+        // Partial field lists are allowed — this is how struct patterns
+        // soften the "no partial moves" rule.
+        let mut fty: i32 = types::TY_INVALID;
+        if (types::is_enum(&c.types, st)) {
+            let vi = types::find_member(&c.types, st, variant_suffix(n.sval));
+            if (vi < 0) {
+                err_no_field(c, h, st, variant_suffix(n.sval));
+                return;
+            }
+            note_variant(seen, vi);
+            fty = types::member_type(&c.types, st, vi);
+        } else if (types::type_kind(&c.types, st) == types::CTY_STRUCT) {
+            fty = st;
+        } else {
+            add_diag(c, "TYPE-01", "a struct pattern needs a struct or enum",
+                     "Use `{ .field: pattern }` on a struct or an enum payload.", h);
+            return;
+        }
+        let mut k: usize = 0;
+        while (k < n.kids.len()) {
+            let f = node::get(&c.nodes, *n.kids.get(k));
+            let mi = types::find_member(&c.types, fty, f.sval);
+            if (mi < 0) {
+                err_no_field(c, *n.kids.get(k), fty, f.sval);
+            } else {
+                let pt = types::member_type(&c.types, fty, mi);
+                let sub = node::get(&c.nodes, f.a);
+                if (sub.kind == node::AST_PAT_BIND) {
+                    declare_init(c, f.a, sub.sval, pt, 1);
+                } else if (sub.kind != node::AST_PAT_WILD) {
+                    check_switch_pattern(c, f.a, pt, seen);
+                }
+            }
+            k += 1;
+        }
+        return;
+    }
     if (n.kind == node::AST_PAT_RANGE) {
         check_expr(c, n.a);
         check_expr(c, n.b);
@@ -3029,6 +3120,18 @@ fn pattern_irrefutable_for_variant(c: &Checker, h: i32, st: i32) -> i32 {
         let mut i: usize = 0;
         while (i < n.kids.len()) {
             let sub = node::get(&c.nodes, *n.kids.get(i));
+            if (sub.kind != node::AST_PAT_BIND && sub.kind != node::AST_PAT_WILD) {
+                return 0;
+            }
+            i += 1;
+        }
+        return 1;
+    }
+    if (n.kind == node::AST_PAT_STRUCT) {
+        let mut i: usize = 0;
+        while (i < n.kids.len()) {
+            let f = node::get(&c.nodes, *n.kids.get(i));
+            let sub = node::get(&c.nodes, f.a);
             if (sub.kind != node::AST_PAT_BIND && sub.kind != node::AST_PAT_WILD) {
                 return 0;
             }
@@ -3705,7 +3808,11 @@ fn fill_enum(c: &mut Checker, h: i32) {
             let mut j: usize = 0;
             while (j < vn.kids.len()) {
                 let ft = resolve_type(c, *vn.kids.get(j));
-                types::add_member(&mut c.types, pt, "", ft);
+                let mut fname: &str = "";
+                if ((vn.ival & 1) != 0 && j < vn.kids2.len()) {
+                    fname = node::get(&c.nodes, *vn.kids2.get(j)).sval;
+                }
+                types::add_member(&mut c.types, pt, fname, ft);
                 j += 1;
             }
         }

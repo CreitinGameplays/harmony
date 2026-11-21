@@ -1747,6 +1747,38 @@ fn expr_struct_init(e: &mut context::Emitter, h: i32) -> &str {
     context::out(e, " = alloca ");
     context::out(e, context::type_name(e, ty));
     context::nl(e);
+    if (types::type_kind(&e.c.types, ty) == types::CTY_ENUM) {
+        // `Enum::Variant { .field = value, ... }`: zero the storage, write
+        // the variant tag, then store each named field in the payload.
+        context::out(e, "  store ");
+        context::out(e, context::type_name(e, ty));
+        context::out(e, " zeroinitializer, ptr ");
+        context::out(e, slot);
+        context::nl(e);
+        let vi = n.ival as i32;
+        let tagp = struct_gep(e, slot, ty, 0);
+        context::out(e, "  store i32 ");
+        context::out_i64(e, vi as i64);
+        context::out(e, ", ptr ");
+        context::out(e, tagp);
+        context::nl(e);
+        let pid = types::member_type(&e.c.types, ty, vi);
+        let mut j: usize = 0;
+        while (j < n.kids.len()) {
+            let fi = node::get(&e.c.nodes, *n.kids.get(j));
+            let mi = types::find_member(&e.c.types, pid, fi.sval);
+            if (mi >= 0) {
+                let ft = types::member_type(&e.c.types, pid, mi);
+                let v = expr(e, fi.a);
+                let a = offset_addr(e, slot,
+                                    8 + types::field_offset(pid, mi as usize, &mut e.c.types));
+                store_value(e, a, ft, v);
+            }
+            j += 1;
+        }
+        e.expr_ty = ty;
+        return slot;
+    }
     let mut i: usize = 0;
     while (i < n.kids.len()) {
         let fi = node::get(&e.c.nodes, *n.kids.get(i));
@@ -2707,27 +2739,104 @@ fn pattern_test(e: &mut context::Emitter, p_h: i32, st: i32,
         let b = cmp(e, "icmp sle", st, cur2, hi);
         return bin(e, "and", types::TY_BOOL, a, b);
     }
+    if (p.kind == node::AST_PAT_STRUCT) {
+        let mut vi: i32 = 0;
+        let fty = pattern_field_source(e, st, p.sval, &mut vi);
+        let mut acc: &str = "";
+        if (vi >= 0) {
+            acc = enum_tag_test(e, st, subjslot, vi);
+        }
+        let mut k: usize = 0;
+        while (k < p.kids.len()) {
+            let f = node::get(&e.c.nodes, *p.kids.get(k));
+            let mi = types::find_member(&e.c.types, fty, f.sval);
+            let sub = node::get(&e.c.nodes, f.a);
+            if (mi >= 0 && sub.kind == node::AST_PAT_LIT) {
+                let ft = types::member_type(&e.c.types, fty, mi);
+                let addr = pattern_field_addr(e, subjslot, st, vi, mi);
+                let cur = load(e, ft, addr);
+                let v = expr(e, sub.a);
+                let mut t: &str = "";
+                if (context::is_float_ty(ft)) {
+                    t = cmp(e, "fcmp oeq", ft, cur, v);
+                } else {
+                    t = cmp(e, "icmp eq", ft, cur, v);
+                }
+                if (acc == "") { acc = t; }
+                else { acc = bin(e, "and", types::TY_BOOL, acc, t); }
+            }
+            k += 1;
+        }
+        return acc;
+    }
     return "";
+}
+
+// Address of a matched field: inside an enum payload (after the i32 tag) or
+// directly in a struct. `vi < 0` means the subject is a struct.
+fn pattern_field_addr(e: &mut context::Emitter, base: &str, st: i32,
+                      vi: i32, mi: i32) -> &str {
+    if (vi >= 0) {
+        let pid = types::member_type(&e.c.types, st, vi);
+        return offset_addr(e, base,
+                           8 + types::field_offset(pid, mi as usize, &mut e.c.types));
+    }
+    return struct_gep(e, base, st, mi);
+}
+
+fn pattern_field_source(e: &mut context::Emitter, st: i32, name: &str,
+                        vi: &mut i32) -> i32 {
+    *vi = -1;
+    if (types::type_kind(&e.c.types, st) == types::CTY_ENUM) {
+        *vi = types::find_member(&e.c.types, st, variant_suffix_str(name));
+        if (*vi < 0) { *vi = 0; }
+        return types::member_type(&e.c.types, st, *vi);
+    }
+    return st;
+}
+
+// `Enum::Variant` -> `Variant` (mirrors the checker's variant_suffix).
+fn variant_suffix_str(s: &str) -> &str {
+    let cut = rfind_colons(s);
+    if (cut >= 0) { return &s[cut as usize + 2..s.len()]; }
+    return s;
+}
+
+// Kept byte-identical to harmony-base: load the payload first, then allocate
+// the local and store the loaded value (even aggregates are loaded by value
+// here). Changing that order changes the IR of every variant-binding switch.
+fn bind_at(e: &mut context::Emitter, name: &str, addr: &str, ft: i32) {
+    let v = load(e, ft, addr);
+    let slot = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, slot);
+    context::out(e, " = alloca ");
+    context::out(e, context::type_name(e, ft));
+    context::nl(e);
+    context::out(e, "  store ");
+    context::out(e, context::type_name(e, ft));
+    context::out(e, " ");
+    context::out(e, v);
+    context::out(e, ", ptr ");
+    context::out(e, slot);
+    context::nl(e);
+    context::local_declare(e, name, slot, ft);
 }
 
 fn bind_pattern(e: &mut context::Emitter, pats: &vec::Vec<i32>, st: i32,
                 subjslot: &str) {
-    if (types::type_kind(&e.c.types, st) != types::CTY_ENUM) { return; }
     let mut k: usize = 0;
     while (k < pats.len()) {
         let p = node::get(&e.c.nodes, *pats.get(k));
         if (p.kind == node::AST_PAT_VARIANT && p.kids.len() > 0) {
-            let cut = rfind_colons(p.sval);
-            let mut vname = p.sval;
-            if (cut >= 0) { vname = &p.sval[cut + 2..p.sval.len()]; }
-            let vi = types::find_member(&e.c.types, st, vname);
+            let vi = types::find_member(&e.c.types, st, variant_suffix_str(p.sval));
             if (vi >= 0) {
                 let pid = types::member_type(&e.c.types, st, vi);
                 let mut j: usize = 0;
                 while (j < p.kids.len() && j < types::member_count(&e.c.types, pid)) {
                     let sub = node::get(&e.c.nodes, *p.kids.get(j));
                     let ft = types::member_type(&e.c.types, pid, j as i32);
-                    let a = offset_addr(e, subjslot, 8 + types::field_offset(pid, j as usize, &mut e.c.types));
+                    let a = pattern_field_addr(e, subjslot, st, vi, j as i32);
                     let v = load(e, ft, a);
                     if (sub.kind == node::AST_PAT_BIND) {
                         let slot = context::new_reg(e);
@@ -2747,6 +2856,21 @@ fn bind_pattern(e: &mut context::Emitter, pats: &vec::Vec<i32>, st: i32,
                     }
                     j += 1;
                 }
+            }
+        } else if (p.kind == node::AST_PAT_STRUCT) {
+            let mut vi: i32 = 0;
+            let fty = pattern_field_source(e, st, p.sval, &mut vi);
+            let mut j: usize = 0;
+            while (j < p.kids.len()) {
+                let f = node::get(&e.c.nodes, *p.kids.get(j));
+                let mi = types::find_member(&e.c.types, fty, f.sval);
+                let sub = node::get(&e.c.nodes, f.a);
+                if (mi >= 0 && sub.kind == node::AST_PAT_BIND) {
+                    let ft = types::member_type(&e.c.types, fty, mi);
+                    let a = pattern_field_addr(e, subjslot, st, vi, mi);
+                    bind_at(e, sub.sval, a, ft);
+                }
+                j += 1;
             }
         }
         k += 1;

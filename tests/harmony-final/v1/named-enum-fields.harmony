@@ -1,0 +1,41 @@
+// v1 named enum payload fields: declare, construct and match by field name.
+enum Shape {
+    Circle { radius: f64 },
+    Rect { w: f64, h: f64 },
+    Dot,
+}
+
+fn area(s: Shape) -> f64 {
+    switch (s) {
+        case Circle { radius: r }: { return 3.0 * r * r; }
+        case Rect { w, h }: { return w * h; }
+        case Dot: { return 0.0; }
+    }
+    return -1.0;
+}
+
+fn pick(s: Shape) -> i32 {
+    switch (s) {
+        case Circle { radius: 2.0 }: { return 1; }
+        case Circle { radius: r }: { return 2; }
+        case Rect { w: 3.0, h: 4.0 }: { return 3; }
+        case Rect { w, h }: { return 4; }
+        case Dot: { return 5; }
+    }
+    return 6;
+}
+
+fn main() -> i32 {
+    let c = Shape::Circle { .radius = 2.0 };
+    let r = Shape::Rect { .w = 3.0, .h = 4.0 };
+    let d = Shape::Dot;
+    if (area(c) != 12.0) { return 1; }
+    if (area(r) != 12.0) { return 2; }
+    if (area(d) != 0.0) { return 3; }
+    // positional construction still works for named-field variants
+    let c2 = Shape::Circle(2.0);
+    if (pick(c2) != 1) { return 4; }
+    if (pick(r) != 3) { return 5; }
+    if (pick(d) != 5) { return 6; }
+    return 42;
+}

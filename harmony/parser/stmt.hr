@@ -401,10 +401,49 @@ export fn parse_pattern(p: &mut pctx::Parser) -> i32 {
         return h;
     }
 
-    // path / variant with sub-patterns / bare binding
+    // path / variant with sub-patterns / struct pattern / bare binding
     if (pctx::at(&*p, token::TokKind::Ident)) {
         let name = parse::parse_path_name(p);
         if (name == "") { return -1; }
+        if (pctx::at(&*p, token::TokKind::LBrace)) {
+            // v1 struct pattern: `Point { x: 0, y: y }`, `Circle { radius: r }`
+            // and the shorthand `Point { x, y }` (binds both fields).
+            pctx::advance(p);
+            let h = pctx::node_at(p, node::AST_PAT_STRUCT, start);
+            node::set_sval(p.nodes, h, name);
+            while (!pctx::at(&*p, token::TokKind::RBrace)
+                   && !pctx::at(&*p, token::TokKind::Eof)) {
+                pctx::eat(p, token::TokKind::Dot);   // `.x` is accepted too
+                if (!pctx::at(&*p, token::TokKind::Ident)) {
+                    pctx::syntax_stop(p, "SYN-05", "a pattern field needs a name",
+                                     "Write `Point { .x: 0, .y }` (§20.3 item 6).");
+                    return -1;
+                }
+                let fname = pctx::cur_word(p);
+                let fstart = pctx::cur(&*p).start;
+                pctx::advance(p);
+                let fi = pctx::node_at(p, node::AST_PAT_FIELD, fstart);
+                node::set_sval(p.nodes, fi, fname);
+                if (pctx::eat(p, token::TokKind::Colon)) {
+                    let sub = parse_pattern(p);
+                    if (sub < 0) { return -1; }
+                    node::set_a(p.nodes, fi, sub);
+                } else {
+                    let bind = pctx::node_at(p, node::AST_PAT_BIND, fstart);
+                    node::set_sval(p.nodes, bind, fname);
+                    node::set_a(p.nodes, fi, bind);
+                }
+                node::push_kid(p.nodes, h, fi);
+                if (!pctx::eat(p, token::TokKind::Comma)) { break; }
+                if (pctx::at(&*p, token::TokKind::RBrace)) { break; }
+            }
+            if (!pctx::expect(p, token::TokKind::RBrace,
+                             "add `}` to close the pattern fields")) {
+                return -1;
+            }
+            pctx::end_at(p, h, pctx::prev(&*p).end);
+            return h;
+        }
         if (pctx::at(&*p, token::TokKind::LParen)) {
             pctx::advance(p);
             let h = pctx::node_at(p, node::AST_PAT_VARIANT, start);

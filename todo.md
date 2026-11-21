@@ -868,5 +868,12 @@ directly into its binary and (b) support **multi-core compilation by default**.
   - harmony-base: `ty_find_member` now bounds-checks the flat member table;
     a stale/primitive type id in a struct initializer used to segfault the
     compiler. It reports "no such member" instead.
-  - Remaining v1 features (named fields/struct patterns, first-class function
+  - V1 named payload fields and struct patterns (final compiler only): enums
+    can declare `Variant { field: Type }`, be constructed with
+    `Enum::Variant { .field = value }` (positional still works), and be
+    matched with `case Variant { field: p }:`. Struct values support the same
+    `case S { field: p }:` patterns with literal tests and bindings; field
+    lists may be partial. Generic enums, qualified names and guards work.
+    `tests/harmony-final/v1.sh` covers three accepted programs and three
+    field/subject rejections. Remaining v1 features (first-class function
     pointers, `abilities`) are still unimplemented.

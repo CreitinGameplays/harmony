@@ -114,3 +114,54 @@ export fn spawn_with_input(a: &ArgList, input: &str, log_path: &str) -> i32 {
 export fn spawn(a: &ArgList, log_path: &str) -> i32 {
     return spawn_with_input(a, "", log_path);
 }
+
+// ---- a tiny fork/join worker pool -----------------------------------------
+//
+// Compilation workers inherit the checked program through fork's
+// copy-on-write snapshot, so no context has to be serialised. Each worker
+// writes its deterministic output chunk to its own file; the parent joins in
+// spawn order and merges the chunks in that same order. PIDs and temporary
+// paths never appear in compiler output, so the result is byte-identical to
+// the sequential path.
+
+export struct WorkerPool {
+    pids: vec::Vec<i32>;
+    paths: vec::Vec<str::String>;
+}
+
+export fn workers_make() -> WorkerPool {
+    return WorkerPool {
+        .pids = vec::Vec<i32>::make(),
+        .paths = vec::Vec<str::String>::make(),
+    };
+}
+
+// Returns 1 in the child, 0 in the parent, and -1 if fork failed.
+export fn worker_spawn(p: &mut WorkerPool, path: &str) -> i32 {
+    let pid = sys::fork();
+    if (pid < 0) { return -1; }
+    if (pid == 0) { return 1; }
+    p.pids.push(pid);
+    let mut copy_path: str::String = str::String::make();
+    copy_path.push(path);
+    p.paths.push(copy_path);
+    return 0;
+}
+
+// Only a child calls this. The parent sees a normal wait status.
+export fn worker_exit() {
+    sys::exit(0);
+}
+
+// Waits for every worker. Returns 0 if all succeeded, -1 otherwise.
+export fn worker_join(p: &WorkerPool) -> i32 {
+    let mut bad: i32 = 0;
+    let mut i: usize = 0;
+    while (i < p.pids.len()) {
+        let mut status: i32 = 0;
+        sys::waitpid(*p.pids.get(i), raw(&mut status));
+        if (wait_status(status) != 0) { bad = 1; }
+        i += 1;
+    }
+    return -bad;
+}

@@ -43,8 +43,10 @@ not a goal statement.
 3. **Freestanding.** `harmony` links against `bootstrap/runtime/rt.c` only —
    no libc, no std beyond `library/`. It reaches the OS through
    `lc_syscall3`, exactly as harmony-base does.
-4. **Multi-core by default** in the final driver (AGENTS.md), while
-   `harmony-base` stays optimized for single-core.
+4. **Multi-core compilation by default** in the final driver (AGENTS.md),
+   while `harmony-base` stays optimized for single-core. Function and
+   monomorphized-instance LLVM lowering is split across forked workers; the
+   shared-state checker stays sequential (see R7).
 5. **In-memory LLVM IR**: the driver pipes IR to clang on stdin; no `.ll`
    temp file by default.
 6. **Byte-deterministic self-host**: stage 2 (`harmony` built by `harmony`)
@@ -241,7 +243,7 @@ rule; it is recorded here rather than hidden.
     reject).
   - `tests/harmony-final/typechecker_sh.py` — the 28 `checker.sh` snippets.
   - `tests/harmony-final/typecorpus.py error-handling` — 60 files.
-  - `tests/harmony-final/typecorpus.py codegen` — 85 files.
+  - `tests/harmony-final/typecorpus.py codegen` — 86 files.
 - [x] **Speed**: compiling the rewrite's core modules takes ~5s, so the
   harness (`typeharness.py`) compiles the checker ONCE into a batch binary
   and feeds every program through it as a generated `run_one(i, "...")` call.
@@ -270,7 +272,7 @@ rule; it is recorded here rather than hidden.
   template body left its expression types and call targets stamped for
   whichever instance was checked first.
 - [x] Gate: `tests/harmony-final/irdiff.py` compares the rewrite's IR with
-  harmony-base's byte for byte. All **94 programs** in the codegen corpus,
+  harmony-base's byte for byte. All **95 programs** in the codegen corpus,
   including the eight multi-module programs, are **identical (0 mismatches)**.
   The emitter is compiled once into a batch driver; the whole comparison takes
   about 9–15 s to build and 0.3 s to diff. Multi-module sources are embedded
@@ -307,7 +309,7 @@ The R6 byte-diff found ten rewrite-only bugs, all fixed at the source:
   instance members interleaved with the enclosing struct's members. All field
   types now resolve first, then all members are added, matching harmony-base.
 
-### R7 — Driver parity and self-host [/]
+### R7 — Driver parity and self-host [x]
 
 - [x] `build`/`run`: IR is piped to clang on stdin (no `.ll` temp file),
   freestanding runtime linked, quiet/condensed clang log, `-O` levels,
@@ -324,9 +326,29 @@ The R6 byte-diff found ten rewrite-only bugs, all fixed at the source:
   The old fixed table silently aliased later literals to `@.str.0`, which
   corrupted the compiler's own `VERSION` path once the driver grew large.
   Regression `tests/harmony/string-pool.sh`.
-- [ ] Multi-core module checking/monomorphization is still sequential. The
-  final compiler currently gains parallelism only from clang and the driver's
-  subprocess model; a deterministic fork/join split is still needed.
+- [x] **Deterministic multi-core lowering by default.** `emit.hr` builds the
+  exact sequential function order (free functions, non-generic methods, then
+  monomorphized instances), then forks up to `--jobs` workers (default: the
+  online CPU count from `sysinfo(2)`) over contiguous slices. Workers inherit
+  the checked program through copy-on-write and write their IR chunk to a
+  private `/tmp` file; the parent joins in spawn order and concatenates the
+  chunks. Small programs stay sequential. `--jobs=1` / `--sequential` are the
+  explicit single-core paths. `tests/harmony-final/parallel.sh` diffs every
+  job count against harmony-base and traces actual forks on the compiler's
+  own source.
+  - Module checking and monomorphization themselves remain sequential: they
+    mutate one shared type table whose ids and first-instantiation order are
+    observable in the IR. Splitting them safely needs an explicit dependency
+    graph and stable id assignment (M2+/borrowck work); doing it by merging
+    worker tables ad hoc would break the byte-identical IR gate. The final
+    compiler is nevertheless multi-core by default on every non-trivial
+    `build`/`run`/`emit-llvm`.
+- [x] Fixed a rewrite checker quirk found by the new source: `stamp_lits`
+  recursed into typed children and stamped a constant array index with the
+  enclosing expression's type (`a[80] as usize` widened at i64 instead of
+  i32). It now descends only into children that are still untyped literals,
+  exactly like harmony-base. Regression `stamp-lits-index-operand` (in the
+  byte-identical IR corpus).
 
 ## What harmony-base must still grow (feed it back)
 

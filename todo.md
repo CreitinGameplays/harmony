@@ -758,7 +758,7 @@ directly into its binary and (b) support **multi-core compilation by default**.
   - `harmony/sema/types.hr` + `harmony/sema/check.hr` are the whole type
     checker, gated by four differential suites (`typediff.py` 32 cases,
     `typechecker_sh.py` 28, `typecorpus.py error-handling` 59,
-    `typecorpus.py codegen` 85): 204 cases, 0 mismatches. The batch harness
+    `typecorpus.py codegen` 86): 206 cases, 0 mismatches. The batch harness
     compiles the checker once and runs every program through it, so a whole
     corpus takes ~6s instead of ~5s per case.
   - A fourth harmony-base bug fixed: generic instance reuse compared type-arg
@@ -795,7 +795,7 @@ directly into its binary and (b) support **multi-core compilation by default**.
     (deterministic emitter state and type spellings), `llx.hr`
     (mutually recursive expression/statement lowering), and `emit.hr` (module
     and function driver). `tests/harmony-final/irdiff.py` is the R6 gate: its
-    IR is **byte-identical** to harmony-base's on all 94 codegen programs,
+    IR is **byte-identical** to harmony-base's on all 95 codegen programs,
     including the eight multi-module programs (0 mismatches). The harness
     compiles the backend once and runs the corpus in isolated processes, so a
     trap in one program cannot hide the rest; build ~10s, diff ~0.3s. Imported
@@ -823,5 +823,14 @@ directly into its binary and (b) support **multi-core compilation by default**.
   - harmony-base's LLVM string pool is resizable; the old 1024-entry cap
     silently aliased later literals and broke the compiler's own `VERSION`
     read. `tests/harmony/string-pool.sh` guards it.
-- [ ] Multi-core compilation by default (AGENTS.md): module checking and
-  monomorphization are still sequential in the final compiler.
+  - Multi-core compilation is on by default: `harmony/codegen/llvm/emit.hr`
+    forks `--jobs` workers (auto = online CPU count) over contiguous slices of
+    the deterministic function order and merges their IR chunks in that same
+    order. `--jobs=1`/`--sequential` force the single-core path. The checker
+    and monomorphizer remain sequential because they share one type table
+    whose ids and instantiation order are observable in the emitted IR; a
+    safe split needs explicit stable id assignment (M2+ work).
+  - The rewrite checker's `stamp_lits` now only descends into untyped literal
+    children. The old walk stamped array-index operands with the enclosing
+    result type, producing different widen instructions. Regression
+    `stamp-lits-index-operand` is in the byte-identical IR corpus.

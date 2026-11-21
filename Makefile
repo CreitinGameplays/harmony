@@ -99,6 +99,7 @@ test: test-seed harmony-base harmony
 	# determinism.sh cleans build/, so rebuild both compilers before the driver gate.
 	$(MAKE) harmony-base harmony
 	bash tests/harmony-final/driver.sh
+	bash tests/harmony-final/parallel.sh
 
 # c2x-seed regression corpus (guards the compiler bugs fixed during bring-up).
 test-seed: seed
@@ -127,6 +128,7 @@ test-final: harmony-base harmony
 	python3 tests/harmony-final/typecorpus.py codegen
 	python3 tests/harmony-final/irdiff.py codegen
 	bash tests/harmony-final/driver.sh
+	bash tests/harmony-final/parallel.sh
 
 test-fuzz: harmony-base
 	bash tests/harmony/fuzz.sh

@@ -6,12 +6,13 @@
 // function of the input program (docs/harmony.md §19.4).
 import "../../../library/core/str.hr";
 import "../../../library/core/vec.hr";
+import "../../../library/std/sys.hr";
 import "../../ast/node.hr";
 import "../../sema/types.hr";
 import "../../sema/check.hr";
+import "../../driver/process.hr";
 import "context.hr";
 import "llx.hr";
-import "context.hr";
 
 // ---- string pool ----------------------------------------------------------
 
@@ -268,7 +269,10 @@ fn emit_fn(e: &mut context::Emitter, h: i32) {
 
 // ---- module ----------------------------------------------------------------
 
-export fn emit_module(c: &mut check::Checker, program: i32) -> &str {
+// Everything before the first function: string globals, nominal types, and
+// the runtime declarations. This part is emitted once by the parent; workers
+// only inherit the resulting string pool through `collect_strings`.
+fn emit_prelude(c: &mut check::Checker, program: i32) -> &str {
     let mut e = context::make(c);
     let p = node::get(&e.c.nodes, program);
     collect_strings(&mut e, program);
@@ -312,7 +316,7 @@ export fn emit_module(c: &mut check::Checker, program: i32) -> &str {
         }
         i += 1;
     }
-    // Monomorphized type instances.
+    // Monomorphized type instances, in first-instantiation order.
     let insts = check::type_instance_ids(&*e.c);
     i = 0;
     while (i < insts.len()) {
@@ -320,36 +324,140 @@ export fn emit_module(c: &mut check::Checker, program: i32) -> &str {
         i += 1;
     }
     context::nl(&mut e);
-    // Free functions.
-    i = 0;
+    return e.out.as_str();
+}
+
+// The exact function order of the sequential emitter. Generic instances are
+// already cloned and checked by this point, so lowering one is independent of
+// every other function (each starts its own SSA/label counters).
+fn function_handles(c: &check::Checker, program: i32) -> vec::Vec<i32> {
+    let mut out: vec::Vec<i32> = vec::Vec<i32>::make();
+    let p = node::get(&c.nodes, program);
+    let mut i: usize = 0;
     while (i < p.kids.len()) {
-        let it = node::get(&e.c.nodes, *p.kids.get(i));
+        let it = node::get(&c.nodes, *p.kids.get(i));
         if ((it.kind == node::AST_FN || it.kind == node::AST_EXTERN_FN)
             && it.kids.len() == 0) {
-            emit_fn(&mut e, *p.kids.get(i));
+            out.push(*p.kids.get(i));
         }
         i += 1;
     }
-    // Methods from non-generic blocks.
     i = 0;
     while (i < p.kids.len()) {
-        let it = node::get(&e.c.nodes, *p.kids.get(i));
+        let it = node::get(&c.nodes, *p.kids.get(i));
         if (it.kind == node::AST_METHODS && it.kids2.len() > 0 && it.kids.len() == 0) {
             let mut k: usize = 0;
             while (k < it.kids2.len()) {
-                emit_fn(&mut e, *it.kids2.get(k));
+                out.push(*it.kids2.get(k));
                 k += 1;
             }
         }
         i += 1;
     }
-    // Monomorphized generic functions and methods.
     i = 0;
-    while (i < e.c.fns.len()) {
-        let fh = *e.c.fns.get(i);
-        let f = node::get(&e.c.nodes, fh);
-        if (f.instance == 2 || f.instance == 3) { emit_fn(&mut e, fh); }
+    while (i < c.fns.len()) {
+        let fh = *c.fns.get(i);
+        let f = node::get(&c.nodes, fh);
+        if (f.instance == 2 || f.instance == 3) { out.push(fh); }
+        i += 1;
+    }
+    return out;
+}
+
+// Emits a contiguous slice of that order. The string pool is rebuilt from the
+// unchanged program, so `@.str.N` means the same bytes in every worker.
+fn emit_functions(c: &mut check::Checker, program: i32,
+                  handles: &vec::Vec<i32>, from: usize, to: usize) -> &str {
+    let mut e = context::make(c);
+    collect_strings(&mut e, program);
+    let mut i: usize = from;
+    while (i < to) {
+        emit_fn(&mut e, *handles.get(i));
         i += 1;
     }
     return e.out.as_str();
+}
+
+fn resolve_jobs(requested: i32) -> usize {
+    if (requested > 0) { return requested as usize; }
+    return sys::cpu_count();
+}
+
+fn chunk_path(i: usize) -> &str {
+    let mut s: str::String = str::String::make();
+    s.push("/tmp/harmony-");
+    s.push_i64(sys::getpid() as i64);
+    s.push("-emit-");
+    s.push_i64(i as i64);
+    s.push(".chunk");
+    return s.as_str();
+}
+
+const MIN_PARALLEL_FNS: usize = 16;
+
+// Emits a whole LLVM module. Function lowering is split across forked workers
+// when there is enough work; chunks are merged in the original order. The
+// emitted bytes are identical to a single-worker run (R6/R7 gates).
+export fn emit_module(c: &mut check::Checker, program: i32,
+                      jobs_requested: i32) -> &str {
+    let base = emit_prelude(c, program);
+    let handles = function_handles(&*c, program);
+    let mut jobs = resolve_jobs(jobs_requested);
+    // Never spawn more workers than there are functions to share out. A
+    // machine with hundreds of CPUs and a 20-function program must not pay
+    // hundreds of forks for almost empty chunks.
+    let max_jobs: usize = handles.len() / MIN_PARALLEL_FNS;
+    if (jobs > max_jobs) { jobs = max_jobs; }
+    let mut out: str::String = str::String::make();
+    out.push(base);
+    if (jobs <= 1 || handles.len() < MIN_PARALLEL_FNS) {
+        out.push(emit_functions(c, program, &handles, 0, handles.len()));
+        return out.as_str();
+    }
+    let mut pool = process::workers_make();
+    let mut ok: i32 = 1;
+    let mut i: usize = 0;
+    while (i < jobs) {
+        let start: usize = i * handles.len() / jobs;
+        let end: usize = (i + 1) * handles.len() / jobs;
+        if (start < end) {
+            let path = chunk_path(i);
+            let spawned = process::worker_spawn(&mut pool, path);
+            if (spawned < 0) {
+                ok = 0;
+                i = jobs;   // stop spawning; join what we already started
+                break;
+            }
+            if (spawned == 1) {
+                let chunk = emit_functions(c, program, &handles, start, end);
+                if (sys::write_file(path, chunk) != 0) { sys::exit(1); }
+                process::worker_exit();
+            }
+        }
+        i += 1;
+    }
+    if (process::worker_join(&pool) != 0) { ok = 0; }
+    if (ok == 0) {
+        // Fork or a worker failed: fall back to the complete sequential path.
+        out.push(emit_functions(c, program, &handles, 0, handles.len()));
+    } else {
+        i = 0;
+        while (i < pool.paths.len()) {
+            let f = sys::read_file(pool.paths.get(i).as_str());
+            if (f.ok != 0) {
+                out.clear();
+                out.push(base);
+                out.push(emit_functions(c, program, &handles, 0, handles.len()));
+                break;
+            }
+            out.push(f.data);
+            i += 1;
+        }
+    }
+    i = 0;
+    while (i < pool.paths.len()) {
+        sys::unlink(pool.paths.get(i).as_str());
+        i += 1;
+    }
+    return out.as_str();
 }

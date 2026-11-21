@@ -167,7 +167,7 @@ fn run_binary(path: &str) -> i32 {
 
 // Runs the full compiler pipeline for one command.
 export fn run(cmd: i32, input: &str, output: &str, opt: &str,
-             opt_given: i32, format: i32) -> i32 {
+             opt_given: i32, format: i32, jobs: i32) -> i32 {
     if (input == "") {
         eprintln("harmony: no input file");
         return process::EXIT_USAGE;
@@ -195,7 +195,7 @@ export fn run(cmd: i32, input: &str, output: &str, opt: &str,
     }
     if (cmd == 2) { return process::EXIT_OK; }   // check
 
-    let ir = emit::emit_module(&mut c, loaded.program);
+    let ir = emit::emit_module(&mut c, loaded.program, jobs);
     if (cmd == 3) {   // emit-llvm
         if (opt_given == 0) {
             print("{}", ir);

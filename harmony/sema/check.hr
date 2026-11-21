@@ -334,8 +334,17 @@ fn stamp_lits(c: &mut Checker, h: i32, want: i32) {
         && !types::is_float(t)) {
         return;
     }
-    stamp_lits(c, n.a, want);
-    stamp_lits(c, n.b, want);
+    // Descend only into a child that is itself still an untyped literal. The
+    // old unconditional walk reached through typed nodes (`a[80] as usize`),
+    // stamping the index operand with the *result* type and changing the
+    // widening instruction in the IR. harmony-base stops at the first typed
+    // node; matching that rule keeps the two emitters byte-identical.
+    let mut a_ty: i32 = 0;
+    let mut b_ty: i32 = 0;
+    if (n.a >= 0) { a_ty = node::get(&c.nodes, n.a).ty; }
+    if (n.b >= 0) { b_ty = node::get(&c.nodes, n.b).ty; }
+    if (types::is_untyped_lit(a_ty)) { stamp_lits(c, n.a, want); }
+    if (types::is_untyped_lit(b_ty)) { stamp_lits(c, n.b, want); }
     if (types::is_untyped_lit(n.ty)) { n.ty = want; }
     node::put(&mut c.nodes, h, n);
 }

@@ -22,6 +22,7 @@ export const SYS_UNLINK: i64 = 87;
 export const SYS_GETPID: i64 = 39;
 export const SYS_EXIT: i64 = 60;
 export const SYS_PIPE2: i64 = 293;
+export const SYS_SYSINFO: i64 = 99;
 
 export const FD_STDIN: i32 = 0;
 export const FD_STDOUT: i32 = 1;
@@ -111,6 +112,19 @@ export fn waitpid(pid: i32, status: raw mut i32) -> i32 {
 
 export fn getpid() -> i32 {
     unchecked("getpid cannot fail") { return lc_syscall3(SYS_GETPID, 0, 0, 0) as i32; }
+}
+
+// Online CPU count from sysinfo(2). On Linux/x86-64 `struct sysinfo.procs`
+// is a u16 at byte 80. No libc, environment variable, or fixed machine path
+// is involved, so this works on any Linux host the compiler is built on.
+export fn cpu_count() -> usize {
+    let mut info: [u8; 128] = [0u8; 128];
+    unchecked("info is a writable 128-byte sysinfo buffer") {
+        lc_syscall3(SYS_SYSINFO, raw(&mut info[0]) as usize as i64, 128, 0);
+    }
+    let n: usize = info[80] as usize | ((info[81] as usize) << 8);
+    if (n == 0) { return 1; }
+    return n;
 }
 
 export fn exit(code: i32) {

@@ -20,6 +20,7 @@ export struct Options {
     code: &str;
     opt_flag: &str;
     opt_given: i32;
+    jobs: i32;                  // 0 = auto (all online CPUs), >0 = fixed
     format: i32;
     verbose: i32;
     all: i32;
@@ -41,6 +42,7 @@ fn usage() {
     eprintln("       harmony explain <CODE>");
     eprintln("       harmony --version");
     eprintln("-O<level>: -O0 -O1 -O2 -O3 -Os -Oz -Og -Ofast (default -O2)");
+    eprintln("-j<N>, --jobs=<N>: parallel LLVM workers (0 = all CPUs)");
 }
 
 fn flag_value(a: &str, flag: &str) -> &str {
@@ -61,6 +63,22 @@ fn is_opt(a: &str) -> bool {
     return a == "-O";
 }
 
+// -1 means "not a job count"; a bound keeps a typo from spawning thousands of
+// processes. 0 still means "auto" (all online CPUs).
+fn parse_jobs(s: &str) -> i32 {
+    if (s.len() == 0) { return -1; }
+    let b = s.as_bytes();
+    let mut n: i32 = 0;
+    let mut i: usize = 0;
+    while (i < s.len()) {
+        if (!str::is_digit(b[i])) { return -1; }
+        n = n * 10 + (b[i] - 48u8) as i32;
+        if (n > 256) { n = 256; }
+        i += 1;
+    }
+    return n;
+}
+
 export fn parse(av: &[&str]) -> ParseResult {
     let mut o = Options {
         .cmd = CMD_BUILD,
@@ -69,6 +87,7 @@ export fn parse(av: &[&str]) -> ParseResult {
         .code = "",
         .opt_flag = "-O2",
         .opt_given = 0,
+        .jobs = 0,
         .format = FORMAT_PRETTY,
         .verbose = 0,
         .all = 0,
@@ -94,6 +113,38 @@ export fn parse(av: &[&str]) -> ParseResult {
         if (a == "--all") { o.all = 1; i += 1; continue; }
         if (a == "--strict") { o.strict = 1; i += 1; continue; }
         if (a == "--version") { o.cmd = CMD_VERSION; i += 1; continue; }
+        if (a == "--sequential") { o.jobs = 1; i += 1; continue; }
+        let jlong = flag_value(a, "--jobs=");
+        if (jlong != "") {
+            let n = parse_jobs(jlong);
+            if (n < 0) {
+                eprintln("harmony: bad job count: {}", jlong);
+                return ParseResult { .ok = -1, .opts = o };
+            }
+            o.jobs = n;
+            i += 1;
+            continue;
+        }
+        if (a == "-j" && i + 1 < av.len()) {
+            let n = parse_jobs(av[i + 1]);
+            if (n < 0) {
+                eprintln("harmony: bad job count: {}", av[i + 1]);
+                return ParseResult { .ok = -1, .opts = o };
+            }
+            o.jobs = n;
+            i += 2;
+            continue;
+        }
+        if (str::starts_with(a, "-j") && a.len() > 2) {
+            let n = parse_jobs(&a[2..a.len()]);
+            if (n < 0) {
+                eprintln("harmony: bad job count: {}", a);
+                return ParseResult { .ok = -1, .opts = o };
+            }
+            o.jobs = n;
+            i += 1;
+            continue;
+        }
         if (a == "-o" && i + 1 < av.len()) {
             o.output = av[i + 1];
             i += 2;

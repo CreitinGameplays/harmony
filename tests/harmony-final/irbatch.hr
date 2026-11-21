@@ -30,7 +30,7 @@ fn run_one(i: usize, src: &str) {
     check::check_program(&mut c, program);
     print("@@@CASE {}\n", i);
     if (program >= 0 && p.stops == 0 && c.diags.len() == 0) {
-        let ir = emit::emit_module(&mut c, program);
+        let ir = emit::emit_module(&mut c, program, 0);
         print("@@@IR\n");
         print("{}", ir);
         print("@@@END {}\n", i);
@@ -115,7 +115,7 @@ fn main() -> i32 {
         let mut c = check::make(ns, root);
         check::check_program(&mut c, loaded.program);
         if (c.diags.len() == 0) {
-            let ir = emit::emit_module(&mut c, loaded.program);
+            let ir = emit::emit_module(&mut c, loaded.program, 0);
             print("@@@IR\n");
             print("{}", ir);
         } else {

@@ -56,7 +56,7 @@ File extension: `.harmony`
 | v0.3.3 | Split rule | §19.8 makes the compiler-vs-library boundary explicit: the compiler keeps only what soundness or syntax requires (analyses, traps, indexing, `heap(x)`, about a dozen intrinsics). Types, collections, formatting, I/O, the runtime's entry/allocator/trap formatting, protocol implementations, diagnostic wording, and lints all move to the library or tooling. |
 | impl | M1 in harmony-base | The bootstrap compiler now **runs the language**: lexer → parser → type checker → LLVM IR text → clang + freestanding runtime → executable. Checked arithmetic (T-OVERFLOW), division/shift traps (T-DIV0, T-SHIFT), bounds-checked indexing (T-INDEX), `heap(x)` allocation, structs/enums by value (sret), methods with `Type__method` mangling, `switch` on scalars and enums, and references all work under `run` with trap status 70 (§14.3). `emit-llvm` output is byte-deterministic. |
 | impl (rewrite) | R7 driver and self-host | `build/harmony` is built by harmony-base, pipes IR to clang on stdin, and produces a stage-2/stage-3 compiler byte-identical to stage 1. `build`/`run`/`check`/`emit-llvm`/`explain`/`audit` have a differential smoke gate. |
-| impl (rewrite) | R6 LLVM backend | The self-hosted compiler now has its own LLVM IR emitter (`harmony/codegen/llvm/`). On all 94 programs in the codegen corpus, its IR is **byte-identical** to harmony-base's, including checked arithmetic, traps, slices, aggregates, generics, methods, enums, switches, formatting calls, and multi-module programs. |
+| impl (rewrite) | R6 LLVM backend | The self-hosted compiler now has its own LLVM IR emitter (`harmony/codegen/llvm/`). On all 95 programs in the codegen corpus, its IR is **byte-identical** to harmony-base's, including checked arithmetic, traps, slices, aggregates, generics, methods, enums, switches, formatting calls, and multi-module programs. |
 
 ### 1.2 Bug fixed in v0.3
 
@@ -2666,6 +2666,18 @@ and function emission. Its IR is byte-identical to the bootstrap backend's
 on the full codegen corpus, including multi-module programs;
 `tests/harmony-final/irdiff.py` is the differential gate.
 
+**Deterministic multi-core lowering.** `emit.hr` first fixes the sequential
+function order (free functions, non-generic methods, then generic
+instances). It then forks workers over contiguous slices of that order;
+each worker inherits the checked program through copy-on-write and writes
+its IR chunk to a private `/tmp` file. The parent joins in spawn order and
+concatenates the chunks, so PIDs, scheduling, and the worker count never
+appear in the result. Small programs take the single-process path. The
+default worker count is the online CPU count from `sysinfo(2)`;
+`--jobs=1`/`--sequential` force one worker. Type checking and monomorphization
+stay sequential because they share one type table whose ids and
+first-instantiation order are visible in the IR.
+
 ### 19.4b C backend (secondary, cross-check)
 
 Emits C11 from the same mapping semantics; run through the host
@@ -2713,6 +2725,7 @@ lc fmt     <file.harmony>   canonical formatter (one style, no options)
 flags:  --format=pretty|line|json   --all   --strict   --deny-unchecked
         --no-color   --ascii   -o <out>
         -O0 -O1 -O2 -O3 -Os -Oz -Og -Ofast   optimization level (-O2 default)
+        -j<N>  --jobs=<N>  --sequential   parallel LLVM workers (default: CPUs)
 ```
 
 `-O<level>` selects the LLVM optimization level for code generation and is

@@ -1,0 +1,16 @@
+// EXPECT: 42
+// Regression: `stamp_lits` must only descend into a child that is itself an
+// untyped literal. Reaching through the typed index node stamped `a[80]`'s
+// operand with the *result* type, changing the widen instruction in the IR.
+fn at(a: &[u8; 128]) -> u8 {
+    return a[80];
+}
+
+fn main() -> i32 {
+    let mut info: [u8; 128] = [0u8; 128];
+    info[80] = 7;
+    let n: usize = info[80] as usize | ((info[81] as usize) << 8);
+    if (at(&info) != 7) { return 1; }
+    if (n == 7) { return 42; }
+    return 2;
+}

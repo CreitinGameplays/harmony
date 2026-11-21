@@ -39,5 +39,5 @@ fn main() -> i32 {
     }
     if (o.cmd == cli::CMD_AUDIT) { return audit::run(o.input, o.format); }
     return pipeline::run(o.cmd, o.input, o.output, o.opt_flag, o.opt_given,
-                         o.format);
+                         o.format, o.jobs);
 }

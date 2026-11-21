@@ -22,7 +22,7 @@ fn main() -> i32 {
     let mut c = check::make(ns, "main.harmony");
     check::check_program(&mut c, program);
     if (c.diags.len() > 0) { return 1; }
-    let ir = emit::emit_module(&mut c, program);
+    let ir = emit::emit_module(&mut c, program, 1);
     print("{}", ir);
     return 0;
 }

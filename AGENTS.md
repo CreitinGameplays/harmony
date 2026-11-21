@@ -19,6 +19,7 @@ File Extension: .harmony (default), .hr (secondary)
   Example: `1.0.0-dev.1+130fa507`. Branches names should be as follows (just an example): `1.0`, `1.1`, `2.0`, and so on.
   `1.0` will only come once the final `harmony` language is fully implemented.
 - Make sure `VERSION` is always up-to-date.
+- Compiler quirks should also be fixed if found.
 - Use c2x-seed to write the harmony language:
   harmony-base: basic implementation with few features, written in c2x-seed.
   harmony: full rewrite in harmony-base itself.

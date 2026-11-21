@@ -850,5 +850,13 @@ directly into its binary and (b) support **multi-core compilation by default**.
     forms with tagged audit output, guarded `switch` arms that see pattern
     bindings, require a `bool`, and branch to the next arm when false, and
     `Shared<T>`/`Weak<T>` in `library/std/shared.hr` with explicit `release`
-    and `Maybe`-returning `upgrade`. `tests/harmony-final/v1.sh` covers all
-    three. Remaining v1 features are still unimplemented.
+    and `Maybe`-returning `upgrade`.
+  - V1 threads (final compiler only): `library/std/thread.hr` provides joined
+    and detached threads over `clone(2)`/futex hooks in
+    `library/runtime/rt.c`. `Share<T>::as_raw()` mints an opaque `ThreadArg`
+    that `spawn` requires, and `fnptr(f)` is the final-only intrinsic for a
+    function address. The allocator is spinlocked and process exits use
+    `SYS_exit_group`; no libc or pthread is needed. `tests/harmony-final/v1.sh`
+    covers join, detach, three concurrent threads, and two error cases.
+    Remaining v1 features (`try`, named fields/struct patterns, first-class
+    function pointers, `abilities`) are still unimplemented.

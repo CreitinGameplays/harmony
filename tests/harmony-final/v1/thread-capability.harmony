@@ -1,0 +1,10 @@
+import "../../../library/std/thread.hr";
+
+// The opaque ThreadArg can only be minted by Share::as_raw: passing a raw
+// pointer straight to spawn is a type error, not an unchecked promise.
+fn worker(p: raw u8) -> i64 { return 0; }
+
+fn main() -> i32 {
+    let mut t = thread::spawn(fnptr(worker), Raw::null<u8>() as raw u8);
+    return 0;
+}

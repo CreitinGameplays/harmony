@@ -1,0 +1,23 @@
+import "../../../library/std/thread.hr";
+
+// A joined thread mutates the box it was given and returns a result. The
+// owner reads the result after join and only then releases the box.
+struct Job { a: i32; b: i32; }
+
+fn worker(p: raw u8) -> i64 {
+    unchecked("main owns the Share box and joins before releasing it") {
+        let j = p as raw mut Job;
+        (*j).a = (*j).a + (*j).b;
+        return (*j).a as i64;
+    }
+    unreachable();
+}
+
+fn main() -> i32 {
+    let mut job = thread::Share<Job>::make(Job { .a = 20, .b = 22 });
+    let mut t = thread::spawn(fnptr(worker), job.as_raw());
+    let r = t.join();
+    let v = *job.get();
+    job.release();
+    return (r as i32) + v.a - 42;
+}

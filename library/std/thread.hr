@@ -1,0 +1,108 @@
+// library/std/thread.hr — v1 threads and the `Share<T>` capability marker.
+//
+// Threads are library code (docs/harmony.md §19.8.8): the compiler emits only
+// ordinary calls to the runtime hooks declared below. The OS work (clone plus
+// futex join) lives in `library/runtime/rt.c`, so no libc or pthread is
+// required and the freestanding link keeps working.
+//
+// `spawn`/`send` are deliberately not keywords (§20.4). The share-style
+// capability marker is the ordinary type `Share<T>`: to cross a thread
+// boundary a value must be put in a heap box by `Share::make`, and the thread
+// receives only an opaque `ThreadArg` minted by `Share::as_raw`. The owner releases
+// the box after the thread stops; drop glue is not implemented yet.
+//
+// A thread entry is a named Harmony function `fn(raw u8) -> i64`. `fnptr(f)`
+// is the small compiler intrinsic that turns the name into that opaque
+// address (the address of a function is backend knowledge, §19.8.9).
+extern "C" fn lc_thread_spawn(entry: raw u8, arg: raw u8) -> i64;
+extern "C" fn lc_thread_join(handle: i64) -> i64;
+extern "C" fn lc_thread_detach(handle: i64);
+extern "C" fn lc_thread_yield();
+
+// The capability marker. `Share<T>` owns one heap box; it is deliberately
+// not a `copy` struct so ownership stays visible at the call site.
+export struct Share<T> {
+    ptr: raw mut T;
+}
+
+methods<T> Share<T> {
+    export fn make(value: T) -> Share<T> {
+        unchecked("a fresh heap box owns the value for the spawned thread") {
+            return Share<T> { .ptr = Heap::into_raw(heap(value)) };
+        }
+        unreachable();
+    }
+
+    export fn get(&self) -> &T {
+        unchecked("this Share keeps the box alive until it is released") {
+            return &(*self.ptr);
+        }
+        unreachable();
+    }
+
+    // The only way to mint a `ThreadArg`: the box is live for as long as this
+    // Share exists, so the caller must keep it alive until the thread stops.
+    export fn as_raw(&self) -> ThreadArg {
+        unchecked("this Share keeps the box alive until the thread stops") {
+            return ThreadArg { .ptr = self.ptr as raw u8 };
+        }
+        unreachable();
+    }
+
+    // Explicit release: no drop glue exists yet, so the owner calls this after
+    // `join` (or after observing a detached thread's last write).
+    export fn release(&mut self) {
+        unchecked("this Share is released exactly once, after the thread stops") {
+            dealloc<T>(self.ptr, 1);
+            self.ptr = Raw::null<T>();
+        }
+    }
+}
+
+// Opaque capability: only `Share::as_raw` can mint this type, and it is not
+// exported, so a caller cannot fabricate one for a pointer it does not own.
+// It is the type-level form of the "share-style capability marker" in §20.4.
+struct ThreadArg {
+    ptr: raw u8;
+}
+
+// A join handle. Non-copy, like Share: one handle owns one thread.
+export struct Thread {
+    handle: i64;
+}
+
+methods Thread {
+    // Wait for the thread and return its i64 result. Consumes the handle.
+    export fn join(&mut self) -> i64 {
+        unchecked("the handle names a live, not-yet-joined thread") {
+            let r = lc_thread_join(self.handle);
+            self.handle = 0;
+            return r;
+        }
+        unreachable();
+    }
+
+    // Detach: the thread keeps running and cleans itself up when it exits.
+    export fn detach(&mut self) {
+        unchecked("this handle is detached exactly once") {
+            lc_thread_detach(self.handle);
+            self.handle = 0;
+        }
+    }
+}
+
+// Start a thread. `entry` is `fnptr(worker)` and `arg` is `share.as_raw()`;
+// the opaque `ThreadArg` is what makes the share capability unforgeable.
+export fn spawn(entry: raw u8, arg: ThreadArg) -> Thread {
+    unchecked("fnptr names a live function and arg was minted by Share::as_raw") {
+        return Thread { .handle = lc_thread_spawn(entry, arg.ptr) };
+    }
+    unreachable();
+}
+
+// Voluntarily give up the CPU; useful when polling a detached thread.
+export fn yield_thread() {
+    unchecked("yielding never breaks a safety invariant") {
+        lc_thread_yield();
+    }
+}

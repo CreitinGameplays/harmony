@@ -52,6 +52,7 @@ a `NAME-02` translation hint): `unsafe` `impl` `match` `trait` `pub` `use`
 | `String` `Vec` `Heap` `str` | owning / borrowed types |
 | `.own()` `.or_trap()` `.clone()` `.take()` | methods |
 | `sizeof(T)` `heap(x)` `raw(x)` | built-in forms |
+| `fnptr(name)` | v1 final-compiler intrinsic: address of a declared function as `raw u8`, used for thread entries; harmony-base does not parse it |
 | `str::from_parts(p, len)` | the `str` lang item (§19.8.9): build a `&str` from owned bytes + length; needs `unchecked` because the pointer is unchecked. Used by `library/core`'s `String::as_str`. |
 | `Type::make()` | constructor convention (a named `make`, not a keyword) |
 

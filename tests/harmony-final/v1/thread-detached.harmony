@@ -1,0 +1,28 @@
+import "../../../library/std/thread.hr";
+
+// A detached thread is not tied to a structured scope: there is no join.
+// The owner polls a flag with `yield_thread` before releasing the box.
+fn setter(p: raw u8) -> i64 {
+    unchecked("main owns the box until it observes the write") {
+        let q = p as raw mut i32;
+        *q = 42;
+        return 0;
+    }
+    unreachable();
+}
+
+fn main() -> i32 {
+    let mut flag = thread::Share<i32>::make(0);
+    let mut t = thread::spawn(fnptr(setter), flag.as_raw());
+    t.detach();
+    let mut spins: i32 = 0;
+    unchecked("the child only writes one i32 and main owns the box") {
+        while (*flag.get() == 0 && spins < 1000000) {
+            thread::yield_thread();
+            spins += 1;
+        }
+    }
+    let v = *flag.get();
+    flag.release();
+    return v;
+}

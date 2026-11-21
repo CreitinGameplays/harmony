@@ -392,12 +392,32 @@ The R6 byte-diff found ten rewrite-only bugs, all fixed at the source:
   destroys the value and drops the implicit weak count; the last weak owner
   frees the block. Drop glue is not implemented yet, so `release` is visible
   at the call site — the "visibly costly" part of §20.3 item 3.
-- [ ] Remaining v1 features: threads, `try`, named enum payload fields and
-  struct patterns, function pointers, and `abilities`.
+- [x] **Threads, joined and detached.** `library/std/thread.hr` exports
+  `thread::spawn`, `Thread::join` and `Thread::detach` over runtime hooks in
+  `library/runtime/rt.c`. Each thread is a `CLONE_THREAD` task with an mmap'd
+  stack; a control block holds `refs`, a futex `done` word and the entry's
+  `i64` result. Whichever side drops the last reference frees the control
+  block; a peer also unmaps the stack, while a thread dropping its own last
+  reference leaves the stack for process exit (it cannot unmap the page it is
+  running on), so detached threads need no reaper. The bump allocator is guarded by
+  an atomic spinlock; process-level exits use `SYS_exit_group` while a thread
+  ends with `SYS_exit`. The runtime needs no libc or pthread, so both the
+  native and `--backend=clang` links still work.
+  - `Share<T>::as_raw()` returns an **opaque, non-exported `ThreadArg`**, the
+    capability marker `spawn` requires. A caller cannot fabricate one for a
+    pointer it does not own (a raw pointer argument is `TYPE-01`).
+  - `fnptr(f)` (node `ival` 18) is the final-only intrinsic for a function
+    address; the checker stores the declaration handle in `b` and codegen
+    emits `@harmony__f`. It is deliberately not a general function-pointer
+    type — that remains a separate v1 item.
+- [ ] Remaining v1 features: `try`, named enum payload fields and struct
+  patterns, function pointers (as a first-class type), and `abilities`.
+  Channels (§19.8.8) are also still future work; the current primitive is a
+  `Share<T>` box plus `join`.
 
-`tests/harmony-final/v1.sh` runs the batch: eight accepted programs, a
-`TYPE-03` rejection, a `CASE-01` rejection, and both audit formats.
-harmony-base is unchanged.
+`tests/harmony-final/v1.sh` runs the batch: eleven accepted programs, a
+`TYPE-03` rejection, a `CASE-01` rejection, two thread-capability rejections,
+and both audit formats. harmony-base is unchanged.
 
 ## What harmony-base must still grow (feed it back)
 

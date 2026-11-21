@@ -1,0 +1,29 @@
+import "../../../library/std/thread.hr";
+
+// Several threads at once: each gets its own control block and stack, and
+// all of them allocate through the runtime's locked bump allocator.
+struct Job { idx: i32; }
+
+fn worker(p: raw u8) -> i64 {
+    unchecked("main owns each box and joins every thread before releasing") {
+        let j = p as raw mut Job;
+        return ((*j).idx + 1) as i64 * 10;
+    }
+    unreachable();
+}
+
+fn main() -> i32 {
+    let mut a = thread::Share<Job>::make(Job { .idx = 1 });
+    let mut b = thread::Share<Job>::make(Job { .idx = 2 });
+    let mut c = thread::Share<Job>::make(Job { .idx = 3 });
+    let mut ta = thread::spawn(fnptr(worker), a.as_raw());
+    let mut tb = thread::spawn(fnptr(worker), b.as_raw());
+    let mut tc = thread::spawn(fnptr(worker), c.as_raw());
+    let ra = ta.join();
+    let rb = tb.join();
+    let rc = tc.join();
+    a.release();
+    b.release();
+    c.release();
+    return (ra + rb + rc) as i32;
+}

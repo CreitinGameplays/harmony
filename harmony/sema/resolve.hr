@@ -186,6 +186,7 @@ fn builtin_fn(s: &str) -> bool {
     if (s == "print" || s == "println" || s == "eprintln") { return true; }
     if (s == "trap" || s == "assert" || s == "unreachable" || s == "exit") { return true; }
     if (s == "args" || s == "alloc" || s == "dealloc" || s == "reinterpret") { return true; }
+    if (s == "fnptr") { return true; }   // v1: address of a declared function
     if (s == "raw" || s == "sizeof" || s == "heap") { return true; }
     if (s == "true" || s == "false") { return true; }
     if (s == "Has" || s == "Empty" || s == "Good" || s == "Bad") { return true; }

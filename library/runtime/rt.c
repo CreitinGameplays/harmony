@@ -17,6 +17,8 @@
 //                     stack exhaustion into a T-STACK trap (§14.2).
 //   lc_put_*          formatting hooks for print/println/eprintln (§15.1).
 //   lc_trap_msg/      prelude traps: trap/assert/unreachable/exit (§15.1).
+//   lc_thread_*       threads via clone(2) + futex, joined or detached
+//                     (§20.3 item 4); no libc or pthread needed.
 //   memset/memcpy/    the standard freestanding memory builtins clang's
 //   memmove/memcmp    optimizer may emit for a large aggregate init/copy.
 //
@@ -29,9 +31,14 @@ typedef long          isize_t;
 #define SYS_read   0
 #define SYS_write  1
 #define SYS_mmap   9
+#define SYS_munmap 11
 #define SYS_rt_sigaction 13
+#define SYS_clone  56
 #define SYS_exit   60
+#define SYS_exit_group 231
 #define SYS_sigaltstack 131
+#define SYS_futex  202
+#define SYS_sched_yield 24
 
 // The signal we guard against, and the flag bits it needs.
 #define SIGSEGV    11
@@ -447,7 +454,7 @@ void lc_trap(long code, long line, long col, long detail) {
     }
     out_char('\n');
     out_flush();
-    sys(SYS_exit, 70, 0, 0);   // §14.3: trap exit status
+    sys(SYS_exit_group, 70, 0, 0);   // §14.3: trap exit status, process-wide
     for (;;) { }
 }
 
@@ -484,7 +491,7 @@ void lc_trap_msg(const char *p, long n, long line, long col) {
     }
     out_char('\n');
     out_flush();
-    sys(SYS_exit, 70, 0, 0);
+    sys(SYS_exit_group, 70, 0, 0);
     for (;;) { }
 }
 
@@ -504,7 +511,7 @@ void lc_assert(long cond, const char *p, long n, long line, long col) {
     }
     out_char('\n');
     out_flush();
-    sys(SYS_exit, 70, 0, 0);
+    sys(SYS_exit_group, 70, 0, 0);
     for (;;) { }
 }
 
@@ -516,7 +523,7 @@ void lc_unreachable(long line, long col) {
 // lc_exit(code) — flush and stop with the given status (§14.3). No hooks run.
 void lc_exit(long code) {
     out_flush();
-    sys(SYS_exit, code & 0xff, 0, 0);
+    sys(SYS_exit_group, code & 0xff, 0, 0);
     for (;;) { }
 }
 
@@ -567,7 +574,14 @@ static char *heap_base;
 static usize_t heap_used;
 static usize_t heap_cap;
 
+// The bump allocator's cursor is process-wide, so spawned threads need a
+// lock (§20.3 item 4). A tiny atomic spinlock keeps the runtime freestanding;
+// the only thing it protects is the three words above. `lc_trap` on OOM is
+// safe under the lock: it flushes output and exits the whole process.
+static volatile char heap_lock = 0;
+
 void *lc_alloc(usize_t n) {
+    while (__atomic_test_and_set(&heap_lock, __ATOMIC_ACQUIRE)) { }
     // 16-byte alignment keeps every Harmony aggregate naturally aligned.
     n = (n + 15) & ~(usize_t) 15;
     if (heap_base == 0 || heap_used + n > heap_cap) {
@@ -579,11 +593,10 @@ void *lc_alloc(usize_t n) {
         heap_used = 0;
         heap_cap = want;
     }
-    {
-        char *p = heap_base + heap_used;
-        heap_used += n;
-        return p;
-    }
+    char *p = heap_base + heap_used;
+    heap_used += n;
+    __atomic_clear(&heap_lock, __ATOMIC_RELEASE);
+    return p;
 }
 
 // lc_dealloc(p, n) — release `n` bytes at `p` (§13.5). The M1 allocator is a
@@ -593,6 +606,149 @@ void *lc_alloc(usize_t n) {
 void lc_dealloc(void *p, usize_t n) {
     (void) p;
     (void) n;
+}
+
+// ---------------------------------------------------------------------------
+// Threads (§20.3 item 4). Still library code (§19.8.8): the compiler emits
+// ordinary calls to these hooks. A thread is a CLONE_THREAD task with its own
+// mmap'd stack, so no libc or pthread is needed and the freestanding `-nostdlib
+// -static` link keeps working. A handle is the address of a control block:
+//
+//   refs   one for the join handle, one while the thread is running
+//   done   futex word: 0 while running, 1 after the entry returns
+//   ret    the entry's i64 result, published by `done` (acquire/release)
+//
+// Whichever side drops the last reference frees the control block; a peer
+// also frees the stack. A thread dropping its own last reference leaves its
+// stack mapped (the kernel reclaims it at exit), so both joined and detached
+// threads clean up without a reaper thread.
+// ---------------------------------------------------------------------------
+struct lc_thread_ctl {
+    long (*entry)(void *);
+    void *arg;
+    long ret;
+    long refs;
+    int done;
+    void *stack;
+    long stack_size;
+};
+
+// A three-argument syscall; the 4th (r10) is pinned to zero for FUTEX_WAIT.
+static long sys_wait_futex(volatile int *addr) {
+    long ret;
+    register long r10 __asm__("r10") = 0;
+    __asm__ volatile("syscall"
+                     : "=a"(ret)
+                     : "a"(SYS_futex), "D"(addr), "S"(0), "d"(0), "r"(r10)
+                     : "rcx", "r11", "memory");
+    return ret;
+}
+
+// `on_own_stack` is true when the exiting thread drops the last reference.
+// It must not unmap the stack it is still executing on; the mapping is left
+// for the kernel to reclaim at process exit, just like the bump allocator's
+// pages (§19.8.4). Joined and detached-by-a-peer threads free both blocks.
+static void lc_thread_free(struct lc_thread_ctl *t, int on_own_stack) {
+    if (!on_own_stack) {
+        sys(SYS_munmap, (long) t->stack, t->stack_size, 0);
+    }
+    sys(SYS_munmap, (long) t, (long) sizeof(*t), 0);
+}
+
+// The child runs this on its own stack. It never returns: SYS_exit (60) ends
+// only this thread, while the process-level paths below use SYS_exit_group.
+// `used` matters: the reference lives in inline asm, so the C front end would
+// otherwise drop this function as unreferenced.
+__attribute__((used, noreturn)) static void lc_thread_child(struct lc_thread_ctl *t) {
+    t->ret = t->entry(t->arg);
+    __atomic_fetch_add(&t->done, 1, __ATOMIC_RELEASE);
+    sys(SYS_futex, (long) &t->done, 1, 1);       // FUTEX_WAKE(1)
+    if (__atomic_fetch_sub(&t->refs, 1, __ATOMIC_ACQ_REL) == 1) {
+        lc_thread_free(t, 1);
+    }
+    sys(SYS_exit, 0, 0, 0);
+    for (;;) { }
+}
+
+// clone(2) returns twice. In the child the kernel sets rsp to `child_sp`,
+// where the parent parked the control-block pointer; a naked stub pops it
+// into the first argument register and calls the C child. In the parent (or
+// on error) it simply returns the syscall result. Keeping the post-clone path
+// in assembly matters: C locals live on the old stack, not the child's.
+__attribute__((naked)) static long lc_clone_child(long flags, long child_sp,
+                                                  void *unused __attribute__((unused))) {
+    __asm__ volatile(
+        "mov $56, %eax\n"          // SYS_clone
+        "xor %edx, %edx\n"         // parent_tid = NULL
+        "xor %r10d, %r10d\n"       // child_tid  = NULL
+        "xor %r8d, %r8d\n"         // tls        = NULL
+        "syscall\n"
+        "test %rax, %rax\n"
+        "jne 1f\n"                 // parent: tid, or -errno
+        "pop %rdi\n"               // child: control block from the new stack
+        "xor %ebp, %ebp\n"
+        "and $-16, %rsp\n"
+        "call lc_thread_child\n"
+        "ud2\n"
+        "1: ret\n"
+    );
+}
+
+// CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM.
+#define CLONE_THREAD_FLAGS 0x50f00L
+#define LC_THREAD_STACK_SIZE (1024L * 1024L)
+
+long lc_thread_spawn(long (*entry)(void *), void *arg) {
+    struct lc_thread_ctl *t = (struct lc_thread_ctl *) sys_mmap((long) sizeof(*t));
+    if ((long) t < 0) { return (long) t; }
+    void *stack = (void *) sys_mmap(LC_THREAD_STACK_SIZE);
+    if ((long) stack < 0) {
+        sys(SYS_munmap, (long) t, (long) sizeof(*t), 0);
+        return (long) stack;
+    }
+    t->entry = entry;
+    t->arg = arg;
+    t->ret = 0;
+    t->refs = 2;                   // join handle + running thread
+    t->done = 0;
+    t->stack = stack;
+    t->stack_size = LC_THREAD_STACK_SIZE;
+    // Top of stack, 16-byte aligned, with the block pointer just below it.
+    long top = ((long) stack + LC_THREAD_STACK_SIZE) & ~15L;
+    long *slot = (long *) (top - 16);
+    *slot = (long) t;
+    long tid = lc_clone_child(CLONE_THREAD_FLAGS, (long) slot, t);
+    if (tid < 0) {
+        sys(SYS_munmap, (long) stack, LC_THREAD_STACK_SIZE, 0);
+        sys(SYS_munmap, (long) t, (long) sizeof(*t), 0);
+        return tid;
+    }
+    return (long) t;               // the handle, not the TID
+}
+
+long lc_thread_join(long handle) {
+    struct lc_thread_ctl *t = (struct lc_thread_ctl *) handle;
+    if (handle == 0) { return 0; }
+    while (__atomic_load_n(&t->done, __ATOMIC_ACQUIRE) == 0) {
+        sys_wait_futex(&t->done);
+    }
+    long ret = t->ret;
+    if (__atomic_fetch_sub(&t->refs, 1, __ATOMIC_ACQ_REL) == 1) {
+        lc_thread_free(t, 0);
+    }
+    return ret;
+}
+
+void lc_thread_detach(long handle) {
+    struct lc_thread_ctl *t = (struct lc_thread_ctl *) handle;
+    if (handle == 0) { return; }
+    if (__atomic_fetch_sub(&t->refs, 1, __ATOMIC_ACQ_REL) == 1) {
+        lc_thread_free(t, 0);
+    }
+}
+
+void lc_thread_yield(void) {
+    sys(SYS_sched_yield, 0, 0, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -658,7 +814,7 @@ static void segv_handler(int sig, void *info, void *uctx) {
         out_fd = 2;
         out_str("TRAP  T-STACK  stack exhausted\n");
         out_flush();
-        sys(SYS_exit, 70, 0, 0);
+        sys(SYS_exit_group, 70, 0, 0);
         for (;;) { }
     }
     // Not the guard page: a bad access that violates an `unchecked` contract.
@@ -770,7 +926,7 @@ __attribute__((noreturn)) void lc_start(long *sp) {
     install_stack_guard();
     code = harmony_main();
     out_flush();
-    sys(SYS_exit, code & 0xff, 0, 0);
+    sys(SYS_exit_group, code & 0xff, 0, 0);
     for (;;) { }
 }
 

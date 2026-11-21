@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # V1 features for the final compiler: structured unchecked reasons, guarded
-# switch arms, and Shared<T>/Weak<T>. The syntax forms are final-language
-# only, so they are checked directly through `build/harmony`.
+# switch arms, Shared<T>/Weak<T>, and threads with the `fnptr` intrinsic.
+# The syntax forms are final-language only, so they are checked directly
+# through `build/harmony`.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -41,6 +42,9 @@ run_case guarded-exhaustive 42
 run_case shared 42
 run_case shared-counts 42
 run_case shared-expired 42
+run_case thread-join 42
+run_case thread-detached 42
+run_case thread-multi 90
 
 "$HC" check "$DIR/guarded-refutable.harmony" >"$TMP/refutable.out" 2>&1
 refutable_rc=$?
@@ -56,6 +60,22 @@ if [ "$guard_rc" -ne 0 ] && grep -q 'TYPE-03' "$TMP/guard.out"; then
     ok "rejects a non-bool switch guard"
 else
     bad "rejects a non-bool switch guard (exit $guard_rc)"
+fi
+
+"$HC" check "$DIR/fnptr-not-fn.harmony" >"$TMP/fnptr.out" 2>&1
+fnptr_rc=$?
+if [ "$fnptr_rc" -ne 0 ] && grep -q 'TYPE-04' "$TMP/fnptr.out"; then
+    ok "fnptr rejects a non-function argument"
+else
+    bad "fnptr rejects a non-function argument (exit $fnptr_rc)"
+fi
+
+"$HC" check "$DIR/thread-capability.harmony" >"$TMP/cap.out" 2>&1
+cap_rc=$?
+if [ "$cap_rc" -ne 0 ] && grep -q 'thread::ThreadArg' "$TMP/cap.out"; then
+    ok "spawn requires the opaque Share capability"
+else
+    bad "spawn requires the opaque Share capability (exit $cap_rc)"
 fi
 
 "$HC" audit --format=json "$DIR/structured-reason.harmony" >"$TMP/audit.json" 2>/dev/null

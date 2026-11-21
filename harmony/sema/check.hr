@@ -1030,6 +1030,7 @@ fn is_builtin_fn(s: &str) -> bool {
     if (s == "args") { return true; }
     if (s == "alloc" || s == "dealloc") { return true; }
     if (s == "reinterpret") { return true; }
+    if (s == "fnptr") { return true; }
     if (s == "Raw::null") { return true; }
     if (s == "str::from_parts") { return true; }
     return false;
@@ -2171,6 +2172,31 @@ fn ordinary_call(c: &mut Checker, at: i32, name: &str, args: &vec::Vec<i32>) -> 
         }
         stamp_lits(c, *args.get(1), types::TY_USIZE);
         return out;
+    }
+    // `fnptr(f)` (v1): the address of a declared function as `raw u8`. The
+    // address itself is backend knowledge (§19.8.9); the thread library wraps
+    // it so the capability stays in ordinary library code (§19.8.8).
+    if (name == "fnptr") {
+        node::set_ival(&mut c.nodes, at, 18);
+        if (args.len() != 1) {
+            err_arity(c, at, name, 1, args.len());
+            return types::TY_INVALID;
+        }
+        let f = node::get(&c.nodes, *args.get(0));
+        if (f.kind != node::AST_PATH) {
+            add_diag(c, "TYPE-04", "fnptr needs a function name",
+                     "Write `fnptr(name)` with the name of a declared function.",
+                     *args.get(0));
+            return types::TY_INVALID;
+        }
+        let sym = lookup(&*c, f.sval);
+        if (sym < 0 || sym_kind(&*c, sym) != SK_FN) {
+            err_unknown(c, *args.get(0), f.sval, false);
+            return types::TY_INVALID;
+        }
+        node::set_b(&mut c.nodes, at, sym_decl(&*c, sym));
+        set_ty(c, *args.get(0), types::TY_UNIT);
+        return types::new_type(&mut c.types, types::CTY_PTR, "raw u8", types::TY_U8, 0);
     }
     // `Raw::null()` without `<T>`: infer the pointee from the expected type.
     if (name == "Raw::null") {

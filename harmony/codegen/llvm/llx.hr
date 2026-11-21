@@ -1622,6 +1622,15 @@ fn expr_call(e: &mut context::Emitter, h: i32) -> &str {
         e.expr_ty = retty;
         return slot;
     }
+    // `fnptr(f)` (v1): the function's LLVM global as an opaque `ptr`.
+    if (marker == 18) {
+        let fname = context::fn_symbol(e, n.b);
+        let mut refname: str::String = str::String::make();
+        refname.push("@");
+        refname.push(fname);
+        e.expr_ty = retty;
+        return refname.as_str();
+    }
     // An ordinary call.
     let mut symbol = "";
     if (n.target >= 0) { symbol = context::fn_symbol(e, n.target); }

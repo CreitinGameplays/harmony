@@ -1,0 +1,5 @@
+// `fnptr` only accepts the name of a declared function.
+fn main() -> i32 {
+    let p = fnptr(42);
+    return 0;
+}

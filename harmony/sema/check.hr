@@ -3050,11 +3050,72 @@ fn note_variant(seen: &mut vec::Vec<i32>, vi: i32) {
     seen.push(vi);
 }
 
+// v1 §20.3 item 5: the payload types of an `Outcome<T, E>` instance. An enum
+// instance's members are its variants; each variant's member is a one-field
+// payload struct (§R5 instantiate_type), so `Good`/`Bad` carry T and E at
+// field 0. Returns 0 for anything that is not an Outcome.
+fn outcome_payload(c: &Checker, ty: i32, variant: &str) -> i32 {
+    if (ty <= 0 || types::type_kind(&c.types, ty) != types::CTY_ENUM) { return 0; }
+    if (instance_base(&*c, ty) != "Outcome") { return 0; }
+    let vi = types::find_member(&c.types, ty, variant);
+    if (vi < 0) { return 0; }
+    let pt = types::member_type(&c.types, ty, vi);
+    return types::member_type(&c.types, pt, 0);
+}
+
+fn outcome_error_type(c: &Checker, ty: i32) -> i32 {
+    return outcome_payload(c, ty, "Bad");
+}
+
+// `let [mut] x = try f();`. On `Good(x)` the payload binds x; on `Bad(e)` the
+// function returns `Bad(e)` immediately. Both the initializer and the
+// enclosing function must be `Outcome` with the same error type.
+fn check_try_let(c: &mut Checker, h: i32, n: &node::Node) {
+    let ity = check_expr(c, n.b);
+    let vty = outcome_payload(&*c, ity, "Good");
+    let ety = outcome_error_type(&*c, ity);
+    if (vty == 0 || ety == 0) {
+        add_diag(c, "TYPE-01", "`try` needs an `Outcome` value",
+                 "Write `let x = try f();` where `f` returns `Outcome<T, E>`.", h);
+        set_ty(c, h, types::TY_INVALID);
+        return;
+    }
+    let ret_ety = outcome_error_type(&*c, c.ret_ty);
+    if (ret_ety == 0) {
+        add_diag(c, "TYPE-01", "`try` needs an `Outcome`-returning function",
+                 "A `Bad` must be returned from this function, so its return type must be `Outcome<T, E>`.", h);
+    } else if (!types::eq(ety, ret_ety, &c.types)) {
+        add_diag(c, "TYPE-01", "error types disagree",
+                 "The `Bad` payload of `try` and of this function's return type must be the same type.", h);
+    }
+    let mut ty: i32 = vty;
+    if (n.a >= 0) {
+        let declared = resolve_type(c, n.a);
+        if (declared > 0 && declared != types::TY_INVALID) {
+            if (!types::eq(declared, vty, &c.types)) {
+                mismatch(c, h, declared, vty, "`try` binding");
+            } else {
+                ty = declared;
+            }
+        }
+    }
+    set_ty(c, h, ty);
+    let mut mutbl: i32 = 0;
+    if ((n.ival & 1) != 0) { mutbl = 1; }
+    let idx = declare(c, h, n.sval, SK_LET, ty, mutbl);
+    if (idx >= 0) {
+        let mut s = *c.syms.get(idx as usize);
+        s.init = 1;
+        c.syms.set(idx as usize, s);
+    }
+}
+
 fn check_stmt(c: &mut Checker, h: i32) {
     if (h < 0) { return; }
     let n = node::get(&c.nodes, h);
     let k = n.kind;
     if (k == node::AST_LET) {
+        if ((n.ival & 4) != 0) { check_try_let(c, h, &n); return; }
         let mut ty: i32 = 0;
         if (n.a >= 0) {
             ty = resolve_type(c, n.a);

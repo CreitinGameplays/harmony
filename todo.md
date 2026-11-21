@@ -858,5 +858,11 @@ directly into its binary and (b) support **multi-core compilation by default**.
     function address. The allocator is spinlocked and process exits use
     `SYS_exit_group`; no libc or pthread is needed. `tests/harmony-final/v1.sh`
     covers join, detach, three concurrent threads, and two error cases.
-    Remaining v1 features (`try`, named fields/struct patterns, first-class
-    function pointers, `abilities`) are still unimplemented.
+  - V1 `try` (final compiler only): `let x = try f();` unwraps `Good` into the
+    binding and returns `Bad` from the enclosing `Outcome`-returning function.
+    The word is contextual (no lexer change), the checker enforces matching
+    error types, and codegen rebuilds `Bad(e)` in `%sret` on the early return.
+    `tests/harmony-final/v1.sh` covers Good/Bad, chained uses, nested blocks,
+    aggregate payloads, and three `TYPE-01` rejections. Remaining v1 features
+    (named fields/struct patterns, first-class function pointers, `abilities`)
+    are still unimplemented.

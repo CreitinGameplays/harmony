@@ -1,0 +1,10 @@
+// The `Bad` payload of the initializer and of the function must agree.
+enum E { Fail, }
+enum F { Nope, }
+
+fn inner() -> Outcome<i32, E> { return Good(1); }
+fn outer() -> Outcome<i32, F> {
+    let v = try inner();
+    return Good(v);
+}
+fn main() -> i32 { return 0; }

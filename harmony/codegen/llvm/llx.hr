@@ -1992,8 +1992,73 @@ fn compound_op(op: &str) -> &str {
     return "";
 }
 
+// v1 `let x = try f();`. The initializer is an `Outcome<T, E>` aggregate:
+// `Bad` is rebuilt directly in the function's sret slot and returns, `Good`
+// binds its payload to x and execution continues in a fresh block.
+fn stmt_try_let(e: &mut context::Emitter, h: i32) {
+    let n = node::get(&e.c.nodes, h);
+    let ty = context::node_ty(e, h);
+    let oty = context::node_ty(e, n.b);
+    let slot = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, slot);
+    context::out(e, " = alloca ");
+    context::out(e, context::type_name(e, ty));
+    context::nl(e);
+    let v = expr(e, n.b);
+    let tag = load(e, types::TY_I32, struct_gep(e, v, oty, 0));
+    let bad_vi = types::find_member(&e.c.types, oty, "Bad");
+    let good_vi = types::find_member(&e.c.types, oty, "Good");
+    let is_bad = cmp(e, "icmp eq", types::TY_I32, tag,
+                     const_int(e, bad_vi as i64, types::TY_I32));
+    let badlbl = context::new_label(e, "try.bad");
+    let goodlbl = context::new_label(e, "try.good");
+    context::out(e, "  br i1 ");
+    context::out(e, is_bad);
+    context::out(e, ", label %"); context::out(e, badlbl);
+    context::out(e, ", label %"); context::out(e, goodlbl);
+    context::nl(e);
+    e.terminated = 1;
+
+    // Bad: write the tag and payload into %sret, then return, just like
+    // `return Bad(e);` but without parsing a synthetic AST node.
+    label(e, badlbl);
+    let stag = struct_gep(e, "%sret", e.sret_ty, 0);
+    context::out(e, "  store i32 ");
+    context::out_i64(e, bad_vi as i64);
+    context::out(e, ", ptr ");
+    context::out(e, stag);
+    context::nl(e);
+    let bpt = types::member_type(&e.c.types, oty, bad_vi);
+    let bety = types::member_type(&e.c.types, bpt, 0);
+    let bsrc = offset_addr(e, v, 8 + types::field_offset(bpt, 0, &mut e.c.types));
+    let dpt = types::member_type(&e.c.types, e.sret_ty, bad_vi);
+    let dety = types::member_type(&e.c.types, dpt, 0);
+    let daddr = offset_addr(e, "%sret", 8 + types::field_offset(dpt, 0, &mut e.c.types));
+    let mut bv: &str = bsrc;
+    if (!context::is_aggregate(e, bety)) { bv = load(e, bety, bsrc); }
+    store_value(e, daddr, dety, bv);
+    context::out(e, "  ret void\n");
+    e.terminated = 1;
+
+    // Good: the payload becomes the binding, and the following statements
+    // continue in this block.
+    label(e, goodlbl);
+    let gpt = types::member_type(&e.c.types, oty, good_vi);
+    let gty = types::member_type(&e.c.types, gpt, 0);
+    let gaddr = offset_addr(e, v, 8 + types::field_offset(gpt, 0, &mut e.c.types));
+    if (context::is_aggregate(e, gty)) {
+        store_value(e, slot, gty, gaddr);
+    } else {
+        let gv = load(e, gty, gaddr);
+        store_value(e, slot, gty, gv);
+    }
+    if (n.sval != "_") { context::local_declare(e, n.sval, slot, ty); }
+}
+
 fn stmt_let(e: &mut context::Emitter, h: i32) {
     let n = node::get(&e.c.nodes, h);
+    if ((n.ival & 4) != 0) { stmt_try_let(e, h); return; }
     let ty = context::node_ty(e, h);
     let slot = context::new_reg(e);
     context::out(e, "  ");

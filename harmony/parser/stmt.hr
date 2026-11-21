@@ -106,6 +106,14 @@ fn parse_let(p: &mut pctx::Parser) -> i32 {
         node::set_a(p.nodes, h, t);
     }
     if (pctx::eat(p, token::TokKind::Assign)) {
+        // v1: `let x = try f();` — `try` is a contextual word here (§20.3
+        // item 5), not a lexer keyword, so harmony-base's token stream stays
+        // byte-identical. Bit 2 of `ival` marks the initializer as a
+        // fallible unwrap; bit 0 still means `mut`.
+        if (pctx::at(&*p, token::TokKind::Ident) && pctx::cur_word(p) == "try") {
+            pctx::advance(p);
+            node::set_ival(p.nodes, h, node::get(&*p.nodes, h).ival | 4);
+        }
         let e = parse::parse_expr(p);
         if (e < 0) { return -1; }
         node::set_b(p.nodes, h, e);

@@ -1,0 +1,21 @@
+// v1 `try`: on `Bad(e)` the enclosing function returns `Bad(e)` immediately.
+enum E { Fail, }
+
+fn inner(good: bool) -> Outcome<i32, E> {
+    if (good) { return Good(40); }
+    return Bad(E::Fail);
+}
+
+fn outer(good: bool) -> Outcome<i32, E> {
+    let v = try inner(good);
+    return Good(v + 2);       // must not run when inner returned Bad
+}
+
+fn main() -> i32 {
+    let r = outer(false);
+    switch (r) {
+        case Good(v): { return 1; }
+        case Bad(e): { return 42; }
+    }
+    return 2;
+}

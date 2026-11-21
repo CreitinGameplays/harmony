@@ -1,0 +1,33 @@
+// A `try` inside an `if` block: the early `Bad` return leaves the function
+// even though the enclosing block would otherwise continue at `if.end`.
+enum E { Fail, }
+
+fn inner(n: i32) -> Outcome<i32, E> {
+    if (n < 0) { return Bad(E::Fail); }
+    return Good(n * 2);
+}
+
+fn outer(n: i32) -> Outcome<i32, E> {
+    let mut acc: i32 = 0;
+    if (n != 0) {
+        let v = try inner(n);
+        acc = v;
+    } else {
+        acc = 100;
+    }
+    return Good(acc + 1);
+}
+
+fn main() -> i32 {
+    let r1 = outer(20);
+    switch (r1) {
+        case Good(v): { if (v != 41) { return 1; } }
+        case Bad(e): { return 2; }
+    }
+    let r2 = outer(-1);
+    switch (r2) {
+        case Good(v): { return 3; }
+        case Bad(e): { return 42; }
+    }
+    return 4;
+}

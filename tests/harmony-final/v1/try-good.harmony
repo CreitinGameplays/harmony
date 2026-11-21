@@ -1,0 +1,21 @@
+// v1 `try`: on `Good(v)` the payload binds the `let` and execution continues.
+enum E { Fail, }
+
+fn inner(good: bool) -> Outcome<i32, E> {
+    if (good) { return Good(40); }
+    return Bad(E::Fail);
+}
+
+fn outer(good: bool) -> Outcome<i32, E> {
+    let v = try inner(good);
+    return Good(v + 2);
+}
+
+fn main() -> i32 {
+    let r = outer(true);
+    switch (r) {
+        case Good(v): { return v; }
+        case Bad(e): { return 1; }
+    }
+    return 2;
+}

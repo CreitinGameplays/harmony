@@ -1,0 +1,28 @@
+// `try` inside a loop: unique labels and correct block termination on both
+// the Good path (continue the loop) and the Bad path (return immediately).
+enum E { Fail, }
+
+fn step(n: i32) -> Outcome<i32, E> {
+    if (n < 0) { return Bad(E::Fail); }
+    return Good(n - 1);
+}
+
+fn count(n: i32) -> Outcome<i32, E> {
+    let mut total: i32 = 0;
+    let mut i: i32 = n;
+    while (i > 0) {
+        let v = try step(i);
+        total = total + v;
+        i = i - 1;
+    }
+    return Good(total);
+}
+
+fn main() -> i32 {
+    let r = count(9);
+    switch (r) {
+        case Good(v): { if (v == 36) { return 42; } return 1; }
+        case Bad(e): { return 2; }
+    }
+    return 3;
+}

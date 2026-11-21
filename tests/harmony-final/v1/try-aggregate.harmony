@@ -1,0 +1,23 @@
+// Both payloads can be aggregates: `Good(Pair)` is copied into the binding,
+// `Bad(E)` is copied into the function's return slot.
+struct Pair { a: i32; b: i32; }
+enum E { Fail, }
+
+fn inner(ok: bool) -> Outcome<Pair, E> {
+    if (ok) { return Good(Pair { .a = 40, .b = 2 }); }
+    return Bad(E::Fail);
+}
+
+fn outer(ok: bool) -> Outcome<i32, E> {
+    let p = try inner(ok);
+    return Good(p.a + p.b);
+}
+
+fn main() -> i32 {
+    let r = outer(true);
+    switch (r) {
+        case Good(v): { return v; }
+        case Bad(e): { return 1; }
+    }
+    return 2;
+}

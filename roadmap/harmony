@@ -49,9 +49,10 @@ not a goal statement.
    shared-state checker stays sequential (see R7).
 5. **In-memory LLVM IR**: the driver pipes IR to clang on stdin; no `.ll`
    temp file by default.
-6. **Byte-deterministic self-host**: stage 2 (`harmony` built by `harmony`)
-   must produce a binary identical to stage 1 (`harmony` built by
-   `harmony-base`).
+6. **Byte-deterministic self-host**: the canonical stage 1 is built by a
+   stage-0 binary that harmony-base produced, so its parallel clang schedule
+   is already the final one. Stage 2 (`harmony` built by `harmony`) and stage 3
+   must produce binaries identical to stage 1.
 
 ## Architecture decisions
 
@@ -319,23 +320,35 @@ The R6 byte-diff found ten rewrite-only bugs, all fixed at the source:
 - [x] Gate: `tests/harmony-final/driver.sh` diffs `--version`, `explain`,
   `audit --format=json`, and `emit-llvm` against harmony-base, then checks
   `build` and `run`.
-- [x] **Byte-deterministic self-host**: stage 1 (built by harmony-base),
-  stage 2 (built by stage 1), and stage 3 (built by stage 2) are identical.
-  The driver gate verifies all three.
+- [x] **Byte-deterministic self-host**: `make harmony` builds a stage-0
+  binary with harmony-base and then rebuilds the canonical stage 1 with it.
+  Stage 2 (built by stage 1) and stage 3 (built by stage 2) are identical to
+  stage 1. The driver gate verifies all three. The extra bootstrap rebuild is
+  needed because the parallel clang path produces a different (smaller,
+  non-cross-module-inlined) binary from a single clang invocation; every
+  canonical stage uses the same path.
 - [x] harmony-base's LLVM string-literal pool now grows past 1024 entries.
   The old fixed table silently aliased later literals to `@.str.0`, which
   corrupted the compiler's own `VERSION` path once the driver grew large.
   Regression `tests/harmony/string-pool.sh`.
 - [x] **Deterministic multi-core lowering by default.** `emit.hr` builds the
   exact sequential function order (free functions, non-generic methods, then
-  monomorphized instances), then forks up to `--jobs` workers (default: the
-  online CPU count from `sysinfo(2)`) over contiguous slices. Workers inherit
-  the checked program through copy-on-write and write their IR chunk to a
-  private `/tmp` file; the parent joins in spawn order and concatenates the
-  chunks. Small programs stay sequential. `--jobs=1` / `--sequential` are the
-  explicit single-core paths. `tests/harmony-final/parallel.sh` diffs every
-  job count against harmony-base and traces actual forks on the compiler's
-  own source.
+  monomorphized instances), then forks `--jobs` workers (default: two per CPU
+  in this process's affinity mask, via `sched_getaffinity(2)`, capped at 32)
+  over contiguous slices. Workers inherit the checked program through
+  copy-on-write and write their IR chunk to a private `/tmp` file; the parent
+  joins in spawn order and concatenates the chunks. Small programs stay
+  sequential. `--jobs=1` / `--sequential` are the explicit single-core paths.
+  `tests/harmony-final/parallel.sh` diffs every job count against
+  harmony-base and traces actual forks on the compiler's own source.
+- [x] **Deterministic multi-core clang.** LLVM's `-O2` pipeline is
+  single-threaded and dominated self-hosting. For large programs
+  `emit_module_chunks` emits each chunk as a self-contained module (shared
+  preamble + declarations of sibling symbols), the driver pipes one chunk to
+  each clang in parallel, compiles `rt.c` once, and links the objects in
+  stable chunk order. Self-hosting dropped from ~9.3 s to ~5.6 s here. No
+  `.ll` file is written. `--jobs=1` keeps the original one-clang path.
+  `parallel.sh` runs `build`/`run` through both paths.
   - Module checking and monomorphization themselves remain sequential: they
     mutate one shared type table whose ids and first-instantiation order are
     observable in the IR. Splitting them safely needs an explicit dependency

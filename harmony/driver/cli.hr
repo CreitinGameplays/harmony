@@ -20,7 +20,7 @@ export struct Options {
     code: &str;
     opt_flag: &str;
     opt_given: i32;
-    jobs: i32;                  // 0 = auto (all online CPUs), >0 = fixed
+    jobs: i32;                  // 0 = auto (up to 32), >0 = fixed (max 32)
     format: i32;
     verbose: i32;
     all: i32;
@@ -63,8 +63,9 @@ fn is_opt(a: &str) -> bool {
     return a == "-O";
 }
 
-// -1 means "not a job count"; a bound keeps a typo from spawning thousands of
-// processes. 0 still means "auto" (all online CPUs).
+// -1 means "not a job count". Counts above 32 (the compiler's hard worker
+// ceiling) are clamped, so a typo cannot spawn thousands of processes. 0
+// still means "auto".
 fn parse_jobs(s: &str) -> i32 {
     if (s.len() == 0) { return -1; }
     let b = s.as_bytes();
@@ -73,7 +74,7 @@ fn parse_jobs(s: &str) -> i32 {
     while (i < s.len()) {
         if (!str::is_digit(b[i])) { return -1; }
         n = n * 10 + (b[i] - 48u8) as i32;
-        if (n > 256) { n = 256; }
+        if (n > 32) { n = 32; }
         i += 1;
     }
     return n;

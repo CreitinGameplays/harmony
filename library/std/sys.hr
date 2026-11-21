@@ -23,6 +23,7 @@ export const SYS_GETPID: i64 = 39;
 export const SYS_EXIT: i64 = 60;
 export const SYS_PIPE2: i64 = 293;
 export const SYS_SYSINFO: i64 = 99;
+export const SYS_SCHED_GETAFFINITY: i64 = 204;
 
 export const FD_STDIN: i32 = 0;
 export const FD_STDOUT: i32 = 1;
@@ -114,10 +115,41 @@ export fn getpid() -> i32 {
     unchecked("getpid cannot fail") { return lc_syscall3(SYS_GETPID, 0, 0, 0) as i32; }
 }
 
-// Online CPU count from sysinfo(2). On Linux/x86-64 `struct sysinfo.procs`
-// is a u16 at byte 80. No libc, environment variable, or fixed machine path
-// is involved, so this works on any Linux host the compiler is built on.
+// CPUs available to this process. `sysinfo.procs` reports every CPU on the
+// host, including ones outside the process's cpuset, which made the compiler
+// spawn hundreds of workers in a two-CPU container. `sched_getaffinity(2)`
+// is the honest number; the mask grows until the kernel accepts it, so there
+// is no fixed CPU ceiling. sysinfo is only a fallback if that syscall fails.
 export fn cpu_count() -> usize {
+    let mut size: usize = 128;
+    while (size <= 65536) {
+        unchecked("the mask buffer is writable for `size` bytes") {
+            let mask: raw mut u8 = alloc<u8>(size);
+            let mut i: usize = 0;
+            while (i < size) { mask.plus(i).write(0u8); i += 1; }
+            let rc = lc_syscall3(SYS_SCHED_GETAFFINITY, 0, size as i64,
+                                 mask as usize as i64);
+            if (rc >= 0) {
+                let mut n: usize = 0;
+                i = 0;
+                while (i < size) {
+                    let mut byte: u8 = mask.plus(i).read();
+                    let mut bit: usize = 0;
+                    while (bit < 8) {
+                        if ((byte & 1u8) != 0) { n += 1; }
+                        byte = byte >> 1;
+                        bit += 1;
+                    }
+                    i += 1;
+                }
+                dealloc(mask, size);
+                if (n == 0) { return 1; }
+                return n;
+            }
+            dealloc(mask, size);
+        }
+        size = size * 2;
+    }
     let mut info: [u8; 128] = [0u8; 128];
     unchecked("info is a writable 128-byte sysinfo buffer") {
         lc_syscall3(SYS_SYSINFO, raw(&mut info[0]) as usize as i64, 128, 0);

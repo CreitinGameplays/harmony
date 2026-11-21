@@ -824,12 +824,17 @@ directly into its binary and (b) support **multi-core compilation by default**.
     silently aliased later literals and broke the compiler's own `VERSION`
     read. `tests/harmony/string-pool.sh` guards it.
   - Multi-core compilation is on by default: `harmony/codegen/llvm/emit.hr`
-    forks `--jobs` workers (auto = online CPU count) over contiguous slices of
-    the deterministic function order and merges their IR chunks in that same
-    order. `--jobs=1`/`--sequential` force the single-core path. The checker
-    and monomorphizer remain sequential because they share one type table
-    whose ids and instantiation order are observable in the emitted IR; a
-    safe split needs explicit stable id assignment (M2+ work).
+    forks `--jobs` workers (auto = two per available CPU, capped at 32) over
+    contiguous slices of the deterministic function order and merges their IR
+    chunks in that same order. Large builds also pipe each chunk to its own
+    clang and link the objects in stable order, cutting self-hosting from
+    ~9.3 s to ~4.9 s here. `--jobs=1`/`--sequential` force the single-core
+    path. The checker and monomorphizer remain sequential because they share
+    one type table whose ids and instantiation order are observable in the
+    emitted IR; a safe split needs explicit stable id assignment (M2+ work).
+  - `make harmony` now builds a harmony-base stage 0 and then rebuilds stage 1
+    with it, so canonical stage 1, stage 2 and stage 3 all use the parallel
+    clang schedule and stay byte-identical.
   - The rewrite checker's `stamp_lits` now only descends into untyped literal
     children. The old walk stamped array-index operands with the enclosing
     result type, producing different widen instructions. Regression

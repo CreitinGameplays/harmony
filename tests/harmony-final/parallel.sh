@@ -78,6 +78,20 @@ if [ "$bad_rc" -ne 0 ] && grep -q 'bad job count' "$TMP/bad.err"; then
     ok "rejects a bad job count"
 else bad "rejects a bad job count (exit $bad_rc)"; fi
 
+# A large build must survive the parallel clang path: every chunk gets the
+# sibling declarations it needs, and the linked binary must work. Rebuilding
+# with that binary must stay byte-identical.
+want="harmony $(cat VERSION)"
+if "$HC" build harmony/main.hr -o "$TMP/self1" >/dev/null 2>"$TMP/self.err" \
+   && [ "$("$TMP/self1" --version 2>/dev/null)" = "$want" ] \
+   && "$TMP/self1" build harmony/main.hr -o "$TMP/self2" >/dev/null 2>>"$TMP/self.err" \
+   && cmp -s "$TMP/self1" "$TMP/self2"; then
+    ok "parallel clang self-build is byte-deterministic"
+else
+    bad "parallel clang self-build is byte-deterministic"
+    head -10 "$TMP/self.err" | sed 's/^/     /'
+fi
+
 # Optional: prove the default really forks. strace is a measuring tool, not a
 # build dependency, so this check is skipped when it is not installed.
 if command -v strace >/dev/null 2>&1; then

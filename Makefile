@@ -66,11 +66,15 @@ harmony-base: $(SEED) $(HB_SRC)
 	$(SEED) -o $(HB_OUT) $(HB_SRC)
 	@bash tools/version.sh >/dev/null 2>&1 || true
 
-# The self-hosted compiler is built by harmony-base. Its source imports pull
-# in the rest of `harmony/` and `library/`; listing them as prerequisites keeps
-# incremental builds correct.
+# The self-hosted compiler is built by harmony-base and then rebuilt once by
+# itself. The bootstrap binary uses one clang invocation; the self-built
+# compiler uses the parallel clang path, so this extra stage makes the
+# canonical `build/harmony` byte-identical to every later self-build.
+HARMONY_STAGE0 := build/harmony-stage0
 harmony: harmony-base $(HARMONY_SRC)
-	$(HB_OUT) build harmony/main.hr -o $(HARMONY_OUT)
+	$(HB_OUT) build harmony/main.hr -o $(HARMONY_STAGE0)
+	$(HARMONY_STAGE0) build harmony/main.hr -o $(HARMONY_OUT)
+	rm -f $(HARMONY_STAGE0)
 
 # Full test target: c2x-seed regression corpus + harmony-base driver tests.
 test: test-seed harmony-base harmony

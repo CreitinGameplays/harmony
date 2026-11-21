@@ -165,6 +165,158 @@ fn run_binary(path: &str) -> i32 {
     return process::spawn(&a, "");
 }
 
+// ---- parallel clang --------------------------------------------------------
+//
+// LLVM's -O2 pipeline is single-threaded, so one clang on a 3 MB module
+// dominates self-hosting time. For large programs the driver gives each
+// chunk to its own clang, compiles the runtime once, and links the objects
+// in a stable order. Every path is PID-derived and never reaches the IR or
+// the final binary.
+
+fn object_path(stem: &str) -> &str {
+    let mut s: str::String = str::String::make();
+    s.push("/tmp/harmony-");
+    s.push_i64(sys::getpid() as i64);
+    s.push(stem);
+    return s.as_str();
+}
+
+fn clang_chunk_args(obj: &str, opt: &str) -> process::ArgList {
+    let mut a = process::args_make();
+    process::args_push(&mut a, "/usr/bin/clang");
+    process::args_push(&mut a, "-x");
+    process::args_push(&mut a, "ir");
+    process::args_push(&mut a, "-");
+    process::args_push(&mut a, "-c");
+    process::args_push(&mut a, "-o");
+    process::args_push(&mut a, obj);
+    process::args_push(&mut a, opt);
+    process::args_push(&mut a, "-ffreestanding");
+    process::args_push(&mut a, "-fno-stack-protector");
+    process::args_push(&mut a, "-fstack-clash-protection");
+    process::args_push(&mut a, "-Wno-override-module");
+    return a;
+}
+
+fn clang_runtime_args(obj: &str) -> process::ArgList {
+    let mut a = process::args_make();
+    process::args_push(&mut a, "/usr/bin/clang");
+    process::args_push(&mut a, "-x");
+    process::args_push(&mut a, "c");
+    process::args_push(&mut a, "bootstrap/runtime/rt.c");
+    process::args_push(&mut a, "-c");
+    process::args_push(&mut a, "-o");
+    process::args_push(&mut a, obj);
+    process::args_push(&mut a, "-O2");
+    process::args_push(&mut a, "-ffreestanding");
+    process::args_push(&mut a, "-fno-stack-protector");
+    process::args_push(&mut a, "-fstack-clash-protection");
+    return a;
+}
+
+fn clang_link_args(objs: &vec::Vec<str::String>, output: &str) -> process::ArgList {
+    let mut a = process::args_make();
+    process::args_push(&mut a, "/usr/bin/clang");
+    let mut i: usize = 0;
+    while (i < objs.len()) {
+        process::args_push(&mut a, objs.get(i).as_str());
+        i += 1;
+    }
+    process::args_push(&mut a, "-o");
+    process::args_push(&mut a, output);
+    process::args_push(&mut a, "-nostdlib");
+    process::args_push(&mut a, "-static");
+    return a;
+}
+
+fn finish_logs(pids: &vec::Vec<i32>, logs: &vec::Vec<str::String>) -> i32 {
+    let mut bad: i32 = 0;
+    let mut i: usize = 0;
+    while (i < pids.len()) {
+        if (process::wait_for(*pids.get(i)) != 0) {
+            if (bad == 0) { print_clang_error(logs.get(i).as_str()); }
+            bad = 1;
+        }
+        i += 1;
+    }
+    i = 0;
+    while (i < logs.len()) {
+        sys::unlink_if_empty(logs.get(i).as_str());
+        i += 1;
+    }
+    return bad;
+}
+
+fn cleanup_objects(objs: &vec::Vec<str::String>) {
+    let mut i: usize = 0;
+    while (i < objs.len()) {
+        sys::unlink(objs.get(i).as_str());
+        i += 1;
+    }
+}
+
+fn compile_chunks(chunks: &vec::Vec<str::String>, output: &str,
+                  opt: &str) -> i32 {
+    let mut pids: vec::Vec<i32> = vec::Vec<i32>::make();
+    let mut logs: vec::Vec<str::String> = vec::Vec<str::String>::make();
+    let mut objs: vec::Vec<str::String> = vec::Vec<str::String>::make();
+    let mut i: usize = 0;
+    while (i < chunks.len()) {
+        let obj = object_path("-obj-");
+        let mut obj_name: str::String = str::String::make();
+        obj_name.push(obj);
+        obj_name.push_i64(i as i64);
+        obj_name.push(".o");
+        let log_path = object_path("-clang-");
+        let mut log_name: str::String = str::String::make();
+        log_name.push(log_path);
+        log_name.push_i64(i as i64);
+        log_name.push(".log");
+        let a = clang_chunk_args(obj_name.as_str(), opt);
+        let pid = process::spawn_input_begin(&a, chunks.get(i).as_str(), log_name.as_str());
+        if (pid < 0) { break; }
+        pids.push(pid);
+        objs.push(obj_name);
+        logs.push(log_name);
+        i += 1;
+    }
+    if (pids.len() != chunks.len()) {
+        // A spawn failure cannot be repaired by partial objects: join the
+        // children we did start, clean up, and let the caller use one clang.
+        finish_logs(&pids, &logs);
+        cleanup_objects(&objs);
+        return -1;
+    }
+    let rt_obj = object_path("-rt.o");
+    let mut rt_name: str::String = str::String::make();
+    rt_name.push(rt_obj);
+    let rt_log = object_path("-rt.log");
+    let mut rt_log_name: str::String = str::String::make();
+    rt_log_name.push(rt_log);
+    let rt_args = clang_runtime_args(rt_name.as_str());
+    let rt_pid = process::spawn_input_begin(&rt_args, "", rt_log_name.as_str());
+    if (rt_pid >= 0) {
+        pids.push(rt_pid);
+        objs.push(rt_name);
+        logs.push(rt_log_name);
+    }
+    let failed = finish_logs(&pids, &logs);
+    if (failed != 0 || rt_pid < 0) {
+        cleanup_objects(&objs);
+        return process::EXIT_STOP;
+    }
+    // Objects stay alive until after the link. Their order is the stable
+    // chunk order followed by the runtime object, so repeated builds produce
+    // identical binaries.
+    let link_log = object_path("-link.log");
+    let a = clang_link_args(&objs, output);
+    let rc = process::spawn(&a, link_log);
+    if (rc != 0) { print_clang_error(link_log); }
+    sys::unlink_if_empty(link_log);
+    cleanup_objects(&objs);
+    return rc;
+}
+
 // Runs the full compiler pipeline for one command.
 export fn run(cmd: i32, input: &str, output: &str, opt: &str,
              opt_given: i32, format: i32, jobs: i32) -> i32 {
@@ -195,8 +347,12 @@ export fn run(cmd: i32, input: &str, output: &str, opt: &str,
     }
     if (cmd == 2) { return process::EXIT_OK; }   // check
 
-    let ir = emit::emit_module(&mut c, loaded.program, jobs);
-    if (cmd == 3) {   // emit-llvm
+    let mut binary = output;
+    let default_binary = temp_path(".bin", "");
+    if (binary == "") { binary = default_binary; }
+
+    if (cmd == 3) {   // emit-llvm: always the one byte-identical module
+        let ir = emit::emit_module(&mut c, loaded.program, jobs);
         if (opt_given == 0) {
             print("{}", ir);
             return process::EXIT_OK;
@@ -209,17 +365,28 @@ export fn run(cmd: i32, input: &str, output: &str, opt: &str,
         return rc;
     }
 
-    let log = temp_path(".clang.log", "");
-    let mut binary = output;
-    let default_binary = temp_path(".bin", "");
-    if (binary == "") { binary = default_binary; }
-    let a = build_args(binary, opt);
-    let rc = process::spawn_with_input(&a, ir, log);
-    if (rc != 0) {
-        print_clang_error(log);
-        return process::EXIT_STOP;
+    let chunks = emit::emit_module_chunks(&mut c, loaded.program, jobs);
+    let mut rc: i32 = 0;
+    if (chunks.len() > 1) {
+        rc = compile_chunks(&chunks, binary, opt);
+        if (rc == -1) {
+            // Fork or spawn failed before any object was linked: retry with
+            // the original single-module clang invocation.
+            let full = emit::emit_module(&mut c, loaded.program, jobs);
+            let log = temp_path(".clang.log", "");
+            let a = build_args(binary, opt);
+            rc = process::spawn_with_input(&a, full, log);
+            if (rc != 0) { print_clang_error(log); }
+            sys::unlink_if_empty(log);
+        }
+    } else {
+        let log = temp_path(".clang.log", "");
+        let a = build_args(binary, opt);
+        rc = process::spawn_with_input(&a, chunks.get(0).as_str(), log);
+        if (rc != 0) { print_clang_error(log); }
+        sys::unlink_if_empty(log);
     }
-    sys::unlink_if_empty(log);
+    if (rc != 0) { return process::EXIT_STOP; }
     if (cmd == 0) { return process::EXIT_OK; }   // build
     let run_rc = run_binary(binary);
     if (output == "") { sys::unlink(binary); }

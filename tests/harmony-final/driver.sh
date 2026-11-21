@@ -74,8 +74,9 @@ if [ "$check_rc" -ne 0 ] && grep -q 'TYPE-01' "$TMP/err.out"; then
     ok "driver check reports TYPE-01"
 else bad "driver check reports TYPE-01"; fi
 
-# Self-host: stage 1 is built by harmony-base; stage 2 by stage 1; stage 3
-# by stage 2. All three binaries must be byte-identical.
+# Self-host: `make harmony` builds a stage-0 binary with harmony-base and
+# then rebuilds the canonical stage 1 with itself. Stage 2 is built by stage 1
+# and stage 3 by stage 2. All three canonical binaries must be identical.
 if "$HC" build harmony/main.hr -o "$TMP/stage2" >/dev/null 2>&1 \
    && "$TMP/stage2" build harmony/main.hr -o "$TMP/stage3" >/dev/null 2>&1 \
    && cmp -s "$HC" "$TMP/stage2" && cmp -s "$TMP/stage2" "$TMP/stage3"; then

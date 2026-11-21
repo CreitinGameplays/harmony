@@ -267,6 +267,55 @@ fn emit_fn(e: &mut context::Emitter, h: i32) {
     context::out(e, "}\n\n");
 }
 
+// A declaration with the exact signature of a definition. Split modules call
+// functions defined in their siblings, so each one needs the other modules'
+// symbols declared (extern declarations live in the preamble already).
+fn emit_fn_declare(e: &mut context::Emitter, h: i32) {
+    let fnode = node::get(&e.c.nodes, h);
+    let name = context::fn_symbol(e, h);
+    let params = fnode.kids2;
+    let mut retty = fnode.ty;
+    if (retty == 0) { retty = types::TY_UNIT; }
+    let mut sret: i32 = 0;
+    if (context::is_aggregate(e, retty)) { sret = 1; }
+    if (fnode.kind == node::AST_EXTERN_FN) {
+        if (is_predeclared(name)) { return; }
+        context::out(e, "; extern \"");
+        if (fnode.abi == "") { context::out(e, "C"); } else { context::out(e, fnode.abi); }
+        context::out(e, "\" ");
+        context::out(e, name);
+        context::out(e, "\ndeclare ");
+        if (sret != 0) { context::out(e, "void "); }
+        else { context::out(e, context::type_name(e, retty)); }
+        context::out(e, " @");
+        context::out(e, name);
+        context::out(e, "(");
+        if (sret != 0) {
+            context::out(e, "ptr sret(");
+            context::out(e, context::type_name(e, retty));
+            context::out(e, ") %sret");
+            if (params.len() > 0) { context::out(e, ", "); }
+        }
+        emit_param_types(e, &params);
+        context::out(e, ")\n\n");
+        return;
+    }
+    context::out(e, "declare ");
+    if (sret != 0) { context::out(e, "void "); }
+    else { context::out(e, context::type_name(e, retty)); }
+    context::out(e, " @");
+    context::out(e, name);
+    context::out(e, "(");
+    if (sret != 0) {
+        context::out(e, "ptr sret(");
+        context::out(e, context::type_name(e, retty));
+        context::out(e, ") %sret");
+        if (params.len() > 0) { context::out(e, ", "); }
+    }
+    emit_param_types(e, &params);
+    context::out(e, ")\n");
+}
+
 // ---- module ----------------------------------------------------------------
 
 // Everything before the first function: string globals, nominal types, and
@@ -378,9 +427,23 @@ fn emit_functions(c: &mut check::Checker, program: i32,
     return e.out.as_str();
 }
 
+const MAX_JOBS: usize = 32;
+
 fn resolve_jobs(requested: i32) -> usize {
-    if (requested > 0) { return requested as usize; }
-    return sys::cpu_count();
+    if (requested > 0) {
+        let n = requested as usize;
+        if (n > MAX_JOBS) { return MAX_JOBS; }
+        return n;
+    }
+    // Two workers per available CPU hides the IR pipe and clang startup
+    // latency. `cpu_count` uses the process affinity mask, so containers see
+    // their own CPUs, not the host's. Beyond 32 workers the link step and
+    // memory bandwidth eat the gain, so the default is capped there.
+    let cpus = sys::cpu_count();
+    let n = cpus * 2;
+    if (n == 0) { return 1; }
+    if (n > MAX_JOBS) { return MAX_JOBS; }
+    return n;
 }
 
 fn chunk_path(i: usize) -> &str {
@@ -460,4 +523,43 @@ export fn emit_module(c: &mut check::Checker, program: i32,
         i += 1;
     }
     return out.as_str();
+}
+
+// Builds self-contained LLVM modules for parallel clang -O2. Each chunk has
+// the same preamble (types, runtime declarations, string globals), the exact
+// signatures of every other chunk's functions, and one contiguous slice of
+// the deterministic function order. The driver pipes each chunk to its own
+// clang, so no `.ll` file is written by default.
+export fn emit_module_chunks(c: &mut check::Checker, program: i32,
+                             jobs_requested: i32) -> vec::Vec<str::String> {
+    let mut out: vec::Vec<str::String> = vec::Vec<str::String>::make();
+    let base = emit_prelude(c, program);
+    let handles = function_handles(&*c, program);
+    let mut jobs = resolve_jobs(jobs_requested);
+    let max_jobs: usize = handles.len() / MIN_PARALLEL_FNS;
+    if (jobs > max_jobs) { jobs = max_jobs; }
+    if (jobs < 1) { jobs = 1; }
+    let mut w: usize = 0;
+    while (w < jobs) {
+        let start: usize = w * handles.len() / jobs;
+        let end: usize = (w + 1) * handles.len() / jobs;
+        let mut e = context::make(c);
+        collect_strings(&mut e, program);
+        context::out(&mut e, base);
+        let mut i: usize = 0;
+        while (i < handles.len()) {
+            if (i < start || i >= end) { emit_fn_declare(&mut e, *handles.get(i)); }
+            i += 1;
+        }
+        i = start;
+        while (i < end) {
+            emit_fn(&mut e, *handles.get(i));
+            i += 1;
+        }
+        let mut chunk: str::String = str::String::make();
+        chunk.push(e.out.as_str());
+        out.push(chunk);
+        w += 1;
+    }
+    return out;
 }

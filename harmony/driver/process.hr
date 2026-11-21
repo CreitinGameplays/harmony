@@ -67,16 +67,17 @@ fn wait_status(status: i32) -> i32 {
     return (status >> 8) & 0xff;
 }
 
-// Runs a program with `input` on stdin. `log_path` receives stderr; an empty
-// path keeps stderr inherited. Returns the child's exit status.
-export fn spawn_with_input(a: &ArgList, input: &str, log_path: &str) -> i32 {
-    if (a.items.len() == 0) { return 127; }
+// Starts a child with `input` on stdin and returns its PID without waiting.
+// The caller may start several children before joining them; `log_path`
+// receives each child's stderr, or is inherited when empty.
+export fn spawn_input_begin(a: &ArgList, input: &str, log_path: &str) -> i32 {
+    if (a.items.len() == 0) { return -1; }
     let mut pipe_bytes: [u8; 8] = [0u8; 8];
-    if (sys::pipe2(raw(&mut pipe_bytes[0])) < 0) { return 127; }
+    if (sys::pipe2(raw(&mut pipe_bytes[0])) < 0) { return -1; }
     let read_fd = pipe_bytes[0] as i32 | ((pipe_bytes[1] as i32) << 8);
     let write_fd = pipe_bytes[4] as i32 | ((pipe_bytes[5] as i32) << 8);
     let pid = sys::fork();
-    if (pid < 0) { return 127; }
+    if (pid < 0) { return -1; }
     if (pid == 0) {
         sys::dup2(read_fd, 0);
         close_scratch(read_fd);
@@ -105,9 +106,22 @@ export fn spawn_with_input(a: &ArgList, input: &str, log_path: &str) -> i32 {
         off += n as usize;
     }
     close_scratch(write_fd);
+    return pid;
+}
+
+// Waits for one child started by `spawn_input_begin`.
+export fn wait_for(pid: i32) -> i32 {
     let mut status: i32 = 0;
     sys::waitpid(pid, raw(&mut status));
     return wait_status(status);
+}
+
+// Runs a program with `input` on stdin. `log_path` receives stderr; an empty
+// path keeps stderr inherited. Returns the child's exit status.
+export fn spawn_with_input(a: &ArgList, input: &str, log_path: &str) -> i32 {
+    let pid = spawn_input_begin(a, input, log_path);
+    if (pid < 0) { return 127; }
+    return wait_for(pid);
 }
 
 // Runs a program with no stdin payload.

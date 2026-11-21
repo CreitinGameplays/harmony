@@ -877,3 +877,8 @@ directly into its binary and (b) support **multi-core compilation by default**.
     `tests/harmony-final/v1.sh` covers three accepted programs and three
     field/subject rejections. Remaining v1 features (first-class function
     pointers, `abilities`) are still unimplemented.
+  - Future scoped AST macros (docs/harmony.md §20.5): design documented only.
+    Expansion at pipeline stage 3.5, `#name(...)` invocation, `expr`/`code`/
+    `block`/`type`/`ident` parameter kinds, hygiene with provenance, variadic
+    packs, `MACRO-01..04`. Requires `#` and `...` lexer tokens; `macro` is
+    reserved. No implementation, no v1 tests — do not mark as v1 work.

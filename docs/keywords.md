@@ -29,7 +29,7 @@ heap form is the built-in `heap(x)` (docs/harmony.md §12.2).
 `extern fn` without one is a syntax error — and `"C"` is the only ABI the
 backend implements (`FFI-01` for any other name).
 
-**Reserved for the future:** `abilities` `async` `await` `macro`. (`try` was dropped: v1 early exit is an `else` clause.)
+**Reserved for the future:** `abilities` `async` `await` `macro`. (`try` was dropped: v1 early exit is an `else` clause. `macro` is reserved for the future scoped AST macro design in docs/harmony.md §20.5 — design only, no implementation.)
 Dropped reservations: `spawn`, `send` (concurrency uses ordinary method-style
 names), `trait` (the v1 trait-like feature is spelled `abilities`, see
 docs/harmony.md §20.4), and `try` (v1 early exit is an `else` clause, §20.3
@@ -38,7 +38,7 @@ item 5). Dropped keyword (v0.3.2): `new` — the heap form is `heap(x)`.
 **Recognized foreign words** (not keywords; the compiler knows them and emits
 a `NAME-02` translation hint): `unsafe` `impl` `match` `trait` `pub` `use`
 `loop` `goto` `null` `NULL` `nullptr` `malloc` `free` `new` `delete` `Box`
-`Option` `Some` `None` `Result` `Ok` `Err` `panic`.
+`Option` `Some` `None` `Result` `Ok` `Err` `panic`, plus `define` (as `#define`) and `macro_rules` (as `macro_rules!`) — §16.11, §20.5.
 
 ## Builtins (docs/harmony.md §15)
 
@@ -55,6 +55,8 @@ a `NAME-02` translation hint): `unsafe` `impl` `match` `trait` `pub` `use`
 | `fnptr(name)` | v1 final-compiler intrinsic: address of a declared function as `raw u8`, used for thread entries; harmony-base does not parse it |
 | `else` (on a simple statement) | v1 final-compiler clause: `let x = f() else return;`, `x = f() else (e) { ... };`, `f() else trap("...");`. Only `Maybe`/`Outcome`; see FLOW-01/02/03 |
 | named payload / struct pattern | v1 final compiler: `enum E { V { f: T } }`, `E::V { .f = x }`, and `case V { f: p }:` / `case S { f: p }:` in `switch` |
+| future `#` / `...` | reserved tokens for §20.5 macros: `#name(...)` invocation, `items: expr...` packs and `pack...` spreads; not implemented in v1 |
+| future contextual `expr` `code` `block` `type` `ident` | macro parameter kinds in §20.5, only after `:` in a macro parameter list; not implemented in v1 |
 | `str::from_parts(p, len)` | the `str` lang item (§19.8.9): build a `&str` from owned bytes + length; needs `unchecked` because the pointer is unchecked. Used by `library/core`'s `String::as_str`. |
 | `Type::make()` | constructor convention (a named `make`, not a keyword) |
 

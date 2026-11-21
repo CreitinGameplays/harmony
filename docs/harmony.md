@@ -61,6 +61,7 @@ File extension: `.harmony`
 | impl (rewrite) | v1 threads | `library/std/thread.hr` adds joined and detached threads over raw `clone(2)` + futex hooks in `library/runtime/rt.c`. The `Share<T>` capability marker mints an opaque `ThreadArg` that `spawn` requires; `fnptr(f)` is the small final-only intrinsic for a function address. All three v1 gates pass; harmony-base stays v0. |
 | impl (rewrite) | v1 `else` clause | The final compiler accepts `let x = f() else return;`, `else (e) { ... };`, `else continue;`, `else break;` and `else trap(...);` on `let`, plain `=` assignment, and expression statements. `try` is not a keyword; the success payload binds the target, `else return` forwards `Bad(e)`/`Empty`, and FLOW-01/02/03 reject fallthrough, mismatched errors, and impossible forwarding. These forms are final-language only; harmony-base stays v0. |
 | impl (rewrite) | v1 patterns | The final compiler accepts named enum payload fields (`Variant { name: Type }`), named construction (`Enum::Variant { .name = value }`, positional still works), and struct patterns in `switch` (`case Point { x: 0, y: y }:`) with literal tests, bindings, qualified names and guards. Unknown fields are `TYPE-02`; a struct pattern on a non-struct/enum subject is `TYPE-01`. |
+| design (future) | §20.5 scoped AST macros | Documented the intended v2 macro system: expansion at stage 3.5, `#name(...)` calls, `expr`/`code`/`block`/`type`/`ident` parameter kinds, hygienic scopes, scoped `return`, variadic packs, `MACRO-01..04`, and the grammar extension. **Design only — no implementation, not in v1.** |
 | impl (rewrite) | R6 LLVM backend | The self-hosted compiler now has its own LLVM IR emitter (`harmony/codegen/llvm/`). On all 95 programs in the codegen corpus, its IR is **byte-identical** to harmony-base's, including checked arithmetic, traps, slices, aggregates, generics, methods, enums, switches, formatting calls, and multi-module programs. |
 
 ### 1.2 Bug fixed in v0.3
@@ -211,17 +212,17 @@ ordinary library code begins is spelled out in the **split rule** (§19.8).
 | Control flow | `if` `else` `while` `for` `switch` `case` `default` `return` `break` `continue` |
 | Memory and safety | `unchecked` `raw` `self` |
 | Literals and operators | `true` `false` `as` `sizeof` `heap` |
-| **Contextual** (keyword only in the positions listed) | `life` — only in generic lists (`<life a>`) and in types (`&life(a) T`, `Words<life(a)>`) |
+| **Contextual** (keyword only in the positions listed) | `life` — only in generic lists (`<life a>`) and in types (`&life(a) T`, `Words<life(a)>`); `expr` `code` `block` `type` `ident` — only as macro parameter kinds (§20.5) |
 
-`life` is **contextual**, so `player.life -= 1;` still compiles. (A game developer's most-typed identifier survives.)
+`life` is **contextual**, so `player.life -= 1;` still compiles. (A game developer's most-typed identifier survives.) The five macro parameter-kind words are contextual too: they are ordinary identifiers everywhere except after the `:` in a macro parameter list.
 
-**Reserved for the future:** `abilities` `async` `await` `macro`. (`try` was dropped from the list in v1: early exit is an `else` clause, not a keyword — §20.3 item 5.)
+**Reserved for the future:** `abilities` `async` `await` `macro`. (`try` was dropped from the list in v1: early exit is an `else` clause, not a keyword — §20.3 item 5. `macro` stays reserved for the scoped AST macro design in §20.5, which is **not** in v1.)
 (`trait` is **not** reserved — the v1 trait-like feature is spelled
 `abilities`, see §20.4. `spawn` and `send` are deliberately **not** reserved
 either — v1 concurrency will use ordinary method-style names, not keywords;
 see §20.4.)
 
-**Recognized foreign words** (not keywords, but the compiler knows them and gives a translation hint instead of a bare "unknown name"; see `NAME-02` in §16): `unsafe` `impl` `match` `trait` `pub` `use` `loop` `goto` `null` `NULL` `nullptr` `malloc` `free` `new` `delete` `Box` `Option` `Some` `None` `Result` `Ok` `Err` `panic`.
+**Recognized foreign words** (not keywords, but the compiler knows them and gives a translation hint instead of a bare "unknown name"; see `NAME-02` in §16): `unsafe` `impl` `match` `trait` `pub` `use` `loop` `goto` `null` `NULL` `nullptr` `malloc` `free` `new` `delete` `Box` `Option` `Some` `None` `Result` `Ok` `Err` `panic`, plus the preprocessor/macro spellings `define` (as `#define`) and `macro_rules` (as `macro_rules!`) — §16.11, §20.5.
 
 ### 4.3 Literals
 
@@ -244,6 +245,7 @@ Because lifetimes use `life(...)` rather than a tick, **a `'` is always a char l
 - Struct initializer fields are separated by `,` (trailing comma allowed).
 - `switch` cases are `case P: { ... }` with no separator.
 - `*` means multiplication in infix position and dereference in prefix position. `&` means bitwise-and in infix position and borrow in prefix position. The parser decides by position, as in C.
+- `#` is reserved as the macro-invocation prefix (§20.5); `...` is reserved for variadic packs and spreads (§20.5). Neither is a token in v0 — a program using them is a syntax stop until macros land.
 
 
 ---
@@ -2076,6 +2078,10 @@ SEE    Language guide § Ownership and moves
 | `FLOW-01` | stop | `else` clause falls through | `let x = f() else (e) { };` | end every path with `return`/`break`/`continue`/`trap(...)`/`exit(...)` |
 | `FLOW-02` | stop | cannot forward this failure | `Outcome<E>` into a function returning `Outcome<F>` | convert with an explicit block |
 | `FLOW-03` | stop | no return type can carry the failure | `else return;` in a function returning `i32` | use an explicit `trap`/`exit` block |
+| `MACRO-01` | stop | wrong macro argument count or kind | `{ ... }` passed to `expr`, `a + 1` passed to `ident` | show the parameter kind and the call site (§20.5) |
+| `MACRO-02` | stop | macro form/position mismatch | statement macro in expression position, or a missing `return` in `-> expr` | add `-> expr`, use `return`, or call as `#name(...);` |
+| `MACRO-03` | stop | expansion depth exceeded (64) | recursive macro cycle | break the cycle |
+| `MACRO-04` | stop | invalid pack spread or loop exit | `pack...` outside a call, `break` in an unrolled pack loop | use `for (x : pack)` or `return` |
 | `MUT-01` | stop | assigning to a read-only binding | `let x = 1; x = 2;` | `let mut` |
 | `MUT-02` | warn | `let mut` never changed | unused `mut` | remove `mut` |
 | `MUT-03` | stop | `&mut` of a read-only binding | `&mut x` where `x` isn't `mut` | `let mut` |
@@ -2124,6 +2130,8 @@ When the compiler sees a word from C, C++, Rust, Java, or Go that means somethin
 | `Box<T>`, `Box::new(x)` | `Heap<T>`, `heap(x)` |
 | `malloc(...)` / `free(p)` | `heap(x)` / nothing: freed at `}` |
 | `new X`, `delete p` | `heap(x)` / nothing: freed at `}` (a `NAME-02` hint, not an error) |
+| `#define N 8` | `const N: usize = 8;` (or `macro` for code, §20.5) |
+| `macro_rules! name { ... }` | `macro name(...) { ... }` (§20.5; `macro` is reserved, not a v1 feature) |
 | `panic!("msg")`, `abort()` | `trap("msg")` |
 | `.unwrap()` | `.or_trap("msg")` |
 | `String::from("x")`, `.to_string()` | `"x".own()` |
@@ -2600,6 +2608,7 @@ explicit `generic_args` list always wins and is checked as before.
 | 1 | Lexer | tokens | Contextual `life`; byte/char literals; nestable block comments. |
 | 2 | Parser | AST | Recursive descent, one extra lookahead (§18). Recovers at `;` and `}` to report several syntax errors. |
 | 3 | Module loader and name resolution | resolved AST | Handles `import`/`export`; detects cycles; emits `NAME-xx`, including migration hints. |
+| 3.5 | **Macro expansion** (future, §20.5) | expanded resolved AST | Scoped AST macros only: expand `#name(...)` after resolution but before checking, with hygienic scopes and provenance for caller-origin `return`/`break`/`continue`. Not in v1. |
 | 4 | Type checker | typed AST | Local inference, bounds (`copy`/`eq`/`ord`), conversion rules, format-string checking, `unchecked` gating. |
 | 5 | Lowering | CFG IR | Basic blocks; explicit places; moves, copies, borrows, and scope ends as instructions. |
 | 6 | Flow analyses | facts and **events** | Definite init, move analysis, liveness, loan analysis, life inference, exhaustiveness. |
@@ -2956,7 +2965,7 @@ everything above it can be audited as ordinary code.
 
 ### 20.2 Deliberately left out of v0
 
-User-defined abilities (`abilities`, v1; `trait` elsewhere), closures, macros, operator overloading, partial moves, `?`/`try`, ternary, threads, shared ownership, interior mutability, mutable globals, unions, `goto`, exceptions, null, implicit conversions, inheritance, and a preprocessor.
+User-defined abilities (`abilities`, v1; `trait` elsewhere), closures, macros, operator overloading, partial moves, `?`/`try`, ternary, threads, shared ownership, interior mutability, mutable globals, unions, `goto`, exceptions, null, implicit conversions, inheritance, and a preprocessor. The planned macro form (§20.5) is a **scoped AST macro, not a preprocessor**; it is future work, not part of v1.
 
 ### 20.3 Decisions on the open questions (resolved for v1)
 
@@ -2982,6 +2991,214 @@ These were open in the v0.3 draft; they are now decided, to be implemented in v1
 - `trait` (like `impl`, `match`, `Box`) becomes a **recognized foreign word**: writing it earns a `NAME-02` translation hint (`trait Shape { ... }` → `abilities Shape { ... }`), never a bare "unknown name".
 
 Four keyword reservations are **dropped**: `spawn`, `send`, `try`, and (per the rename above) `trait`. Concurrency in v1 uses ordinary names (e.g. `thread.spawn(...)`-style methods), and early exit on failure is an `else` clause; neither needs a keyword. The reserved-for-the-future list in §4.2 is therefore `abilities` `async` `await` `macro`.
+
+### 20.5 Future design: scoped AST macros
+
+**Status: design only — not implemented, not in v1.** `macro` is reserved (§4.2), and `#`/`...` are reserved tokens (§4.4), but no compiler stage expands them yet. This section records the intended semantics so later work does not accidentally drift into text substitution.
+
+#### 20.5.1 What a macro is
+
+A `macro` is **not** text substitution and **not** a runtime function:
+
+1. It is expanded **after parsing and module resolution, before type/borrow checking** — new stage 3.5 in §19.1, between stages 3 and 4.
+2. It uses ordinary Harmony syntax (`let`, `if`, `for`, `switch`, `return`) instead of `$` sigils.
+3. Because Harmony has no block-expressions (`if`/`switch` are statements, §8), a `-> expr` macro acts as an **inline scoped block** whose `return` yields the value of `#name(...)`.
+
+This is deliberately **not a preprocessor** (§20.2): the input is a resolved AST, not source text, and all checking still happens on the expanded tree.
+
+#### 20.5.2 Syntax forms
+
+```c
+// 1. Statement macro (invoked as a statement, ends with `;`)
+macro log_if(flag: expr, msg: code) {
+    if (!flag) { return; }          // exits this expansion only
+    eprintln("{}", msg);
+}
+
+// 2. Expression macro (invoked inside any expression)
+macro max(a: expr, b: expr) -> expr {
+    let mut best = a;
+    if (b > best) { best = b; }
+    return best;                    // yields the value of `#max(...)`
+}
+
+// 3. One-liner expression shorthand (`= <expr>;`)
+macro square(x: expr) = x * x;      // sugar for: -> expr { return x * x; }
+
+// 4. Variadic macro (`...`)
+macro vec(items: expr...) -> expr {
+    let mut v = Vec::make();
+    for (x : items) { v.push(x); }  // unrolls at expansion time
+    return v;
+}
+```
+
+Call-site rules:
+
+* **Always prefixed with `#` and parenthesized:** `#max(a, b)`, `#log_if(v, msg);`.
+  * Why `#`: `!` is already logical-not (`!flag`), and `#` makes compile-time expansion, lazy `code` arguments, and macro `return` boundaries immediately visible to readers.
+  * Parentheses `(...)` are always used (even for `#vec(1, 2, 3)`), avoiding Rust's `[]`/`{}`/`()` guessing game.
+* **Statement vs. expression:**
+  * Macros without `-> expr` may **only** be called as a statement (`#log_if(...);`), requiring `;` per §4.4.
+  * Macros with `-> expr` (or `= expr;`) yield a value and can be used anywhere an expression is valid, including as an expression statement (`#do_thing();`, value discarded).
+  * In an expression macro `return;` is `MACRO-02`; in a statement macro `return expr;` is also `MACRO-02`.
+* **Modules (§6.7):** macros are private to their file unless marked `export macro ...`. Imported macros are called with their module prefix: `#math::max(a, b)`. A macro and a function may share a name: the `#` prefix selects the macro namespace.
+* **Scope:** macro declarations are top-level items only — not inside `fn` or `methods` blocks (MACRO-02).
+
+#### 20.5.3 Parameter kinds
+
+Instead of runtime types, macro parameters declare **how the argument is parsed and when it is evaluated**:
+
+| Kind | Accepts | Evaluated when? | Typical use |
+|---|---|---|---|
+| `expr` | Any expression | **Once, left-to-right**, at entry to the expansion | `#max(a, b)`, `#square(next())` — kills C's double-evaluation bug |
+| `code` | Any expression | **Lazy (on each use)** — skipped if never reached | Guards, assertions, short-circuiting, retries |
+| `block` | `{ ... }` statement block | **Lazy (on each use)** | Timing/profiling, scoped wrappers, repeat-N-times |
+| `type` | Any type (`i32`, `Vec<u8>`) | Compile-time AST node | Generic helpers, cast/size macros |
+| `ident` | A bare identifier | Compile-time AST node | Field names, method names, variable names |
+
+These five words are **contextual**, only meaningful after the `:` in a macro parameter list (§4.2); they are not new reserved keywords.
+
+**Why `expr` vs. `code` matters.** This single distinction eliminates C's two biggest macro traps while keeping things simple:
+
+* In `macro square(x: expr) = x * x;`, calling `#square(next_int())` evaluates `next_int()` **once** into a hidden temporary `__arg0`, then computes `__arg0 * __arg0` (still overflow-checked by Harmony!).
+* In `macro log_if(flag: expr, msg: code)`, `flag` is evaluated once up front, while `msg` is only evaluated if execution reaches `eprintln("{}", msg);`. A `code` or `block` parameter used **twice** evaluates its argument **twice** — write a local `let` inside the macro if you need once-only behavior.
+
+**Variadic packs (`...`).** Any parameter kind may end in `...` to accept **0 or more** comma-separated arguments (e.g. `items: expr...`, `conds: code...`). A parameter pack must be the **last** parameter, and can be used in two ways inside the macro:
+
+1. **Compile-time unrolling:** `for (x : pack) { ... }` unrolls the loop body once per argument, in order. This is a *compile-time* `for`, not the runtime loop of §8.5; `break`/`continue` in it are `MACRO-04` because there is no runtime loop to exit.
+2. **Call forwarding (`pack...`):** passing `pack...` to a function, `println`/`format`, or another macro splices the arguments in order:
+   ```c
+   macro debug(fmt: expr, args: expr...) {
+       eprintln(fmt, args...);
+   }
+   ```
+   Spread arguments are still checked by `FMT-01` after expansion; a pack spread outside a call is `MACRO-04`.
+
+#### 20.5.4 Semantic rules
+
+**Rule 1: Scoped `return`.** `return` written **in the macro body** exits **only the macro expansion**:
+
+* In a `-> expr` macro, every control-flow path must end in `return <expr>;` (or a diverging call like `trap(...)`), just like a function (`MACRO-02` otherwise).
+* In a statement macro, `return;` exits the expansion early; execution continues after the `#macro(...);` call in the caller.
+* `return`, `break`, or `continue` written **inside a caller's `code` or `block` argument** keep the **caller's** meaning: they exit the caller's function or loop, running drops cleanly along the way. Implementing this needs provenance on each AST node (macro-origin vs caller-origin), not a textual splice.
+
+**Rule 2: Evaluation order and short-circuiting (§7.5).**
+
+1. Expression macros evaluate **in-place** where `#name(...)` appears — not hoisted above the enclosing statement. So in `ok && #check(x)`, `#check(x)` does **not** run if `ok` is `false`.
+2. All `expr` arguments are evaluated strictly **left-to-right** when entering the expansion, bound to invisible hygienic `let` bindings (`__arg0`, `__arg1`, ...). Those names are compiler-generated and cannot be spelled or observed by user code.
+3. Calling `#name(a, b)` where an `expr` parameter is non-`copy` (e.g., `String`) moves the value into the expansion, just like a `fn` call. Using that `expr` parameter twice inside the macro body triggers the normal `MOVE-01` diagnostic unless borrowed (`&a`).
+
+**Rule 3: Automatic hygiene.**
+
+* **No variable capture:** locals declared inside a macro (like `best` in `#max` or `v` in `#vec`) live in the macro's own hygiene scope. They cannot shadow, overwrite, or be read by caller code — and caller variables inside `code`/`block` arguments resolve in the **caller's** scope.
+* **Module-scoped names:** functions, types, and `const`s named in a macro body (like `Vec::make()`) resolve in the **macro's defining module**, even if the caller did not import them. This follows from resolving names at definition time (or carrying module provenance), not from the caller's scope.
+* **No token pasting:** there is no `##` identifier gluing or stringification (`#x`). If you need a name, pass an `ident`.
+
+**Rule 4: Safety and `unchecked` preservation (§13).** Macros have **zero** special safety privileges:
+
+* Expanded code goes through full type inference, move/borrow/`life` checking, bounds checks, overflow traps, and `FMT-01` format checking.
+* A macro **cannot** hide `unchecked` operations from callers without writing an explicit `unchecked("...") { ... }` block inside the macro body — and `harmony audit` still flags that site, noting both the macro definition and the call site.
+
+**Rule 5: Expansion limits.** Macros may call other macros, up to a fixed expansion depth of **64** to prevent infinite expansion (`MACRO-03`).
+
+#### 20.5.5 Examples in action
+
+Short-circuiting with `code...`:
+
+```c
+macro all_true(conds: code...) -> expr {
+    for (c : conds) {
+        if (!c) { return false; }   // exits #all_true immediately
+    }
+    return true;
+}
+
+// step2() is never called if step1() returns false
+if (#all_true(ready, step1(), step2())) {
+    println("go");
+}
+```
+
+Scoped timing with `block`:
+
+```c
+macro timed(label: expr, body: block) {
+    let t0 = clock::now_ms();
+    body;                           // runs caller's block in place
+    let dt = clock::now_ms() - t0;
+    println("[{}] {} ms", label, dt);
+}
+
+#timed("parse", {
+    let ast = parse(&src);
+    check(&ast);
+});
+```
+
+Safe checked unwrap or fallback (`code` avoids evaluating the fallback unnecessarily):
+
+```c
+macro or_else(opt: expr, fallback: code) -> expr {
+    switch (opt) {
+        case Has(v): { return v; }
+        case Empty:  { return fallback; }
+    }
+}
+
+let user = #or_else(find_user(id), load_default_user());
+```
+
+Compile-time field access with `ident`:
+
+```c
+macro swap_field(a: expr, b: expr, field: ident) {
+    swap(&mut a.field, &mut b.field);
+}
+
+#swap_field(&mut p1, &mut p2, x);
+```
+
+#### 20.5.6 Grammar extension (fits §18 EBNF)
+
+```ebnf
+item          = ... | [ "export" ] macro_decl ;
+
+macro_decl    = "macro" ID "(" [ mparams ] ")" macro_body ;
+mparams       = mparam { "," mparam } [ "," ] ;
+mparam        = ID ":" mkind [ "..." ] ;
+mkind         = "expr" | "code" | "block" | "type" | "ident" ;
+macro_body    = [ "->" "expr" ] block
+              | "=" expr ";" ;
+
+(* Call sites *)
+stmt          = ... | macro_stmt ;
+macro_stmt    = "#" path "(" [ margs ] ")" ";" ;
+primary       = ... | macro_expr ;
+macro_expr    = "#" path "(" [ margs ] ")" ;
+
+margs         = marg { "," marg } [ "," ] ;
+marg          = ( expr | type | block ) [ "..." ] ;
+```
+
+*(In `marg`, an `ident` is already valid `expr`/`type` syntax; the expander validates that the argument matches the declared `mkind` and reports `MACRO-01` otherwise.)* The lexer must gain `#` and `...` tokens (§4.4); `->` (Arrow) already exists.
+
+#### 20.5.7 Diagnostics
+
+| Code | Sev | Trigger | Primary hint / fix |
+|---|---|---|---|
+| `MACRO-01` | stop | Wrong macro argument count or kind (e.g. `{ ... }` passed to `expr`, or `a + 1` passed to `ident`) | Show expected parameter `kind` and call site |
+| `MACRO-02` | stop | Macro form/position mismatch (statement macro in expression position, `-> expr` missing `return`, `return` without a value in `-> expr`, macro declared inside a block) | Add `-> expr`, use `return`, or call as `#name(...);` |
+| `MACRO-03` | stop | Macro expansion exceeded max depth (64) | Break recursive macro cycle |
+| `MACRO-04` | stop | `pack...` spread outside a call, or `break`/`continue` in unrolled `for (x : pack)` with no enclosing runtime loop | Use `for (x : pack)` or `return` |
+| `NAME-02` | hint | `#define` or `macro_rules!` written | Suggest `const` or `macro name(...) { ... }` |
+
+When a **type or borrow error** happens inside expanded code, the timeline diagnostic (§16.2) adds one context step at the top:
+
+```text
+   ①  14  let m = #max(count, "hi");     expanded from macro `max`
+   ②   3      if (b > best) {            expected i32, found &str  ◂ here
+```
 
 ---
 

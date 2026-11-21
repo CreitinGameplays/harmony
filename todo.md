@@ -875,7 +875,7 @@ directly into its binary and (b) support **multi-core compilation by default**.
     `case S { field: p }:` patterns with literal tests and bindings; field
     lists may be partial. Generic enums, qualified names and guards work.
     `tests/harmony-final/v1.sh` covers three accepted programs and three
-    field/subject rejections. Remaining v1 feature: `abilities`.
+    field/subject rejections.
   - V1 first-class function pointers (final compiler only): `fn(Params) -> Ret`
     is a structural, `copy`, pointer-sized type (`AST_TYPE_FN` / `CTY_FN`).
     A declared function name used as a value lowers to its LLVM global and
@@ -885,15 +885,25 @@ directly into its binary and (b) support **multi-core compilation by default**.
     `fnptr(name)` remains the separate opaque-address intrinsic used by thread
     entries. `tests/harmony-final/v1.sh` covers four accepted programs and five
     rejections.
+  - V1 user-defined abilities (final compiler only): `abilities Name { fn sig;
+    ... }` declares required method signatures (`AST_ABILITIES`, kind 27);
+    bounds accept any identifier besides `copy`/`eq`/`ord`. Satisfaction is
+    structural and checked at generic instantiation (functions and types):
+    `ABLT-01` for a missing or mismatched method, `ABLT-02` for an unknown or
+    duplicate ability. Method requirements on a bounded parameter resolve
+    during the template check; concrete instances re-resolve to real methods.
+    A foreign `trait` block gets the `NAME-02` hint. No codegen changes.
+    `tests/harmony-final/v1.sh` covers three accepted programs and five
+    rejections. No v1 compiler features remain.
   - Future scoped AST macros (docs/harmony.md §20.5): design documented only.
     Expansion at pipeline stage 3.5, `#name(...)` invocation, `expr`/`code`/
     `block`/`type`/`ident` parameter kinds, hygiene with provenance, variadic
     packs, `MACRO-01..04`. Requires `#` and `...` lexer tokens; `macro` is
     reserved. No implementation, no v1 tests — do not mark as v1 work.
   - Editor grammar (Zed / tree-sitter): syntax highlight now covers all v1
-    forms — including the `fn(Params) -> Ret` type — and the future
-    macro/reserved tokens. `~/tree-sitter-harmony` and the nested
-    `language-extension/zed/harmony/grammars/harmony` repo were synced to the
-    same commit, with regenerated parser artifacts and a `test/corpus/v1.txt`
-    gate (4/4). The Zed `highlights.scm`, indent config and grammar rev in
+    forms — including the `fn(Params) -> Ret` type and `abilities` blocks —
+    and the future macro/reserved tokens. `~/tree-sitter-harmony` and the
+    nested `language-extension/zed/harmony/grammars/harmony` repo were synced to
+    the same commit, with regenerated parser artifacts and a `test/corpus/v1.txt`
+    gate (5/5). The Zed `highlights.scm`, indent config and grammar rev in
     `extension.toml` were updated in this repo.

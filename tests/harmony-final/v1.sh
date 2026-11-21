@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # V1 features for the final compiler: structured unchecked reasons, guarded
 # switch arms, Shared<T>/Weak<T>, threads with `fnptr`, `else` clauses, named
-# enum payload fields, struct patterns and first-class function pointers.
-# The syntax forms are final-language only, so they are checked directly
-# through `build/harmony`.
+# enum payload fields, struct patterns, first-class function pointers and
+# user-defined abilities. The syntax forms are final-language only, so they
+# are checked directly through `build/harmony`.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -57,6 +57,9 @@ run_case fnptr-basic 42
 run_case fnptr-field 42
 run_case fnptr-dispatch 42
 run_case fnptr-qualified 42
+run_case abilities-basic 42
+run_case abilities-bound-mix 42
+run_case abilities-struct 42
 
 "$HC" check "$DIR/guarded-refutable.harmony" >"$TMP/refutable.out" 2>&1
 refutable_rc=$?
@@ -121,6 +124,47 @@ if [ "$fpunknown_rc" -ne 0 ] && grep -q 'NAME-01' "$TMP/fpunknown.out"; then
     ok "fn type rejects an unknown parameter type"
 else
     bad "fn type rejects an unknown parameter type (exit $fpunknown_rc)"
+fi
+
+# Abilities: satisfaction, signature, name, foreign spelling, duplicates.
+"$HC" check "$DIR/abilities-not-satisfied.harmony" >"$TMP/ablt1.out" 2>&1
+ablt1_rc=$?
+if [ "$ablt1_rc" -ne 0 ] && grep -q 'ABLT-01' "$TMP/ablt1.out"; then
+    ok "ability rejects a type missing a required method"
+else
+    bad "ability rejects a type missing a required method (exit $ablt1_rc)"
+fi
+
+"$HC" check "$DIR/abilities-signature.harmony" >"$TMP/ablt2.out" 2>&1
+ablt2_rc=$?
+if [ "$ablt2_rc" -ne 0 ] && grep -q 'ABLT-01' "$TMP/ablt2.out"; then
+    ok "ability rejects a mismatched method signature"
+else
+    bad "ability rejects a mismatched method signature (exit $ablt2_rc)"
+fi
+
+"$HC" check "$DIR/abilities-unknown.harmony" >"$TMP/ablt3.out" 2>&1
+ablt3_rc=$?
+if [ "$ablt3_rc" -ne 0 ] && grep -q 'ABLT-02' "$TMP/ablt3.out"; then
+    ok "an unknown ability name is rejected"
+else
+    bad "an unknown ability name is rejected (exit $ablt3_rc)"
+fi
+
+"$HC" check "$DIR/abilities-trait.harmony" >"$TMP/ablt4.out" 2>&1
+ablt4_rc=$?
+if [ "$ablt4_rc" -ne 0 ] && grep -q 'NAME-02' "$TMP/ablt4.out"; then
+    ok "a foreign trait block gets the NAME-02 hint"
+else
+    bad "a foreign trait block gets the NAME-02 hint (exit $ablt4_rc)"
+fi
+
+"$HC" check "$DIR/abilities-duplicate.harmony" >"$TMP/ablt5.out" 2>&1
+ablt5_rc=$?
+if [ "$ablt5_rc" -ne 0 ] && grep -q 'ABLT-02' "$TMP/ablt5.out"; then
+    ok "duplicate ability names are rejected"
+else
+    bad "duplicate ability names are rejected (exit $ablt5_rc)"
 fi
 
 "$HC" check "$DIR/thread-capability.harmony" >"$TMP/cap.out" 2>&1

@@ -14,7 +14,7 @@ heap form is the built-in `heap(x)` (docs/harmony.md §12.2).
 
 | Group | Keywords |
 |---|---|
-| Declarations | `fn` `let` `mut` `const` `struct` `enum` `methods` `copy` `export` `import` `extern` |
+| Declarations | `fn` `let` `mut` `const` `struct` `enum` `methods` `abilities` `copy` `export` `import` `extern` |
 | Control flow | `if` `else` `while` `for` `switch` `case` `default` `return` `break` `continue` |
 | Memory and safety | `unchecked` `raw` `self` |
 | Literals and operators | `true` `false` `as` `sizeof` `heap` |
@@ -29,7 +29,7 @@ heap form is the built-in `heap(x)` (docs/harmony.md §12.2).
 `extern fn` without one is a syntax error — and `"C"` is the only ABI the
 backend implements (`FFI-01` for any other name).
 
-**Reserved for the future:** `abilities` `async` `await` `macro`. (`try` was dropped: v1 early exit is an `else` clause. `macro` is reserved for the future scoped AST macro design in docs/harmony.md §20.5 — design only, no implementation.)
+**Reserved for the future:** `async` `await` `macro`. (`abilities` became a declaration keyword in v1 — docs/harmony.md §6.9. `try` was dropped: v1 early exit is an `else` clause. `macro` is reserved for the future scoped AST macro design in docs/harmony.md §20.5 — design only, no implementation.)
 Dropped reservations: `spawn`, `send` (concurrency uses ordinary method-style
 names), `trait` (the v1 trait-like feature is spelled `abilities`, see
 docs/harmony.md §20.4), and `try` (v1 early exit is an `else` clause, §20.3
@@ -52,6 +52,7 @@ a `NAME-02` translation hint): `unsafe` `impl` `match` `trait` `pub` `use`
 | `String` `Vec` `Heap` `str` | owning / borrowed types |
 | `.own()` `.or_trap()` `.clone()` `.take()` | methods |
 | `sizeof(T)` `heap(x)` `raw(x)` | built-in forms |
+| `abilities Name { fn sig; ... }` | v1 final-compiler declaration: an ability with required method signatures; used as a generic bound, satisfied structurally (see `harmony.md` §6.9) |
 | `fn(Params) -> Ret` | v1 final-compiler type: a structural, `copy`, pointer-sized function pointer; a declared function name coerces to it when the signature matches (see `harmony.md` §5.11) |
 | `fnptr(name)` | v1 final-compiler intrinsic: address of a declared function as `raw u8`, used for thread entries; harmony-base does not parse it |
 | `else` (on a simple statement) | v1 final-compiler clause: `let x = f() else return;`, `x = f() else (e) { ... };`, `f() else trap("...");`. Only `Maybe`/`Outcome`; see FLOW-01/02/03 |

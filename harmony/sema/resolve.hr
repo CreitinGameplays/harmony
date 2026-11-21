@@ -394,6 +394,7 @@ export fn resolve(r: &mut Resolver, nodes: &node::Nodes, program: i32) -> i32 {
         // a spurious NAME-03.
         if (n.sval != "" && (n.kind == node::AST_FN || n.kind == node::AST_CONST
             || n.kind == node::AST_STRUCT || n.kind == node::AST_ENUM
+            || n.kind == node::AST_ABILITIES
             || n.kind == node::AST_EXTERN_FN)) {
             let mut kind: i32 = SK_FN;
             if (n.kind == node::AST_STRUCT || n.kind == node::AST_ENUM) { kind = SK_TYPE; }
@@ -412,6 +413,14 @@ export fn resolve(r: &mut Resolver, nodes: &node::Nodes, program: i32) -> i32 {
             resolve_type(r, nodes, n.a);
             resolve_expr(r, nodes, n.b);
         } else if (n.kind == node::AST_METHODS) {
+            let mut j: usize = 0;
+            while (j < n.kids2.len()) {
+                resolve_fn(r, nodes, *n.kids2.get(j));
+                j += 1;
+            }
+        } else if (n.kind == node::AST_ABILITIES) {
+            // v1: required signatures name types just like methods do; their
+            // (absent) bodies are handled by resolve_fn's -1 guard.
             let mut j: usize = 0;
             while (j < n.kids2.len()) {
                 resolve_fn(r, nodes, *n.kids2.get(j));

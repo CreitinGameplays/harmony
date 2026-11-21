@@ -1,0 +1,4 @@
+// A bound must name a declared ability or a built-in marker.
+fn use_it<T: Missing>(item: &T) -> i32 { return 1; }
+
+fn main() -> i32 { return 0; }

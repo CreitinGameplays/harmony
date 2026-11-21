@@ -27,6 +27,7 @@ const SK_PARAM: i32 = 4;
 const SK_TYPE: i32 = 5;
 const SK_SELF: i32 = 6;
 const SK_GEN: i32 = 7;
+const SK_ABILITY: i32 = 8;
 
 copy struct Sym {
     name: &str;
@@ -47,6 +48,7 @@ export struct Checker {
     fns: vec::Vec<i32>;         // function decl handles
     gen_fns: vec::Vec<i32>;     // generic function templates
     gen_tys: vec::Vec<i32>;     // generic type templates
+    ability_decls: vec::Vec<i32>;   // v1: ability declaration handles
     inst_names: vec::Vec<str::String>; // type-instance reuse: mangled name
     inst_bases: vec::Vec<str::String>; // template base name
     inst_ids: vec::Vec<i32>;    // the instance type id
@@ -79,6 +81,7 @@ export fn make(nodes: node::Nodes, path: &str) -> Checker {
         .fns = vec::Vec<i32>::make(),
         .gen_fns = vec::Vec<i32>::make(),
         .gen_tys = vec::Vec<i32>::make(),
+        .ability_decls = vec::Vec<i32>::make(),
         .inst_names = vec::Vec<str::String>::make(),
         .inst_bases = vec::Vec<str::String>::make(),
         .inst_ids = vec::Vec<i32>::make(),
@@ -494,6 +497,188 @@ fn find_gen_fn(c: &Checker, name: &str) -> i32 {
         i += 1;
     }
     return -1;
+}
+
+// ---- v1 abilities --------------------------------------------------------
+//
+// An ability is a set of required method signatures. Satisfaction is
+// structural: a type "has" an ability when its methods match every
+// requirement. Bounds live in the generic parameter's sval string
+// (`T: Drawable + ord`), which the parser records verbatim.
+
+fn is_builtin_bound(name: &str) -> bool {
+    return name == "copy" || name == "eq" || name == "ord";
+}
+
+// Splits `T: Drawable + ord` into the bound names after the colon. The parser
+// emits exactly `name: a + b`, but trimming keeps this robust to spacing.
+fn bound_names(s: &str) -> vec::Vec<str::String> {
+    let mut out: vec::Vec<str::String> = vec::Vec<str::String>::make();
+    let b = s.as_bytes();
+    let mut i: usize = 0;
+    while (i < b.len() && b[i] != 58u8) { i += 1; }   // ':'
+    if (i >= b.len()) { return out; }
+    i += 1;
+    let mut start: usize = i;
+    while (i <= b.len()) {
+        if (i == b.len() || b[i] == 43u8) {          // '+'
+            let mut a = start;
+            let mut z = i;
+            while (a < z && b[a] == 32u8) { a += 1; }
+            while (z > a && b[z - 1] == 32u8) { z -= 1; }
+            if (z > a) {
+                let mut bname: str::String = str::String::make();
+                bname.push(str::slice(s, a, z));
+                out.push(bname);
+            }
+            start = i + 1;
+        }
+        i += 1;
+    }
+    return out;
+}
+
+fn find_ability(c: &Checker, name: &str) -> i32 {
+    let mut i: usize = 0;
+    while (i < c.ability_decls.len()) {
+        let h = *c.ability_decls.get(i);
+        if (node::get(&c.nodes, h).sval == name) { return h; }
+        i += 1;
+    }
+    return -1;
+}
+
+fn ability_method(c: &Checker, ah: i32, name: &str) -> i32 {
+    let ab = node::get(&c.nodes, ah);
+    let mut i: usize = 0;
+    while (i < ab.kids2.len()) {
+        let f = *ab.kids2.get(i);
+        if (node::get(&c.nodes, f).sfx == name) { return f; }
+        i += 1;
+    }
+    return -1;
+}
+
+// Register an ability declaration and resolve its required signatures once,
+// so later comparisons can use the stamped types.
+fn register_ability(c: &mut Checker, h: i32) {
+    let n = node::get(&c.nodes, h);
+    declare(c, h, n.sval, SK_ABILITY, 0, 0);
+    let mut dup = false;
+    let mut k: usize = 0;
+    while (k < c.ability_decls.len()) {
+        if (node::get(&c.nodes, *c.ability_decls.get(k)).sval == n.sval) { dup = true; }
+        k += 1;
+    }
+    if (dup) {
+        add_diag(c, "ABLT-02", "duplicate ability",
+                 "An ability with this name is already declared.", h);
+        return;
+    }
+    c.ability_decls.push(h);
+    let mut i: usize = 0;
+    while (i < n.kids2.len()) {
+        let f = *n.kids2.get(i);
+        let mut fnode = node::get(&c.nodes, f);
+        fnode.sfx = fnode.sval;   // method name for lookup
+        node::put(&mut c.nodes, f, fnode);
+        let fp = node::get(&c.nodes, f);
+        let mut j: usize = 0;
+        while (j < fp.kids2.len()) {
+            let p = *fp.kids2.get(j);
+            if (!is_self_param(node::get(&c.nodes, p).sval)) {
+                let pt = resolve_type(c, node::get(&c.nodes, p).a);
+                set_ty(c, p, pt);
+            }
+            j += 1;
+        }
+        set_ty(c, f, resolve_type(c, fp.a));
+        i += 1;
+    }
+}
+
+// Compare a requirement signature with an implementation. Parameter names
+// may differ; the receiver's spelling and every type must agree.
+fn sig_matches(c: &Checker, req: i32, imp: i32) -> bool {
+    let a = node::get(&c.nodes, req);
+    let b = node::get(&c.nodes, imp);
+    if (!types::eq(a.ty, b.ty, &c.types)) { return false; }
+    if (a.kids2.len() != b.kids2.len()) { return false; }
+    let mut i: usize = 0;
+    while (i < a.kids2.len()) {
+        let pa = node::get(&c.nodes, *a.kids2.get(i));
+        let pb = node::get(&c.nodes, *b.kids2.get(i));
+        if (is_self_param(pa.sval) || is_self_param(pb.sval)) {
+            if (pa.sval != pb.sval) { return false; }
+        } else if (!types::eq(pa.ty, pb.ty, &c.types)) {
+            return false;
+        }
+        i += 1;
+    }
+    return true;
+}
+
+// Does `ty` provide every method required by `ah`?
+fn type_has_ability(c: &mut Checker, ty: i32, ah: i32) -> bool {
+    let ab = node::get(&c.nodes, ah);
+    let mut i: usize = 0;
+    while (i < ab.kids2.len()) {
+        let req = *ab.kids2.get(i);
+        let m = find_method(c, ty, node::get(&c.nodes, req).sfx);
+        if (m < 0 || !sig_matches(&*c, req, m)) { return false; }
+        i += 1;
+    }
+    return true;
+}
+
+// Validates a generic template's bounds: user ability names must exist.
+fn validate_bounds(c: &mut Checker, gp_h: i32) {
+    let names = bound_names(node::get(&c.nodes, gp_h).sval);
+    let mut i: usize = 0;
+    while (i < names.len()) {
+        let name = names.get(i).as_str();
+        if (!is_builtin_bound(name) && find_ability(&*c, name) < 0) {
+            let mut s: str::String = str::String::make();
+            s.push("no ability named `");
+            s.push(name);
+            s.push("` is declared");
+            add_diag(c, "ABLT-02", "unknown ability", s.as_str(), gp_h);
+        }
+        i += 1;
+    }
+}
+
+// Called at each generic instantiation with concrete type arguments. Built-in
+// bounds keep their existing (structural) behaviour; user abilities are
+// checked here, after monomorphization makes the receiver types concrete.
+fn check_ability_bounds(c: &mut Checker, tmpl: i32,
+                        concrete: &vec::Vec<i32>, at: i32) {
+    let t = node::get(&c.nodes, tmpl);
+    let mut i: usize = 0;
+    while (i < t.kids.len() && i < concrete.len()) {
+        let names = bound_names(node::get(&c.nodes, *t.kids.get(i)).sval);
+        let mut j: usize = 0;
+        while (j < names.len()) {
+            let name = names.get(j).as_str();
+            if (!is_builtin_bound(name)) {
+                let ah = find_ability(&*c, name);
+                let ty = *concrete.get(i);
+                // A template-only placeholder cannot be checked yet; the
+                // final instantiation with a concrete type re-checks it.
+                if (ah >= 0 && types::type_kind(&c.types, ty) != types::CTY_GENPARAM
+                    && !type_has_ability(c, ty, ah)) {
+                    let mut s: str::String = str::String::make();
+                    s.push(types::tname(&c.types, ty));
+                    s.push(" does not have ability `");
+                    s.push(name);
+                    s.push("`");
+                    add_diag(c, "ABLT-01", "ability not satisfied", s.as_str(), at);
+                }
+            }
+            j += 1;
+        }
+        i += 1;
+    }
 }
 
 // v1 function pointers. A `fn(A) -> R` type is structural: the return type is
@@ -953,6 +1138,9 @@ fn instantiate_type(c: &mut Checker, ti: i32, at: i32, args: &vec::Vec<i32>) -> 
         else { concrete.push(a_t); }
         i += 1;
     }
+    // v1: a generic type's ability bounds are checked at instantiation just
+    // like a generic function's.
+    check_ability_bounds(c, tmpl, &concrete, at);
     let mut kd: i32 = types::CTY_STRUCT;
     if (params.kind == node::AST_ENUM) { kd = types::CTY_ENUM; }
     // Reuse an existing instance with the same base and structurally equal
@@ -1328,6 +1516,11 @@ fn check_path(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
         return types::TY_INVALID;
     }
     let kind = sym_kind(&*c, sym);
+    if (kind == SK_ABILITY) {
+        add_diag(c, "TYPE-05", "an ability is not a value",
+                 "An ability is a bound on a type parameter, not a value.", h);
+        return types::TY_INVALID;
+    }
     if (kind == SK_CONST || kind == SK_LET || kind == SK_PARAM || kind == SK_SELF) {
         if (kind == SK_CONST) { set_target(c, h, sym_decl(&*c, sym)); }
         if ((kind == SK_LET || kind == SK_PARAM) && c.syms.get(sym as usize).init == 0
@@ -1740,6 +1933,30 @@ fn find_method(c: &mut Checker, recv: i32, name: &str) -> i32 {
             i += 1;
         }
         if (best >= 0) { return instantiate_gt(c, *c.gtmpls.get(best as usize), recv); }
+    }
+    // v1: on a generic parameter, a required method from one of its ability
+    // bounds is callable in the template body. Concrete instances re-resolve
+    // this to the real method after substitution.
+    if (types::type_kind(&c.types, recv) == types::CTY_GENPARAM) {
+        let mut sym: i32 = -1;
+        let mut k: usize = 0;
+        while (k < c.syms.len()) {
+            let s = c.syms.get(k);
+            if (s.kind == SK_GEN && s.ty == recv) { sym = k as i32; break; }
+            k += 1;
+        }
+        if (sym >= 0) {
+            let names = bound_names(node::get(&c.nodes, sym_decl(&*c, sym)).sval);
+            let mut j: usize = 0;
+            while (j < names.len()) {
+                let ah = find_ability(&*c, names.get(j).as_str());
+                if (ah >= 0) {
+                    let m = ability_method(&*c, ah, name);
+                    if (m >= 0) { return m; }
+                }
+                j += 1;
+            }
+        }
     }
     return -1;
 }
@@ -2930,6 +3147,8 @@ fn instantiate_fn(c: &mut Checker, ti: i32, at: i32, targs: &vec::Vec<i32>) -> i
         concrete.push(resolve_type(c, *targs.get(i)));
         i += 1;
     }
+    // v1: check user-defined ability bounds against the concrete arguments.
+    check_ability_bounds(c, tmpl, &concrete, at);
     return build_instance(c, tmpl, &concrete);
 }
 
@@ -3787,6 +4006,7 @@ fn check_template_body(c: &mut Checker, fh: i32) {
         if (pname != "") {
             let gt = types::new_named(&mut c.types, types::CTY_GENPARAM, pname, *f.kids.get(i));
             declare(c, *f.kids.get(i), pname, SK_GEN, gt, 0);
+            validate_bounds(c, *f.kids.get(i));
         }
         i += 1;
     }
@@ -4238,11 +4458,13 @@ export fn check_program(c: &mut Checker, program: i32) -> i32 {
         if (n.kind == node::AST_ENUM) { register_enum(c, h); }
         i += 1;
     }
-    // Pass 2: members.
+    // Pass 2: members and abilities. Abilities are registered before the
+    // function pass so their required signatures can name declared types.
     i = 0;
     while (i < p.kids.len()) {
         let h = *p.kids.get(i);
         let n = node::get(&c.nodes, h);
+        if (n.kind == node::AST_ABILITIES) { register_ability(c, h); }
         if (n.kind == node::AST_STRUCT) { fill_struct(c, h); }
         if (n.kind == node::AST_ENUM) { fill_enum(c, h); }
         i += 1;
@@ -4256,6 +4478,19 @@ export fn check_program(c: &mut Checker, program: i32) -> i32 {
         if (n.kind == node::AST_EXTERN_FN) { register_extern(c, h); }
         if (n.kind == node::AST_CONST) { register_const(c, h); }
         if (n.kind == node::AST_METHODS) { register_methods(c, h); }
+        i += 1;
+    }
+    // Ability names on generic type parameters are checked here as well;
+    // function templates validate their own bounds in check_template_body.
+    i = 0;
+    while (i < c.gen_tys.len()) {
+        let gt = *c.gen_tys.get(i);
+        let gtn = node::get(&c.nodes, gt);
+        let mut j: usize = 0;
+        while (j < gtn.kids.len()) {
+            validate_bounds(c, *gtn.kids.get(j));
+            j += 1;
+        }
         i += 1;
     }
     check_main(c);

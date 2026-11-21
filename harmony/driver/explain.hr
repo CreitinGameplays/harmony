@@ -21,6 +21,8 @@ fn known(code: &str) -> bool {
     if (code == "FLOW-01") { return true; }
     if (code == "FLOW-02") { return true; }
     if (code == "FLOW-03") { return true; }
+    if (code == "ABLT-01") { return true; }
+    if (code == "ABLT-02") { return true; }
     return false;
 }
 
@@ -199,6 +201,32 @@ fn flow03() {
     print("SEE    docs/harmony.md - 14.4, 16.10 Code catalogue\n\n");
 }
 
+fn ablt01() {
+    print("ABLT-01 - ability not satisfied\n\n");
+    print("WHAT   A concrete type argument for a bounded parameter does not\n");
+    print("       provide every method required by the ability.\n");
+    print("WHY    Otherwise a generic body could call a method that does not\n");
+    print("       exist on the type it was instantiated with.\n");
+    print("BAD    abilities Drawable {{ fn area(&self) -> i32; }}\n");
+    print("       fn f<T: Drawable>(x: &T) -> i32 {{ return x.area(); }}\n");
+    print("       // the argument type has no matching `area` method\n");
+    print("GOOD   Add a `methods Type` block with `fn area(&self) -> i32`.\n");
+    print("NOTE   Satisfaction is structural: names, receiver spelling and\n");
+    print("       parameter and return types must match the requirements.\n");
+    print("SEE    docs/harmony.md - 6.9, 16.10 Code catalogue\n\n");
+}
+
+fn ablt02() {
+    print("ABLT-02 - unknown or duplicate ability\n\n");
+    print("WHAT   A bound names an ability that was never declared, or two\n");
+    print("       abilities share the same name.\n");
+    print("WHY    A bound must name exactly one set of required methods.\n");
+    print("BAD    fn f<T: Drawable>(x: &T) {{ }} // no abilities Drawable block\n");
+    print("GOOD   abilities Drawable {{ fn area(&self) -> i32; }}\n");
+    print("NOTE   Built-in bounds `copy`, `eq` and `ord` are always known.\n");
+    print("SEE    docs/harmony.md - 6.9, 16.10 Code catalogue\n\n");
+}
+
 // Returns 0 for a known code, or -1 for an unknown one.
 export fn run(code: &str) -> i32 {
     if (!known(code)) { return -1; }
@@ -208,6 +236,8 @@ export fn run(code: &str) -> i32 {
     if (code == "FLOW-01") { flow01(); return 0; }
     if (code == "FLOW-02") { flow02(); return 0; }
     if (code == "FLOW-03") { flow03(); return 0; }
+    if (code == "ABLT-01") { ablt01(); return 0; }
+    if (code == "ABLT-02") { ablt02(); return 0; }
     if (code == "SYN-01") { syn01(); return 0; }
     if (code == "SYN-02") { syn02(); return 0; }
     if (code == "SYN-03") { syn03(); return 0; }

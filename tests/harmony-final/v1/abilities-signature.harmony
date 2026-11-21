@@ -1,0 +1,16 @@
+// A method with the right name but the wrong signature does not satisfy it.
+abilities Drawable {
+    fn area(&self) -> i32;
+}
+
+struct Box { v: i32; }
+methods Box {
+    export fn area(&self) -> i64 { return 1; }
+}
+
+fn use_it<T: Drawable>(item: &T) -> i32 { return item.area(); }
+
+fn main() -> i32 {
+    let b = Box { .v = 5 };
+    return use_it(&b);
+}

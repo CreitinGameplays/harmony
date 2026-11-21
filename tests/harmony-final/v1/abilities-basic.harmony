@@ -1,0 +1,31 @@
+// v1 abilities: declare a required signature, use it as a bound, and call the
+// method on a generic `&T`. Satisfaction is structural (matching methods).
+abilities Drawable {
+    fn area(&self) -> i32;
+    fn label(&self) -> &str;
+}
+
+struct Square { side: i32; }
+struct Rect { w: i32; h: i32; }
+
+methods Square {
+    export fn area(&self) -> i32 { return self.side * self.side; }
+    export fn label(&self) -> &str { return "square"; }
+}
+
+methods Rect {
+    export fn area(&self) -> i32 { return self.w * self.h; }
+    export fn label(&self) -> &str { return "rect"; }
+}
+
+fn area_of<T: Drawable>(item: &T) -> i32 { return item.area(); }
+fn label_of<T: Drawable>(item: &T) -> &str { return item.label(); }
+
+fn main() -> i32 {
+    let sq = Square { .side = 5 };
+    let r = Rect { .w = 2, .h = 5 };
+    if (area_of(&sq) != 25) { return 1; }
+    if (area_of(&r) != 10) { return 2; }
+    if (label_of(&sq) != "square") { return 3; }
+    return 42;
+}

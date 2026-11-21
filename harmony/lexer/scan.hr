@@ -31,6 +31,9 @@ fn is_keyword(s: &str) -> bool {
     // A chain, not a `switch`: harmony-base's switch patterns are scalar
     // literals, and a `&str` subject cannot match a string pattern.
     if (s == "fn") { return true; }
+    // v1: the trait-like feature is a keyword (§20.4). harmony-base stays v0
+    // and still lexes it as a reserved word, never as a declaration.
+    if (s == "abilities") { return true; }
     if (s == "let") { return true; }
     if (s == "mut") { return true; }
     if (s == "const") { return true; }

@@ -1,0 +1,21 @@
+// v1: ability bounds on generic type parameters are checked at instantiation.
+abilities Drawable {
+    fn area(&self) -> i32;
+}
+
+struct Square { side: i32; }
+methods Square {
+    export fn area(&self) -> i32 { return self.side * self.side; }
+}
+
+struct Holder<T: Drawable> { item: T; }
+
+methods<T> Holder<T> {
+    export fn total(&self) -> i32 { return self.item.area(); }
+}
+
+fn main() -> i32 {
+    let h = Holder<Square> { .item = Square { .side = 5 } };
+    if (h.total() != 25) { return 1; }
+    return 42;
+}

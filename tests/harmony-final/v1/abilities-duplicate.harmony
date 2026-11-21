@@ -1,0 +1,5 @@
+// Two abilities cannot share a name.
+abilities Drawable { fn area(&self) -> i32; }
+abilities Drawable { fn area(&self) -> i32; }
+
+fn main() -> i32 { return 0; }

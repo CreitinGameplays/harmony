@@ -145,17 +145,18 @@ export fn parse_generics(p: &mut pctx::Parser, onto: i32) -> bool {
             name.push(pctx::cur_word(p));
             pctx::advance(p);
             if (pctx::eat(p, token::TokKind::Colon)) {
-                // Bounds are the compiler-known markers: `copy` (a keyword),
-                // `eq`/`ord` (plain identifiers, §5.8).
+                // Bounds are `copy` (a keyword) or an identifier. Besides the
+                // built-in `eq`/`ord` markers (§5.8), v1 accepts the name of a
+                // declared ability (`<T: Drawable + ord>`, §20.4); the checker
+                // validates that the name exists.
                 name.push(":");
                 let mut first = true;
                 while (true) {
                     let is_bound = pctx::at_kw(&*p, "copy")
-                        || (pctx::at(&*p, token::TokKind::Ident)
-                            && (pctx::cur_word(p) == "eq" || pctx::cur_word(p) == "ord"));
+                        || pctx::at(&*p, token::TokKind::Ident);
                     if (!is_bound) {
-                        pctx::syntax_stop(p, "SYN-05", "a bound must be copy, eq, or ord",
-                                         "Bounds are the compiler-known markers copy, eq, ord (§5.8).");
+                        pctx::syntax_stop(p, "SYN-05", "a bound must be a name",
+                                         "Write `copy`, `eq`, `ord`, or the name of a declared ability.");
                         return false;
                     }
                     if (!first) { name.push(" + "); }
@@ -332,6 +333,69 @@ export fn parse_const(p: &mut pctx::Parser, is_export: i64, start: usize) -> i32
     if (v < 0) { return -1; }
     node::set_b(p.nodes, h, v);
     if (!pctx::expect_semi(p)) { return -1; }
+    pctx::end_at(p, h, pctx::prev(&*p).end);
+    return h;
+}
+
+// v1: abilities Name { fn sig; ... }
+// An ability declares required method *signatures*, not bodies. Satisfaction
+// is structural: a type with matching methods in its `methods` block has the
+// ability. The shape is parallel to `methods Type { ... }` (§20.4).
+export fn parse_abilities(p: &mut pctx::Parser, is_export: i64, start: usize) -> i32 {
+    pctx::advance(p);   // abilities
+    if (!pctx::at(&*p, token::TokKind::Ident)) {
+        pctx::syntax_stop(p, "SYN-05", "an ability needs a name",
+                         "`abilities Name { fn method(&self); }`");
+        return -1;
+    }
+    let h = pctx::node_at(p, node::AST_ABILITIES, start);
+    node::set_sval(p.nodes, h, pctx::cur_word(p));
+    node::set_ival(p.nodes, h, is_export);
+    pctx::advance(p);
+    if (!pctx::expect(p, token::TokKind::LBrace,
+                      "add `{` to open the abilities block")) {
+        return -1;
+    }
+    while (!pctx::at(&*p, token::TokKind::RBrace)
+           && !pctx::at(&*p, token::TokKind::Eof)) {
+        if (!pctx::at_kw(&*p, "fn")) {
+            pctx::syntax_stop(p, "SYN-05", "only `fn` signatures live in an abilities block",
+                             "Write `fn name(params) [-> type];` for each required method.");
+            return -1;
+        }
+        let fstart = pctx::cur(&*p).start;
+        pctx::advance(p);   // fn
+        if (!pctx::at(&*p, token::TokKind::Ident)) {
+            pctx::syntax_stop(p, "SYN-05", "a required method needs a name",
+                              "Write `fn name(params) [-> type];`.");
+            return -1;
+        }
+        let f = pctx::node_at(p, node::AST_FN, fstart);
+        node::set_sval(p.nodes, f, pctx::cur_word(p));
+        pctx::advance(p);
+        if (pctx::at(&*p, token::TokKind::Lt)) {
+            pctx::syntax_stop(p, "SYN-05", "generic requirements are not in v1",
+                              "An abilities block holds plain method signatures without `<...>`.");
+            return -1;
+        }
+        if (!pctx::expect(p, token::TokKind::LParen, "add `(` for the parameters")) {
+            return -1;
+        }
+        if (!parse_params(p, f)) { return -1; }
+        if (pctx::at(&*p, token::TokKind::Arrow)) {
+            pctx::advance(p);
+            let t = parse::parse_type(p);
+            if (t < 0) { return -1; }
+            node::set_a(p.nodes, f, t);
+        }
+        if (!pctx::expect_semi(p)) { return -1; }
+        pctx::end_at(p, f, pctx::prev(&*p).end);
+        node::push_kid2(p.nodes, h, f);
+    }
+    if (!pctx::expect(p, token::TokKind::RBrace,
+                      "add `}` to close the abilities block")) {
+        return -1;
+    }
     pctx::end_at(p, h, pctx::prev(&*p).end);
     return h;
 }
@@ -532,11 +596,22 @@ fn parse_item(p: &mut pctx::Parser, is_export: i64) -> i32 {
         }
     }
 
+    if (pctx::at_kw(&*p, "abilities")) {
+        return parse_abilities(p, is_export, start);
+    }
     if (pctx::at_kw(&*p, "methods")) { return parse_methods(p); }
     if (pctx::at_kw(&*p, "extern")) { return parse_extern(p); }
 
+    // A foreign `trait` block gets the documented NAME-02 translation hint
+    // instead of a bare syntax stop (§16.11, §20.4).
+    if (pctx::at(&*p, token::TokKind::Ident) && pctx::cur_word(p) == "trait") {
+        pctx::syntax_stop(p, "NAME-02", "spell it `abilities`",
+                          "The v1 trait-like feature is `abilities Name { ... }`, not `trait`.");
+        return -1;
+    }
+
     pctx::syntax_stop(p, "SYN-05", "expected an item",
-                     "Top level holds imports and items: fn, const, struct, enum, methods, extern fn (§6, §18).");
+                     "Top level holds imports and items: fn, const, struct, enum, methods, abilities, extern fn.");
     return -1;
 }
 

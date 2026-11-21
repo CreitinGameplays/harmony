@@ -449,8 +449,20 @@ The R6 byte-diff found ten rewrite-only bugs, all fixed at the source:
       opaque-address intrinsic for threads. New gates: `fnptr-basic`,
       `fnptr-field`, `fnptr-dispatch`, `fnptr-qualified` plus three type
       rejections and two syntax/name rejections.
-- [ ] Remaining v1 feature: `abilities`. Channels (§19.8.8) are also still
-  future work; the current primitive is a `Share<T>` box plus `join`.
+- [x] **User-defined abilities (§20.3 item 10).** `abilities Name { fn sig; ... }`
+      declares required method signatures (`AST_ABILITIES`, kind 27). The
+      keyword is lexed only by the final compiler, bounds accept any name in
+      addition to `copy`/`eq`/`ord`, and `find_method` resolves a requirement
+      on a bounded generic parameter during the template check. A structural
+      check at each generic instantiation (`instantiate_fn` and
+      `instantiate_type`) verifies that the concrete type has matching methods
+      (`ABLT-01`); unknown or duplicate ability names are `ABLT-02`. A foreign
+      `trait` block in item position produces the documented `NAME-02` hint.
+      No codegen changes: abilities are compile-time only, and template bodies
+      are never emitted. New gates: `abilities-basic`, `abilities-bound-mix`,
+      `abilities-struct` plus five rejections.
+- [ ] No v1 compiler features remain. Channels (§19.8.8) are future work; the
+  current primitive is a `Share<T>` box plus `join`.
 - [ ] **Scoped AST macros (future): design documented, not implemented.**
   docs/harmony.md §20.5 records the planned model: expansion at stage 3.5,
   `#name(...)` calls with `#` and `...` as reserved tokens, contextual
@@ -459,10 +471,10 @@ The R6 byte-diff found ten rewrite-only bugs, all fixed at the source:
   and `MACRO-01..04`. No compiler stage expands macros today; `macro` stays
   reserved and no v1 test covers it.
 
-`tests/harmony-final/v1.sh` runs the batch: twenty-two accepted programs,
-sixteen rejections (guards, `fnptr`, the thread capability, four `else`/FLOW
-checks, three field/pattern checks and five function-pointer checks), and both
-audit formats.
+`tests/harmony-final/v1.sh` runs the batch: twenty-five accepted programs,
+twenty-one rejections (guards, `fnptr`, the thread capability, four `else`/FLOW
+checks, three field/pattern checks, five function-pointer checks and five
+ability checks), and both audit formats.
 harmony-base is unchanged apart from the `ty_find_member` bounds guard.
 
 ## What harmony-base must still grow (feed it back)

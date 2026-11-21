@@ -1,0 +1,17 @@
+// A type missing a required method does not have the ability.
+abilities Drawable {
+    fn area(&self) -> i32;
+    fn label(&self) -> &str;
+}
+
+struct Square { side: i32; }
+methods Square {
+    export fn area(&self) -> i32 { return self.side; }
+}
+
+fn use_it<T: Drawable>(item: &T) -> i32 { return item.area(); }
+
+fn main() -> i32 {
+    let sq = Square { .side = 5 };
+    return use_it(&sq);
+}

@@ -1,0 +1,22 @@
+// v1: a user ability combines with a built-in bound, and explicit generic
+// type arguments instantiate the template.
+abilities Drawable {
+    fn area(&self) -> i32;
+}
+
+struct Square { side: i32; }
+methods Square {
+    export fn area(&self) -> i32 { return self.side * self.side; }
+}
+
+fn bigger<T: Drawable + ord>(a: &T, b: &T) -> i32 {
+    if (a.area() > b.area()) { return a.area(); }
+    return b.area();
+}
+
+fn main() -> i32 {
+    let a = Square { .side = 3 };
+    let b = Square { .side = 6 };
+    if (bigger<Square>(&a, &b) != 36) { return 1; }
+    return 42;
+}

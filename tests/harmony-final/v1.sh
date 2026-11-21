@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # V1 features for the final compiler: structured unchecked reasons, guarded
 # switch arms, Shared<T>/Weak<T>, threads with `fnptr`, `else` clauses, named
-# enum payload fields and struct patterns. The syntax forms are final-language
-# only, so they are checked directly through `build/harmony`.
+# enum payload fields, struct patterns and first-class function pointers.
+# The syntax forms are final-language only, so they are checked directly
+# through `build/harmony`.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -52,6 +53,10 @@ run_case else-nested-exit 42
 run_case named-enum-fields 42
 run_case struct-patterns 42
 run_case named-generic-enum 42
+run_case fnptr-basic 42
+run_case fnptr-field 42
+run_case fnptr-dispatch 42
+run_case fnptr-qualified 42
 
 "$HC" check "$DIR/guarded-refutable.harmony" >"$TMP/refutable.out" 2>&1
 refutable_rc=$?
@@ -75,6 +80,47 @@ if [ "$fnptr_rc" -ne 0 ] && grep -q 'TYPE-04' "$TMP/fnptr.out"; then
     ok "fnptr rejects a non-function argument"
 else
     bad "fnptr rejects a non-function argument (exit $fnptr_rc)"
+fi
+
+# First-class function pointers: signature, arity and argument checks.
+"$HC" check "$DIR/fnptr-sig-mismatch.harmony" >"$TMP/fpsig.out" 2>&1
+fpsig_rc=$?
+if [ "$fpsig_rc" -ne 0 ] && grep -q 'function pointer' "$TMP/fpsig.out"; then
+    ok "function pointer rejects a mismatched function signature"
+else
+    bad "function pointer rejects a mismatched function signature (exit $fpsig_rc)"
+fi
+
+"$HC" check "$DIR/fnptr-arity.harmony" >"$TMP/fparity.out" 2>&1
+fparity_rc=$?
+if [ "$fparity_rc" -ne 0 ] && grep -q 'wrong number of arguments' "$TMP/fparity.out"; then
+    ok "indirect call rejects the wrong arity"
+else
+    bad "indirect call rejects the wrong arity (exit $fparity_rc)"
+fi
+
+"$HC" check "$DIR/fnptr-arg-type.harmony" >"$TMP/fparg.out" 2>&1
+fparg_rc=$?
+if [ "$fparg_rc" -ne 0 ] && grep -q 'TYPE-01' "$TMP/fparg.out"; then
+    ok "indirect call rejects a mismatched argument type"
+else
+    bad "indirect call rejects a mismatched argument type (exit $fparg_rc)"
+fi
+
+"$HC" check "$DIR/fnptr-missing-arrow.harmony" >"$TMP/fparrow.out" 2>&1
+fparrow_rc=$?
+if [ "$fparrow_rc" -ne 0 ] && grep -q 'SYN-05' "$TMP/fparrow.out"; then
+    ok "fn type rejects a missing return type"
+else
+    bad "fn type rejects a missing return type (exit $fparrow_rc)"
+fi
+
+"$HC" check "$DIR/fnptr-unknown-type.harmony" >"$TMP/fpunknown.out" 2>&1
+fpunknown_rc=$?
+if [ "$fpunknown_rc" -ne 0 ] && grep -q 'NAME-01' "$TMP/fpunknown.out"; then
+    ok "fn type rejects an unknown parameter type"
+else
+    bad "fn type rejects an unknown parameter type (exit $fpunknown_rc)"
 fi
 
 "$HC" check "$DIR/thread-capability.harmony" >"$TMP/cap.out" 2>&1

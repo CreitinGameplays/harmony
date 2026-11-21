@@ -1,0 +1,20 @@
+// v1: function pointers in struct fields and as return values.
+fn add(a: i32, b: i32) -> i32 { return a + b; }
+fn sub(a: i32, b: i32) -> i32 { return a - b; }
+
+struct Ops {
+    f: fn(i32, i32) -> i32;
+}
+
+fn pick(flag: bool) -> fn(i32, i32) -> i32 {
+    if (flag) { return add; }
+    return sub;
+}
+
+fn main() -> i32 {
+    let ops = Ops { .f = add };
+    if (ops.f(20, 22) != 42) { return 1; }
+    let f = pick(false);
+    if (f(44, 2) != 42) { return 2; }
+    return 42;
+}

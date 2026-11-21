@@ -148,6 +148,36 @@ export fn parse_type(p: &mut pctx::Parser) -> i32 {
 fn parse_type_core(p: &mut pctx::Parser) -> i32 {
     let start = pctx::cur(&*p).start;
 
+    // v1 (final compiler only): a first-class function pointer type
+    //   fn_type = "fn" "(" [ type { "," type } ] ")" "->" type
+    // The keyword `fn` already opens a declaration at item level, but here we
+    // are in type position, where it can only be this form.
+    if (pctx::at_kw(&*p, "fn")) {
+        pctx::advance(p);
+        if (!pctx::expect(p, token::TokKind::LParen, "add `(` after `fn`")) { return -1; }
+        let h = pctx::node_at(p, node::AST_TYPE_FN, start);
+        if (!pctx::at(&*p, token::TokKind::RParen)) {
+            while (true) {
+                let pt = parse_type(p);
+                if (pt < 0) { return -1; }
+                node::push_kid(p.nodes, h, pt);
+                if (!pctx::eat(p, token::TokKind::Comma)) { break; }
+                if (pctx::at(&*p, token::TokKind::RParen)) { break; }
+            }
+        }
+        if (!pctx::expect(p, token::TokKind::RParen, "add `)` to close the parameters")) {
+            return -1;
+        }
+        if (!pctx::expect(p, token::TokKind::Arrow, "add `->` and a return type after the parameters")) {
+            return -1;
+        }
+        let rt = parse_type(p);
+        if (rt < 0) { return -1; }
+        node::set_a(p.nodes, h, rt);
+        pctx::end_at(p, h, pctx::prev(&*p).end);
+        return h;
+    }
+
     // Reference: `&` [mut] [life(...)] type
     if (pctx::at(&*p, token::TokKind::Amp)) {
         pctx::advance(p);

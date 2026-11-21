@@ -1,0 +1,16 @@
+// v1: arrays of function pointers, zero-argument and unit-return pointers.
+fn add(a: i32, b: i32) -> i32 { return a + b; }
+fn sub(a: i32, b: i32) -> i32 { return a - b; }
+fn noop() { }
+fn five() -> i32 { return 5; }
+
+fn main() -> i32 {
+    let table: [fn(i32, i32) -> i32; 2] = [add, sub];
+    if (table[0](20, 22) != 42) { return 1; }
+    if (table[1](44, 2) != 42) { return 2; }
+    let n = noop;
+    n();
+    let z: fn() -> i32 = five;
+    if (z() != 5) { return 3; }
+    return 42;
+}

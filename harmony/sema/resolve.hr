@@ -164,6 +164,15 @@ fn resolve_type(r: &mut Resolver, nodes: &node::Nodes, h: i32) {
         }
         return;
     }
+    // v1: a function-pointer type keeps its parameter types in `kids` and its
+    // return type in `a`; both need their names checked.
+    if (n.kind == node::AST_TYPE_FN) {
+        let mut i: usize = 0;
+        while (i < n.kids.len()) {
+            resolve_type(r, nodes, *n.kids.get(i));
+            i += 1;
+        }
+    }
     // Ref/raw/array/slice: check the inner type (and an array's length expr).
     resolve_type(r, nodes, n.a);
     resolve_type(r, nodes, n.b);

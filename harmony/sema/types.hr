@@ -47,6 +47,10 @@ export const CTY_PTR: i32 = 209;
 export const CTY_MUTPTR: i32 = 210;
 export const CTY_SLICE: i32 = 211;
 export const CTY_GENPARAM: i32 = 212;
+// v1: a first-class function pointer type `fn(A, B) -> R`. `a` is the return
+// type; the parameter types live in the member list (like a tuple). It is a
+// scalar, pointer-sized type, never a nominal aggregate.
+export const CTY_FN: i32 = 213;
 
 // ---- storage --------------------------------------------------------------
 
@@ -294,6 +298,22 @@ export fn is_struct(t: &Types, id: i32) -> bool { return type_kind(t, id) == CTY
 
 export fn is_genparam(t: &Types, id: i32) -> bool { return type_kind(t, id) == CTY_GENPARAM; }
 
+// v1 function-pointer helpers. `a` is the return type and the member list
+// holds the parameter types in declaration order.
+export fn is_fn(t: &Types, id: i32) -> bool { return type_kind(t, id) == CTY_FN; }
+export fn fn_ret(t: &Types, id: i32) -> i32 {
+    if (!is_fn(t, id)) { return TY_INVALID; }
+    return elem(t, id);
+}
+export fn fn_param_count(t: &Types, id: i32) -> usize {
+    if (!is_fn(t, id)) { return 0; }
+    return member_count(t, id);
+}
+export fn fn_param(t: &Types, id: i32, i: i32) -> i32 {
+    if (!is_fn(t, id)) { return TY_INVALID; }
+    return member_type(t, id, i);
+}
+
 
 export fn eq(a: i32, b: i32, t: &Types) -> bool {
     if (a == b) { return true; }
@@ -309,6 +329,19 @@ export fn eq(a: i32, b: i32, t: &Types) -> bool {
     // Generic parameters are stand-ins: two references to `T` name the same
     // type even though each resolution allocated its own placeholder id.
     if (k == CTY_GENPARAM) { return tname(t, a) == tname(t, b); }
+    // Function pointers are structural: same return and parameter types.
+    if (k == CTY_FN) {
+        if (!eq(elem(t, a), elem(t, b), &*t)) { return false; }
+        if (member_count(t, a) != member_count(t, b)) { return false; }
+        let mut i: usize = 0;
+        while (i < member_count(t, a)) {
+            if (!eq(member_type(t, a, i as i32), member_type(t, b, i as i32), &*t)) {
+                return false;
+            }
+            i += 1;
+        }
+        return true;
+    }
     if (k == CTY_ARRAY) {
         return eq(elem(t, a), elem(t, b), &*t) && array_len(t, a) == array_len(t, b);
     }
@@ -349,7 +382,8 @@ export fn size(id: i32, t: &mut Types) -> i32 {
     let k = e.kind;
     let mut sz: i32 = 8;
     let mut al: i32 = 0;
-    if (k == CTY_REF || k == CTY_MUTREF || k == CTY_PTR || k == CTY_MUTPTR || k == CTY_HEAP) {
+    if (k == CTY_REF || k == CTY_MUTREF || k == CTY_PTR || k == CTY_MUTPTR
+        || k == CTY_HEAP || k == CTY_FN) {
         sz = 8;
     } else if (k == CTY_STRREF || k == CTY_SLICE) {
         sz = 16;
@@ -402,7 +436,7 @@ export fn align(id: i32, t: &mut Types) -> i32 {
     let e = *t.entries.get(id as usize);
     if (e.align != 0) { return e.align; }
     if (e.kind == CTY_ARRAY) { return align(e.a, t); }
-    if (is_ref(&*t, id) || is_ptr(&*t, id) || is_heap(&*t, id)
+    if (is_ref(&*t, id) || is_ptr(&*t, id) || is_heap(&*t, id) || e.kind == CTY_FN
         || e.kind == CTY_SLICE || e.kind == CTY_STRREF) {
         return 8;
     }

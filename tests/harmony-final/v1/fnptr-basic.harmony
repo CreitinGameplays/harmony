@@ -1,0 +1,27 @@
+// v1 first-class function pointers: annotate, infer, pass, reassign, call.
+fn add(a: i32, b: i32) -> i32 { return a + b; }
+fn sub(a: i32, b: i32) -> i32 { return a - b; }
+
+fn apply(f: fn(i32, i32) -> i32, a: i32, b: i32) -> i32 {
+    return f(a, b);
+}
+
+fn main() -> i32 {
+    // An annotated binding takes the address of a declared function.
+    let f: fn(i32, i32) -> i32 = add;
+    if (f(20, 22) != 42) { return 1; }
+
+    // The type is inferred from the function when no annotation is present.
+    let g = sub;
+    if (g(44, 2) != 42) { return 2; }
+
+    // A function name passed to a function-pointer parameter.
+    if (apply(add, 40, 2) != 42) { return 3; }
+
+    // Reassignment keeps the pointer's type.
+    let mut h: fn(i32, i32) -> i32 = add;
+    h = sub;
+    if (h(50, 8) != 42) { return 4; }
+
+    return 42;
+}

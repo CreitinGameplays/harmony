@@ -34,6 +34,10 @@ const AST_TYPE_ARRAY: i32 = 22;
 const AST_TYPE_SLICE: i32 = 23;
 const AST_TYPE_UNIT: i32 = 24;
 const AST_TYPE_RAW: i32 = 25;
+// v1: first-class function pointer type `fn(A, B) -> R`. `a` holds the return
+// type node and `kids` the parameter type nodes. harmony-base stays v0, so it
+// never mints this kind; the stable name keeps `--dump-ast` readable.
+const AST_TYPE_FN: i32 = 26;
 const AST_BLOCK: i32 = 30;
 const AST_LET: i32 = 31;
 const AST_ASSIGN: i32 = 32;
@@ -279,6 +283,7 @@ export fn kind_name(kind: i32) -> &str {
     if (kind == AST_TYPE_SLICE) { return "type-slice"; }
     if (kind == AST_TYPE_UNIT) { return "type-unit"; }
     if (kind == AST_TYPE_RAW) { return "type-raw"; }
+    if (kind == AST_TYPE_FN) { return "type-fn"; }
     if (kind == AST_BLOCK) { return "block"; }
     if (kind == AST_LET) { return "let"; }
     if (kind == AST_ASSIGN) { return "assign"; }

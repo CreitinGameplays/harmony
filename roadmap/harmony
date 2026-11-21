@@ -406,10 +406,10 @@ The R6 byte-diff found ten rewrite-only bugs, all fixed at the source:
   - `Share<T>::as_raw()` returns an **opaque, non-exported `ThreadArg`**, the
     capability marker `spawn` requires. A caller cannot fabricate one for a
     pointer it does not own (a raw pointer argument is `TYPE-01`).
-  - `fnptr(f)` (node `ival` 18) is the final-only intrinsic for a function
-    address; the checker stores the declaration handle in `b` and codegen
-    emits `@harmony__f`. It is deliberately not a general function-pointer
-    type — that remains a separate v1 item.
+  - `fnptr(f)` (node `ival` 18) is the final-only intrinsic for an **opaque**
+    function address used by thread entries; the checker stores the declaration
+    handle in `b` and codegen emits `@harmony__f`. Typed, first-class function
+    pointers are a separate v1 item (below); `fnptr` does not produce one.
 - [x] **Early exit on failure via an `else` clause (§20.3 item 5, redesigned).**
   The `try` keyword was removed entirely. A new `AST_ELSE` node (kind 43)
   attaches to `let`, plain `=` assignment and expression statements; the
@@ -436,9 +436,21 @@ The R6 byte-diff found ten rewrite-only bugs, all fixed at the source:
   codegen ANDs literal-field tests with the variant tag test (for enums) and
   binds the remaining fields. Unknown fields are `TYPE-02`; a struct pattern
   on a non-struct/enum subject is `TYPE-01`.
-- [ ] Remaining v1 features: function pointers (as a first-class type) and
-  `abilities`. Channels (§19.8.8) are also still future work; the current
-  primitive is a `Share<T>` box plus `join`.
+- [x] **First-class function pointers (§20.3 item 7).** A `fn(Params) -> Ret`
+      type node (`AST_TYPE_FN`, kind 26) resolves to a structural `CTY_FN`
+      entry: the return type in `a`, parameter types in the member list, and
+      a pointer-sized, `copy` layout. A declared function name used as a value
+      stamps its declaration in `target` and lowers to its LLVM global; the
+      signature must match the expected type (`TYPE-01`). Calls through a
+      function-pointer local, parameter, field or array element check arity
+      (`TYPE-04`) and argument types (`TYPE-01`); codegen emits an indirect
+      `call ptr` with the same sret conventions as a direct call. Qualified
+      module functions work as values too. `fnptr(name)` remains the separate
+      opaque-address intrinsic for threads. New gates: `fnptr-basic`,
+      `fnptr-field`, `fnptr-dispatch`, `fnptr-qualified` plus three type
+      rejections and two syntax/name rejections.
+- [ ] Remaining v1 feature: `abilities`. Channels (§19.8.8) are also still
+  future work; the current primitive is a `Share<T>` box plus `join`.
 - [ ] **Scoped AST macros (future): design documented, not implemented.**
   docs/harmony.md §20.5 records the planned model: expansion at stage 3.5,
   `#name(...)` calls with `#` and `...` as reserved tokens, contextual
@@ -447,10 +459,10 @@ The R6 byte-diff found ten rewrite-only bugs, all fixed at the source:
   and `MACRO-01..04`. No compiler stage expands macros today; `macro` stays
   reserved and no v1 test covers it.
 
-`tests/harmony-final/v1.sh` runs the batch: eighteen accepted programs, a
-`TYPE-03` rejection, a `CASE-01` rejection, nine v1 type rejections (`fnptr`,
-the thread capability, four `else`/FLOW checks, and three field/pattern
-checks), and both audit formats.
+`tests/harmony-final/v1.sh` runs the batch: twenty-two accepted programs,
+sixteen rejections (guards, `fnptr`, the thread capability, four `else`/FLOW
+checks, three field/pattern checks and five function-pointer checks), and both
+audit formats.
 harmony-base is unchanged apart from the `ty_find_member` bounds guard.
 
 ## What harmony-base must still grow (feed it back)

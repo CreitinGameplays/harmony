@@ -163,7 +163,9 @@ export fn type_name(e: &mut Emitter, id: i32) -> &str {
     let k = types::type_kind(&e.c.types, id);
     if (k == types::CTY_SLICE || k == types::CTY_STRREF) { return "%slice"; }
     if (k == types::CTY_REF || k == types::CTY_MUTREF || k == types::CTY_HEAP
-        || k == types::CTY_PTR || k == types::CTY_MUTPTR) { return "ptr"; }
+        || k == types::CTY_PTR || k == types::CTY_MUTPTR || k == types::CTY_FN) {
+        return "ptr";
+    }
     if (k == types::CTY_STRUCT) {
         let mut s: str::String = str::String::make();
         s.push("%struct.");
@@ -209,7 +211,9 @@ export fn zero_of(e: &mut Emitter, id: i32) -> &str {
         || k == types::CTY_ARRAY || k == types::CTY_SLICE
         || k == types::CTY_STRREF) { return "zeroinitializer"; }
     if (k == types::CTY_REF || k == types::CTY_MUTREF || k == types::CTY_HEAP
-        || k == types::CTY_PTR || k == types::CTY_MUTPTR) { return "null"; }
+        || k == types::CTY_PTR || k == types::CTY_MUTPTR || k == types::CTY_FN) {
+        return "null";
+    }
     return "0";
 }
 

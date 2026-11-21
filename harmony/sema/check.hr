@@ -496,6 +496,45 @@ fn find_gen_fn(c: &Checker, name: &str) -> i32 {
     return -1;
 }
 
+// v1 function pointers. A `fn(A) -> R` type is structural: the return type is
+// stored in `a` and the parameter types in the member list. Parameters get
+// synthetic empty names — they are never visible as struct fields.
+fn make_fn_type(c: &mut Checker, ret: i32, params: &vec::Vec<i32>) -> i32 {
+    let mut s: str::String = str::String::make();
+    s.push("fn(");
+    let mut i: usize = 0;
+    while (i < params.len()) {
+        if (i > 0) { s.push(", "); }
+        s.push(types::tname(&c.types, *params.get(i)));
+        i += 1;
+    }
+    s.push(") -> ");
+    s.push(types::tname(&c.types, ret));
+    let id = types::new_type(&mut c.types, types::CTY_FN, s.as_str(), ret, 0);
+    i = 0;
+    while (i < params.len()) {
+        types::add_member(&mut c.types, id, "", *params.get(i));
+        i += 1;
+    }
+    return id;
+}
+
+// The function-pointer type of a declared function. `self` receivers are not
+// parameters of the free function, so they are skipped (a method as a value
+// needs its receiver supplied by the caller, which v1 does not support).
+fn decl_fn_type(c: &mut Checker, decl: i32) -> i32 {
+    let f = node::get(&c.nodes, decl);
+    let mut params: vec::Vec<i32> = vec::Vec<i32>::make();
+    let mut i: usize = 0;
+    while (i < f.kids2.len()) {
+        let p = node::get(&c.nodes, *f.kids2.get(i));
+        // A self parameter has no type node; see `register_extern`.
+        if (p.a >= 0) { params.push(p.ty); }
+        i += 1;
+    }
+    return make_fn_type(c, f.ty, &params);
+}
+
 // Resolve a type node to a type id. `cache` stamps Node.ty so repeated uses
 // (and recursive types) stay cheap.
 export fn resolve_type(c: &mut Checker, h: i32) -> i32 {
@@ -506,6 +545,19 @@ export fn resolve_type(c: &mut Checker, h: i32) -> i32 {
     let k = n.kind;
     if (k == node::AST_TYPE_UNIT) {
         result = types::TY_UNIT;
+    } else if (k == node::AST_TYPE_FN) {
+        // v1: `fn(params) -> ret`. Each child of `kids` is a parameter type.
+        let mut params: vec::Vec<i32> = vec::Vec<i32>::make();
+        let mut i: usize = 0;
+        while (i < n.kids.len()) {
+            let pt = resolve_type(c, *n.kids.get(i));
+            if (pt == types::TY_INVALID) { return types::TY_INVALID; }
+            params.push(pt);
+            i += 1;
+        }
+        let ret = resolve_type(c, n.a);
+        if (ret == types::TY_INVALID) { return types::TY_INVALID; }
+        result = make_fn_type(c, ret, &params);
     } else if (k == node::AST_TYPE_REF) {
         // `&str` is the fat string-reference type (§5.3): `str` itself is
         // unsized, so it only appears behind a reference.
@@ -770,7 +822,8 @@ fn subst_type(c: &mut Checker, h: i32, params: &node::Node, args: &vec::Vec<i32>
 fn is_type_syntax(kind: i32) -> bool {
     return kind == node::AST_TYPE_NAME || kind == node::AST_TYPE_REF
         || kind == node::AST_TYPE_ARRAY || kind == node::AST_TYPE_SLICE
-        || kind == node::AST_TYPE_UNIT || kind == node::AST_TYPE_RAW;
+        || kind == node::AST_TYPE_UNIT || kind == node::AST_TYPE_RAW
+        || kind == node::AST_TYPE_FN;
 }
 
 // Rewrites every type in a freshly cloned generic body and clears semantic
@@ -1206,6 +1259,22 @@ fn enum_path(c: &mut Checker, at: i32, full: &str) -> i32 {
     return pt;
 }
 
+// v1: bind a declared function's address to a name expression as a typed
+// function pointer. `target` tells codegen which LLVM global to emit.
+fn fn_value(c: &mut Checker, h: i32, decl: i32) -> i32 {
+    let ft = decl_fn_type(c, decl);
+    let mut out = ft;
+    if (c.expected > 0 && types::is_fn(&c.types, c.expected)) {
+        if (!types::eq(ft, c.expected, &c.types)) {
+            mismatch(c, h, c.expected, ft, "function pointer");
+            return types::TY_INVALID;
+        }
+        out = c.expected;   // keep the annotated spelling/stable id
+    }
+    set_target(c, h, decl);
+    return out;
+}
+
 // A `name` expression (path, constant, local, enum variant, fn-as-value).
 fn check_path(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
     let name = n.sval;
@@ -1217,6 +1286,10 @@ fn check_path(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
     }
     if (has_colons(name)) {
         let sym = lookup(&*c, name);
+        // v1: an imported/module-qualified function name is also a value.
+        if (sym >= 0 && sym_kind(&*c, sym) == SK_FN) {
+            return fn_value(c, h, sym_decl(&*c, sym));
+        }
         if (sym >= 0 && (sym_kind(&*c, sym) == SK_CONST || sym_kind(&*c, sym) == SK_LET
             || sym_kind(&*c, sym) == SK_PARAM)) {
             if (sym_kind(&*c, sym) == SK_CONST) { set_target(c, h, sym_decl(&*c, sym)); }
@@ -1265,7 +1338,11 @@ fn check_path(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
         }
         return sym_ty(&*c, sym);
     }
-    if (kind == SK_FN) { return types::TY_UNIT; }   // fn values arrive in v1
+    if (kind == SK_FN) {
+        // v1: a function name used as a value is a first-class function
+        // pointer. Target stamping lets codegen emit the function's address.
+        return fn_value(c, h, sym_decl(&*c, sym));
+    }
     if (kind == SK_TYPE) {
         add_diag(c, "TYPE-05", "a type is not a value",
                  "Type names can only appear in type position.", h);
@@ -2300,18 +2377,76 @@ fn ordinary_call(c: &mut Checker, at: i32, name: &str, args: &vec::Vec<i32>) -> 
     return sym_ty(&*c, sym);
 }
 
+// v1: an indirect call through a function-pointer value. The parameter types
+// are the CTY_FN member list; the return type is its `a`.
+fn check_fn_ptr_call(c: &mut Checker, at: i32, fty: i32,
+                     args: &vec::Vec<i32>) -> i32 {
+    let np = types::fn_param_count(&c.types, fty);
+    if (np != args.len()) {
+        err_arity(c, at, types::tname(&c.types, fty), np, args.len());
+    }
+    let mut i: usize = 0;
+    while (i < args.len()) {
+        let mut want: i32 = types::TY_INVALID;
+        if (i < np) { want = types::fn_param(&c.types, fty, i as i32); }
+        let saved = c.expected;
+        if (want != types::TY_INVALID) { c.expected = want; }
+        let got = check_expr(c, *args.get(i));
+        c.expected = saved;
+        if (got != types::TY_INVALID && want != types::TY_INVALID
+            && !coercible(c, want, got)) {
+            mismatch(c, *args.get(i), want, got, "argument");
+        }
+        if (want != types::TY_INVALID) { stamp_lits(c, *args.get(i), want); }
+        i += 1;
+    }
+    return types::fn_ret(&c.types, fty);
+}
+
 // A call expression: method, explicit generic, plain, or not-callable.
 fn check_call(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
     // Explicit generic call: parser put the name in sval and args in kids.
     if (n.a < 0) { return generic_call(c, h, n); }
     let callee = node::get(&c.nodes, n.a);
+    // v1: `f(3)` where `f` is a local/parameter holding a function pointer is
+    // an indirect call, not a call to a function named `f`.
+    if (callee.kind == node::AST_PATH && !has_colons(callee.sval)) {
+        let cs = lookup(&*c, callee.sval);
+        if (cs >= 0) {
+            let ck = sym_kind(&*c, cs);
+            if ((ck == SK_LET || ck == SK_PARAM || ck == SK_CONST)
+                && types::is_fn(&c.types, sym_ty(&*c, cs))) {
+                let ct = check_expr(c, n.a);
+                if (ct != types::TY_INVALID && types::is_fn(&c.types, ct)) {
+                    return check_fn_ptr_call(c, h, ct, &n.kids);
+                }
+            }
+        }
+    }
     if (callee.kind == node::AST_FIELD_ACC) {
         let recv_ty = check_expr(c, callee.a);
+        // v1: `obj.f(args)` where `f` is a function-pointer *field* is an
+        // indirect call, not a method lookup on the receiver type.
+        let bt = deref_all(&*c, recv_ty);
+        if (types::is_struct(&c.types, bt) || types::is_enum(&c.types, bt)) {
+            let fi = types::find_member(&c.types, bt, callee.sval);
+            if (fi >= 0 && types::is_fn(&c.types,
+                    types::member_type(&c.types, bt, fi))) {
+                let ft = check_expr(c, n.a);
+                if (ft != types::TY_INVALID && types::is_fn(&c.types, ft)) {
+                    return check_fn_ptr_call(c, h, ft, &n.kids);
+                }
+            }
+        }
         if (recv_ty == types::TY_INVALID) { return recv_ty; }
         return method_call(c, h, callee.a, recv_ty, callee.sval, &n.kids);
     }
     if (callee.kind != node::AST_PATH) {
         let ct = check_expr(c, n.a);
+        // v1: calling through a function-pointer local or parameter.
+        if (ct != types::TY_INVALID && types::is_fn(&c.types, ct)) {
+            return check_fn_ptr_call(c, h, ct, &n.kids);
+        }
         let mut s: str::String = str::String::make();
         let mut shown: i32 = ct;
         if (shown == types::TY_INVALID) { shown = types::TY_UNIT; }

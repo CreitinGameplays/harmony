@@ -1,0 +1,5 @@
+// Names inside a function-pointer type are resolved like any other type.
+fn main() -> i32 {
+    let f: fn(NoSuchType) -> i32 = noop;
+    return 0;
+}

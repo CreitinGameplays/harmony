@@ -1,0 +1,7 @@
+// v1: an imported function name is also a first-class function pointer.
+import "fnptr_mod.harmony";
+
+fn main() -> i32 {
+    let f: fn(i32) -> i32 = fnptr_mod::twice;
+    return f(21);
+}

@@ -1,0 +1,5 @@
+// A function-pointer type needs its `-> ReturnType`.
+fn main() -> i32 {
+    let f: fn(i32) = noop;
+    return 0;
+}

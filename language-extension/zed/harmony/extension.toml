@@ -1,10 +1,10 @@
 id = "harmony"
 name = "harmony"
-version = "0.2.0"
+version = "0.3.0"
 schema_version = 1
 authors = ["Creitin Gameplays"]
 description = "harmony language support"
 
 [grammars.harmony]
 repository = "https://github.com/CreitinGameplays/tree-sitter-harmony"
-rev = "ebd15022a483688c43b433ecdd66235183b76921"
+rev = "8ab6edbd7c983e8f151711daf6305ce9a70b5919"

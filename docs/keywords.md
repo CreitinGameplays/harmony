@@ -52,6 +52,7 @@ a `NAME-02` translation hint): `unsafe` `impl` `match` `trait` `pub` `use`
 | `String` `Vec` `Heap` `str` | owning / borrowed types |
 | `.own()` `.or_trap()` `.clone()` `.take()` | methods |
 | `sizeof(T)` `heap(x)` `raw(x)` | built-in forms |
+| `fn(Params) -> Ret` | v1 final-compiler type: a structural, `copy`, pointer-sized function pointer; a declared function name coerces to it when the signature matches (see `harmony.md` §5.11) |
 | `fnptr(name)` | v1 final-compiler intrinsic: address of a declared function as `raw u8`, used for thread entries; harmony-base does not parse it |
 | `else` (on a simple statement) | v1 final-compiler clause: `let x = f() else return;`, `x = f() else (e) { ... };`, `f() else trap("...");`. Only `Maybe`/`Outcome`; see FLOW-01/02/03 |
 | named payload / struct pattern | v1 final compiler: `enum E { V { f: T } }`, `E::V { .f = x }`, and `case V { f: p }:` / `case S { f: p }:` in `switch` |

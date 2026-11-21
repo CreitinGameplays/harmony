@@ -875,16 +875,25 @@ directly into its binary and (b) support **multi-core compilation by default**.
     `case S { field: p }:` patterns with literal tests and bindings; field
     lists may be partial. Generic enums, qualified names and guards work.
     `tests/harmony-final/v1.sh` covers three accepted programs and three
-    field/subject rejections. Remaining v1 features (first-class function
-    pointers, `abilities`) are still unimplemented.
+    field/subject rejections. Remaining v1 feature: `abilities`.
+  - V1 first-class function pointers (final compiler only): `fn(Params) -> Ret`
+    is a structural, `copy`, pointer-sized type (`AST_TYPE_FN` / `CTY_FN`).
+    A declared function name used as a value lowers to its LLVM global and
+    must match the expected signature (`TYPE-01`); calls through a function-
+    pointer local, parameter, field or array element check arity (`TYPE-04`)
+    and argument types (`TYPE-01`); qualified module functions work as values.
+    `fnptr(name)` remains the separate opaque-address intrinsic used by thread
+    entries. `tests/harmony-final/v1.sh` covers four accepted programs and five
+    rejections.
   - Future scoped AST macros (docs/harmony.md §20.5): design documented only.
     Expansion at pipeline stage 3.5, `#name(...)` invocation, `expr`/`code`/
     `block`/`type`/`ident` parameter kinds, hygiene with provenance, variadic
     packs, `MACRO-01..04`. Requires `#` and `...` lexer tokens; `macro` is
     reserved. No implementation, no v1 tests — do not mark as v1 work.
   - Editor grammar (Zed / tree-sitter): syntax highlight now covers all v1
-    forms and the future macro/reserved tokens. `~/tree-sitter-harmony` and
-    the nested `language-extension/zed/harmony/grammars/harmony` repo were
-    synced to the same commit, with regenerated parser artifacts and a
-    `test/corpus/v1.txt` gate (3/3). The Zed `highlights.scm`, indent config
-    and grammar rev in `extension.toml` were updated in this repo.
+    forms — including the `fn(Params) -> Ret` type — and the future
+    macro/reserved tokens. `~/tree-sitter-harmony` and the nested
+    `language-extension/zed/harmony/grammars/harmony` repo were synced to the
+    same commit, with regenerated parser artifacts and a `test/corpus/v1.txt`
+    gate (4/4). The Zed `highlights.scm`, indent config and grammar rev in
+    `extension.toml` were updated in this repo.

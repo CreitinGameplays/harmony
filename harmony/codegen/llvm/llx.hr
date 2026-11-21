@@ -576,6 +576,16 @@ fn reinterpret_cast(e: &mut context::Emitter, v: &str, from: i32, to: i32) -> &s
 
 fn expr_path(e: &mut context::Emitter, h: i32) -> &str {
     let n = node::get(&e.c.nodes, h);
+    // v1: a function name used as a value lowers to its LLVM global address.
+    // The checker stamps `target` with the declaration for exactly this case.
+    let pty = context::node_ty(e, h);
+    if (types::is_fn(&e.c.types, pty) && n.target >= 0) {
+        let mut s: str::String = str::String::make();
+        s.push("@");
+        s.push(context::fn_symbol(e, n.target));
+        e.expr_ty = pty;
+        return s.as_str();
+    }
     // A constant is inlined at every use (§6.2).
     if (n.target >= 0) {
         let decl = node::get(&e.c.nodes, n.target);
@@ -1152,6 +1162,94 @@ fn emit_call_args(e: &mut context::Emitter, symbol: &str, retty: i32,
     return emit_call(e, symbol, buf.as_str(), retty);
 }
 
+// v1: an indirect call through a function-pointer value. The callee string
+// already carries its LLVM prefix (`@...` for a global, `%...` for a loaded
+// pointer); the call site supplies the signature from the checked AST types.
+fn emit_indirect_call(e: &mut context::Emitter, callee: &str,
+                      args: &vec::Vec<i32>, retty: i32) -> &str {
+    let mut buf: str::String = str::String::make();
+    let mut i: usize = 0;
+    while (i < args.len()) {
+        let a = expr(e, *args.get(i));
+        let aty = e.expr_ty;
+        if (i > 0) { buf.push(", "); }
+        if (context::is_aggregate(e, aty)) { buf.push("ptr "); }
+        else {
+            buf.push(context::type_name(e, aty));
+            buf.push(" ");
+        }
+        buf.push(a);
+        i += 1;
+    }
+    let agg = context::is_aggregate(e, retty);
+    if (retty == types::TY_UNIT || retty == types::TY_NEVER) {
+        if (agg) {
+            let sslot = context::new_reg(e);
+            context::out(e, "  ");
+            context::out(e, sslot);
+            context::out(e, " = alloca ");
+            context::out(e, context::type_name(e, retty));
+            context::nl(e);
+            context::out(e, "  call void ");
+            context::out(e, callee);
+            context::out(e, "(ptr sret(");
+            context::out(e, context::type_name(e, retty));
+            context::out(e, ") ");
+            context::out(e, sslot);
+            if (buf.as_str() != "") {
+                context::out(e, ", ");
+                context::out(e, buf.as_str());
+            }
+            context::out(e, ")\n");
+        } else {
+            context::out(e, "  call void ");
+            context::out(e, callee);
+            context::out(e, "(");
+            context::out(e, buf.as_str());
+            context::out(e, ")\n");
+        }
+        if (retty == types::TY_NEVER) {
+            context::out(e, "  unreachable\n");
+            e.terminated = 1;
+        }
+        e.expr_ty = retty;
+        return "0";
+    }
+    if (agg) {
+        let sslot = context::new_reg(e);
+        context::out(e, "  ");
+        context::out(e, sslot);
+        context::out(e, " = alloca ");
+        context::out(e, context::type_name(e, retty));
+        context::nl(e);
+        context::out(e, "  call void ");
+        context::out(e, callee);
+        context::out(e, "(ptr sret(");
+        context::out(e, context::type_name(e, retty));
+        context::out(e, ") ");
+        context::out(e, sslot);
+        if (buf.as_str() != "") {
+            context::out(e, ", ");
+            context::out(e, buf.as_str());
+        }
+        context::out(e, ")\n");
+        e.expr_ty = retty;
+        return sslot;
+    }
+    let ret = context::new_reg(e);
+    context::out(e, "  ");
+    context::out(e, ret);
+    context::out(e, " = call ");
+    context::out(e, context::type_name(e, retty));
+    context::out(e, " ");
+    context::out(e, callee);
+    context::out(e, "(");
+    context::out(e, buf.as_str());
+    context::out(e, ")\n");
+    e.expr_ty = retty;
+    return ret;
+}
+
 // The receiver type a method symbol is keyed by.
 fn method_recv_ty(e: &mut context::Emitter, rt: i32) -> i32 {
     let mut t = rt;
@@ -1568,6 +1666,12 @@ fn expr_call(e: &mut context::Emitter, h: i32) -> &str {
     }
     let callee = node::get(&e.c.nodes, n.a);
     if (callee.kind == node::AST_FIELD_ACC) {
+        // v1: a function-pointer field call is indirect, not a method call.
+        let ft = context::node_ty(e, n.a);
+        if (types::is_fn(&e.c.types, ft)) {
+            let fp = expr(e, n.a);
+            return emit_indirect_call(e, fp, &n.kids, retty);
+        }
         return method_call(e, h, n.a, &n.kids, retty);
     }
     // `Enum::Variant(payload...)`.
@@ -1630,6 +1734,14 @@ fn expr_call(e: &mut context::Emitter, h: i32) -> &str {
         refname.push(fname);
         e.expr_ty = retty;
         return refname.as_str();
+    }
+    // v1: indirect call through a function-pointer value (a local, parameter,
+    // or a function name stored in one). The callee's stamped type identifies
+    // it even when the callee node is a plain path.
+    let ct = context::node_ty(e, n.a);
+    if (types::is_fn(&e.c.types, ct)) {
+        let fp = expr(e, n.a);
+        return emit_indirect_call(e, fp, &n.kids, retty);
     }
     // An ordinary call.
     let mut symbol = "";

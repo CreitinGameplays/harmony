@@ -1,0 +1,8 @@
+// A function name only coerces to a function-pointer type with the same
+// parameter and return types.
+fn one(a: i64) -> i64 { return a; }
+
+fn main() -> i32 {
+    let f: fn(i32) -> i32 = one;
+    return 0;
+}

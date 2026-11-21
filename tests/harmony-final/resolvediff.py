@@ -161,10 +161,12 @@ fn run(mods: &vec::Vec<loader::Module>, root: &str) -> i32 {
     return 0;
 }
 
+// One compiled driver runs every case. Recompiling this file per case used to
+// dominate the harness; the loader/resolver themselves take microseconds.
+// A marker line separates each case's diagnostics for the Python harness.
 fn main() -> i32 {
-    let mut mods: vec::Vec<loader::Module> = vec::Vec<loader::Module>::make();
-%(pushes)s
-    return run(&mods, %(root_path)s);
+%(cases)s
+    return 0;
 }
 '''
 
@@ -173,9 +175,55 @@ def codes_from(text):
     return sorted(set(re.findall(r"\b(NAME-\d+|TYPE-\d+|SYN-\d+)\b", text)))
 
 
+def run_all_rewrite(cases):
+    """Compile the driver once and resolve every module set in that process."""
+    chunks = []
+    for idx, (name, modules, root) in enumerate(cases):
+        lines = ['    println("===CASE {}===", %d);' % idx,
+                 '    let mut mods%d: vec::Vec<loader::Module> = '
+                 'vec::Vec<loader::Module>::make();' % idx]
+        for path, src in modules.items():
+            lines.append(
+                '    mods%d.push(loader::Module { .path = "%s", .src = "%s" });'
+                % (idx, hs_escape(path), hs_escape(src)))
+        lines.append('    run(&mods%d, "%s");' % (idx, hs_escape(root)))
+        chunks.append("\n".join(lines))
+    drv = os.path.join(TMP, "resolve-driver.harmony")
+    rel = os.path.relpath(ROOT, TMP)
+    with open(drv, "w") as f:
+        f.write(DRIVER.replace("%(root)s", rel) %
+                {"cases": "\n".join(chunks)})
+    # -O0: this is a tiny test harness, not the compiler under test. Skipping
+    # the optimizer cuts the one driver compilation from ~6 s to ~1 s.
+    return subprocess.run([HB, "run", drv, "-O0"], capture_output=True, text=True)
+
+
+def split_cases(text, count):
+    """Return {case index: that case's stdout}, keyed by the CASE markers."""
+    out = {}
+    cur = None
+    for line in text.splitlines(True):
+        if line.startswith("===CASE "):
+            cur = int(line.split()[1].rstrip("===\n"))
+            out[cur] = []
+        elif cur is not None:
+            out[cur].append(line)
+    return {i: "".join(out.get(i, [])) for i in range(count)}
+
+
 def main():
     failures = 0
     checked = 0
+
+    # The rewrite side runs in one driver; the harmony-base side stays per
+    # case (`check` needs no compilation and costs about 2 ms).
+    rw_all = run_all_rewrite(CASES)
+    if rw_all.returncode != 0:
+        print("rewrite batch driver failed: " +
+              (rw_all.stdout + rw_all.stderr)[:400].replace("\n", "\n   "))
+        return 1
+    rw_out = split_cases(rw_all.stdout, len(CASES))
+
     for idx, (name, modules, root) in enumerate(CASES):
         case_dir = os.path.join(TMP, "c%d" % idx)
         os.makedirs(case_dir, exist_ok=True)
@@ -189,22 +237,9 @@ def main():
                             capture_output=True, text=True)
         hb_codes = codes_from(hb.stdout + hb.stderr)
 
-        rel = os.path.relpath(ROOT, TMP)
-        pushes = "\n".join(
-            '    mods.push(loader::Module { .path = "%s", .src = "%s" });'
-            % (hs_escape(p), hs_escape(s)) for p, s in modules.items())
-        drv = os.path.join(TMP, "d%d.harmony" % idx)
-        with open(drv, "w") as f:
-            f.write(DRIVER % {"root": rel, "pushes": pushes,
-                              "root_path": '"%s"' % hs_escape(root)})
-        rw = subprocess.run([HB, "run", drv], capture_output=True, text=True)
-        rw_codes = sorted(set(re.findall(r"DIAG (\w+-\d+)", rw.stdout)))
+        out = rw_out[idx]
+        rw_codes = sorted(set(re.findall(r"DIAG (\w+-\d+)", out)))
         checked += 1
-        if rw.returncode != 0:
-            print("FAIL %s: rewrite driver failed: %s" %
-                  (name, (rw.stdout + rw.stderr)[:300].replace("\n", "\n   ")))
-            failures += 1
-            continue
         # The rewrite's resolver checks names only; harmony-base's `check`
         # also reports TYPE-* from later stages. Compare NAME-* codes only.
         hb_names = [c for c in hb_codes if c.startswith("NAME-")]

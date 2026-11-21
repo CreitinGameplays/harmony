@@ -11,7 +11,6 @@ the rewrite must report the same SYN-* code (a parser that silently accepts
 broken input is worse than one that rejects it).
 """
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -129,6 +128,7 @@ def hs_escape(s):
 
 DRIVER = '''import "%(root)s/library/core/fmt.hr";
 import "%(root)s/library/core/str.hr";
+import "%(root)s/library/core/vec.hr";
 import "%(root)s/library/core/mem.hr";
 import "%(root)s/harmony/lexer/token.hr";
 import "%(root)s/harmony/lexer/ctx.hr";
@@ -163,23 +163,67 @@ fn run(src: &str) -> i32 {
     return p.stops;
 }
 
+// All snippets run in ONE compiled driver: recompiling this file per case
+// dominated the old harness (seconds per case, versus milliseconds to parse).
+// A marker line separates each case's output so Python can split it again.
 fn main() -> i32 {
-    return run(%s);
+    let mut items: vec::Vec<str::String> = vec::Vec<str::String>::make();
+%(pushes)s
+    let mut n: usize = 0;
+    while (n < items.len()) {
+        println("===CASE {}===", n);
+        run(items.get(n).as_str());
+        n += 1;
+    }
+    return 0;
 }
 '''
 
 
-def run_rewrite(src, idx):
-    drv = os.path.join(TMP, "d%d.harmony" % idx)
+def run_all_rewrite(sources):
+    """Compile the driver once and parse every snippet in that single process."""
+    pushes = []
+    for i, src in enumerate(sources):
+        pushes.append(
+            '    let mut s%d: str::String = str::String::make();\n'
+            '    s%d.push("%s");\n'
+            '    items.push(s%d);' % (i, i, hs_escape(src), i))
+    drv = os.path.join(TMP, "parse-driver.harmony")
     rel = os.path.relpath(ROOT, TMP)
     with open(drv, "w") as f:
-        f.write(DRIVER.replace("%(root)s", rel) % ('"' + hs_escape(src) + '"'))
-    return subprocess.run([HB, "run", drv], capture_output=True, text=True)
+        f.write(DRIVER.replace("%(root)s", rel) %
+                {"pushes": "\n".join(pushes)})
+    # -O0: this is a tiny test harness, not the compiler under test. Skipping
+    # the optimizer cuts the one driver compilation from ~5 s to ~1.4 s.
+    return subprocess.run([HB, "run", drv, "-O0"], capture_output=True, text=True)
+
+
+def split_cases(text, count):
+    """Return {case index: that case's stdout}, keyed by the CASE markers."""
+    out = {}
+    cur = None
+    for line in text.splitlines(True):
+        if line.startswith("===CASE "):
+            cur = int(line.split()[1].rstrip("===\n"))
+            out[cur] = []
+        elif cur is not None:
+            out[cur].append(line)
+    return {i: "".join(out.get(i, [])) for i in range(count)}
 
 
 def main():
     failures = 0
     checked = 0
+
+    # One compilation, all snippets. The harmony-base side stays per case:
+    # `check --dump-ast` costs about 2 ms and needs no fresh driver.
+    sources = [s + "\n" for s in ACCEPT] + [s + "\n" for s, _ in REJECT]
+    rw_all = run_all_rewrite(sources)
+    if rw_all.returncode != 0:
+        print("rewrite batch driver failed: " +
+              (rw_all.stdout + rw_all.stderr)[:400].replace("\n", "\n   "))
+        return 1
+    rw_out = split_cases(rw_all.stdout, len(sources))
 
     for idx, src in enumerate(ACCEPT):
         sf = os.path.join(TMP, "a%d.harmony" % idx)
@@ -190,18 +234,19 @@ def main():
         if hb.returncode != 0:
             print("SKIP accept %d: harmony-base rejected it: %r" % (idx, src[:40]))
             continue
-        rw = run_rewrite(src + "\n", 1000 + idx)
+        out = rw_out[idx]
         checked += 1
         # Strip the DIAG lines the rewrite prints before the tree.
-        lines = rw.stdout.splitlines(True)
+        lines = out.splitlines(True)
         tree = "".join(l for l in lines if not l.startswith("DIAG "))
         # `println` appends one newline after the dump, which already ends in
         # one; drop it so the two streams are comparable byte for byte.
         if tree.endswith("\n"):
             tree = tree[:-1]
-        if rw.returncode != 0:
+        codes = [l.split()[1] for l in lines if l.startswith("DIAG ")]
+        if any(c.startswith("SYN-") for c in codes):
             print("FAIL accept %d: rewrite rejected: %r" % (idx, src[:40]))
-            print("   " + (rw.stdout + rw.stderr)[:300].replace("\n", "\n   "))
+            print("   " + out[:300].replace("\n", "\n   "))
             failures += 1
         elif tree != hb.stdout:
             print("FAIL accept %d: tree differs: %r" % (idx, src[:40]))
@@ -220,13 +265,13 @@ def main():
         with open(sf, "w") as f:
             f.write(src + "\n")
         hb = subprocess.run([HB, "check", sf], capture_output=True, text=True)
-        rw = run_rewrite(src + "\n", 2000 + idx)
+        out = rw_out[len(ACCEPT) + idx]
         checked += 1
-        codes = [l.split()[1] for l in rw.stdout.splitlines() if l.startswith("DIAG ")]
+        codes = [l.split()[1] for l in out.splitlines() if l.startswith("DIAG ")]
         if hb.returncode == 0:
             print("SKIP reject %d: harmony-base accepted it: %r" % (idx, src[:40]))
             continue
-        if rw.returncode == 0:
+        if not codes:
             print("FAIL reject %d: rewrite accepted %r" % (idx, src[:50]))
             failures += 1
         elif want not in codes:

@@ -126,8 +126,14 @@ fn use_place(b: &mut Borrow, c: &mut check::Checker, h: i32, mov: bool,
     let root = root_place(&*c, h);
     if (root == -2) {
         if (mov) {
-            report(b, c, "MOVE-04", "cannot move out of a field or slot",
-                   "Moving one field out of an owning value is not allowed; clone it or take the whole value.", h);
+            let base_ty = node::get(&c.nodes, n.a).ty;
+            if (types::is_ref(&c.types, base_ty) || types::is_heap(&c.types, base_ty)) {
+                report(b, c, "MOVE-03", "cannot move out from behind a reference",
+                       "You can only borrow or clone the value behind a reference.", h);
+            } else {
+                report(b, c, "MOVE-04", "cannot move out of a field or slot",
+                       "Moving one field out of an owning value is not allowed; clone it or take the whole value.", h);
+            }
         }
         return;
     }

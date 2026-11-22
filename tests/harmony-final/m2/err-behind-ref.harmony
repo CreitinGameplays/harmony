@@ -1,0 +1,5 @@
+// M2: taking ownership of a field behind a reference is MOVE-03.
+struct Inner { v: i32; }
+struct O { inner: Inner; }
+fn grab(v: &O) -> Inner { return v.inner; }
+fn main() -> i32 { return 0; }

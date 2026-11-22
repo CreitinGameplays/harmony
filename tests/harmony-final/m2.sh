@@ -73,6 +73,7 @@ reject err-use-after-move MOVE-01
 reject err-conditional-move MOVE-01
 reject err-loop-move MOVE-02
 reject err-partial-move MOVE-04
+reject err-behind-ref MOVE-03
 reject err-invalid-copy TYPE-05
 reject err-copy-cleanup TYPE-05
 reject err-direct-cleanup DROP-01

@@ -1,4 +1,7 @@
-# Harmony
+<p align="center">
+  <img src="logo/banaxe.png" alt="Logo" width="100"/>
+</p>
+<h1 align="center">Harmony</h1>
 
 Harmony is a small, statically-typed, **GC-free** systems language with
 value semantics, one owner per value, checked borrows, explicit lifetimes

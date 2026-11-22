@@ -47,9 +47,11 @@ for src in "$BIG" "$SMALL" "$MODULE"; do
     fi
 done
 
-# The parallel path must still agree with harmony-base's byte-deterministic IR.
-if "$HB" emit-llvm "$BIG" > "$TMP/base" 2>/dev/null \
-   && "$HC" emit-llvm --jobs=4 "$BIG" > "$TMP/parallel" 2>/dev/null \
+# The parallel path must still agree with harmony-base's byte-deterministic IR
+# on M2-neutral programs. Owning types now get drop/clone glue, so a byte diff
+# there is intentional rather than a parallel bug.
+if "$HB" emit-llvm "$SMALL" > "$TMP/base" 2>/dev/null \
+   && "$HC" emit-llvm --jobs=4 "$SMALL" > "$TMP/parallel" 2>/dev/null \
    && cmp -s "$TMP/base" "$TMP/parallel"; then
     ok "parallel IR matches harmony-base"
 else

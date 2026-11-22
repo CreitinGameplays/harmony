@@ -1,0 +1,260 @@
+// harmony/codegen/llvm/drop.hr — M2 drop glue and drop flags.
+//
+// The checker marks which types own memory; this module emits one internal
+// destructor per such type and drives hidden per-local `i1` flags so a value
+// is destroyed exactly once on every CFG exit, including conditional moves.
+import "../../../library/core/str.hr";
+import "../../../library/core/vec.hr";
+import "../../ast/node.hr";
+import "../../sema/types.hr";
+import "../../sema/check.hr";
+import "context.hr";
+
+export fn symbol(e: &mut context::Emitter, ty: i32) -> &str {
+    let mut s: str::String = str::String::make();
+    s.push("@harmony__drop__");
+    s.push(context::symbol_name(types::tname(&e.c.types, ty)));
+    s.push("_");
+    s.push_i64(ty as i64);
+    return s.as_str();
+}
+
+fn collection(e: &mut context::Emitter, ty: i32) -> bool {
+    let n = types::tname(&e.c.types, ty);
+    return str::starts_with(n, "vec::Vec");
+}
+
+fn load_ptr(e: &mut context::Emitter, addr: &str) -> &str {
+    let r = context::new_reg(e);
+    context::out(e, "  "); context::out(e, r);
+    context::out(e, " = load ptr, ptr "); context::out(e, addr); context::nl(e);
+    return r;
+}
+
+fn load_i64(e: &mut context::Emitter, addr: &str) -> &str {
+    let r = context::new_reg(e);
+    context::out(e, "  "); context::out(e, r);
+    context::out(e, " = load i64, ptr "); context::out(e, addr); context::nl(e);
+    return r;
+}
+
+fn gep(e: &mut context::Emitter, base: &str, off: i64) -> &str {
+    let r = context::new_reg(e);
+    context::out(e, "  "); context::out(e, r);
+    context::out(e, " = getelementptr inbounds i8, ptr ");
+    context::out(e, base); context::out(e, ", i64 "); context::out_i64(e, off);
+    context::nl(e);
+    return r;
+}
+
+fn call_void(e: &mut context::Emitter, sym: &str, args: &str) {
+    context::out(e, "  call void @"); context::out(e, sym);
+    context::out(e, "("); context::out(e, args); context::out(e, ")\n");
+}
+
+// Call a type's generated destructor instead of inlining its body. This keeps
+// recursive types (Heap<Self>) from recursing at generation time.
+fn call_drop(e: &mut context::Emitter, ty: i32, addr: &str) {
+    if (!check::needs_drop(&*e.c, ty)) { return; }
+    context::out(e, "  call void ");
+    context::out(e, symbol(e, ty));
+    context::out(e, "(ptr "); context::out(e, addr); context::out(e, ")\n");
+}
+
+// Emits the destruction sequence for `addr : ty`. Recursive calls are plain
+// LLVM calls, so recursive types work without generation-time recursion.
+export fn drop_addr(e: &mut context::Emitter, ty: i32, addr: &str) {
+    if (!check::needs_drop(&*e.c, ty)) { return; }
+    let k = types::type_kind(&e.c.types, ty);
+    if (types::is_heap(&e.c.types, ty)) {
+        let p = load_ptr(e, addr);
+        let inner = types::elem(&e.c.types, ty);
+        call_drop(e, inner, p);
+        context::out(e, "  call void @lc_dealloc(ptr ");
+        context::out(e, p); context::out(e, ", i64 ");
+        let sz = types::size(inner, &mut e.c.types);
+        context::out_i64(e, sz as i64); context::out(e, ")\n");
+        return;
+    }
+    if (check::has_cleanup(&*e.c, ty)) {
+        let mut args: str::String = str::String::make();
+        args.push("ptr "); args.push(addr);
+        call_void(e, context::method_symbol(e, ty, "cleanup"), args.as_str());
+    }
+    if (collection(e, ty)) {
+        // Vec<T> / String: drop the live elements, then free the block.
+        let lenp = gep(e, addr, 8);
+        let cpp = gep(e, addr, 16);
+        let pp = gep(e, addr, 0);
+        let len = load_i64(e, lenp);
+        let cap = load_i64(e, cpp);
+        let p = load_ptr(e, pp);
+        let inner = types::elem(&e.c.types, ty);
+        let esz = types::size(inner, &mut e.c.types);
+        let head = context::new_label(e, "drop.vec.head");
+        let body = context::new_label(e, "drop.vec.body");
+        let step = context::new_label(e, "drop.vec.step");
+        let end = context::new_label(e, "drop.vec.end");
+        let idx = context::new_reg(e);
+        context::out(e, "  "); context::out(e, idx); context::out(e, " = alloca i64\n");
+        context::out(e, "  store i64 0, ptr "); context::out(e, idx); context::nl(e);
+        context::out(e, "  br label %"); context::out(e, head); context::nl(e);
+        context::out(e, head); context::out(e, ":\n");
+        let cur = load_i64(e, idx);
+        let cond = context::new_reg(e);
+        context::out(e, "  "); context::out(e, cond);
+        context::out(e, " = icmp slt i64 "); context::out(e, cur);
+        context::out(e, ", "); context::out(e, len); context::nl(e);
+        context::out(e, "  br i1 "); context::out(e, cond);
+        context::out(e, ", label %"); context::out(e, body);
+        context::out(e, ", label %"); context::out(e, end); context::nl(e);
+        context::out(e, body); context::out(e, ":\n");
+        let mul = context::new_reg(e);
+        context::out(e, "  "); context::out(e, mul);
+        context::out(e, " = mul i64 "); context::out(e, cur);
+        context::out(e, ", "); context::out_i64(e, esz as i64); context::nl(e);
+        let ep = gep(e, p, 0);
+        let ea = context::new_reg(e);
+        context::out(e, "  "); context::out(e, ea);
+        context::out(e, " = getelementptr inbounds i8, ptr ");
+        context::out(e, ep); context::out(e, ", i64 "); context::out(e, mul);
+        context::nl(e);
+        call_drop(e, inner, ea);
+        context::out(e, "  br label %"); context::out(e, step); context::nl(e);
+        context::out(e, step); context::out(e, ":\n");
+        let next = context::new_reg(e);
+        context::out(e, "  "); context::out(e, next);
+        context::out(e, " = add i64 "); context::out(e, cur); context::out(e, ", 1\n");
+        context::out(e, "  store i64 "); context::out(e, next);
+        context::out(e, ", ptr "); context::out(e, idx); context::nl(e);
+        context::out(e, "  br label %"); context::out(e, head); context::nl(e);
+        context::out(e, end); context::out(e, ":\n");
+        let nz = context::new_reg(e);
+        context::out(e, "  "); context::out(e, nz);
+        context::out(e, " = icmp sgt i64 "); context::out(e, cap); context::out(e, ", 0\n");
+        let freebb = context::new_label(e, "drop.vec.free");
+        let donbb = context::new_label(e, "drop.vec.done");
+        context::out(e, "  br i1 "); context::out(e, nz);
+        context::out(e, ", label %"); context::out(e, freebb);
+        context::out(e, ", label %"); context::out(e, donbb); context::nl(e);
+        context::out(e, freebb); context::out(e, ":\n");
+        context::out(e, "  call void @lc_dealloc(ptr "); context::out(e, p);
+        context::out(e, ", i64 "); context::out(e, cap); context::out(e, ")\n");
+        context::out(e, "  br label %"); context::out(e, donbb); context::nl(e);
+        context::out(e, donbb); context::out(e, ":\n");
+        return;
+    }
+    if (k == types::CTY_ARRAY) {
+        let inner = types::elem(&e.c.types, ty);
+        let n = types::array_len(&e.c.types, ty);
+        let esz = types::size(inner, &mut e.c.types);
+        let mut i: i32 = 0;
+        while (i < n) {
+            let ap = gep(e, addr, i as i64 * esz as i64);
+            call_drop(e, inner, ap);
+            i += 1;
+        }
+        return;
+    }
+    if (k == types::CTY_STRUCT) {
+        let mut i: usize = 0;
+        while (i < types::member_count(&e.c.types, ty)) {
+            let ft = types::member_type(&e.c.types, ty, i as i32);
+            let off = types::field_offset(ty, i, &mut e.c.types);
+            let fa = gep(e, addr, off as i64);
+            call_drop(e, ft, fa);
+            i += 1;
+        }
+        return;
+    }
+    if (k == types::CTY_ENUM) {
+        let tp = gep(e, addr, 0);
+        let tag = context::new_reg(e);
+        context::out(e, "  "); context::out(e, tag);
+        context::out(e, " = load i32, ptr "); context::out(e, tp); context::nl(e);
+        let end = context::new_label(e, "drop.enum.end");
+        let mut vi: usize = 0;
+        while (vi < types::member_count(&e.c.types, ty)) {
+            let case_lbl = context::new_label(e, "drop.enum.case");
+            let next = context::new_label(e, "drop.enum.next");
+            let cmp = context::new_reg(e);
+            context::out(e, "  "); context::out(e, cmp);
+            context::out(e, " = icmp eq i32 "); context::out(e, tag);
+            context::out(e, ", "); context::out_i64(e, vi as i64); context::nl(e);
+            context::out(e, "  br i1 "); context::out(e, cmp);
+            context::out(e, ", label %"); context::out(e, case_lbl);
+            context::out(e, ", label %"); context::out(e, next); context::nl(e);
+            context::out(e, case_lbl); context::out(e, ":\n");
+            let pt = types::member_type(&e.c.types, ty, vi as i32);
+            let mut fi: usize = 0;
+            while (fi < types::member_count(&e.c.types, pt)) {
+                let ft = types::member_type(&e.c.types, pt, fi as i32);
+                let off = 8 + types::field_offset(pt, fi, &mut e.c.types);
+                let fa = gep(e, addr, off as i64);
+                call_drop(e, ft, fa);
+                fi += 1;
+            }
+            context::out(e, "  br label %"); context::out(e, end); context::nl(e);
+            context::out(e, next); context::out(e, ":\n");
+            vi += 1;
+        }
+        context::out(e, "  br label %"); context::out(e, end); context::nl(e);
+        context::out(e, end); context::out(e, ":\n");
+    }
+}
+
+// Destroys one live local through its flag, then clears the flag so an early
+// return and the enclosing scope end cannot drop it twice.
+export fn drop_live(e: &mut context::Emitter, idx: usize) {
+    let flag = context::local_flag(e, idx);
+    if (flag == "") { return; }
+    let v = context::new_reg(e);
+    context::out(e, "  "); context::out(e, v);
+    context::out(e, " = load i1, ptr "); context::out(e, flag); context::nl(e);
+    let yes = context::new_label(e, "drop.live");
+    let end = context::new_label(e, "drop.live.end");
+    context::out(e, "  br i1 "); context::out(e, v);
+    context::out(e, ", label %"); context::out(e, yes);
+    context::out(e, ", label %"); context::out(e, end); context::nl(e);
+    context::out(e, yes); context::out(e, ":\n");
+    drop_addr(e, context::local_ty_at(e, idx), context::local_slot_at(e, idx));
+    context::out(e, "  store i1 false, ptr "); context::out(e, flag); context::nl(e);
+    context::out(e, "  br label %"); context::out(e, end); context::nl(e);
+    context::out(e, end); context::out(e, ":\n");
+}
+
+export fn drop_named(e: &mut context::Emitter, name: &str) {
+    let i = context::local_find(e, name);
+    if (i >= 0) { drop_live(e, i as usize); }
+}
+
+export fn scope_end(e: &mut context::Emitter, mark: usize) {
+    if (context::local_count(e) < mark) { return; }
+    let mut i: usize = context::local_count(e);
+    while (i > mark) {
+        i -= 1;
+        drop_live(e, i);
+    }
+}
+
+export fn all_live(e: &mut context::Emitter) {
+    scope_end(e, 0);
+}
+
+// Emits every destructor once, in type-table order.
+export fn emit_helpers(e: &mut context::Emitter) {
+    let ids = check::all_type_ids(&*e.c);
+    let mut i: usize = 0;
+    while (i < ids.len()) {
+        let ty = *ids.get(i);
+        if (!check::needs_drop(&*e.c, ty)) { i += 1; continue; }
+        e.ssa = 0;
+        e.label = 0;
+        context::out(e, "define internal void ");
+        context::out(e, symbol(e, ty));
+        context::out(e, "(ptr %v) {\nentry:\n");
+        drop_addr(e, ty, "%v");
+        context::out(e, "  ret void\n}\n\n");
+        i += 1;
+    }
+}

@@ -1,0 +1,12 @@
+// M2: structural clone deep-copies an owning value.
+import "../../../library/core/str.hr";
+
+fn main() -> i32 {
+    let a = str::String::make();
+    a.push("hello");
+    let b = a.clone();
+    a.push("!");
+    if (a.as_str() != "hello!") { return 1; }
+    if (b.as_str() != "hello") { return 2; }
+    return 42;
+}

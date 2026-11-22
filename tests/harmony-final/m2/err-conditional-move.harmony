@@ -1,0 +1,9 @@
+// M2: a value moved on only one branch is maybe-moved afterwards.
+struct O { v: i32; }
+fn take(o: O) -> i32 { return o.v; }
+fn run(c: bool) -> i32 {
+    let a = O { .v = 1 };
+    if (c) { take(a); }
+    return a.v;
+}
+fn main() -> i32 { return run(true); }

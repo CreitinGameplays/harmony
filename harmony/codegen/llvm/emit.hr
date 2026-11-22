@@ -12,6 +12,8 @@ import "../../sema/types.hr";
 import "../../sema/check.hr";
 import "../../driver/process.hr";
 import "context.hr";
+import "clone.hr";
+import "drop.hr";
 import "llx.hr";
 
 // ---- string pool ----------------------------------------------------------
@@ -109,7 +111,8 @@ fn is_predeclared(name: &str) -> bool {
         || name == "lc_put_i64" || name == "lc_put_u64" || name == "lc_put_hex"
         || name == "lc_put_bool" || name == "lc_put_char" || name == "lc_put_f64"
         || name == "lc_trap_msg" || name == "lc_assert"
-        || name == "lc_unreachable" || name == "lc_exit" || name == "lc_args";
+        || name == "lc_unreachable" || name == "lc_exit" || name == "lc_args"
+        || name == "lc_syscall4";
 }
 
 fn emit_type_def(e: &mut context::Emitter, id: i32) {
@@ -174,7 +177,7 @@ fn emit_param_types(e: &mut context::Emitter, params: &vec::Vec<i32>) {
 fn emit_fn(e: &mut context::Emitter, h: i32) {
     let fnode = node::get(&e.c.nodes, h);
     let name = context::fn_symbol(e, h);
-    let params = fnode.kids2;
+    let params = &fnode.kids2;
     let mut retty = fnode.ty;
     if (retty == 0) { retty = types::TY_UNIT; }
     let mut sret: i32 = 0;
@@ -198,7 +201,7 @@ fn emit_fn(e: &mut context::Emitter, h: i32) {
             context::out(e, ") %sret");
             if (params.len() > 0) { context::out(e, ", "); }
         }
-        emit_param_types(e, &params);
+        emit_param_types(e, params);
         context::out(e, ")\n\n");
         return;
     }
@@ -213,7 +216,7 @@ fn emit_fn(e: &mut context::Emitter, h: i32) {
         context::out(e, ") %sret");
         if (params.len() > 0) { context::out(e, ", "); }
     }
-    emit_param_types(e, &params);
+    emit_param_types(e, params);
     context::out(e, ") {\nentry:\n");
     e.ssa = 0;
     e.label = 0;
@@ -233,6 +236,7 @@ fn emit_fn(e: &mut context::Emitter, h: i32) {
             slot.push("%arg");
             slot.push_i64(i as i64);
             context::local_declare(e, bindname, slot.as_str(), p.ty);
+            context::mark_live(e, bindname);
         } else {
             let isref = types::is_ref(&e.c.types, p.ty);
             let slot = context::new_reg(e);
@@ -249,6 +253,7 @@ fn emit_fn(e: &mut context::Emitter, h: i32) {
             context::out(e, slot);
             context::nl(e);
             context::local_declare(e, bindname, slot, p.ty);
+            context::mark_live(e, bindname);
         }
         i += 1;
     }
@@ -273,7 +278,7 @@ fn emit_fn(e: &mut context::Emitter, h: i32) {
 fn emit_fn_declare(e: &mut context::Emitter, h: i32) {
     let fnode = node::get(&e.c.nodes, h);
     let name = context::fn_symbol(e, h);
-    let params = fnode.kids2;
+    let params = &fnode.kids2;
     let mut retty = fnode.ty;
     if (retty == 0) { retty = types::TY_UNIT; }
     let mut sret: i32 = 0;
@@ -296,7 +301,7 @@ fn emit_fn_declare(e: &mut context::Emitter, h: i32) {
             context::out(e, ") %sret");
             if (params.len() > 0) { context::out(e, ", "); }
         }
-        emit_param_types(e, &params);
+        emit_param_types(e, params);
         context::out(e, ")\n\n");
         return;
     }
@@ -312,7 +317,7 @@ fn emit_fn_declare(e: &mut context::Emitter, h: i32) {
         context::out(e, ") %sret");
         if (params.len() > 0) { context::out(e, ", "); }
     }
-    emit_param_types(e, &params);
+    emit_param_types(e, params);
     context::out(e, ")\n");
 }
 
@@ -349,6 +354,17 @@ fn emit_prelude(c: &mut check::Checker, program: i32) -> &str {
     context::out(&mut e, "declare void @lc_unreachable(i64, i64)\n");
     context::out(&mut e, "declare void @lc_exit(i64)\n");
     context::out(&mut e, "declare ptr @lc_args()\n\n");
+    // Only modules that import the driver's sys shim declare this hook; adding
+    // it unconditionally would change the byte-identical IR of every program.
+    let mut k: usize = 0;
+    while (k < p.kids.len()) {
+        let it = node::get(&e.c.nodes, *p.kids.get(k));
+        if (it.kind == node::AST_EXTERN_FN && it.sval == "lc_syscall4") {
+            context::out(&mut e, "declare i64 @lc_syscall4(i64, i64, i64, i64, i64)\n\n");
+            k = p.kids.len();
+        }
+        k += 1;
+    }
     let mut s: usize = 0;
     while (s < e.strings.len()) {
         emit_string_def(&mut e, s as i32);
@@ -372,6 +388,10 @@ fn emit_prelude(c: &mut check::Checker, program: i32) -> &str {
         emit_type_def(&mut e, *insts.get(i));
         i += 1;
     }
+    // M2 drop glue comes after type definitions but before functions, so every
+    // parallel chunk remains self-contained.
+    drop::emit_helpers(&mut e);
+    clone::emit_helpers(&mut e);
     context::nl(&mut e);
     return e.out.as_str();
 }

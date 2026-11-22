@@ -1,0 +1,205 @@
+// harmony/ir/cfg.hr — the M2 CFG IR used by the move analysis.
+//
+// Lowering is intentionally shallow: statements become instructions that still
+// reference their AST nodes, while control flow (if/while/for/switch) becomes
+// explicit basic blocks and edges. The borrow checker therefore walks a real
+// CFG for definite-move dataflow, and the same instructions carry the
+// statement spans used by timeline diagnostics.
+import "../../library/core/vec.hr";
+import "../ast/node.hr";
+
+export const I_SIMPLE: i32 = 1;
+export const I_ENTER: i32 = 2;
+export const I_LEAVE: i32 = 3;
+
+export const T_NEXT: i32 = 1;
+export const T_BRANCH: i32 = 2;
+export const T_RETURN: i32 = 3;
+export const T_BREAK: i32 = 4;
+export const T_CONTINUE: i32 = 5;
+export const T_END: i32 = 6;
+
+copy struct Instr {
+    node: i32;      // AST statement handle
+    decl: i32;      // declaration handle for ENTER/LEAVE, else -1
+    loop: i32;      // loop nesting depth at this instruction
+}
+
+export struct Block {
+    instrs: vec::Vec<Instr>;
+    succ: vec::Vec<i32>;
+    term: i32;
+}
+
+export struct Cfg {
+    blocks: vec::Vec<Block>;
+}
+
+fn add_block(c: &mut Cfg) -> i32 {
+    c.blocks.push(Block {
+        .instrs = vec::Vec<Instr>::make(),
+        .succ = vec::Vec<i32>::make(),
+        .term = T_NEXT,
+    });
+    return c.blocks.len() as i32 - 1;
+}
+
+fn push_instr(c: &mut Cfg, b: i32, node: i32, decl: i32, loop_depth: i32) {
+    c.blocks.get(b as usize).instrs.push(Instr {
+        .node = node, .decl = decl, .loop = loop_depth,
+    });
+}
+
+fn edge(c: &mut Cfg, from: i32, to: i32) {
+    c.blocks.get(from as usize).succ.push(to);
+}
+
+fn terminate(c: &mut Cfg, b: i32, t: i32) {
+    c.blocks.get(b as usize).term = t;
+}
+
+// Builds one function's body. Params are entered first so their places are
+// initialized on every path.
+export fn build(nodes: &node::Nodes, body: i32,
+                params: &vec::Vec<i32>) -> Cfg {
+    let mut c = Cfg { .blocks = vec::Vec<Block>::make() };
+    let entry = add_block(&mut c);
+    let mut i: usize = 0;
+    while (i < params.len()) {
+        push_instr(&mut c, entry, -1, *params.get(i), 0);
+        i += 1;
+    }
+    let mut brks: vec::Vec<i32> = vec::Vec<i32>::make();
+    let mut conts: vec::Vec<i32> = vec::Vec<i32>::make();
+    let end = stmt(&mut c, nodes, body, entry, 0, &mut brks, &mut conts);
+    terminate(&mut c, end, T_END);
+    return c;
+}
+
+// Adds one simple statement to `cur` and returns it.
+fn simple(c: &mut Cfg, cur: i32, h: i32, depth: i32) -> i32 {
+    push_instr(c, cur, h, -1, depth);
+    return cur;
+}
+
+fn branch(c: &mut Cfg, cur: i32, h: i32, depth: i32,
+          then_h: i32, else_h: i32, nodes: &node::Nodes,
+          brks: &mut vec::Vec<i32>, conts: &mut vec::Vec<i32>) -> i32 {
+    push_instr(c, cur, h, -1, depth);  // condition evaluation
+    let tb = add_block(c);
+    let eb = add_block(c);
+    let mb = add_block(c);
+    terminate(c, cur, T_BRANCH);
+    edge(c, cur, tb);
+    edge(c, cur, eb);
+    let t2 = stmt(c, nodes, then_h, tb, depth, brks, conts);
+    if (c.blocks.get(t2 as usize).term == T_NEXT) { edge(c, t2, mb); }
+    if (else_h >= 0) {
+        let e2 = stmt(c, nodes, else_h, eb, depth, brks, conts);
+        if (c.blocks.get(e2 as usize).term == T_NEXT) { edge(c, e2, mb); }
+    } else {
+        edge(c, eb, mb);
+    }
+    return mb;
+}
+
+fn loop(c: &mut Cfg, cur: i32, h: i32, init_h: i32, cond_h: i32,
+        step_h: i32, body_h: i32, decl: i32, nodes: &node::Nodes,
+        brks: &mut vec::Vec<i32>, conts: &mut vec::Vec<i32>) -> i32 {
+    let d = 0;
+    if (init_h >= 0) { simple(c, cur, init_h, d); }
+    if (decl >= 0) { push_instr(c, cur, -1, decl, d); }
+    let head = add_block(c);
+    let body = add_block(c);
+    let step = add_block(c);
+    let exit = add_block(c);
+    edge(c, cur, head);
+    if (cond_h >= 0) {
+        push_instr(c, head, cond_h, -1, d);
+        terminate(c, head, T_BRANCH);
+        edge(c, head, body);
+        edge(c, head, exit);
+    } else {
+        edge(c, head, body);
+    }
+    brks.push(exit);
+    conts.push(step);
+    let b2 = stmt(c, nodes, body_h, body, d + 1, brks, conts);
+    brks.pop();
+    conts.pop();
+    if (c.blocks.get(b2 as usize).term == T_NEXT) { edge(c, b2, step); }
+    if (step_h >= 0) { simple(c, step, step_h, d); }
+    edge(c, step, head);
+    if (decl >= 0) { push_instr(c, exit, -1, decl, d); }
+    return exit;
+}
+
+fn stmt(c: &mut Cfg, nodes: &node::Nodes, h: i32, cur: i32, depth: i32,
+        brks: &mut vec::Vec<i32>, conts: &mut vec::Vec<i32>) -> i32 {
+    if (h < 0) { return cur; }
+    let n = node::get(nodes, h);
+    let k = n.kind;
+    if (k == node::AST_BLOCK) {
+        push_instr(c, cur, -1, -1, depth);   // scope enter
+        let mut b = cur;
+        let mut i: usize = 0;
+        while (i < n.kids.len()) {
+            b = stmt(c, nodes, *n.kids.get(i), b, depth, brks, conts);
+            i += 1;
+        }
+        if (c.blocks.get(b as usize).term == T_NEXT) {
+            push_instr(c, b, -1, -1, depth);  // scope leave
+        }
+        return b;
+    }
+    if (k == node::AST_UNCHECKED) { return stmt(c, nodes, n.a, cur, depth, brks, conts); }
+    if (k == node::AST_IF) {
+        return branch(c, cur, n.a, depth, n.b, n.c, nodes, brks, conts);
+    }
+    if (k == node::AST_WHILE) {
+        return loop(c, cur, h, -1, n.a, -1, n.b, -1, nodes, brks, conts);
+    }
+    if (k == node::AST_FOR) {
+        // A range/iterable loop has a binding name and no explicit condition;
+        // a C-style loop has init/cond/step children. The binding is declared
+        // on the loop node itself, which the borrow checker sees as a place.
+        let mut body: i32 = -1;
+        if (n.kids.len() > 0) { body = *n.kids.get(0); }
+        if (n.sval != "") {
+            return loop(c, cur, h, -1, -1, -1, body, h, nodes, brks, conts);
+        }
+        return loop(c, cur, h, n.a, n.b, n.c, body, -1, nodes, brks, conts);
+    }
+    if (k == node::AST_SWITCH) {
+        push_instr(c, cur, h, -1, depth);  // scrutinee
+        let mb = add_block(c);
+        let mut i: usize = 0;
+        while (i < n.kids.len()) {
+            let arm = node::get(nodes, *n.kids.get(i));
+            let ab = add_block(c);
+            edge(c, cur, ab);
+            let a2 = stmt(c, nodes, arm.b, ab, depth, brks, conts);
+            if (c.blocks.get(a2 as usize).term == T_NEXT) { edge(c, a2, mb); }
+            i += 1;
+        }
+        return mb;
+    }
+    if (k == node::AST_RETURN) {
+        let b = simple(c, cur, h, depth);
+        terminate(c, b, T_RETURN);
+        return b;
+    }
+    if (k == node::AST_BREAK) {
+        let b = simple(c, cur, h, depth);
+        terminate(c, b, T_BREAK);
+        if (brks.len() > 0) { edge(c, b, *brks.get(brks.len() - 1)); }
+        return b;
+    }
+    if (k == node::AST_CONTINUE) {
+        let b = simple(c, cur, h, depth);
+        terminate(c, b, T_CONTINUE);
+        if (conts.len() > 0) { edge(c, b, *conts.get(conts.len() - 1)); }
+        return b;
+    }
+    return simple(c, cur, h, depth);
+}

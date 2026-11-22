@@ -1,0 +1,14 @@
+// M2: cleanup runs exactly once, in reverse declaration order.
+struct L { id: i32; }
+methods L {
+    fn cleanup(&mut self) { println("drop {}", self.id); }
+}
+
+fn main() -> i32 {
+    let a = L { .id = 1 };
+    if (true) {
+        let b = L { .id = 2 };
+        if (b.id != 2) { return 1; }
+    }
+    return 42;
+}

@@ -395,7 +395,7 @@ fn parse_one(nodes: &mut node::Nodes, arena: &mut mem::Arena,
     let first = node::len(&*nodes);
     let mut lx: ctx::Ctx = ctx::make(src, path);
     scan::scan(&mut lx, arena);
-    let mut p: pctx::Parser = pctx::make(nodes, lx.toks, path);
+    let mut p: pctx::Parser = pctx::make(nodes, lx.toks.clone(), path);
     let program = item::parse_program(&mut p);
     // A module's syntax errors belong to the load result. Dropping them made
     // a malformed imported module look like an empty one: the merged program

@@ -760,6 +760,13 @@ long lc_syscall3(long n, long a, long b, long c) {
     return sys(n, a, b, c);
 }
 
+// Four-argument hook for wait4/execve-style syscalls whose fourth argument
+// lives in r10. Passing an uninitialised rusage pointer through syscall3 made
+// waitpid write to a garbage address (caught by valgrind).
+long lc_syscall4(long n, long a, long b, long c, long d) {
+    return sys4(n, a, b, c, d);
+}
+
 // ---------------------------------------------------------------------------
 // Fault handler (§14.2, T-STACK). Both a runaway recursion and a bad raw
 // pointer arrive as SIGSEGV, but only the first is `T-STACK`. Reporting

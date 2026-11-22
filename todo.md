@@ -675,11 +675,19 @@ directly into its binary and (b) support **multi-core compilation by default**.
 
 ### Language semantics
 
-- [ ] **M2 Ownership**: moves (`MOVE-01..04`), `copy` bounds (`TYPE-05/06`),
-      `.clone()`, `Heap<String>`/`Vec`/`cleanup`, drop flags (§9.5),
-      `MOVE-02` loop moves, re-initialization (§9.7); moves dataflow over the
-      CFG IR (§19.2) and the **event log** (`born`, `moved`, `used`, …) for
-      story diagnostics (§19.3).
+- [x] **M2 Ownership** (final compiler only): forward move dataflow over a
+      real CFG (`harmony/ir/cfg.hr` + `harmony/borrowck/moves.hr`) detects
+      `MOVE-01/02/04`, conditional moves, and re-initialization. `copy`
+      declarations are validated (`TYPE-05`), `eq`/`ord` bounds are checked
+      (`TYPE-06`), structural `.clone()` is generated for cloneable types, and
+      direct `cleanup` calls are `DROP-01`. Drop glue destroys owners at scope
+      end, on return/break/continue and on assignment, using per-local `i1`
+      drop flags; `Vec` drops its live elements, `Heap` drops its pointee, and
+      `cleanup` runs exactly once. M2's IR is intentionally not byte-identical
+      to v0 harmony-base for owning programs; `irdiff` keeps comparing all
+      M2-neutral cases and reports M2 cases as skipped. `tests/harmony-final/m2.sh`
+      covers 7 accepted and 9 rejected programs. Event records
+      (`born`/`moved`/`used`/`reinit`) are collected for story diagnostics.
 - [ ] **M3 Borrow checker**: loans `(place, kind, region)`, liveness-based
       regions (§10.2, §19.2), `LOAN-01..03`, reborrowing (§10.5), disjoint
       fields (§10.6), two-phase borrows (§10.7), borrowing from collections.
@@ -815,7 +823,7 @@ directly into its binary and (b) support **multi-core compilation by default**.
     with the `generic-ref-str-inference` regression. The related `&&str`
     collapse is a representation limit documented in §20.1, not a substitution
     bug: the loader keeps raw `&str` slots until nested-reference support lands
-    with the M2/M3 ownership work.
+    with the remaining M3 loan/lifetime work.
   - The R7 driver (`harmony/driver/`, `library/std/sys.hr`) is built by
     `make harmony`. It pipes IR to clang on stdin (no `.ll` temp file),
     supports `build`/`run`/`check`/`emit-llvm`/`explain`/`audit`, and is

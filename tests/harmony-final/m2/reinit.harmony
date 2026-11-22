@@ -1,0 +1,13 @@
+// M2: a moved-from `mut` binding can own a fresh value again.
+struct L { id: i32; }
+methods L {
+    fn cleanup(&mut self) { println("drop {}", self.id); }
+}
+fn take(x: L) -> i32 { return x.id; }
+
+fn main() -> i32 {
+    let mut a = L { .id = 1 };
+    take(a);
+    a = L { .id = 2 };
+    return a.id;
+}

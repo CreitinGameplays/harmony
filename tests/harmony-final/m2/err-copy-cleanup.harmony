@@ -1,0 +1,6 @@
+// M2: a type with cleanup cannot be copy (TYPE-05).
+copy struct L { v: i32; }
+methods L {
+    fn cleanup(&mut self) { }
+}
+fn main() -> i32 { return 0; }

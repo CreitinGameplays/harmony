@@ -1,0 +1,16 @@
+// M2: a conditionally moved value is dropped exactly once on each path.
+struct L { id: i32; }
+methods L {
+    fn cleanup(&mut self) { println("drop {}", self.id); }
+}
+fn take(x: L) -> i32 { return x.id; }
+
+fn run(c: bool) -> i32 {
+    let a = L { .id = 7 };
+    if (c) { take(a); }
+    return 0;
+}
+
+fn main() -> i32 {
+    return run(true) + run(false);
+}

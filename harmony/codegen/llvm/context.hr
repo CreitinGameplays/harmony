@@ -20,12 +20,14 @@ copy struct Local {
     name: &str;
     slot: &str;
     ty: i32;
+    flag: &str;       // M2 drop flag, "" for copy-only locals
 }
 
 // One `break`/`continue` target. The stack is innermost-last.
 copy struct LoopTarget {
     brk: &str;
     cont: &str;
+    scope: usize;     // locals declared inside the loop
 }
 
 // Format-string pieces (docs/harmony.md §15.1).
@@ -107,6 +109,25 @@ export fn new_label(e: &mut Emitter, hint: &str) -> &str {
     s.push(".");
     s.push_i64(e.label as i64);
     return s.as_str();
+}
+
+// Maps a display type name to a legal LLVM identifier. `sanitize` only
+// collapses `::`; glue helpers also see `[u8; 24]` and similar spellings.
+export fn symbol_name(s: &str) -> &str {
+    let mut out_s: str::String = str::String::make();
+    let b = s.as_bytes();
+    let mut i: usize = 0;
+    while (i < b.len()) {
+        let c = b[i];
+        if ((c >= 48u8 && c <= 57u8) || (c >= 65u8 && c <= 90u8)
+            || (c >= 97u8 && c <= 122u8) || c == 95u8) {
+            out_s.push_byte(c);
+        } else {
+            out_s.push_byte(95u8);
+        }
+        i += 1;
+    }
+    return out_s.as_str();
 }
 
 // Collapses `::` to `__`, as LLVM symbol names cannot contain colons.
@@ -252,8 +273,46 @@ export fn scope_pop(e: &mut Emitter) {
 }
 
 export fn local_declare(e: &mut Emitter, name: &str, slot: &str, ty: i32) {
-    e.locals.push(Local { .name = name, .slot = slot, .ty = ty });
+    let mut flag: &str = "";
+    if (check::needs_drop(&*e.c, ty)) {
+        flag = new_reg(e);
+        out(e, "  "); out(e, flag); out(e, " = alloca i1\n");
+        out(e, "  store i1 false, ptr "); out(e, flag); nl(e);
+    }
+    e.locals.push(Local { .name = name, .slot = slot, .ty = ty, .flag = flag });
 }
+
+// The local is now holding a live value (initializer, parameter spill, or
+// re-initialization after a move).
+export fn mark_live(e: &mut Emitter, name: &str) {
+    let i = local_find(e, name);
+    if (i < 0) { return; }
+    let f = e.locals.get(i as usize).flag;
+    if (f == "") { return; }
+    out(e, "  store i1 true, ptr "); out(e, f); nl(e);
+}
+
+export fn mark_moved(e: &mut Emitter, name: &str) {
+    let i = local_find(e, name);
+    if (i < 0) { return; }
+    let f = e.locals.get(i as usize).flag;
+    if (f == "") { return; }
+    out(e, "  store i1 false, ptr "); out(e, f); nl(e);
+}
+
+export fn local_flag(e: &mut Emitter, idx: usize) -> &str {
+    return e.locals.get(idx).flag;
+}
+
+export fn local_slot_at(e: &mut Emitter, idx: usize) -> &str {
+    return e.locals.get(idx).slot;
+}
+
+export fn local_ty_at(e: &mut Emitter, idx: usize) -> i32 {
+    return e.locals.get(idx).ty;
+}
+
+export fn local_count(e: &mut Emitter) -> usize { return e.locals.len(); }
 
 export fn local_find(e: &mut Emitter, name: &str) -> i32 {
     let mut i: usize = e.locals.len();

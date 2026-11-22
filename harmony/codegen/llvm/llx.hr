@@ -13,6 +13,8 @@ import "../../ast/node.hr";
 import "../../sema/types.hr";
 import "../../sema/check.hr";
 import "context.hr";
+import "clone.hr";
+import "drop.hr";
 
 // ---- instruction helpers --------------------------------------------------
 
@@ -603,8 +605,11 @@ fn expr_path(e: &mut context::Emitter, h: i32) -> &str {
     if (slot != "") {
         let ty = context::local_ty(e, n.sval);
         e.expr_ty = ty;
-        if (context::is_aggregate(e, ty)) { return slot; }
-        return load(e, ty, slot);
+        let mut v: &str = slot;
+        if (!context::is_aggregate(e, ty)) { v = load(e, ty, slot); }
+        // M2: the analyzer stamps place expressions whose value is moved.
+        if (n.own != 0) { context::mark_moved(e, n.sval); }
+        return v;
     }
     // An unqualified enum variant has no local slot: build the tagged value.
     let ty = context::node_ty(e, h);
@@ -1670,6 +1675,32 @@ fn expr_call(e: &mut context::Emitter, h: i32) -> &str {
         return context::zero_of(e, retty);
     }
     let callee = node::get(&e.c.nodes, n.a);
+    // M2: structural `.clone()` with no user method. The checker stamps the
+    // call target with -2 and the receiver's checked type.
+    if (n.target == -2) {
+        let mut rt = context::node_ty(e, callee.a);
+        while (types::is_ref(&e.c.types, rt) || types::is_heap(&e.c.types, rt)) {
+            rt = types::elem(&e.c.types, rt);
+        }
+        let mut src = expr(e, callee.a);
+        if (!context::is_aggregate(e, rt)) {
+            let tmp = context::new_reg(e);
+            context::out(e, "  "); context::out(e, tmp);
+            context::out(e, " = alloca "); context::out(e, context::type_name(e, rt));
+            context::nl(e);
+            store_value(e, tmp, rt, src);
+            src = tmp;
+        }
+        let out = context::new_reg(e);
+        context::out(e, "  "); context::out(e, out);
+        context::out(e, " = alloca "); context::out(e, context::type_name(e, rt));
+        context::nl(e);
+        context::out(e, "  call void "); context::out(e, clone::symbol(e, rt));
+        context::out(e, "(ptr "); context::out(e, out);
+        context::out(e, ", ptr "); context::out(e, src); context::out(e, ")\n");
+        e.expr_ty = rt;
+        return out;
+    }
     if (callee.kind == node::AST_FIELD_ACC) {
         // v1: a function-pointer field call is indirect, not a method call.
         let ft = context::node_ty(e, n.a);
@@ -2117,6 +2148,7 @@ fn expr(e: &mut context::Emitter, h: i32) -> &str {
 
 export fn block(e: &mut context::Emitter, h: i32) {
     if (h < 0) { return; }
+    let mark = context::local_count(e);
     context::scope_push(e);
     let n = node::get(&e.c.nodes, h);
     let mut i: usize = 0;
@@ -2124,6 +2156,7 @@ export fn block(e: &mut context::Emitter, h: i32) {
         stmt(e, *n.kids.get(i));
         i += 1;
     }
+    if (e.terminated == 0) { drop::scope_end(e, mark); }
     context::scope_pop(e);
 }
 
@@ -2193,6 +2226,8 @@ fn payload_value(e: &mut context::Emitter, base: &str, ty: i32, vi: i32,
 
 // Shared `return` lowering, also used by `else return expr;`.
 fn emit_return_expr(e: &mut context::Emitter, a: i32) {
+    // Evaluate the return value first, then destroy every still-live local in
+    // reverse declaration order (§12.7).
     if (e.sret_on != 0) {
         let retty = e.sret_ty;
         let v = expr(e, a);
@@ -2201,6 +2236,7 @@ fn emit_return_expr(e: &mut context::Emitter, a: i32) {
         context::out(e, ", i64 ");
         context::out_i64(e, types::size(retty, &mut e.c.types) as i64);
         context::out(e, ", i1 false)\n");
+        drop::all_live(e);
         context::out(e, "  ret void\n");
         e.terminated = 1;
         return;
@@ -2208,12 +2244,14 @@ fn emit_return_expr(e: &mut context::Emitter, a: i32) {
     if (a >= 0) {
         let v = expr(e, a);
         let ty = e.expr_ty;
+        drop::all_live(e);
         context::out(e, "  ret ");
         context::out(e, context::type_name(e, ty));
         context::out(e, " ");
         context::out(e, v);
         context::nl(e);
     } else {
+        drop::all_live(e);
         context::out(e, "  ret void\n");
     }
     e.terminated = 1;
@@ -2277,6 +2315,7 @@ fn emit_else_split(e: &mut context::Emitter, els_h: i32, v: &str, oty: i32) -> &
         if (els.sval != "" && fty > 0) {
             let addr = payload_addr(e, v, oty, fvi);
             context::local_declare(e, els.sval, addr, fty);
+            context::mark_live(e, els.sval);
         }
         block(e, els.a);
         if (e.terminated == 0) {
@@ -2366,7 +2405,10 @@ fn stmt_let(e: &mut context::Emitter, h: i32) {
         let v = expr(e, n.b);
         store_value(e, slot, ty, v);
     }
-    if (n.sval != "_") { context::local_declare(e, n.sval, slot, ty); }
+    if (n.sval != "_") {
+        context::local_declare(e, n.sval, slot, ty);
+        if (n.b >= 0) { context::mark_live(e, n.sval); }
+    }
 }
 
 fn stmt_assign(e: &mut context::Emitter, h: i32) {
@@ -2384,6 +2426,9 @@ fn stmt_assign(e: &mut context::Emitter, h: i32) {
     }
     if (slot == "") { return; }
     if (n.sval == "=") {
+        // Assignment overwrites an owner: drop the old value first.
+        if (lhs.kind == node::AST_PATH) { drop::drop_named(e, lhs.sval); }
+        else { drop::drop_addr(e, ty, slot); }
         let v = expr(e, n.b);
         let vty = e.expr_ty;
         if (context::is_aggregate(e, vty)) {
@@ -2394,6 +2439,7 @@ fn stmt_assign(e: &mut context::Emitter, h: i32) {
             context::out(e, ", i64 ");
             context::out_i64(e, types::size(vty, &mut e.c.types) as i64);
             context::out(e, ", i1 false)\n");
+            if (lhs.kind == node::AST_PATH) { context::mark_live(e, lhs.sval); }
             return;
         }
         context::out(e, "  store ");
@@ -2403,6 +2449,7 @@ fn stmt_assign(e: &mut context::Emitter, h: i32) {
         context::out(e, ", ptr ");
         context::out(e, slot);
         context::nl(e);
+        if (lhs.kind == node::AST_PATH) { context::mark_live(e, lhs.sval); }
         return;
     }
     // Compound assignment: `x op= y` becomes `x = x op y`.
@@ -2482,7 +2529,7 @@ fn stmt_while(e: &mut context::Emitter, h: i32) {
     context::out(e, endlbl);
     context::nl(e);
     label(e, bodylbl);
-    e.loops.push(context::LoopTarget { .brk = endlbl, .cont = condlbl });
+    e.loops.push(context::LoopTarget { .scope = context::local_count(e), .brk = endlbl, .cont = condlbl });
     e.terminated = 0;
     block(e, n.b);
     e.loops.pop();
@@ -2517,6 +2564,7 @@ fn stmt_for_range(e: &mut context::Emitter, h: i32) {
     context::out(e, islot);
     context::nl(e);
     context::local_declare(e, n.sval, islot, ty);
+    context::mark_live(e, n.sval);
     let hslot = context::new_reg(e);
     context::out(e, "  ");
     context::out(e, hslot);
@@ -2565,7 +2613,7 @@ fn stmt_for_range(e: &mut context::Emitter, h: i32) {
     context::out(e, endlbl);
     context::nl(e);
     label(e, bodylbl);
-    e.loops.push(context::LoopTarget { .brk = endlbl, .cont = steplbl });
+    e.loops.push(context::LoopTarget { .scope = context::local_count(e), .brk = endlbl, .cont = steplbl });
     e.terminated = 0;
     if (n.kids.len() > 0) { block(e, *n.kids.get(0)); }
     e.loops.pop();
@@ -2637,7 +2685,7 @@ fn stmt_for(e: &mut context::Emitter, h: i32) {
         context::nl(e);
     }
     label(e, bodylbl);
-    e.loops.push(context::LoopTarget { .brk = endlbl, .cont = steplbl });
+    e.loops.push(context::LoopTarget { .scope = context::local_count(e), .brk = endlbl, .cont = steplbl });
     e.terminated = 0;
     if (n.kids.len() > 0) { block(e, *n.kids.get(0)); }
     e.loops.pop();
@@ -2660,6 +2708,7 @@ fn stmt_for(e: &mut context::Emitter, h: i32) {
 fn stmt_break(e: &mut context::Emitter) {
     if (e.loops.len() == 0) { return; }
     let t = *e.loops.get(e.loops.len() - 1);
+    drop::scope_end(e, t.scope);
     context::out(e, "  br label %");
     context::out(e, t.brk);
     context::nl(e);
@@ -2669,6 +2718,7 @@ fn stmt_break(e: &mut context::Emitter) {
 fn stmt_continue(e: &mut context::Emitter) {
     if (e.loops.len() == 0) { return; }
     let t = *e.loops.get(e.loops.len() - 1);
+    drop::scope_end(e, t.scope);
     context::out(e, "  br label %");
     context::out(e, t.cont);
     context::nl(e);
@@ -2779,7 +2829,7 @@ fn stmt_for_iter(e: &mut context::Emitter, h: i32) {
     context::out(e, endlbl);
     context::nl(e);
     label(e, body);
-    e.loops.push(context::LoopTarget { .brk = endlbl, .cont = head });
+    e.loops.push(context::LoopTarget { .scope = context::local_count(e), .brk = endlbl, .cont = head });
     e.terminated = 0;
     // Bind the `Has` payload to the loop variable.
     let pid = types::member_type(&e.c.types, ret_ty, has_vi);
@@ -2798,6 +2848,7 @@ fn stmt_for_iter(e: &mut context::Emitter, h: i32) {
         store_value(e, bind_slot, pty, pv);
     }
     context::local_declare(e, n.sval, bind_slot, pty);
+    context::mark_live(e, n.sval);
     if (n.kids.len() > 0) { block(e, *n.kids.get(0)); }
     e.loops.pop();
     if (e.terminated == 0) {
@@ -2938,6 +2989,7 @@ fn bind_at(e: &mut context::Emitter, name: &str, addr: &str, ft: i32) {
     context::out(e, slot);
     context::nl(e);
     context::local_declare(e, name, slot, ft);
+    context::mark_live(e, name);
 }
 
 fn bind_pattern(e: &mut context::Emitter, pats: &vec::Vec<i32>, st: i32,
@@ -2970,6 +3022,7 @@ fn bind_pattern(e: &mut context::Emitter, pats: &vec::Vec<i32>, st: i32,
                         context::out(e, slot);
                         context::nl(e);
                         context::local_declare(e, sub.sval, slot, ft);
+                        context::mark_live(e, sub.sval);
                     }
                     j += 1;
                 }

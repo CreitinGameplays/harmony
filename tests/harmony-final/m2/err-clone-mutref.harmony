@@ -1,0 +1,8 @@
+// M2: exclusive references are never cloneable (TYPE-05).
+struct O { v: i32; }
+fn main() -> i32 {
+    let mut a = O { .v = 1 };
+    let r = &mut a;
+    let r2 = r.clone();
+    return r2.v;
+}

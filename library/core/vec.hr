@@ -20,9 +20,26 @@ export struct Vec<T> {
     cap: usize;         // allocated slots; 0 or a power of two
 }
 
-// `filled` duplicates its value n times, so it requires a copy element. A
+// `clone` and `filled` duplicate their elements, so they require copy. A
 // separate block keeps the rest of Vec usable with non-copy elements (M2).
 methods<T: copy> Vec<T> {
+    // Structural clone of the live slots. The compiler generates this for
+    // ordinary user types; the library needs it for its own raw storage.
+    export fn clone(&self) -> Vec<T> {
+        let mut out: Vec<T> = Vec<T>::make();
+        if (self.len == 0) { return out; }
+        out.reserve(self.len);
+        unchecked("slots 0..len are initialized and T is copy") {
+            let mut i: usize = 0;
+            while (i < self.len) {
+                out.ptr.plus(i).write(self.ptr.plus(i).read());
+                i += 1;
+            }
+        }
+        out.len = self.len;
+        return out;
+    }
+
     export fn filled(n: usize, v: T) -> Vec<T> {
         let mut out: Vec<T> = Vec<T>::make();
         let mut i: usize = 0;
@@ -59,6 +76,14 @@ methods<T> Vec<T> {
     export fn get(&self, i: usize) -> &T {
         unchecked("callers of get() guarantee i < len") {
             return &*self.ptr.plus(i);
+        }
+    }
+
+    // Mutable element access. Needed by analyses that own their table (e.g.
+    // CFG dataflow); `set` cannot express "lend this element as &mut".
+    export fn get_mut(&mut self, i: usize) -> &mut T {
+        unchecked("callers of get_mut() guarantee i < len") {
+            return &mut *self.ptr.plus(i);
         }
     }
 

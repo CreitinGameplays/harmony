@@ -143,6 +143,7 @@ def main():
     t1 = time.time()
     rewrite = {}
     mismatches = 0
+    skipped = 0
     for i, (name, path) in enumerate(cases):
         # One process per case keeps a runtime trap in one lowered program
         # from hiding every later case. The expensive part (compiling the
@@ -152,6 +153,14 @@ def main():
         oracle = subprocess.run([HB, "emit-llvm", path], capture_output=True)
         expected = oracle.stdout
         got = rewrite.get(i)
+        # M2 changes the final compiler's IR for owning types by design: drop
+        # flags and structural clone helpers do not exist in v0 harmony-base.
+        # Skip those cases here but still compare every M2-neutral program.
+        if (b"MOVE-" in (run.stdout + run.stderr).encode()
+                or (got is not None and (b"harmony__drop__" in got
+                                         or b"harmony__clone__" in got))):
+            skipped += 1
+            continue
         if got != expected:
             mismatches += 1
             print("MISMATCH %s" % name)
@@ -170,8 +179,8 @@ def main():
         pass
     shutil.rmtree(os.path.dirname(driver), ignore_errors=True)
     t2 = time.time()
-    print("\nbuild %.2fs, diff %.2fs, %d cases, %d mismatches" %
-          (t1 - t0, t2 - t1, len(cases), mismatches))
+    print("\nbuild %.2fs, diff %.2fs, %d cases, %d mismatches, %d M2-skipped" %
+          (t1 - t0, t2 - t1, len(cases), mismatches, skipped))
     return 1 if mismatches else 0
 
 

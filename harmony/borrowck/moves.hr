@@ -1,0 +1,432 @@
+// harmony/borrowck/moves.hr — M2 definite-move analysis over the CFG IR.
+//
+// The checker has already stamped every expression with its type and every
+// local path with its declaration handle. This pass computes, at each CFG
+// point, whether a place is initialized, moved, or maybe moved. It records
+// timeline events (born/moved/used) and stamps moved path nodes so codegen can
+// clear their drop flags.
+import "../../library/core/vec.hr";
+import "../../harmony/ast/node.hr";
+import "../../harmony/sema/check.hr";
+import "../../harmony/sema/types.hr";
+import "../../harmony/ir/cfg.hr";
+
+const ST_UNINIT: i32 = 0;
+const ST_LIVE: i32 = 1;
+const ST_MOVED: i32 = 2;
+const ST_MAYBE: i32 = 3;
+
+export const EV_BORN: i32 = 1;
+export const EV_MOVED: i32 = 2;
+export const EV_USED: i32 = 3;
+export const EV_REINIT: i32 = 4;
+
+copy struct Event {
+    role: i32;
+    node: i32;
+    decl: i32;
+}
+
+struct Place {
+    decl: i32;
+    name: &str;
+    ty: i32;
+    loop_depth: i32;
+    state: i32;
+    reported: i32;
+}
+
+export struct Borrow {
+    places: vec::Vec<Place>;
+    events: vec::Vec<Event>;
+    reported: vec::Vec<i64>;   // (code hash, AST handle) pairs
+}
+
+fn find_place(b: &Borrow, decl: i32) -> i32 {
+    let mut i: usize = 0;
+    while (i < b.places.len()) {
+        if (b.places.get(i).decl == decl) { return i as i32; }
+        i += 1;
+    }
+    return -1;
+}
+
+fn add_place(b: &mut Borrow, decl: i32, name: &str, ty: i32) {
+    if (find_place(&*b, decl) >= 0) { return; }
+    b.places.push(Place {
+        .decl = decl, .name = name, .ty = ty, .loop_depth = 0,
+        .state = ST_UNINIT, .reported = 0,
+    });
+}
+
+fn collect(b: &mut Borrow, c: &check::Checker, h: i32) {
+    if (h < 0) { return; }
+    let n = node::get(&c.nodes, h);
+    if (n.kind == node::AST_LET) {
+        add_place(b, h, n.sval, n.ty);
+    } else if (n.kind == node::AST_PAT_BIND) {
+        add_place(b, h, n.sval, n.ty);
+    } else if (n.kind == node::AST_FOR && n.sval != "") {
+        add_place(b, h, n.sval, n.ty);
+    }
+    collect(b, c, n.a);
+    collect(b, c, n.b);
+    collect(b, c, n.c);
+    let mut i: usize = 0;
+    while (i < n.kids.len()) { collect(b, c, *n.kids.get(i)); i += 1; }
+    i = 0;
+    while (i < n.kids2.len()) { collect(b, c, *n.kids2.get(i)); i += 1; }
+    i = 0;
+    while (i < n.kids3.len()) { collect(b, c, *n.kids3.get(i)); i += 1; }
+}
+
+fn event(b: &mut Borrow, role: i32, node_h: i32, decl: i32) {
+    b.events.push(Event { .role = role, .node = node_h, .decl = decl });
+}
+
+fn report(b: &mut Borrow, c: &mut check::Checker, code: &str, title: &str,
+          summary: &str, at: i32) {
+    let mut h: i64 = 0;
+    let cb = code.as_bytes();
+    let mut i: usize = 0;
+    while (i < cb.len()) { h = h * 131 + cb[i] as i64; i += 1; }
+    h = h * 4099 + at as i64;
+    i = 0;
+    while (i < b.reported.len()) {
+        if (*b.reported.get(i) == h) { return; }
+        i += 1;
+    }
+    b.reported.push(h);
+    let mut s: str::String = str::String::make();
+    s.push(summary);
+    check::diag_ownership(c, code, title, s.as_str(), at);
+}
+
+// Is this expression a place rooted at a local variable?
+fn root_place(c: &check::Checker, h: i32) -> i32 {
+    let n = node::get(&c.nodes, h);
+    if (n.kind == node::AST_PATH) {
+        if (n.target >= 0) { return n.target; }
+        return -1;
+    }
+    if (n.kind == node::AST_FIELD_ACC || n.kind == node::AST_INDEX) {
+        return -2;   // a sub-place: moving it out is a partial move
+    }
+    if (n.kind == node::AST_DEREF) {
+        return -3;   // behind a reference or heap box
+    }
+    return -1;
+}
+
+fn use_place(b: &mut Borrow, c: &mut check::Checker, h: i32, mov: bool,
+             depth: i32) {
+    let n = node::get(&c.nodes, h);
+    let ty = n.ty;
+    if (ty <= 0 || check::is_copy(&*c, ty)) { return; }
+    let root = root_place(&*c, h);
+    if (root == -2) {
+        if (mov) {
+            report(b, c, "MOVE-04", "cannot move out of a field or slot",
+                   "Moving one field out of an owning value is not allowed; clone it or take the whole value.", h);
+        }
+        return;
+    }
+    if (root == -3) {
+        // Reading through `*p` is a value copy, not an ownership transfer of
+        // the reference itself. Moving the pointee's fields is still caught as
+        // a partial move at the field-access node.
+        return;
+    }
+    if (root < 0) { return; }
+    let pi = find_place(&*b, root);
+    if (pi < 0) { return; }
+    let p = *b.places.get(pi as usize);
+    if (mov) {
+        if (p.state != ST_LIVE && p.reported == 0) {
+            let code: &str = "MOVE-01";
+            let title: &str = "use of moved value";
+            let mut s: str::String = str::String::make();
+            s.push("`"); s.push(p.name); s.push("` was already moved");
+            report(b, c, code, title, s.as_str(), h);
+            let mut q = *b.places.get(pi as usize);
+            q.reported = 1;
+            b.places.set(pi as usize, q);
+        }
+        if (depth > p.loop_depth && p.reported == 0) {
+            let mut s: str::String = str::String::make();
+            s.push("`"); s.push(p.name);
+            s.push("` is moved on every loop iteration");
+            report(b, c, "MOVE-02", "moved inside a loop", s.as_str(), h);
+            let mut q = *b.places.get(pi as usize);
+            q.reported = 1;
+            b.places.set(pi as usize, q);
+        }
+        let mut q = *b.places.get(pi as usize);
+        q.state = ST_MOVED;
+        b.places.set(pi as usize, q);
+        let mut m = node::get(&c.nodes, h);
+        m.own = 1;
+        node::put(&mut c.nodes, h, m);
+        event(b, EV_MOVED, h, root);
+        return;
+    }
+    if (p.state != ST_LIVE) {
+        let mut s: str::String = str::String::make();
+        s.push("`"); s.push(p.name); s.push("` is no longer available");
+        report(b, c, "MOVE-01", "use of moved value", s.as_str(), h);
+    }
+    event(b, EV_USED, h, root);
+}
+
+fn args(b: &mut Borrow, c: &mut check::Checker, list: &vec::Vec<i32>,
+        param_tys: &vec::Vec<i32>, skip: usize, depth: i32) {
+    let mut i: usize = 0;
+    while (i < list.len()) {
+        let pi = skip + i;
+        let mut mov = true;
+        if (pi < param_tys.len()) {
+            let pt = *param_tys.get(pi);
+            mov = !check::is_copy(&*c, pt)
+                && !types::is_ref(&c.types, pt);
+        }
+        expr(b, c, *list.get(i), mov, depth);
+        i += 1;
+    }
+}
+
+fn call_expr(b: &mut Borrow, c: &mut check::Checker, h: i32, n: &node::Node,
+             depth: i32) {
+    let marker = n.ival as i32;
+    // Format calls borrow their arguments; `fnptr` and sized builtins are not
+    // ownership transfers either.
+    if (marker >= 1 && marker <= 18) {
+        let mut i: usize = 0;
+        while (i < n.kids.len()) { expr(b, c, *n.kids.get(i), false, depth); i += 1; }
+        return;
+    }
+    let mut target = n.target;
+    if (target < 0) { target = n.b; }
+    let mut skip: usize = 0;
+    if (n.a >= 0 && node::get(&c.nodes, n.a).kind == node::AST_FIELD_ACC) {
+        // Method call: the receiver is `callee.a` and the target's first
+        // parameter is `self` (by value only for a plain `self`).
+        if (target >= 0) {
+            let f = node::get(&c.nodes, target);
+            if (f.kids2.len() > 0) {
+                let sp = node::get(&c.nodes, *f.kids2.get(0));
+                if (sp.sval == "self" || sp.sval == "mut self") {
+                    use_place(b, c, node::get(&c.nodes, n.a).a, true, depth);
+                }
+            }
+        }
+        skip = 1;
+    }
+    let mut tys: vec::Vec<i32> = vec::Vec<i32>::make();
+    if (target >= 0) {
+        let f = node::get(&c.nodes, target);
+        let mut i: usize = 0;
+        while (i < f.kids2.len()) { tys.push(node::get(&c.nodes, *f.kids2.get(i)).ty); i += 1; }
+    }
+    args(b, c, &n.kids, &tys, skip, depth);
+}
+
+fn expr(b: &mut Borrow, c: &mut check::Checker, h: i32, mov: bool, depth: i32) {
+    if (h < 0) { return; }
+    let n = node::get(&c.nodes, h);
+    let k = n.kind;
+    if (k == node::AST_PATH) { use_place(b, c, h, mov, depth); return; }
+    if (k == node::AST_BORROW) { expr(b, c, n.a, false, depth); return; }
+    if (k == node::AST_DEREF) {
+        use_place(b, c, h, mov, depth);
+        expr(b, c, n.a, false, depth);
+        return;
+    }
+    if (k == node::AST_FIELD_ACC || k == node::AST_INDEX) {
+        use_place(b, c, h, mov, depth);
+        expr(b, c, n.a, false, depth);
+        expr(b, c, n.b, false, depth);
+        return;
+    }
+    if (k == node::AST_CALL) { call_expr(b, c, h, &n, depth); return; }
+    if (k == node::AST_STRUCT_INIT || k == node::AST_ARRAY_LIT) {
+        let mut i: usize = 0;
+        while (i < n.kids.len()) {
+            let v = *n.kids.get(i);
+            let vt = node::get(&c.nodes, v).ty;
+            expr(b, c, v, !check::is_copy(&*c, vt), depth);
+            i += 1;
+        }
+        return;
+    }
+    if (k == node::AST_HEAP) {
+        expr(b, c, n.a, true, depth);
+        return;
+    }
+    if (k == node::AST_UNARY || k == node::AST_AS) {
+        expr(b, c, n.a, false, depth);
+        return;
+    }
+    if (k == node::AST_BINARY) {
+        expr(b, c, n.a, false, depth);
+        expr(b, c, n.b, false, depth);
+        return;
+    }
+    // Default: walk every child without transferring ownership.
+    expr(b, c, n.a, false, depth);
+    expr(b, c, n.b, false, depth);
+    expr(b, c, n.c, false, depth);
+    let mut i: usize = 0;
+    while (i < n.kids.len()) { expr(b, c, *n.kids.get(i), false, depth); i += 1; }
+    i = 0;
+    while (i < n.kids2.len()) { expr(b, c, *n.kids2.get(i), false, depth); i += 1; }
+}
+
+fn set_state(b: &mut Borrow, decl: i32, st: i32, depth: i32, node_h: i32) {
+    let pi = find_place(&*b, decl);
+    if (pi < 0) { return; }
+    let mut p = *b.places.get(pi as usize);
+    p.state = st;
+    p.loop_depth = depth;
+    p.reported = 0;
+    b.places.set(pi as usize, p);
+    if (st == ST_LIVE) { event(b, EV_BORN, node_h, decl); }
+    else if (st == ST_MOVED) { event(b, EV_REINIT, node_h, decl); }
+}
+
+fn instr(b: &mut Borrow, c: &mut check::Checker, ins: &cfg::Instr) {
+    if (ins.node < 0) {
+        if (ins.decl >= 0) { set_state(b, ins.decl, ST_LIVE, ins.loop, ins.node); }
+        return;
+    }
+    let n = node::get(&c.nodes, ins.node);
+    let k = n.kind;
+    if (k == node::AST_LET) {
+        set_state(b, ins.node, ST_LIVE, ins.loop, ins.node);
+        expr(b, c, n.b, true, ins.loop);
+    } else if (k == node::AST_ASSIGN) {
+        // Assignment re-initializes the destination; its old state must not
+        // be read as a use of the moved-from place (§9.7).
+        let mut dest = n.a;
+        let dn = node::get(&c.nodes, dest);
+        if (dn.kind == node::AST_PATH && dn.target >= 0) { dest = dn.target; }
+        set_state(b, dest, ST_LIVE, ins.loop, ins.node);
+        expr(b, c, n.b, true, ins.loop);
+    } else if (k == node::AST_RETURN) {
+        expr(b, c, n.a, true, ins.loop);
+    } else if (k == node::AST_EXPR_STMT) {
+        expr(b, c, n.a, false, ins.loop);
+    } else if (k == node::AST_FOR) {
+        expr(b, c, n.a, true, ins.loop);
+    } else {
+        expr(b, c, ins.node, false, ins.loop);
+    }
+}
+
+fn join_states(into: &mut vec::Vec<i32>, from: &vec::Vec<i32>) -> bool {
+    let mut changed = false;
+    let mut i: usize = 0;
+    while (i < into.len() && i < from.len()) {
+        let a = *into.get(i);
+        let b = *from.get(i);
+        let mut v: i32 = a;
+        if (a == -1) {
+            v = b;   // unreachable predecessor: adopt the incoming state
+        } else if (a != b) {
+            v = ST_MAYBE;
+        }
+        if (v != a) { into.set(i, v); changed = true; }
+        i += 1;
+    }
+    return changed;
+}
+
+fn copy_states(out: &mut vec::Vec<i32>, from: &vec::Vec<i32>) {
+    out.clear();
+    let mut i: usize = 0;
+    while (i < from.len()) { out.push(*from.get(i)); i += 1; }
+}
+
+// Runs the pass for one function. The checker must have completed without
+// stops; type errors suppress ownership analysis at the driver level.
+export fn check_fn(c: &mut check::Checker, fh: i32) -> Borrow {
+    let f = node::get(&c.nodes, fh);
+    let mut b = Borrow {
+        .places = vec::Vec<Place>::make(),
+        .events = vec::Vec<Event>::make(),
+        .reported = vec::Vec<i64>::make(),
+    };
+    let mut i: usize = 0;
+    while (i < f.kids2.len()) {
+        let p = *f.kids2.get(i);
+        add_place(&mut b, p, node::get(&c.nodes, p).sval,
+                  node::get(&c.nodes, p).ty);
+        i += 1;
+    }
+    collect(&mut b, &*c, f.b);
+    let cfg = cfg::build(&c.nodes, f.b, &f.kids2);
+    let mut ins: vec::Vec<vec::Vec<i32>> = vec::Vec<vec::Vec<i32>>::make();
+    let mut initial: vec::Vec<i32> = vec::Vec<i32>::make();
+    i = 0;
+    while (i < b.places.len()) {
+        let mut st: i32 = ST_UNINIT;
+        if (i < f.kids2.len()) { st = ST_LIVE; }
+        initial.push(st);
+        i += 1;
+    }
+    i = 0;
+    while (i < cfg.blocks.len()) {
+        let mut row: vec::Vec<i32> = vec::Vec<i32>::make();
+        let mut j: usize = 0;
+        while (j < initial.len()) { row.push(-1); j += 1; }
+        ins.push(row);
+        i += 1;
+    }
+    copy_states(ins.get_mut(0), &initial);
+    let mut work: vec::Vec<i32> = vec::Vec<i32>::make();
+    work.push(0);
+    let mut rounds: i32 = 0;
+    while (work.len() > 0 && rounds < 10000) {
+        rounds += 1;
+        let blk = *work.get(0);
+        // Drop the head without a generic remove: rebuild the queue.
+        let mut nw: vec::Vec<i32> = vec::Vec<i32>::make();
+        let mut k: usize = 1;
+        while (k < work.len()) { nw.push(*work.get(k)); k += 1; }
+        work = nw;
+        // Load this block's entry states into the place table, run the block
+        // once, then read the exit states back for successor propagation.
+        let mut q: usize = 0;
+        while (q < b.places.len()) {
+            set_state_only(&mut b, q, *ins.get(blk as usize).get(q));
+            q += 1;
+        }
+        let block = cfg.blocks.get(blk as usize);
+        let mut j: usize = 0;
+        while (j < block.instrs.len()) {
+            instr(&mut b, c, block.instrs.get(j));
+            j += 1;
+        }
+        let mut state: vec::Vec<i32> = vec::Vec<i32>::make();
+        q = 0;
+        while (q < b.places.len()) { state.push(b.places.get(q).state); q += 1; }
+        if (block.term != cfg::T_RETURN && block.term != cfg::T_BREAK
+            && block.term != cfg::T_CONTINUE && block.term != cfg::T_END) {
+            let mut s: usize = 0;
+            while (s < block.succ.len()) {
+                let to = *block.succ.get(s);
+                if (join_states(ins.get_mut(to as usize), &state)) { work.push(to); }
+                s += 1;
+            }
+        }
+    }
+    return b;
+}
+
+fn set_state_only(b: &mut Borrow, idx: usize, st: i32) {
+    let mut p = *b.places.get(idx);
+    p.state = st;
+    b.places.set(idx, p);
+}
+
+export fn event_count(b: &Borrow) -> usize { return b.events.len(); }
+export fn event_at(b: &Borrow, i: usize) -> Event { return *b.events.get(i); }

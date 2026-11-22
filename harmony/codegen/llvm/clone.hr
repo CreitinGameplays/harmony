@@ -1,0 +1,228 @@
+// harmony/codegen/llvm/clone.hr — M2 structural clone glue.
+//
+// A `.clone()` with no hand-written method lowers to one internal helper per
+// type. Helpers take (out ptr, in ptr) so aggregates and scalars share a shape.
+import "../../../library/core/str.hr";
+import "../../../library/core/vec.hr";
+import "../../ast/node.hr";
+import "../../sema/types.hr";
+import "../../sema/check.hr";
+import "context.hr";
+
+export fn symbol(e: &mut context::Emitter, ty: i32) -> &str {
+    let mut s: str::String = str::String::make();
+    s.push("@harmony__clone__");
+    s.push(context::symbol_name(types::tname(&e.c.types, ty)));
+    s.push("_");
+    s.push_i64(ty as i64);
+    return s.as_str();
+}
+
+fn memcpy(e: &mut context::Emitter, dst: &str, src: &str, ty: i32) {
+    context::out(e, "  call void @llvm.memcpy.p0.p0.i64(ptr align 8 ");
+    context::out(e, dst); context::out(e, ", ptr align 8 ");
+    context::out(e, src); context::out(e, ", i64 ");
+    context::out_i64(e, types::size(ty, &mut e.c.types) as i64);
+    context::out(e, ", i1 false)\n");
+}
+
+fn gep(e: &mut context::Emitter, base: &str, off: i64) -> &str {
+    let r = context::new_reg(e);
+    context::out(e, "  "); context::out(e, r);
+    context::out(e, " = getelementptr inbounds i8, ptr ");
+    context::out(e, base); context::out(e, ", i64 "); context::out_i64(e, off);
+    context::nl(e);
+    return r;
+}
+
+fn load_ptr(e: &mut context::Emitter, p: &str) -> &str {
+    let r = context::new_reg(e);
+    context::out(e, "  "); context::out(e, r);
+    context::out(e, " = load ptr, ptr "); context::out(e, p); context::nl(e);
+    return r;
+}
+
+fn store_ptr(e: &mut context::Emitter, p: &str, v: &str) {
+    context::out(e, "  store ptr "); context::out(e, v);
+    context::out(e, ", ptr "); context::out(e, p); context::nl(e);
+}
+
+fn load(e: &mut context::Emitter, ty: i32, p: &str) -> &str {
+    let r = context::new_reg(e);
+    context::out(e, "  "); context::out(e, r);
+    context::out(e, " = load "); context::out(e, context::type_name(e, ty));
+    context::out(e, ", ptr "); context::out(e, p); context::nl(e);
+    return r;
+}
+
+fn store(e: &mut context::Emitter, ty: i32, p: &str, v: &str) {
+    context::out(e, "  store "); context::out(e, context::type_name(e, ty));
+    context::out(e, " "); context::out(e, v);
+    context::out(e, ", ptr "); context::out(e, p); context::nl(e);
+}
+
+fn call(e: &mut context::Emitter, ty: i32, dst: &str, src: &str) {
+    context::out(e, "  call void "); context::out(e, symbol(e, ty));
+    context::out(e, "(ptr "); context::out(e, dst);
+    context::out(e, ", ptr "); context::out(e, src); context::out(e, ")\n");
+}
+
+fn copy_field(e: &mut context::Emitter, ty: i32, dst: &str, src: &str) {
+    if (check::needs_drop(&*e.c, ty) && check::cloneable(&*e.c, ty)) {
+        call(e, ty, dst, src);
+    } else {
+        memcpy(e, dst, src, ty);
+    }
+}
+
+fn collection(e: &mut context::Emitter, ty: i32) -> bool {
+    let n = types::tname(&e.c.types, ty);
+    return str::starts_with(n, "vec::Vec");
+}
+
+fn copy_into(e: &mut context::Emitter, ty: i32, out: &str, inp: &str) {
+    if (!check::cloneable(&*e.c, ty)) { memcpy(e, out, inp, ty); return; }
+    let k = types::type_kind(&e.c.types, ty);
+    if (types::is_heap(&e.c.types, ty)) {
+        let p = load_ptr(e, inp);
+        let inner = types::elem(&e.c.types, ty);
+        let sz = types::size(inner, &mut e.c.types);
+        let fresh = context::new_reg(e);
+        context::out(e, "  "); context::out(e, fresh);
+        context::out(e, " = call ptr @lc_alloc(i64 ");
+        context::out_i64(e, sz as i64); context::out(e, ")\n");
+        copy_field(e, inner, fresh, p);
+        store_ptr(e, out, fresh);
+        return;
+    }
+    if (collection(e, ty)) {
+        let len = load(e, types::TY_I64, gep(e, inp, 8));
+        let src = load_ptr(e, gep(e, inp, 0));
+        let inner = types::elem(&e.c.types, ty);
+        let esz = types::size(inner, &mut e.c.types);
+        let fresh = context::new_reg(e);
+        context::out(e, "  "); context::out(e, fresh);
+        context::out(e, " = call ptr @lc_alloc(i64 ");
+        context::out(e, len); context::out(e, ")\n");
+        let head = context::new_label(e, "clone.vec.head");
+        let body = context::new_label(e, "clone.vec.body");
+        let step = context::new_label(e, "clone.vec.step");
+        let end = context::new_label(e, "clone.vec.end");
+        let idx = context::new_reg(e);
+        context::out(e, "  "); context::out(e, idx); context::out(e, " = alloca i64\n");
+        context::out(e, "  store i64 0, ptr "); context::out(e, idx); context::nl(e);
+        context::out(e, "  br label %"); context::out(e, head); context::nl(e);
+        context::out(e, head); context::out(e, ":\n");
+        let cur = load(e, types::TY_I64, idx);
+        let cond = context::new_reg(e);
+        context::out(e, "  "); context::out(e, cond);
+        context::out(e, " = icmp slt i64 "); context::out(e, cur);
+        context::out(e, ", "); context::out(e, len); context::nl(e);
+        context::out(e, "  br i1 "); context::out(e, cond);
+        context::out(e, ", label %"); context::out(e, body);
+        context::out(e, ", label %"); context::out(e, end); context::nl(e);
+        context::out(e, body); context::out(e, ":\n");
+        let mul = context::new_reg(e);
+        context::out(e, "  "); context::out(e, mul);
+        context::out(e, " = mul i64 "); context::out(e, cur);
+        context::out(e, ", "); context::out_i64(e, esz as i64); context::nl(e);
+        let sp = gep(e, src, 0);
+        let dp = gep(e, fresh, 0);
+        let sa = context::new_reg(e);
+        let da = context::new_reg(e);
+        context::out(e, "  "); context::out(e, sa);
+        context::out(e, " = getelementptr inbounds i8, ptr ");
+        context::out(e, sp); context::out(e, ", i64 "); context::out(e, mul); context::nl(e);
+        context::out(e, "  "); context::out(e, da);
+        context::out(e, " = getelementptr inbounds i8, ptr ");
+        context::out(e, dp); context::out(e, ", i64 "); context::out(e, mul); context::nl(e);
+        copy_field(e, inner, da, sa);
+        context::out(e, "  br label %"); context::out(e, step); context::nl(e);
+        context::out(e, step); context::out(e, ":\n");
+        let next = context::new_reg(e);
+        context::out(e, "  "); context::out(e, next);
+        context::out(e, " = add i64 "); context::out(e, cur); context::out(e, ", 1\n");
+        context::out(e, "  store i64 "); context::out(e, next);
+        context::out(e, ", ptr "); context::out(e, idx); context::nl(e);
+        context::out(e, "  br label %"); context::out(e, head); context::nl(e);
+        context::out(e, end); context::out(e, ":\n");
+        store_ptr(e, gep(e, out, 0), fresh);
+        store(e, types::TY_I64, gep(e, out, 8), len);
+        store(e, types::TY_I64, gep(e, out, 16), len);
+        return;
+    }
+    if (k == types::CTY_ARRAY) {
+        let inner = types::elem(&e.c.types, ty);
+        let n = types::array_len(&e.c.types, ty);
+        let esz = types::size(inner, &mut e.c.types);
+        let mut i: i32 = 0;
+        while (i < n) {
+            copy_field(e, inner, gep(e, out, i as i64 * esz as i64),
+                 gep(e, inp, i as i64 * esz as i64));
+            i += 1;
+        }
+        return;
+    }
+    if (k == types::CTY_STRUCT) {
+        let mut i: usize = 0;
+        while (i < types::member_count(&e.c.types, ty)) {
+            let ft = types::member_type(&e.c.types, ty, i as i32);
+            let off = types::field_offset(ty, i, &mut e.c.types) as i64;
+            copy_field(e, ft, gep(e, out, off), gep(e, inp, off));
+            i += 1;
+        }
+        return;
+    }
+    if (k == types::CTY_ENUM) {
+        memcpy(e, out, inp, ty);
+        let tag = load(e, types::TY_I32, gep(e, inp, 0));
+        let end = context::new_label(e, "clone.enum.end");
+        let mut vi: usize = 0;
+        while (vi < types::member_count(&e.c.types, ty)) {
+            let case_lbl = context::new_label(e, "clone.enum.case");
+            let next = context::new_label(e, "clone.enum.next");
+            let cmp = context::new_reg(e);
+            context::out(e, "  "); context::out(e, cmp);
+            context::out(e, " = icmp eq i32 "); context::out(e, tag);
+            context::out(e, ", "); context::out_i64(e, vi as i64); context::nl(e);
+            context::out(e, "  br i1 "); context::out(e, cmp);
+            context::out(e, ", label %"); context::out(e, case_lbl);
+            context::out(e, ", label %"); context::out(e, next); context::nl(e);
+            context::out(e, case_lbl); context::out(e, ":\n");
+            let pt = types::member_type(&e.c.types, ty, vi as i32);
+            let mut fi: usize = 0;
+            while (fi < types::member_count(&e.c.types, pt)) {
+                let ft = types::member_type(&e.c.types, pt, fi as i32);
+                let off = 8 + types::field_offset(pt, fi, &mut e.c.types) as i64;
+                copy_field(e, ft, gep(e, out, off), gep(e, inp, off));
+                fi += 1;
+            }
+            context::out(e, "  br label %"); context::out(e, end); context::nl(e);
+            context::out(e, next); context::out(e, ":\n");
+            vi += 1;
+        }
+        context::out(e, "  br label %"); context::out(e, end); context::nl(e);
+        context::out(e, end); context::out(e, ":\n");
+        return;
+    }
+    memcpy(e, out, inp, ty);
+}
+
+export fn emit_helpers(e: &mut context::Emitter) {
+    let ids = check::all_type_ids(&*e.c);
+    let mut i: usize = 0;
+    while (i < ids.len()) {
+        let ty = *ids.get(i);
+        if (!check::cloneable(&*e.c, ty)) {
+            i += 1; continue;
+        }
+        e.ssa = 0;
+        e.label = 0;
+        context::out(e, "define internal void ");
+        context::out(e, symbol(e, ty));
+        context::out(e, "(ptr %out, ptr %in) {\nentry:\n");
+        copy_into(e, ty, "%out", "%in");
+        context::out(e, "  ret void\n}\n\n");
+        i += 1;
+    }
+}

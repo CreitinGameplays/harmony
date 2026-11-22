@@ -1,0 +1,10 @@
+// M2: a by-value move leaves the source unusable.
+struct Owner { v: i32; }
+
+fn take(o: Owner) -> i32 { return o.v; }
+
+fn main() -> i32 {
+    let a = Owner { .v = 42 };
+    let n = take(a);
+    return n;
+}

@@ -1,0 +1,8 @@
+// M2: moving one field out of an owning struct is MOVE-04.
+struct Inner { v: i32; }
+struct Outer { inner: Inner; }
+fn main() -> i32 {
+    let o = Outer { .inner = Inner { .v = 1 } };
+    let inner = o.inner;
+    return inner.v;
+}

@@ -134,6 +134,12 @@ fn add_diag(c: &mut Checker, code: &str, title: &str, summary: &str, at: i32) {
     });
 }
 
+// Ownership analyses run after type checking and append their own stops here.
+export fn diag_ownership(c: &mut Checker, code: &str, title: &str,
+                         summary: &str, at: i32) {
+    add_diag(c, code, title, summary, at);
+}
+
 fn mismatch(c: &mut Checker, at: i32, want: i32, got: i32, what: &str) {
     let mut s: str::String = str::String::make();
     s.push(what);
@@ -711,7 +717,7 @@ fn is_owning_collection(t: &types::Types, id: i32) -> bool {
         || str::starts_with(name, "str::String");
 }
 
-fn has_cleanup(c: &Checker, ty: i32) -> bool {
+export fn has_cleanup(c: &Checker, ty: i32) -> bool {
     let mut i: usize = 0;
     while (i < c.fns.len()) {
         let f = node::get(&c.nodes, *c.fns.get(i));
@@ -882,6 +888,22 @@ fn satisfies_builtin(c: &Checker, ty: i32, bound: &str) -> bool {
         return bound_visit(c, ty, bound, &mut seen);
     }
     return true;
+}
+
+// Every type id that can own memory. Drop/clone glue is generated for these
+// in stable type-table order so parallel and single-worker IR stay identical.
+export fn all_type_ids(c: &Checker) -> vec::Vec<i32> {
+    let mut out: vec::Vec<i32> = vec::Vec<i32>::make();
+    let mut i: usize = types::TY_DYNAMIC as usize;
+    while (i < c.types.entries.len()) {
+        let k = types::type_kind(&c.types, i as i32);
+        if (k == types::CTY_STRUCT || k == types::CTY_ENUM
+            || k == types::CTY_ARRAY || k == types::CTY_HEAP) {
+            out.push(i as i32);
+        }
+        i += 1;
+    }
+    return out;
 }
 
 // v1 function pointers. A `fn(A) -> R` type is structural: the return type is
@@ -1230,10 +1252,6 @@ fn subst_tree(c: &mut Checker, h: i32, params: &node::Node,
         }
         return;
     }
-    let mut cleared = n;
-    cleared.ty = 0;
-    cleared.target = -1;
-    node::put(&mut c.nodes, h, cleared);
     subst_tree(c, n.a, params, args);
     subst_tree(c, n.b, params, args);
     subst_tree(c, n.c, params, args);
@@ -1252,6 +1270,10 @@ fn subst_tree(c: &mut Checker, h: i32, params: &node::Node,
         subst_tree(c, *n.kids3.get(i), params, args);
         i += 1;
     }
+    let mut cleared = n;
+    cleared.ty = 0;
+    cleared.target = -1;
+    node::put(&mut c.nodes, h, cleared);
 }
 
 // Supplies a generic receiver's arguments to bare constructors in a cloned
@@ -1372,6 +1394,10 @@ fn instantiate_type(c: &mut Checker, ti: i32, at: i32, args: &vec::Vec<i32>) -> 
         k += 1;
     }
     let inst = types::new_named(&mut c.types, kd, iname, tmpl);
+    // Generic collections expose their single type argument through `a`, the
+    // same slot `Heap<T>`/`[T; N]` use. Drop/clone glue and layout helpers read
+    // it; leaving it 0 made Vec<T> element size 0.
+    if (concrete.len() == 1) { types::set_a(&mut c.types, inst, *concrete.get(0)); }
     // Record for reuse.
     let mut iname_s: str::String = str::String::make(); iname_s.push(iname);
     let mut base_s: str::String = str::String::make(); base_s.push(base_name);
@@ -1391,7 +1417,7 @@ fn instantiate_type(c: &mut Checker, ti: i32, at: i32, args: &vec::Vec<i32>) -> 
     // contiguous (lookup is `mstart + i`), and interleaving a payload's
     // members with the enum's corrupts the enum's slice (the second variant's
     // name read back empty).
-    let members = params.kids2;
+    let members = &params.kids2;
     if (params.kind == node::AST_ENUM) {
         let mut pids: vec::Vec<i32> = vec::Vec<i32>::make();
         i = 0;
@@ -1988,7 +2014,7 @@ fn check_index(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
 fn check_args(c: &mut Checker, at: i32, fname: &str, fn_h: i32,
               args: &vec::Vec<i32>, skip_self: bool) {
     let fnode = node::get(&c.nodes, fn_h);
-    let params = fnode.kids2;
+    let params = &fnode.kids2;
     let mut np = params.len();
     let na = args.len();
     if (skip_self && np > 0) { np -= 1; }
@@ -2274,7 +2300,7 @@ fn instantiate_gt(c: &mut Checker, tmpl: i32, recv: i32) -> i32 {
         subst_tree(c, node::get(&c.nodes, p).a, &subst_params, &subst_args);
         i += 1;
     }
-    subst_ctor_args(c, node::get(&c.nodes, h).b, base, &targs);
+    subst_ctor_args(c, node::get(&c.nodes, h).b, base, &subst_args);
     let rt = resolve_type(c, node::get(&c.nodes, h).a);
     set_ty(c, h, rt);
     // Parameters, with `self` resolved from its spelling.
@@ -2311,19 +2337,21 @@ fn instantiate_gt(c: &mut Checker, tmpl: i32, recv: i32) -> i32 {
 // The concrete type *ids* an instance was created with. `subst_type` takes a
 // vec of ids (a node handle would be misread as an id).
 fn instance_targs(c: &Checker, ty: i32) -> vec::Vec<i32> {
-    let out: vec::Vec<i32> = vec::Vec<i32>::make();
+    let mut out: vec::Vec<i32> = vec::Vec<i32>::make();
     let mut k: usize = 0;
-    while (k < c.inst_ids.len()) {
+    let mut found = false;
+    while (k < c.inst_ids.len() && !found) {
         let cid: i32 = *c.inst_ids.get(k);
         if (cid == ty) {
+            found = true;
             let mut ai: usize = 0;
-            while (ai < 8) {
+            let mut done = false;
+            while (ai < 8 && !done) {
                 let a: i32 = *c.inst_args.get(k * 8 + ai);
-                if (a == 0) { return out; }
-                out.push(a);
+                if (a == 0) { done = true; }
+                else { out.push(a); }
                 ai += 1;
             }
-            return out;
         }
         k += 1;
     }
@@ -2452,6 +2480,11 @@ fn method_call(c: &mut Checker, at: i32, recv_h: i32, recv_ty: i32,
     // M2: structural clone is generated when the type has no hand-written
     // method. A sentinel target tells codegen to emit glue instead of a call.
     if (name == "clone") {
+        if (types::type_kind(&c.types, recv_ty) == types::CTY_MUTREF) {
+            add_diag(c, "TYPE-05", "exclusive reference is not cloneable",
+                     "Borrow it as `&T`, or clone the value itself.", at);
+            return types::TY_INVALID;
+        }
         let user = find_method(c, rt, "clone");
         if (user < 0) {
             if (!cloneable(&*c, rt)) {
@@ -4617,11 +4650,12 @@ fn register_methods(c: &mut Checker, h: i32) {
             let f = *n.kids2.get(i);
             let mut fnode = node::get(&c.nodes, f);
             fnode.sfx = fnode.sval;      // method name
+            let mname = fnode.sfx;
             node::put(&mut c.nodes, f, fnode);
             c.gtmpls.push(f);
             let mut b: str::String = str::String::make(); b.push(n.sval);
             c.gtbases.push(b);
-            let mut nm: str::String = str::String::make(); nm.push(fnode.sfx);
+            let mut nm: str::String = str::String::make(); nm.push(mname);
             c.gtnames.push(nm);
             c.gtblks.push(h);
             i += 1;

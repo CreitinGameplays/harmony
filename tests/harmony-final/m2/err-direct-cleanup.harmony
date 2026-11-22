@@ -1,0 +1,10 @@
+// M2: cleanup runs only through drop, never as a direct call (DROP-01).
+struct L { v: i32; }
+methods L {
+    fn cleanup(&mut self) { }
+}
+fn main() -> i32 {
+    let mut a = L { .v = 1 };
+    a.cleanup();
+    return 0;
+}

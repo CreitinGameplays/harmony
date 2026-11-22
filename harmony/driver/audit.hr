@@ -134,7 +134,7 @@ export fn run(input: &str, format: i32) -> i32 {
     let mut ns: node::Nodes = node::nodes_make();
     let mut lx: ctx::Ctx = ctx::make(file.data, input);
     scan::scan(&mut lx, &mut arena);
-    let mut p: pctx::Parser = pctx::make(&mut ns, lx.toks, input);
+    let mut p: pctx::Parser = pctx::make(&mut ns, lx.toks.clone(), input);
     let program = item::parse_program(&mut p);
     let mut sites: vec::Vec<Site> = vec::Vec<Site>::make();
     collect_sites(&ns, program, file.data, &mut sites);

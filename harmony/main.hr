@@ -30,7 +30,7 @@ fn print_version() -> i32 {
 fn main() -> i32 {
     let parsed = cli::parse(args());
     if (parsed.ok <= 0) { return process::EXIT_USAGE; }
-    let o = parsed.opts;
+    let o = &parsed.opts;
     if (o.cmd == cli::CMD_VERSION) { return print_version(); }
     if (o.cmd == cli::CMD_EXPLAIN) {
         if (explain::run(o.code) == 0) { return process::EXIT_OK; }

@@ -235,6 +235,13 @@ export fn tname(t: &Types, id: i32) -> &str {
     return "?";
 }
 
+export fn set_a(t: &mut Types, id: i32, a: i32) {
+    if (id <= 0 || id >= t.entries.len() as i32) { return; }
+    let mut e = *t.entries.get(id as usize);
+    e.a = a;
+    t.entries.set(id as usize, e);
+}
+
 export fn elem(t: &Types, id: i32) -> i32 {
     if (id <= 0 || id >= t.entries.len() as i32) { return 0; }
     return t.entries.get(id as usize).a;

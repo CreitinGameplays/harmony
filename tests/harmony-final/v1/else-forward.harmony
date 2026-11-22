@@ -1,7 +1,7 @@
 // v1 `else` clauses: convert an error in a bound block, and forward it with
 // the shortest spelling `else return;` (Outcome -> Outcome, same E).
-enum ParseError { NoInput, BadChar(char), }
-enum AppError { Parse(ParseError), }
+copy enum ParseError { NoInput, BadChar(char), }
+copy enum AppError { Parse(ParseError), }
 
 fn parse_u8(text: &str) -> Outcome<u8, ParseError> {
     if (text.len() == 0) { return Bad(ParseError::NoInput); }

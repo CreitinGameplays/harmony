@@ -369,6 +369,30 @@ The R6 byte-diff found ten rewrite-only bugs, all fixed at the source:
   exactly like harmony-base. Regression `stamp-lits-index-operand` (in the
   byte-identical IR corpus).
 
+### M2 — Ownership and drop glue [x]
+
+- [x] **Move analysis over CFG IR.** `harmony/ir/cfg.hr` lowers statements to
+  basic blocks with explicit branch/back edges; `harmony/borrowck/moves.hr`
+  runs forward dataflow over them and records `born`/`moved`/`used`/`reinit`
+  events. Conditional moves become maybe-moved; moves of outer places inside
+  loops report `MOVE-02`; re-initialization restores liveness. Type errors
+  suppress ownership analysis for the whole program.
+- [x] **Copy, bounds and clone.** Copy declarations are validated against
+  their fields and cleanup hooks (`TYPE-05`); `eq`/`ord` bounds are enforced
+  at comparisons (`TYPE-06`). Structural `.clone()` helpers are emitted for
+  cloneable types, with special handling for `Vec<T>`, `Heap<T>`, arrays and
+  enum payloads; `&mut` cannot be cloned.
+- [x] **Drop elaboration.** Each owning local has a hidden `i1` drop flag.
+  Destructors run in reverse declaration order at scope end, on return, on
+  break/continue and before overwriting an owner. `Vec<T>` drops live elements,
+  `Heap<T>` drops the pointee, and a `cleanup(&mut self)` hook runs once before
+  fields. `cleanup` cannot be called directly (`DROP-01`).
+- The drop/clone IR is intentionally absent from v0 harmony-base, so byte
+  identity is preserved for M2-neutral programs only: `irdiff.py` reports
+  M2-affected cases as skipped, and `parallel.sh` compares against harmony-base
+  on an M2-neutral program. `tests/harmony-final/m2.sh` is the new semantics
+  gate (7 accepted, 9 rejected).
+
 ### V1 batch 1 — final compiler only [/]
 
 - [x] **Structured `unchecked` reasons.** `unchecked(tag, "free text")`

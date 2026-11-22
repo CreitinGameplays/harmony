@@ -23,6 +23,11 @@ fn known(code: &str) -> bool {
     if (code == "FLOW-03") { return true; }
     if (code == "ABLT-01") { return true; }
     if (code == "ABLT-02") { return true; }
+    if (code == "MOVE-01") { return true; }
+    if (code == "MOVE-02") { return true; }
+    if (code == "MOVE-03") { return true; }
+    if (code == "MOVE-04") { return true; }
+    if (code == "DROP-01") { return true; }
     return false;
 }
 
@@ -227,6 +232,54 @@ fn ablt02() {
     print("SEE    docs/harmony.md - 6.9, 16.10 Code catalogue\n\n");
 }
 
+fn move01() {
+    print("MOVE-01 - use of moved value\n\n");
+    print("WHAT   A value was used after its ownership had been handed to\n");
+    print("       someone else, or after a move on only one branch.\n");
+    print("WHY    A non-copy owner can be destroyed only once. Reusing the\n");
+    print("       moved-from place would read a value that no longer exists.\n");
+    print("BAD    consume(name); println(\"{{}}\", name);\n");
+    print("GOOD   Borrow it: consume(&name), or make a fresh owner with clone.\n");
+    print("NOTE   A `let mut` binding may be assigned a fresh value and reused.\n");
+    print("SEE    docs/harmony.md - 9.2, 9.5, 16.10 Code catalogue\n\n");
+}
+
+fn move02() {
+    print("MOVE-02 - moved inside a loop\n\n");
+    print("WHAT   A value declared outside a loop is moved by the loop body.\n");
+    print("WHY    The second iteration would have nothing left to hand over.\n");
+    print("BAD    let s = \"x\".own(); for (i : 0..3) {{ consume(s); }}\n");
+    print("GOOD   Borrow it, clone it, or create a fresh owner each iteration.\n");
+    print("SEE    docs/harmony.md - 9.6, 16.10 Code catalogue\n\n");
+}
+
+fn move03() {
+    print("MOVE-03 - cannot move out from behind a reference\n\n");
+    print("WHAT   A reference lends access to a value; it does not own it.\n");
+    print("WHY    Taking ownership would leave the lender with a hole.\n");
+    print("BAD    fn grab(v: &Vec<String>) -> String {{ return v[0]; }}\n");
+    print("GOOD   Clone the element, return a reference, or remove it from &mut.\n");
+    print("SEE    docs/harmony.md - 9.8, 16.10 Code catalogue\n\n");
+}
+
+fn move04() {
+    print("MOVE-04 - cannot move one field out of a struct\n\n");
+    print("WHAT   Partial moves leave the rest of an owner in an invalid state.\n");
+    print("WHY    The owner's cleanup and remaining fields need the whole value.\n");
+    print("BAD    let n = player.name;\n");
+    print("GOOD   Clone the field, replace it with a fresh value, or take `self`.\n");
+    print("SEE    docs/harmony.md - 9.9, 16.10 Code catalogue\n\n");
+}
+
+fn drop01() {
+    print("DROP-01 - cleanup cannot be called directly\n\n");
+    print("WHAT   `cleanup` is a hook the compiler runs when an owner dies.\n");
+    print("WHY    A direct call would run it twice or at the wrong time.\n");
+    print("BAD    x.cleanup();\n");
+    print("GOOD   Use `drop(x)` to end the value's lifetime explicitly.\n");
+    print("SEE    docs/harmony.md - 12.6, 16.10 Code catalogue\n\n");
+}
+
 // Returns 0 for a known code, or -1 for an unknown one.
 export fn run(code: &str) -> i32 {
     if (!known(code)) { return -1; }
@@ -238,6 +291,11 @@ export fn run(code: &str) -> i32 {
     if (code == "FLOW-03") { flow03(); return 0; }
     if (code == "ABLT-01") { ablt01(); return 0; }
     if (code == "ABLT-02") { ablt02(); return 0; }
+    if (code == "MOVE-01") { move01(); return 0; }
+    if (code == "MOVE-02") { move02(); return 0; }
+    if (code == "MOVE-03") { move03(); return 0; }
+    if (code == "MOVE-04") { move04(); return 0; }
+    if (code == "DROP-01") { drop01(); return 0; }
     if (code == "SYN-01") { syn01(); return 0; }
     if (code == "SYN-02") { syn02(); return 0; }
     if (code == "SYN-03") { syn03(); return 0; }

@@ -1,0 +1,15 @@
+// M2: dropping a Vec drops every live element before freeing its block.
+import "../../../library/core/vec.hr";
+
+struct L { id: i32; }
+methods L {
+    fn cleanup(&mut self) { println("drop {}", self.id); }
+}
+
+fn main() -> i32 {
+    let mut v: vec::Vec<L> = vec::Vec<L>::make();
+    v.push(L { .id = 1 });
+    v.push(L { .id = 2 });
+    if (v.len() != 2) { return 1; }
+    return 42;
+}

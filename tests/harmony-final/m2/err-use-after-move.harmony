@@ -1,0 +1,8 @@
+// M2: using a moved value is MOVE-01.
+struct O { v: i32; }
+fn take(o: O) -> i32 { return o.v; }
+fn main() -> i32 {
+    let a = O { .v = 1 };
+    take(a);
+    return a.v;
+}

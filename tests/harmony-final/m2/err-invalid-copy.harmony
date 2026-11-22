@@ -1,0 +1,4 @@
+// M2: a copy type cannot contain an owning field (TYPE-05).
+struct Inner { v: i32; }
+copy struct Outer { inner: Inner; }
+fn main() -> i32 { return 0; }

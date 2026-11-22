@@ -8,6 +8,7 @@ import "../core/str.hr";
 import "../core/vec.hr";
 
 extern "C" fn lc_syscall3(n: i64, a: i64, b: i64, c: i64) -> i64;
+extern "C" fn lc_syscall4(n: i64, a: i64, b: i64, c: i64, d: i64) -> i64;
 
 // Linux x86-64 syscall numbers used by the driver.
 export const SYS_READ: i64 = 0;
@@ -107,7 +108,9 @@ export fn execve(path: raw mut u8, argv: raw mut i64, envp: raw mut i64) -> i64 
 
 export fn waitpid(pid: i32, status: raw mut i32) -> i32 {
     unchecked("status points to one writable 32-bit wait status") {
-        return lc_syscall3(SYS_WAITPID, pid as i64, status as usize as i64, 0) as i32;
+        // wait4(pid, status, options, rusage): rusage must be an explicit null,
+        // not whatever happened to be in r10.
+        return lc_syscall4(SYS_WAITPID, pid as i64, status as usize as i64, 0, 0) as i32;
     }
 }
 

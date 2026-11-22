@@ -1,0 +1,9 @@
+// M2: copy types are duplicated, so the source stays valid.
+copy struct Point { x: i32; y: i32; }
+
+fn main() -> i32 {
+    let a = Point { .x = 40, .y = 2 };
+    let b = a;
+    if (a.x != 40) { return 1; }
+    return b.x + b.y;
+}

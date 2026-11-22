@@ -40,7 +40,7 @@ variables:
     - apt-get update -qq
     - apt-get install -y --no-install-recommends
         ca-certificates curl git make gcc clang llvm-dev liblld-dev fasm
-        python3 python-is-python3 file xxd
+        python3 python-is-python3 file xxd patchelf
     - rm -rf /var/lib/apt/lists/*
     - export JOBS=$(nproc)
     - if [ "$JOBS" -gt 32 ]; then JOBS=32; fi
@@ -167,6 +167,18 @@ package:release:
     - git archive --format=tar.gz --prefix="harmony-$VERSION/" -o "dist/harmony-$VERSION-source.tar.gz" HEAD
     # Runtime bundle. LLVM/LLD shared libraries are documented as dependencies.
     - cp build/harmony build/harmony-base "pkg/harmony-$VERSION/bin/"
+    # Bundle the runtime libraries the native LLVM-C backend links against.
+    # Core libc/loader parts stay host-provided; everything else travels with
+    # the binary and is found through a relative RPATH.
+    - mkdir -p "pkg/harmony-$VERSION/lib"
+    - |
+      for lib in $(ldd build/harmony | awk '/=> \// {print $3} /^\t\// {print $1}'); do
+        case "$lib" in
+          *linux-vdso*|*ld-linux*|*libc.so*|*libm.so*|*libgcc_s.so*) continue;;
+        esac
+        cp -L "$lib" "pkg/harmony-$VERSION/lib/" || true
+      done
+      patchelf --set-rpath '$ORIGIN/../lib' "pkg/harmony-$VERSION/bin/harmony"
     - cp VERSION README.md LICENSE "pkg/harmony-$VERSION/"
     - cp -R docs library harmony "pkg/harmony-$VERSION/"
     - |
@@ -179,6 +191,7 @@ package:release:
         echo "runner: $CI_RUNNER_DESCRIPTION"
         echo "llvm: $(llvm-config --version)"
         echo "clang: $(clang --version | head -1)"
+        echo "bundled_libs: $(find lib -maxdepth 1 -type f | wc -l)"
         echo "uname: $(uname -a)"
       } > "pkg/harmony-$VERSION/BUILD_INFO.txt"
     - tar -czf "dist/harmony-$VERSION-linux-x86_64.tar.gz" -C pkg "harmony-$VERSION"

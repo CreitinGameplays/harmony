@@ -57,8 +57,10 @@ request. Releases are manual:
    and exits. Do not push the tag by hand unless you want the same flow.
 3. The tag pipeline rebuilds from the tag, runs `make test`, and packages:
    - `harmony-<VERSION>-source.tar.gz` — the complete source tree;
-   - `harmony-<VERSION>-linux-x86_64.tar.gz` — compiler binaries, docs and
-     `BUILD_INFO.txt`;
+   - `harmony-<VERSION>-linux-x86_64.tar.gz` — compiler binaries, their LLVM/LLD
+     runtime libraries, docs and `BUILD_INFO.txt`; the binary uses a relative
+     RPATH, so it runs without a system LLVM install (glibc/loader still come
+     from the host);
    - `SHA256SUMS`.
 4. The tag pipeline publishes the GitLab release automatically with generated
    notes, name, release time, milestone (when set), and asset links uploaded

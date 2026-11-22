@@ -120,6 +120,9 @@ jobs:
           cp build-artifacts/harmony build-artifacts/harmony-base \
             build-artifacts/c2x-seed build/
           cp build-artifacts/VERSION VERSION
+          # Artifact transfer drops the executable bit, but the seed runner
+          # and the Makefile invoke these binaries directly.
+          chmod +x build/c2x-seed build/harmony-base build/harmony
           touch build/harmony build/harmony-base build/c2x-seed
       - name: make test
         run: make -j"$JOBS" test
@@ -211,6 +214,8 @@ jobs:
           # Runtime bundle. LLVM/LLD shared libraries travel with the binary and
           # are found through a relative RPATH; core libc/loader stay host-side.
           cp build-artifacts/harmony build-artifacts/harmony-base "pkg/harmony-$VERSION/bin/"
+          # Artifact transfer drops the executable bit; restore it in the bundle.
+          chmod +x "pkg/harmony-$VERSION/bin/harmony" "pkg/harmony-$VERSION/bin/harmony-base"
           mkdir -p "pkg/harmony-$VERSION/lib"
           for lib in $(ldd build-artifacts/harmony | awk '/=> \// {print $3} /^\t\// {print $1}'); do
             case "$lib" in

@@ -20,6 +20,7 @@ import "../../harmony/parser/item.hr";
 import "../../harmony/driver/loader.hr";
 import "../../harmony/sema/check.hr";
 import "../../harmony/borrowck/moves.hr";
+import "../../harmony/borrowck/loans.hr";
 import "../../harmony/codegen/llvm/emit.hr";
 import "diagnostics.hr";
 import "process.hr";
@@ -487,6 +488,21 @@ export fn run(cmd: i32, input: &str, output: &str, opt: &str,
         let f = node::get(&c.nodes, fh);
         if (f.b >= 0 && f.instance != 4) {
             let _ = moves::check_fn(&mut c, fh);
+        }
+        fi += 1;
+    }
+    if (c.diags.len() > 0) {
+        diagnostics::render_all(&c.diags, format);
+        return process::EXIT_STOP;
+    }
+    // M3: loan checking runs only for programs that are type-correct and
+    // move-correct, so a broken table never produces loan cascades.
+    fi = 0;
+    while (fi < c.fns.len()) {
+        let fh = *c.fns.get(fi);
+        let f = node::get(&c.nodes, fh);
+        if (f.b >= 0 && f.instance != 4) {
+            let _ = loans::check_fn(&mut c, fh);
         }
         fi += 1;
     }

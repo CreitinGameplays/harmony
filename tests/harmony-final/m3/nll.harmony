@@ -1,0 +1,8 @@
+// M3: a shared borrow ends at its last use, so the owner can be written.
+fn main() -> i32 {
+    let mut n: i32 = 1;
+    let r = &n;
+    if (*r != 1) { return 1; }
+    n += 1;
+    return n;
+}

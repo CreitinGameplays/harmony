@@ -1,0 +1,13 @@
+// M3: a method call borrows the whole receiver, so it conflicts with a field loan.
+struct P { x: i32; y: i32; }
+methods P {
+    fn bump_y(&mut self) { self.y += 1; }
+}
+
+fn main() -> i32 {
+    let mut p = P { .x = 40, .y = 2 };
+    let rx = &mut p.x;
+    p.bump_y();
+    *rx += 1;
+    return p.x + p.y;
+}

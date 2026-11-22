@@ -1,0 +1,8 @@
+// M3: the receiver's exclusive borrow is reserved after arguments are read.
+import "../../../library/core/vec.hr";
+
+fn main() -> i32 {
+    let mut v: vec::Vec<i32> = vec::Vec<i32>::make();
+    v.push(v.len() as i32 + 40);
+    return *v.get(0);
+}

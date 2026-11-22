@@ -1,0 +1,668 @@
+// harmony/borrowck/loans.hr — M3 liveness-based loan checking.
+//
+// A borrow creates a loan `(place, kind, region)`. The region is the set of CFG
+// points where the reference value holding the loan is still live; temporary
+// borrows (an argument or auto-borrow consumed by one call) end at that call.
+// Accesses to overlapping places are then checked against live loans.
+import "../../library/core/vec.hr";
+import "../../harmony/ast/node.hr";
+import "../../harmony/sema/check.hr";
+import "../../harmony/sema/types.hr";
+import "../../harmony/ir/cfg.hr";
+
+const K_SHARED: i32 = 1;
+const K_EXCL: i32 = 2;
+
+const A_READ: i32 = 0;
+const A_WRITE: i32 = 1;
+const A_SHARED: i32 = 2;
+const A_EXCL: i32 = 3;
+
+export const EV_BORROWED: i32 = 5;
+
+copy struct Event {
+    role: i32;
+    node: i32;
+    place: i32;
+}
+
+// A place path. `whole` means an index/unknown interior: the loan covers the
+// root and every sub-place (the collection rule).
+struct Path {
+    root: i32;
+    // AST handles of field-access nodes. Their `sval` is the field name;
+    // storing handles avoids a Vec<&str>, whose nested type arguments are
+    // unreliable in the rewrite's monomorphizer.
+    fields: vec::Vec<i32>;
+    whole: bool;
+}
+
+struct Loan {
+    kind: i32;
+    ref_place: i32;   // -1 for a temporary borrow
+    path: Path;
+    blk: i32;
+    pos: usize;
+    node: i32;        // AST node that created it
+    id: i32;
+}
+
+struct RefPlace {
+    decl: i32;
+    name: &str;
+    ty: i32;
+    loan: i32;
+}
+
+export struct Loans {
+    refs: vec::Vec<RefPlace>;
+    loans: vec::Vec<Loan>;
+    // Liveness is one flat i32 row per (block, instruction): row 0 is the
+    // block's live-in set, row pos+1 is live-before instruction pos. A flat
+    // table avoids Vec<Vec<i32>>, whose nested type arguments are unreliable
+    // in the rewrite's monomorphizer (see library/core/vec.hr).
+    live: vec::Vec<i32>;
+    block_lens: vec::Vec<usize>;  // instruction count per CFG block
+    nrefs: usize;
+    reported: vec::Vec<i64>;
+    events: vec::Vec<Event>;
+    last_loan: i32;
+}
+
+fn find_ref(b: &Loans, decl: i32) -> i32 {
+    let mut i: usize = 0;
+    while (i < b.refs.len()) {
+        if (b.refs.get(i).decl == decl) { return i as i32; }
+        i += 1;
+    }
+    return -1;
+}
+
+fn add_place(b: &mut Loans, decl: i32, name: &str, ty: i32) {
+    if (find_ref(&*b, decl) >= 0) { return; }
+    b.refs.push(RefPlace { .decl = decl, .name = name, .ty = ty, .loan = -1 });
+}
+
+fn is_ref_ty(c: &check::Checker, ty: i32) -> bool {
+    return types::is_ref(&c.types, ty);
+}
+
+fn collect(b: &mut Loans, c: &check::Checker, h: i32) {
+    if (h < 0) { return; }
+    let n = node::get(&c.nodes, h);
+    if (n.kind == node::AST_LET || n.kind == node::AST_PAT_BIND) {
+        add_place(b, h, n.sval, n.ty);
+    } else if (n.kind == node::AST_FOR && n.sval != "") {
+        add_place(b, h, n.sval, n.ty);
+    }
+    collect(b, c, n.a);
+    collect(b, c, n.b);
+    collect(b, c, n.c);
+    let mut i: usize = 0;
+    while (i < n.kids.len()) { collect(b, c, *n.kids.get(i)); i += 1; }
+    i = 0;
+    while (i < n.kids2.len()) { collect(b, c, *n.kids2.get(i)); i += 1; }
+    i = 0;
+    while (i < n.kids3.len()) { collect(b, c, *n.kids3.get(i)); i += 1; }
+}
+
+fn new_path(root: i32) -> Path {
+    return Path {
+        .root = root, .fields = vec::Vec<i32>::make(), .whole = false,
+    };
+}
+
+// Resolves an AST expression to a place rooted at a local variable. Anything
+// behind a reference or heap box is external to this function's loan table.
+fn path_of(c: &check::Checker, h: i32) -> Path {
+    if (h < 0) { return new_path(-2); }
+    let n = node::get(&c.nodes, h);
+    if (n.kind == node::AST_PATH) {
+        if (n.target >= 0) { return new_path(n.target); }
+        return new_path(-2);
+    }
+    if (n.kind == node::AST_FIELD_ACC) {
+        let mut p = path_of(c, n.a);
+        if (p.root >= 0) { p.fields.push(h); }
+        return p;
+    }
+    if (n.kind == node::AST_INDEX) {
+        let mut p = path_of(c, n.a);
+        if (p.root >= 0) { p.whole = true; }
+        return p;
+    }
+    return new_path(-2);
+}
+
+fn overlaps(a: &Path, b: &Path, c: &check::Checker) -> bool {
+    if (a.root < 0 || b.root < 0 || a.root != b.root) { return false; }
+    if (a.whole || b.whole) { return true; }
+    let n = a.fields.len();
+    let m = b.fields.len();
+    let mut i: usize = 0;
+    while (i < n && i < m) {
+        if (node::get(&c.nodes, *a.fields.get(i)).sval
+            != node::get(&c.nodes, *b.fields.get(i)).sval) { return false; }
+        i += 1;
+    }
+    return true;   // one path is a prefix of the other
+}
+
+fn live_offset(b: &Loans, blk: usize, pos: usize) -> usize {
+    let mut off: usize = 0;
+    let mut i: usize = 0;
+    while (i < blk && i < b.block_lens.len()) {
+        off += *b.block_lens.get(i) + 1;
+        i += 1;
+    }
+    return off + pos;
+}
+
+fn active(b: &Loans, l: &Loan, blk: i32, pos: usize) -> bool {
+    if (l.ref_place == -2) { return false; }   // argument temporary, already ended
+    if (l.ref_place == -1) { return l.blk == blk && l.pos == pos; }
+    if (l.blk > blk) { return false; }
+    if (l.blk == blk && l.pos >= pos) { return false; }
+    if (blk as usize >= b.live.len()) { return false; }
+    let rp = l.ref_place as usize;
+    if (rp >= b.nrefs) { return false; }
+    let off = live_offset(&*b, blk as usize, pos + 1) * b.nrefs + rp;
+    if (off >= b.live.len()) { return false; }
+    return *b.live.get(off) != 0;
+}
+
+fn report(b: &mut Loans, c: &mut check::Checker, code: &str, title: &str,
+          summary: &str, at: i32) {
+    let mut h: i64 = 0;
+    let cb = code.as_bytes();
+    let mut i: usize = 0;
+    while (i < cb.len()) { h = h * 131 + cb[i] as i64; i += 1; }
+    h = h * 4099 + at as i64;
+    i = 0;
+    while (i < b.reported.len()) {
+        if (*b.reported.get(i) == h) { return; }
+        i += 1;
+    }
+    b.reported.push(h);
+    check::diag_ownership(c, code, title, summary, at);
+}
+
+fn place_name(c: &check::Checker, p: &Path) -> &str {
+    if (p.root < 0) { return "value"; }
+    let n = node::get(&c.nodes, p.root);
+    if (n.sval != "") { return n.sval; }
+    return "value";
+}
+
+fn check_access(b: &mut Loans, c: &mut check::Checker, p: &Path, access: i32,
+                at: i32, blk: i32, pos: usize) {
+    if (p.root < 0) { return; }
+    let mut i: usize = 0;
+    while (i < b.loans.len()) {
+        let l = b.loans.get(i);
+        // Temporary receiver loans are consumed by their own call; they must
+        // not conflict with another borrow in the same statement (two-phase
+        // calls rely on this). Named references still enforce the rule.
+        if (l.ref_place == -1 && (access == A_EXCL || access == A_SHARED)) {
+            i += 1;
+            continue;
+        }
+        if (!active(&*b, l, blk, pos) || !overlaps(&l.path, p, &*c)) {
+            i += 1;
+            continue;
+        }
+        let name = place_name(&*c, p);
+        if (l.kind == K_EXCL) {
+            if (access == A_READ || access == A_SHARED) {
+                let mut s: str::String = str::String::make();
+                s.push("`"); s.push(name);
+                s.push("` is exclusively borrowed here");
+                report(b, c, "LOAN-03", "read while exclusively borrowed",
+                       s.as_str(), at);
+            } else {
+                let mut s: str::String = str::String::make();
+                s.push("`"); s.push(name);
+                s.push("` is already exclusively borrowed");
+                report(b, c, "LOAN-02", "second exclusive borrow",
+                       s.as_str(), at);
+            }
+        } else if (access != A_READ && access != A_SHARED) {
+            let mut s: str::String = str::String::make();
+            s.push("`"); s.push(name);
+            s.push("` is still shared-borrowed here");
+            report(b, c, "LOAN-01", "write while shared-borrowed",
+                   s.as_str(), at);
+        }
+        i += 1;
+    }
+}
+
+fn make_loan(b: &mut Loans, c: &mut check::Checker, p: &Path, kind: i32,
+             ref_place: i32, at: i32, blk: i32, pos: usize) -> i32 {
+    if (p.root < 0) { return -1; }
+    let root_ty = node::get(&c.nodes, p.root).ty;
+    // Reborrowing through a reference parameter (`self`, `r: &mut T`) is not a
+    // new loan on a local owner; the callee's loan table starts fresh.
+    if (types::is_ref(&c.types, root_ty) || types::is_heap(&c.types, root_ty)) {
+        return -1;
+    }
+    let mut access: i32 = A_EXCL;
+    if (kind == K_SHARED) { access = A_SHARED; }
+    check_access(b, c, p, access, at, blk, pos);
+    if (kind == K_EXCL && !check::decl_mutbl(&*c, p.root)) {
+        let mut s: str::String = str::String::make();
+        s.push("`"); s.push(place_name(&*c, p));
+        s.push("` is not declared `mut`");
+        report(b, c, "MUT-03", "exclusive borrow of an immutable binding",
+               s.as_str(), at);
+    }
+    let mut path = new_path(p.root);
+    path.whole = p.whole;
+    let mut i: usize = 0;
+    while (i < p.fields.len()) { path.fields.push(*p.fields.get(i)); i += 1; }
+    let id = b.loans.len() as i32;
+    b.loans.push(Loan {
+        .kind = kind, .ref_place = ref_place, .path = path,
+        .blk = blk, .pos = pos, .node = at, .id = id,
+    });
+    if (ref_place >= 0) {
+        let mut r = *b.refs.get(ref_place as usize);
+        r.loan = id;
+        b.refs.set(ref_place as usize, r);
+    }
+    b.last_loan = id;
+    b.events.push(Event { .role = EV_BORROWED, .node = at, .place = p.root });
+    return id;
+}
+
+// Expression walk. `access` is A_READ for ordinary uses and A_WRITE for moves
+// and assignment targets; borrow expressions create loans of their own.
+fn expr(b: &mut Loans, c: &mut check::Checker, h: i32, access: i32,
+        blk: i32, pos: usize) {
+    if (h < 0) { return; }
+    let n = node::get(&c.nodes, h);
+    let k = n.kind;
+    if (k == node::AST_BORROW) {
+        let p = path_of(&*c, n.a);
+        let mut kind: i32 = K_SHARED;
+        if (n.ival == 1) { kind = K_EXCL; }
+        make_loan(b, c, &p, kind, -1, h, blk, pos);
+        return;
+    }
+    if (k == node::AST_PATH) {
+        if (is_ref_ty(&*c, n.ty)) { return; }   // use of a reference value
+        let p = path_of(&*c, h);
+        check_access(b, c, &p, access, h, blk, pos);
+        return;
+    }
+    if (k == node::AST_DEREF) {
+        // The pointee is outside this function's ownership; using the
+        // reference itself is recorded at the path node below.
+        expr(b, c, n.a, A_READ, blk, pos);
+        return;
+    }
+    if (k == node::AST_FIELD_ACC || k == node::AST_INDEX) {
+        let base_ty = node::get(&c.nodes, n.a).ty;
+        if (types::is_ref(&c.types, base_ty) || types::is_heap(&c.types, base_ty)) {
+            expr(b, c, n.a, A_READ, blk, pos);
+        } else {
+            let p = path_of(&*c, h);
+            check_access(b, c, &p, access, h, blk, pos);
+            expr(b, c, n.a, A_READ, blk, pos);
+            expr(b, c, n.b, A_READ, blk, pos);
+        }
+        return;
+    }
+    if (k == node::AST_CALL) {
+        call_expr(b, c, h, &n, blk, pos);
+        return;
+    }
+    if (k == node::AST_BINARY) {
+        expr(b, c, n.a, A_READ, blk, pos);
+        expr(b, c, n.b, A_READ, blk, pos);
+        return;
+    }
+    if (k == node::AST_UNARY || k == node::AST_AS) {
+        expr(b, c, n.a, access, blk, pos);
+        return;
+    }
+    expr(b, c, n.a, A_READ, blk, pos);
+    expr(b, c, n.b, A_READ, blk, pos);
+    expr(b, c, n.c, A_READ, blk, pos);
+    let mut i: usize = 0;
+    while (i < n.kids.len()) { expr(b, c, *n.kids.get(i), A_READ, blk, pos); i += 1; }
+    i = 0;
+    while (i < n.kids2.len()) { expr(b, c, *n.kids2.get(i), A_READ, blk, pos); i += 1; }
+}
+
+fn end_temps(b: &mut Loans, from: usize) {
+    let mut i: usize = from;
+    while (i < b.loans.len()) {
+        let mut l = *b.loans.get(i);
+        if (l.ref_place == -1) { l.ref_place = -2; }
+        b.loans.set(i, l);
+        i += 1;
+    }
+}
+
+fn call_expr(b: &mut Loans, c: &mut check::Checker, h: i32, n: &node::Node,
+             blk: i32, pos: usize) {
+    let mut target = n.target;
+    if (target < 0) { target = n.b; }
+    let mut skip: usize = 0;
+    let mut self_kind: i32 = 0;
+    if (n.a >= 0 && node::get(&c.nodes, n.a).kind == node::AST_FIELD_ACC) {
+        skip = 1;
+        if (target >= 0) {
+            let f = node::get(&c.nodes, target);
+            if (f.kids2.len() > 0) {
+                let sp = node::get(&c.nodes, *f.kids2.get(0));
+                if (sp.sval == "&self") { self_kind = K_SHARED; }
+                if (sp.sval == "&mut self") { self_kind = K_EXCL; }
+            }
+        }
+    }
+    // Two-phase rule: arguments are evaluated (and their temporary loans end)
+    // before the receiver's auto-borrow becomes active.
+    let mut i: usize = 0;
+    while (i < n.kids.len()) {
+        let before_arg = b.loans.len();
+        let ai = *n.kids.get(i);
+        let mut pt: i32 = 0;
+        if (target >= 0 && skip + i < node::get(&c.nodes, target).kids2.len()) {
+            let param_h = *node::get(&c.nodes, target).kids2.get(skip + i);
+            if (node::get(&c.nodes, param_h).kids2.len() > 0) {
+                let pp = *node::get(&c.nodes, param_h).kids2.get(0);
+                pt = node::get(&c.nodes, pp).ty;
+            }
+        }
+        if (pt > 0 && types::is_ref(&c.types, pt) && node::get(&c.nodes, ai).kind == node::AST_BORROW) {
+            let mut k: i32 = K_SHARED;
+            if (types::type_kind(&c.types, pt) == types::CTY_MUTREF) { k = K_EXCL; }
+            let p = path_of(&*c, node::get(&c.nodes, ai).a);
+            make_loan(b, c, &p, k, -1, ai, blk, pos);
+        } else {
+            expr(b, c, ai, A_READ, blk, pos);
+        }
+        end_temps(b, before_arg);
+        i += 1;
+    }
+    if (self_kind != 0) {
+        let recv = node::get(&c.nodes, n.a).a;
+        let p = path_of(&*c, recv);
+        make_loan(b, c, &p, self_kind, -1, recv, blk, pos);
+    }
+}
+
+fn owns_loan_result(c: &check::Checker, h: i32) -> bool {
+    let n = node::get(&c.nodes, h);
+    if (n.kind == node::AST_BORROW) { return true; }
+    if (n.kind != node::AST_CALL || n.a < 0) { return false; }
+    let callee = node::get(&c.nodes, n.a);
+    if (callee.kind != node::AST_FIELD_ACC) { return false; }
+    return callee.sval == "get" || callee.sval == "get_unchecked"
+        || callee.sval == "as_slice" || callee.sval == "as_bytes"
+        || callee.sval == "at";
+}
+
+fn instr(b: &mut Loans, c: &mut check::Checker, ins: &cfg::Instr,
+         blk: i32, pos: usize) {
+    if (ins.node < 0) { return; }
+    let n = node::get(&c.nodes, ins.node);
+    let k = n.kind;
+    if (k == node::AST_LET) {
+        b.last_loan = -1;
+        expr(b, c, n.b, A_READ, blk, pos);
+        if (b.last_loan >= 0 && owns_loan_result(&*c, n.b)) {
+            let ri = find_ref(&*b, ins.node);
+            if (ri >= 0) {
+                let mut r = *b.refs.get(ri as usize);
+                r.loan = b.last_loan;
+                b.refs.set(ri as usize, r);
+                let mut l = *b.loans.get(b.last_loan as usize);
+                l.ref_place = ri;
+                b.loans.set(b.last_loan as usize, l);
+            }
+        }
+    } else if (k == node::AST_ASSIGN) {
+        let dest = n.a;
+        let dn = node::get(&c.nodes, dest);
+        if (dn.kind == node::AST_PATH && is_ref_ty(&*c, dn.ty) && dn.target >= 0
+            && owns_loan_result(&*c, n.b)) {
+            b.last_loan = -1;
+            expr(b, c, n.b, A_READ, blk, pos);
+            if (b.last_loan >= 0) {
+                let ri = find_ref(&*b, dn.target);
+                if (ri >= 0) {
+                    let mut r = *b.refs.get(ri as usize);
+                    r.loan = b.last_loan;
+                    b.refs.set(ri as usize, r);
+                    let mut l = *b.loans.get(b.last_loan as usize);
+                    l.ref_place = ri;
+                    b.loans.set(b.last_loan as usize, l);
+                }
+            }
+        } else {
+            let p = path_of(&*c, dest);
+            check_access(b, c, &p, A_WRITE, ins.node, blk, pos);
+            expr(b, c, n.b, A_READ, blk, pos);
+        }
+    } else if (k == node::AST_RETURN) {
+        expr(b, c, n.a, A_READ, blk, pos);
+    } else if (k == node::AST_FOR) {
+        expr(b, c, n.a, A_READ, blk, pos);
+    } else {
+        expr(b, c, ins.node, A_READ, blk, pos);
+    }
+}
+
+// ---- liveness of reference places -----------------------------------------
+
+fn live_use_expr(b: &Loans, c: &check::Checker, h: i32, row: &mut vec::Vec<i32>) {
+    if (h < 0) { return; }
+    let n = node::get(&c.nodes, h);
+    if (n.kind == node::AST_PATH && n.target >= 0 && is_ref_ty(&*c, n.ty)) {
+        let ri = find_ref(&*b, n.target);
+        if (ri >= 0) { row.set(ri as usize, 1); }
+    }
+    live_use_expr(b, c, n.a, row);
+    live_use_expr(b, c, n.b, row);
+    live_use_expr(b, c, n.c, row);
+    let mut i: usize = 0;
+    while (i < n.kids.len()) { live_use_expr(b, c, *n.kids.get(i), row); i += 1; }
+    i = 0;
+    while (i < n.kids2.len()) { live_use_expr(b, c, *n.kids2.get(i), row); i += 1; }
+}
+
+fn live_stmt(b: &Loans, c: &check::Checker, ins: &cfg::Instr,
+             uses: &mut vec::Vec<i32>, defs: &mut vec::Vec<i32>) {
+    if (ins.node < 0) { return; }
+    let n = node::get(&c.nodes, ins.node);
+    if (n.kind == node::AST_LET && node::get(&c.nodes, n.b).kind == node::AST_BORROW) {
+        let ri = find_ref(&*b, ins.node);
+        if (ri >= 0) { defs.set(ri as usize, 1); }
+        live_use_expr(b, c, node::get(&c.nodes, n.b).a, uses);
+        return;
+    }
+    live_use_expr(b, c, ins.node, uses);
+}
+
+fn fill_row(r: &mut vec::Vec<i32>, n: usize) {
+    r.clear();
+    let mut i: usize = 0;
+    while (i < n) { r.push(0); i += 1; }
+}
+
+fn union_from(into: &mut vec::Vec<i32>, from: &vec::Vec<i32>) -> bool {
+    let mut changed = false;
+    let mut i: usize = 0;
+    while (i < into.len() && i < from.len()) {
+        if (*from.get(i) == 1 && *into.get(i) == 0) {
+            into.set(i, 1); changed = true;
+        }
+        i += 1;
+    }
+    return changed;
+}
+
+fn flat_offset(b: &Loans, blk: usize, pos: usize) -> usize {
+    let mut off: usize = 0;
+    let mut i: usize = 0;
+    while (i < blk && i < b.block_lens.len()) {
+        off += *b.block_lens.get(i);
+        i += 1;
+    }
+    return off + pos;
+}
+
+fn load_row(out: &mut vec::Vec<i32>, flat: &vec::Vec<i32>, off: usize, n: usize) {
+    let mut i: usize = 0;
+    while (i < n) { out.set(i, *flat.get(off * n + i)); i += 1; }
+}
+
+fn save_row(flat: &mut vec::Vec<i32>, off: usize, row: &vec::Vec<i32>, n: usize) {
+    let mut i: usize = 0;
+    while (i < n) { flat.set(off * n + i, *row.get(i)); i += 1; }
+}
+
+fn compute_liveness_with(b: &mut Loans, c: &check::Checker, cfgp: &cfg::Cfg) {
+    let n = b.refs.len();
+    let mut total_instr: usize = 0;
+    let mut total_live: usize = 0;
+    let mut i: usize = 0;
+    while (i < cfgp.blocks.len()) {
+        let len = cfgp.blocks.get(i).instrs.len();
+        b.block_lens.push(len);
+        total_instr += len;
+        total_live += len + 1;
+        i += 1;
+    }
+    let mut uses: vec::Vec<i32> = vec::Vec<i32>::make();
+    let mut defs: vec::Vec<i32> = vec::Vec<i32>::make();
+    let mut live: vec::Vec<i32> = vec::Vec<i32>::make();
+    i = 0;
+    while (i < total_instr * n) { uses.push(0); defs.push(0); i += 1; }
+    i = 0;
+    while (i < total_live * n) { live.push(0); i += 1; }
+    i = 0;
+    while (i < cfgp.blocks.len()) {
+        let block = cfgp.blocks.get(i);
+        let mut j: usize = 0;
+        while (j < block.instrs.len()) {
+            let mut u: vec::Vec<i32> = vec::Vec<i32>::make();
+            let mut d: vec::Vec<i32> = vec::Vec<i32>::make();
+            fill_row(&mut u, n);
+            fill_row(&mut d, n);
+            live_stmt(&*b, c, block.instrs.get(j), &mut u, &mut d);
+            save_row(&mut uses, flat_offset(&*b, i, j), &u, n);
+            save_row(&mut defs, flat_offset(&*b, i, j), &d, n);
+            j += 1;
+        }
+        i += 1;
+    }
+    let mut changed = true;
+    let mut rounds: i32 = 0;
+    while (changed && rounds < 8) {
+        changed = false;
+        rounds += 1;
+        let mut bi: usize = cfgp.blocks.len();
+        while (bi > 0) {
+            bi -= 1;
+            let block = cfgp.blocks.get(bi);
+            let mut out: vec::Vec<i32> = vec::Vec<i32>::make();
+            fill_row(&mut out, n);
+            let mut s: usize = 0;
+            while (s < block.succ.len()) {
+                let to = *block.succ.get(s) as usize;
+                if (to < b.block_lens.len()) {
+                    let mut succ_row: vec::Vec<i32> = vec::Vec<i32>::make();
+                    fill_row(&mut succ_row, n);
+                    load_row(&mut succ_row, &live, live_offset(&*b, to, 0), n);
+                    if (union_from(&mut out, &succ_row)) { changed = true; }
+                }
+                s += 1;
+            }
+            let mut pos: usize = block.instrs.len();
+            while (pos > 0) {
+                pos -= 1;
+                let mut u: vec::Vec<i32> = vec::Vec<i32>::make();
+                let mut d: vec::Vec<i32> = vec::Vec<i32>::make();
+                fill_row(&mut u, n);
+                fill_row(&mut d, n);
+                load_row(&mut u, &uses, flat_offset(&*b, bi, pos), n);
+                load_row(&mut d, &defs, flat_offset(&*b, bi, pos), n);
+                let mut row: vec::Vec<i32> = vec::Vec<i32>::make();
+                fill_row(&mut row, n);
+                let mut k: usize = 0;
+                while (k < n) {
+                    let mut v: i32 = 0;
+                    if (*u.get(k) == 1) { v = 1; }
+                    else if (*out.get(k) == 1 && *d.get(k) == 0) { v = 1; }
+                    row.set(k, v);
+                    k += 1;
+                }
+                save_row(&mut live, live_offset(&*b, bi, pos + 1), &row, n);
+                out = row;
+            }
+            save_row(&mut live, live_offset(&*b, bi, 0), &out, n);
+        }
+    }
+    b.live = live;
+    b.nrefs = n;
+}
+
+// Runs M3 for one function, after M2 has completed without diagnostics.
+export fn check_fn(c: &mut check::Checker, fh: i32) -> Loans {
+    let f = node::get(&c.nodes, fh);
+    let mut b = Loans {
+        .refs = vec::Vec<RefPlace>::make(),
+        .loans = vec::Vec<Loan>::make(),
+        .live = vec::Vec<i32>::make(),
+        .block_lens = vec::Vec<usize>::make(),
+        .nrefs = 0,
+        .reported = vec::Vec<i64>::make(),
+        .events = vec::Vec<Event>::make(),
+        .last_loan = -1,
+    };
+    let mut i: usize = 0;
+    while (i < f.kids2.len()) {
+        let p = *f.kids2.get(i);
+        add_place(&mut b, p, node::get(&c.nodes, p).sval,
+                  node::get(&c.nodes, p).ty);
+        i += 1;
+    }
+    collect(&mut b, &*c, f.b);
+    let cfgp = cfg::build(&c.nodes, f.b, &f.kids2);
+    compute_liveness_with(&mut b, &*c, &cfgp);
+    // Conflict checking is a forward pass using the precomputed liveness.
+    // Repeating it a few times lets back-edges see loans created in loop
+    // bodies; diagnostics are deduplicated by (code, node).
+    let mut round: i32 = 0;
+    while (round < 4) {
+        // Start each pass with an empty loan table; diagnostics themselves are
+        // deduplicated and therefore survive across passes.
+        b.loans.clear();
+        let mut ri: usize = 0;
+        while (ri < b.refs.len()) {
+            let mut r = *b.refs.get(ri);
+            r.loan = -1;
+            b.refs.set(ri, r);
+            ri += 1;
+        }
+        let mut bi: usize = 0;
+        while (bi < cfgp.blocks.len()) {
+            let block = cfgp.blocks.get(bi);
+            let mut j: usize = 0;
+            while (j < block.instrs.len()) {
+                instr(&mut b, c, block.instrs.get(j), bi as i32, j);
+                j += 1;
+            }
+            bi += 1;
+        }
+        round += 1;
+    }
+    return b;
+}
+
+export fn event_count(b: &Loans) -> usize { return b.events.len(); }
+export fn event_at(b: &Loans, i: usize) -> Event { return *b.events.get(i); }

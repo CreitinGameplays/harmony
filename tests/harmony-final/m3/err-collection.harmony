@@ -1,0 +1,10 @@
+// M3: a borrow of a collection element borrows the whole collection.
+import "../../../library/core/vec.hr";
+
+fn main() -> i32 {
+    let mut v: vec::Vec<i32> = vec::Vec<i32>::make();
+    v.push(1);
+    let first = v.get(0);
+    v.push(2);
+    return *first;
+}

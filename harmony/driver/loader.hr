@@ -182,8 +182,9 @@ fn find_path(infos: &vec::Vec<ModuleInfo>, path: &str) -> i32 {
     return -1;
 }
 
-fn load_error(l: &mut Loaded, code: &str, title: &str, summary: &str) {
-    l.diags.push(fmt::Diag {
+fn load_error(diags: &mut vec::Vec<fmt::Diag>, code: &str, title: &str,
+              summary: &str) {
+    diags.push(fmt::Diag {
         .code = code,
         .severity = fmt::Severity::Stop,
         .title = title,
@@ -196,7 +197,7 @@ fn load_error(l: &mut Loaded, code: &str, title: &str, summary: &str) {
 
 // The import paths of a module's AST_PROGRAM.
 fn imports(nodes: &node::Nodes, root: i32) -> StrList {
-    let out = sl_make();
+    let mut out = sl_make();
     let rn = node::get(nodes, root);
     let mut i: usize = 0;
     while (i < rn.kids.len()) {
@@ -267,7 +268,7 @@ fn concat(pre: &str, s: &str) -> &str {
 }
 
 fn collect_names(nodes: &node::Nodes, root: i32) -> StrList {
-    let out = sl_make();
+    let mut out = sl_make();
     let rn = node::get(nodes, root);
     let mut i: usize = 0;
     while (i < rn.kids.len()) {
@@ -391,7 +392,8 @@ fn locate(m: &LineMap, off: usize, out: &mut Loc) {
 // ---- parse, expand, merge ------------------------------------------------
 
 fn parse_one(nodes: &mut node::Nodes, arena: &mut mem::Arena,
-             src: &str, path: &str, file: i32, l: &mut Loaded) -> i32 {
+             src: &str, path: &str, file: i32,
+             diags: &mut vec::Vec<fmt::Diag>) -> i32 {
     let first = node::len(&*nodes);
     let mut lx: ctx::Ctx = ctx::make(src, path);
     scan::scan(&mut lx, arena);
@@ -403,7 +405,7 @@ fn parse_one(nodes: &mut node::Nodes, arena: &mut mem::Arena,
     let mut i: usize = 0;
     while (i < p.diags.len()) {
         let d = *p.diags.get(i);
-        l.diags.push(d);
+        diags.push(d);
         i += 1;
     }
     // The parser knows token-relative line/col, but `node_at` can start a node
@@ -424,7 +426,8 @@ fn parse_one(nodes: &mut node::Nodes, arena: &mut mem::Arena,
 
 fn expand(nodes: &mut node::Nodes, arena: &mut mem::Arena,
           modules: &vec::Vec<Module>, infos: &mut vec::Vec<ModuleInfo>,
-          chain: &mut vec::Vec<i32>, idx: usize, l: &mut Loaded) {
+          chain: &mut vec::Vec<i32>, idx: usize,
+          diags: &mut vec::Vec<fmt::Diag>) {
     // Cycle check FIRST: a module already being expanded is a cycle, even
     // though it is also in `infos` (the root is pushed there before its
     // imports are scanned). Checking "already expanded" first skipped the
@@ -433,7 +436,7 @@ fn expand(nodes: &mut node::Nodes, arena: &mut mem::Arena,
     while (j < chain.len()) {
         let in_chain: usize = *chain.get(j) as usize;
         if (in_chain == idx) {
-            load_error(l, "NAME-04", "import cycle",
+            load_error(diags, "NAME-04", "import cycle",
                        "A module imports itself, directly or indirectly.");
             return;
         }
@@ -447,7 +450,7 @@ fn expand(nodes: &mut node::Nodes, arena: &mut mem::Arena,
     }
     chain.push(idx as i32);
     let path = modules.get(idx).path;
-    let root = parse_one(nodes, arena, modules.get(idx).src, path, idx as i32, l);
+    let root = parse_one(nodes, arena, modules.get(idx).src, path, idx as i32, diags);
     let imps = imports(&*nodes, root);
     let mut i: usize = 0;
     while (i < imps.len) {
@@ -463,10 +466,10 @@ fn expand(nodes: &mut node::Nodes, arena: &mut mem::Arena,
             k += 1;
         }
         if (found < 0) {
-            load_error(l, "NAME-04", "unknown module",
+            load_error(diags, "NAME-04", "unknown module",
                        "An imported file was not found.");
         } else {
-            expand(nodes, arena, modules, infos, chain, found as usize, l);
+            expand(nodes, arena, modules, infos, chain, found as usize, diags);
         }
         i += 1;
     }
@@ -531,13 +534,14 @@ export fn load(nodes: &mut node::Nodes, arena: &mut mem::Arena,
     }
     if (root_idx < 0) {
         let mut l2 = l;
-        load_error(&mut l2, "NAME-04", "unknown module",
+        load_error(&mut l2.diags, "NAME-04", "unknown module",
                    "The root module was not found.");
         return l2;
     }
     let mut chain: vec::Vec<i32> = vec::Vec<i32>::make();
     let mut l2 = l;
-    expand(nodes, arena, modules, &mut l2.modules, &mut chain, root_idx as usize, &mut l2);
+    expand(nodes, arena, modules, &mut l2.modules, &mut chain,
+           root_idx as usize, &mut l2.diags);
     if (l2.diags.len() > 0) { return l2; }
     l2.program = merge(nodes, &l2.modules, root_path);
     return l2;

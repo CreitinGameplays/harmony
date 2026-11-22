@@ -2,7 +2,7 @@
 import "../../../library/core/str.hr";
 
 fn main() -> i32 {
-    let a = str::String::make();
+    let mut a = str::String::make();
     a.push("hello");
     let b = a.clone();
     a.push("!");

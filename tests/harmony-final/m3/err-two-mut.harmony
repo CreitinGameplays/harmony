@@ -1,0 +1,9 @@
+// M3: two overlapping exclusive borrows are LOAN-02.
+fn main() -> i32 {
+    let mut n: i32 = 1;
+    let a = &mut n;
+    let b = &mut n;
+    *a = 2;
+    *b = 3;
+    return n;
+}

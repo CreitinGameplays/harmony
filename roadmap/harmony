@@ -393,6 +393,25 @@ The R6 byte-diff found ten rewrite-only bugs, all fixed at the source:
   on an M2-neutral program. `tests/harmony-final/m2.sh` is the new semantics
   gate (7 accepted, 9 rejected).
 
+### M3 — Borrow checking [x]
+
+- [x] **Liveness-based loans.** `harmony/borrowck/loans.hr` computes reference
+  liveness over the CFG and treats a loan's region as the points where the
+  reference value receiving it is live. Temporary borrows end when their
+  argument/call expression is evaluated.
+- [x] **Conflict rules.** Overlapping place paths (root plus field path; an
+  index borrow covers its whole collection) are checked against live loans:
+  writes under shared loans are `LOAN-01`, overlapping exclusive loans are
+  `LOAN-02`, and reads under an exclusive loan are `LOAN-03`. `&mut` of an
+  immutable binding is `MUT-03`.
+- [x] **Reborrowing, disjointness, two-phase methods.** Passing `&mut` through a
+  call reborrows for the call; different fields can be borrowed at once while
+  a method borrows its whole receiver; `v.push(v.len())` evaluates its shared
+  argument before reserving the receiver's exclusive loan.
+- Two small compiler bugs surfaced while making the compiler pass its own
+  borrow check: substituted `&&str` signatures now collapse to `&str`, and the
+  loader passes its diagnostic buffer separately from its module list.
+
 ### V1 batch 1 — final compiler only [/]
 
 - [x] **Structured `unchecked` reasons.** `unchecked(tag, "free text")`

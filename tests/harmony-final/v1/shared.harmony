@@ -11,7 +11,8 @@ fn main() -> i32 {
     let mut val: i32 = 0;
     switch (up) {
         case Has(mut s): {
-            val = *s.get();
+            let g = s.get();
+            val = *g;
             s.release();
         }
         case Empty: {

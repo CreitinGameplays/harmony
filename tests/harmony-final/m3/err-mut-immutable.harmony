@@ -1,0 +1,7 @@
+// M3: &mut requires a mutable binding.
+fn main() -> i32 {
+    let n: i32 = 1;
+    let r = &mut n;
+    *r = 2;
+    return n;
+}

@@ -688,9 +688,17 @@ directly into its binary and (b) support **multi-core compilation by default**.
       M2-neutral cases and reports M2 cases as skipped. `tests/harmony-final/m2.sh`
       covers 7 accepted and 9 rejected programs. Event records
       (`born`/`moved`/`used`/`reinit`) are collected for story diagnostics.
-- [ ] **M3 Borrow checker**: loans `(place, kind, region)`, liveness-based
-      regions (§10.2, §19.2), `LOAN-01..03`, reborrowing (§10.5), disjoint
-      fields (§10.6), two-phase borrows (§10.7), borrowing from collections.
+- [x] **M3 Borrow checker** (final compiler only): `harmony/borrowck/loans.hr`
+      computes liveness of reference places over the M2 CFG and checks live
+      loans `(place, kind, region)` against reads, writes, moves and borrows.
+      `LOAN-01..03` and `MUT-03` cover shared-write, double-exclusive,
+      read-through-exclusive and immutable-`&mut` conflicts. Reborrowing a
+      `&mut` parameter, disjoint struct fields, two-phase method calls
+      (`v.push(v.len())`) and collection-wide element loans are handled.
+      `tests/harmony-final/m3.sh` covers 5 accepted and 6 rejected programs.
+      Also fixed a monomorphization quirk where `&&str` in substituted generic
+      signatures no longer collapsed to `&str`, and removed simultaneous
+      exclusive borrows in the module loader's diagnostic/infos bookkeeping.
 - [ ] **M4 Lifetimes**: `life` parameters, `life(static)`, elision (§11.3),
       inference + region constraints (`LIFE-01..04`).
 - [ ] **M6 `unchecked`, `raw`, FFI, audit**: the seven-powers gate (§13.2),

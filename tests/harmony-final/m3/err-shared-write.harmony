@@ -1,0 +1,7 @@
+// M3: writing an owner while a shared borrow is still live is LOAN-01.
+fn main() -> i32 {
+    let mut n: i32 = 1;
+    let r = &n;
+    n += 1;
+    return *r;
+}

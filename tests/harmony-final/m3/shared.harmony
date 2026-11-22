@@ -1,0 +1,7 @@
+// M3: multiple shared borrows coexist.
+fn main() -> i32 {
+    let n: i32 = 40;
+    let a = &n;
+    let b = &n;
+    return *a + *b + 2;
+}

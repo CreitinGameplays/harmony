@@ -325,7 +325,7 @@ export fn looks_like_generic_type_use(p: &pctx::Parser) -> bool {
 
 // `(` [ expr { , expr } [ , ] ] `)`
 fn parse_call_args(p: &mut pctx::Parser) -> vec::Vec<i32> {
-    let args: vec::Vec<i32> = vec::Vec<i32>::make();
+    let mut args: vec::Vec<i32> = vec::Vec<i32>::make();
     pctx::advance(p);   // (
     if (pctx::eat(p, token::TokKind::RParen)) { return args; }
     while (true) {
@@ -807,7 +807,7 @@ fn parse_path_expr(p: &mut pctx::Parser) -> i32 {
     let start = pctx::cur(&*p).start;
     let name = parse_path_name(p);
     if (name == "") { return -1; }
-    let tyargs: vec::Vec<i32> = vec::Vec<i32>::make();
+    let mut tyargs: vec::Vec<i32> = vec::Vec<i32>::make();
 
     if (pctx::at(&*p, token::TokKind::Lt)) {
         // Three-way split, checked in this order:

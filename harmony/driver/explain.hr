@@ -28,6 +28,10 @@ fn known(code: &str) -> bool {
     if (code == "MOVE-03") { return true; }
     if (code == "MOVE-04") { return true; }
     if (code == "DROP-01") { return true; }
+    if (code == "LOAN-01") { return true; }
+    if (code == "LOAN-02") { return true; }
+    if (code == "LOAN-03") { return true; }
+    if (code == "MUT-03") { return true; }
     return false;
 }
 
@@ -280,6 +284,46 @@ fn drop01() {
     print("SEE    docs/harmony.md - 12.6, 16.10 Code catalogue\n\n");
 }
 
+fn loan01() {
+    print("LOAN-01 - write while shared-borrowed\n\n");
+    print("WHAT   A value was written or moved while a shared reference to\n");
+    print("       it was still live. A collection element borrows the whole\n");
+    print("       collection, so push/reserve conflicts with it too.\n");
+    print("WHY    A writer could invalidate what the shared reference sees.\n");
+    print("BAD    let first = v.get(0); v.push(2); use(first);\n");
+    print("GOOD   Use the reference first, copy the element, or hold an index.\n");
+    print("SEE    docs/harmony.md - 10.4, 10.8, 16.10 Code catalogue\n\n");
+}
+
+fn loan02() {
+    print("LOAN-02 - second exclusive borrow\n\n");
+    print("WHAT   Two live `&mut` borrows overlap. A method call borrows its\n");
+    print("       whole receiver, so it can conflict with a field loan.\n");
+    print("WHY    Only one writer may touch a value at a time.\n");
+    print("BAD    let a = &mut n; let b = &mut n; *a = 1; *b = 2;\n");
+    print("GOOD   Borrow different fields, or end the first loan before the next.\n");
+    print("SEE    docs/harmony.md - 10.6, 10.9, 16.10 Code catalogue\n\n");
+}
+
+fn loan03() {
+    print("LOAN-03 - read while exclusively borrowed\n\n");
+    print("WHAT   The owner was read through another path while an `&mut`\n");
+    print("       borrow was still live.\n");
+    print("WHY    The exclusive writer must be the only active view.\n");
+    print("BAD    let r = &mut n; let x = n; *r += 1;\n");
+    print("GOOD   Read through `r`, or finish its last use before reading `n`.\n");
+    print("SEE    docs/harmony.md - 10.1, 10.9, 16.10 Code catalogue\n\n");
+}
+
+fn mut03() {
+    print("MUT-03 - exclusive borrow of an immutable binding\n\n");
+    print("WHAT   `&mut x` needs `x` to be declared `let mut` (or be `self`).\n");
+    print("WHY    The borrow grants write access to the owner.\n");
+    print("BAD    let n = 1; let r = &mut n;\n");
+    print("GOOD   let mut n = 1; let r = &mut n;\n");
+    print("SEE    docs/harmony.md - 10.3, 16.10 Code catalogue\n\n");
+}
+
 // Returns 0 for a known code, or -1 for an unknown one.
 export fn run(code: &str) -> i32 {
     if (!known(code)) { return -1; }
@@ -296,6 +340,10 @@ export fn run(code: &str) -> i32 {
     if (code == "MOVE-03") { move03(); return 0; }
     if (code == "MOVE-04") { move04(); return 0; }
     if (code == "DROP-01") { drop01(); return 0; }
+    if (code == "LOAN-01") { loan01(); return 0; }
+    if (code == "LOAN-02") { loan02(); return 0; }
+    if (code == "LOAN-03") { loan03(); return 0; }
+    if (code == "MUT-03") { mut03(); return 0; }
     if (code == "SYN-01") { syn01(); return 0; }
     if (code == "SYN-02") { syn02(); return 0; }
     if (code == "SYN-03") { syn03(); return 0; }

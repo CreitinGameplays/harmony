@@ -1,0 +1,11 @@
+// M3: distinct fields can be borrowed exclusively at the same time.
+struct P { x: i32; y: i32; }
+
+fn main() -> i32 {
+    let mut p = P { .x = 40, .y = 2 };
+    let a = &mut p.x;
+    let b = &mut p.y;
+    *a = 1;
+    *b = 2;
+    return p.x + p.y + 39;
+}

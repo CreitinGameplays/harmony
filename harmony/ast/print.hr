@@ -8,7 +8,7 @@ import "../../library/core/str.hr";
 // file must produce the same bytes.
 import "node.hr";
 
-fn indent(out: str::String, depth: usize) {
+fn indent(mut out: str::String, depth: usize) {
     let mut i: usize = 0;
     while (i < depth) { out.push("  "); i += 1; }
 }

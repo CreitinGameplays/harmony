@@ -1,0 +1,10 @@
+// M3: passing &mut through a function reborrows for the call's duration.
+fn double(x: &mut i32) { *x *= 2; }
+
+fn main() -> i32 {
+    let mut n: i32 = 3;
+    let r = &mut n;
+    double(r);
+    double(r);
+    return n;
+}

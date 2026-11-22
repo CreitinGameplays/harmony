@@ -134,6 +134,24 @@ fn add_diag(c: &mut Checker, code: &str, title: &str, summary: &str, at: i32) {
     });
 }
 
+// M3: mutability of a local declaration, looked up by its AST handle.
+export fn decl_mutbl(c: &Checker, decl: i32) -> bool {
+    let dn = node::get(&c.nodes, decl);
+    if (dn.sval == "&mut self" || dn.sval == "mut self") { return true; }
+    if (dn.kind == node::AST_LET || dn.kind == node::AST_PARAM
+        || dn.kind == node::AST_PAT_BIND) {
+        return (dn.ival & 1) != 0;
+    }
+    let mut i: usize = 0;
+    while (i < c.syms.len()) {
+        if (c.syms.get(i).decl == decl) {
+            return c.syms.get(i).mutbl != 0;
+        }
+        i += 1;
+    }
+    return false;
+}
+
 // Ownership analyses run after type checking and append their own stops here.
 export fn diag_ownership(c: &mut Checker, code: &str, title: &str,
                          summary: &str, at: i32) {
@@ -980,6 +998,13 @@ export fn resolve_type(c: &mut Checker, h: i32) -> i32 {
         }
         let inner = resolve_type(c, n.a);
         if (inner != types::TY_INVALID) {
+            // §20.1: a reference to a fat reference collapses to the fat pair.
+            // Without this, `Vec<&str>::get` expects `&&str` while its body
+            // (which borrows a returned `&str`) produces `&str`.
+            if (n.ival == 0 && types::type_kind(&c.types, inner) == types::CTY_STRREF) {
+                set_ty(c, h, inner);
+                return inner;
+            }
             // `&[T]` is the slice type itself (§5.2): a slice is already a
             // fat (pointer, length) pair, so a reference to one adds no layer.
             // `&mut [T]` upgrades the exclusivity.
@@ -1204,6 +1229,11 @@ fn subst_type(c: &mut Checker, h: i32, params: &node::Node, args: &vec::Vec<i32>
             if (n.ival == 1) { sm = 1; }
             return types::new_type(&mut c.types, types::CTY_SLICE,
                 types::tname(&c.types, inner), types::elem(&c.types, inner), sm);
+        }
+        // Keep `&&str` collapsed to `&str` in substituted signatures too.
+        if (n.kind == node::AST_TYPE_REF && n.ival == 0
+            && types::type_kind(&c.types, inner) == types::CTY_STRREF) {
+            return inner;
         }
         let mut kd: i32 = types::CTY_REF;
         if (n.kind == node::AST_TYPE_RAW) {
@@ -1583,7 +1613,7 @@ fn check_format(c: &mut Checker, at: i32, fname: &str, args: &vec::Vec<i32>) {
 
 // The placeholder kinds of a format string: 0 = display `{}`, 1 = hex `{:x}`.
 fn format_kinds(s: &str) -> vec::Vec<i32> {
-    let out: vec::Vec<i32> = vec::Vec<i32>::make();
+    let mut out: vec::Vec<i32> = vec::Vec<i32>::make();
     let b = s.as_bytes();
     let mut i: usize = 0;
     while (i < b.len()) {

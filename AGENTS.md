@@ -61,8 +61,9 @@ File Extension: .harmony (default), .hr (secondary)
   in error-handling directory in `tests` to verify if compiler is handling it well.
 - Use `make` with `-j$(nproc)` arg to use all cores when compiling.
 - Also keep compilation warning-free.
-- **Do NOT** hardcode harmony.md docs sections (§) in source code (only in code comments they are allowed).
+- **Do NOT** hardcode harmony.md docs sections (§) in source code, not even in the reports (only in code comments they are allowed).
 - All risks are accepted.
+- There are zero time constraints.
 - Always add helpful comments in the code.
 - Always use `-s` arg when using `git commit`.
 - If a bug happens on c2x-seed during harmony implementation, pause it and only focus on fixing c2x-seed.

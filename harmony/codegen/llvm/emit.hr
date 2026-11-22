@@ -448,12 +448,26 @@ fn emit_functions(c: &mut check::Checker, program: i32,
 }
 
 const MAX_JOBS: usize = 32;
+// A worker inherits the checked program through copy-on-write. After removing
+// the per-function flat maps the compiler's own source needs ~430 MiB, so a
+// 1 GiB reservation per worker leaves room for LLVM and the parent on a 4 GiB
+// box without swapping.
+const MB_PER_WORKER: usize = 1024;
+
+fn cap_jobs_by_memory(n: usize) -> usize {
+    let avail = sys::available_memory_mb();
+    if (avail == 0) { return n; }
+    let by_mem = avail / MB_PER_WORKER;
+    if (by_mem == 0) { return 1; }
+    if (n > by_mem) { return by_mem; }
+    return n;
+}
 
 fn resolve_jobs(requested: i32) -> usize {
     if (requested > 0) {
         let n = requested as usize;
         if (n > MAX_JOBS) { return MAX_JOBS; }
-        return n;
+        return cap_jobs_by_memory(n);
     }
     // Three workers per available CPU hides the IR parse and LLVM pass
     // latency. `cpu_count` uses the process affinity mask, so containers see
@@ -463,7 +477,7 @@ fn resolve_jobs(requested: i32) -> usize {
     let n = cpus * 3;
     if (n == 0) { return 1; }
     if (n > MAX_JOBS) { return MAX_JOBS; }
-    return n;
+    return cap_jobs_by_memory(n);
 }
 
 fn chunk_path(i: usize) -> &str {

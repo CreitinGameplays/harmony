@@ -1,0 +1,688 @@
+// harmony/borrowck/lifetimes.hr — M4 region and lifetime checking.
+//
+// Lifetimes have no runtime representation. This pass assigns a region to each
+// borrow, reference value and aggregate holding references, then checks the
+// function's signature (elision) and the two places a region can escape: a
+// `return` and an assignment to a longer-lived binding.
+//
+// Regions are small integers. -1 is `life(static)`, 0 is "unknown" (the
+// checker cannot see where the value came from, e.g. a raw-pointer read);
+// positive ids are entries in `regions` with a lexical depth. Static depth is
+// 0, parameters are 1, and each entered block adds one. A region with a larger
+// depth is shorter-lived. Named and elided parameter regions are tagged as
+// abstract so returning a different one is reported as LIFE-04, not LIFE-01.
+import "../../library/core/str.hr";
+import "../../library/core/vec.hr";
+import "../../harmony/ast/node.hr";
+import "../../harmony/sema/check.hr";
+import "../../harmony/sema/types.hr";
+
+export const EV_BORROWED: i32 = 6;
+
+const R_STATIC: i32 = -1;
+const TAG_ABSTRACT: i32 = 2;
+const TAG_LOCAL: i32 = 3;
+
+struct Region {
+    depth: i32;
+    tag: i32;
+    owner: i32;
+}
+
+struct Binding {
+    name: &str;
+    region: i32;
+}
+
+// Sparse i32 -> i32 map. The compiler's allocator is a bump arena: a flat map
+// sized to the whole node table once per function leaked gigabytes while
+// self-hosting. Open addressing keeps one function's footprint proportional to
+// the nodes it actually visits.
+struct IntMap {
+    keys: vec::Vec<i32>;   // -1 = empty
+    vals: vec::Vec<i32>;
+    len: usize;
+}
+
+fn new_map() -> IntMap {
+    return IntMap {
+        .keys = vec::Vec<i32>::filled(64, -1),
+        .vals = vec::Vec<i32>::filled(64, 0),
+        .len = 0,
+    };
+}
+
+fn map_hash(k: i32, len: usize) -> usize {
+    let mut h = (k as usize) ^ ((k as usize) << 13);
+    h = h * 2654435761usize;
+    return h & (len - 1);
+}
+
+fn map_find(m: &IntMap, k: i32) -> i32 {
+    if (m.keys.len() == 0 || k < 0) { return -1; }
+    return map_find_slot(&*m, k);
+}
+
+fn map_find_slot(m: &IntMap, k: i32) -> i32 {
+    let mask = m.keys.len() - 1;
+    let mut i = map_hash(k, m.keys.len());
+    let mut probes: usize = 0;
+    while (probes <= mask) {
+        let cur = *m.keys.get(i);
+        if (cur == k) { return i as i32; }
+        if (cur == -1) { return -1; }
+        i = (i + 1) & mask;
+        probes += 1;
+    }
+    return -1;
+}
+
+fn map_insert(keys: &mut vec::Vec<i32>, vals: &mut vec::Vec<i32>, k: i32, v: i32) {
+    let mask = keys.len() - 1;
+    let mut i = map_hash(k, keys.len());
+    while (*keys.get(i) != -1) { i = (i + 1) & mask; }
+    keys.set(i, k);
+    vals.set(i, v);
+}
+
+fn map_grow(m: &mut IntMap) {
+    let mut nk = vec::Vec<i32>::filled(m.keys.len() * 2, -1);
+    let mut nv = vec::Vec<i32>::filled(m.keys.len() * 2, 0);
+    let mut i: usize = 0;
+    while (i < m.keys.len()) {
+        let k = *m.keys.get(i);
+        if (k >= 0) { map_insert(&mut nk, &mut nv, k, *m.vals.get(i)); }
+        i += 1;
+    }
+    m.keys = nk;
+    m.vals = nv;
+}
+
+fn map_get(m: &IntMap, k: i32) -> i32 {
+    let i = map_find(&*m, k);
+    if (i < 0) { return 0; }
+    return *m.vals.get(i as usize);
+}
+
+fn map_set(m: &mut IntMap, k: i32, v: i32) {
+    if (k < 0) { return; }
+    let found = map_find(&*m, k);
+    if (found >= 0) { m.vals.set(found as usize, v); return; }
+    if (((m.len + 1) * 10) >= (m.keys.len() * 7)) { map_grow(m); }
+    let mask = m.keys.len() - 1;
+    let mut i = map_hash(k, m.keys.len());
+    while (*m.keys.get(i) != -1) { i = (i + 1) & mask; }
+    m.keys.set(i, k);
+    m.vals.set(i, v);
+    m.len += 1;
+}
+
+export struct Lifetimes {
+    node_region: IntMap;
+    decl_region: IntMap;
+    // Storage of a local binding. Borrowing `&x` lends the binding's storage,
+    // which is different from the region `x` points at when x is a reference.
+    decl_storage: IntMap;
+    regions: vec::Vec<Region>;
+    bindings: vec::Vec<Binding>;
+    reported: vec::Vec<i64>;
+    out_region: i32;
+    out_node: i32;
+    out_missing: bool;
+    self_region: i32;
+    has_mut_param: bool;
+    shared_count: usize;
+    shared_region: i32;
+}
+
+fn node_r(l: &Lifetimes, h: i32) -> i32 { return map_get(&l.node_region, h); }
+fn set_node_r(l: &mut Lifetimes, h: i32, r: i32) { map_set(&mut l.node_region, h, r); }
+fn decl_r(l: &Lifetimes, h: i32) -> i32 { return map_get(&l.decl_region, h); }
+fn set_decl_r(l: &mut Lifetimes, h: i32, r: i32) { map_set(&mut l.decl_region, h, r); }
+fn storage_r(l: &Lifetimes, h: i32) -> i32 { return map_get(&l.decl_storage, h); }
+fn set_storage(l: &mut Lifetimes, h: i32, r: i32) { map_set(&mut l.decl_storage, h, r); }
+
+fn new_region(l: &mut Lifetimes, depth: i32, tag: i32, owner: i32) -> i32 {
+    l.regions.push(Region { .depth = depth, .tag = tag, .owner = owner });
+    return l.regions.len() as i32;
+}
+
+fn region_depth(l: &Lifetimes, r: i32) -> i32 {
+    if (r == R_STATIC) { return 0; }
+    if (r <= 0 || r as usize > l.regions.len()) { return 1000000; }
+    return l.regions.get(r as usize - 1).depth;
+}
+
+fn region_tag(l: &Lifetimes, r: i32) -> i32 {
+    if (r == R_STATIC) { return 1; }
+    if (r <= 0 || r as usize > l.regions.len()) { return 0; }
+    return l.regions.get(r as usize - 1).tag;
+}
+
+fn bind(l: &mut Lifetimes, name: &str, r: i32) {
+    if (name == "" || r <= 0 && r != R_STATIC) { return; }
+    let mut i: usize = 0;
+    while (i < l.bindings.len()) {
+        if (l.bindings.get(i).name == name) {
+            l.bindings.set(i, Binding { .name = name, .region = r });
+            return;
+        }
+        i += 1;
+    }
+    l.bindings.push(Binding { .name = name, .region = r });
+}
+
+fn bound(l: &Lifetimes, name: &str) -> i32 {
+    if (name == "static") { return R_STATIC; }
+    let mut i: usize = 0;
+    while (i < l.bindings.len()) {
+        if (l.bindings.get(i).name == name) { return l.bindings.get(i).region; }
+        i += 1;
+    }
+    return 0;
+}
+
+fn shorten(l: &Lifetimes, a: i32, b: i32) -> i32 {
+    if (a <= 0) { return b; }
+    if (b <= 0) { return a; }
+    if (a == R_STATIC) { return b; }
+    if (b == R_STATIC) { return a; }
+    if (region_depth(&*l, a) >= region_depth(&*l, b)) { return a; }
+    return b;
+}
+
+fn report(l: &mut Lifetimes, c: &mut check::Checker, code: &str,
+          title: &str, summary: &str, at: i32) {
+    let mut h: i64 = 0;
+    let b = code.as_bytes();
+    let mut i: usize = 0;
+    while (i < b.len()) { h = h * 131 + b[i] as i64; i += 1; }
+    h = h * 4099 + at as i64;
+    i = 0;
+    while (i < l.reported.len()) {
+        if (*l.reported.get(i) == h) { return; }
+        i += 1;
+    }
+    l.reported.push(h);
+    check::diag_ownership(c, code, title, summary, at);
+}
+
+// Scans a type annotation. Explicit `life(x)` uses bind to `x`; an elided
+// reference gets a fresh abstract region. Returns the type's primary region,
+// which is the one an aggregate value holding references inherits.
+fn scan_type(l: &mut Lifetimes, c: &mut check::Checker, h: i32,
+             depth: i32, count_shared: bool) -> i32 {
+    if (h < 0) { return 0; }
+    let n = node::get(&c.nodes, h);
+    let mut result: i32 = 0;
+    // Only string/slice views are elision candidates. Other shared refs
+    // (structs, checker contexts) are borrows but cannot by themselves lend a
+    // returned `&str`, so they must not make an output ambiguous.
+    if (n.kind == node::AST_TYPE_REF && count_shared && n.ival == 0
+        && n.ty > 0 && (types::type_kind(&c.types, n.ty) == types::CTY_STRREF
+        || types::type_kind(&c.types, n.ty) == types::CTY_SLICE)) {
+        l.shared_count += 1;
+    }
+    if (n.kind == node::AST_TYPE_REF || check::is_life_use(n.sval)) {
+        let life = check::life_name(n.sval);
+        let mut r: i32 = 0;
+        if (life == "static") {
+            r = R_STATIC;
+        } else if (life != "") {
+            r = bound(&*l, life);
+            if (r == 0) {
+                r = new_region(l, depth, TAG_ABSTRACT, h);
+                bind(l, life, r);
+            }
+        } else {
+            r = node_r(&*l, h);
+            if (r == 0) {
+                r = new_region(l, depth, TAG_ABSTRACT, h);
+            }
+        }
+        set_node_r(l, h, r);
+        if (r != 0) { result = r; }
+        if (n.kind == node::AST_TYPE_REF && count_shared && n.ival == 0
+            && n.ty > 0 && (types::type_kind(&c.types, n.ty) == types::CTY_STRREF
+            || types::type_kind(&c.types, n.ty) == types::CTY_SLICE)) {
+            l.shared_region = shorten(&*l, l.shared_region, r);
+        }
+    }
+    let mut i: usize = 0;
+    while (i < n.kids.len()) {
+        let cr = scan_type(l, c, *n.kids.get(i), depth, count_shared);
+        if (result == 0) { result = cr; }
+        i += 1;
+    }
+    if (n.a >= 0 && n.kind != node::AST_TYPE_REF) {
+        let cr = scan_type(l, c, n.a, depth, count_shared);
+        if (result == 0) { result = cr; }
+    }
+    return result;
+}
+
+fn declared_life(c: &check::Checker, fh: i32, name: &str) -> bool {
+    let f = node::get(&c.nodes, fh);
+    let mut i: usize = 0;
+    while (i < f.kids.len()) {
+        let gp = node::get(&c.nodes, *f.kids.get(i));
+        if (gp.ival == 1 && gp.sval == name) { return true; }
+        i += 1;
+    }
+    return false;
+}
+
+// Declares named life parameters and resolves the function's signature.
+fn setup_signature(l: &mut Lifetimes, c: &mut check::Checker, fh: i32) {
+    let f = node::get(&c.nodes, fh);
+    let mut i: usize = 0;
+    while (i < f.kids.len()) {
+        let gp_h = *f.kids.get(i);
+        let gp = node::get(&c.nodes, gp_h);
+        if (gp.ival == 1 && gp.sval != "") {
+            bind(l, gp.sval, new_region(l, 1, TAG_ABSTRACT, gp_h));
+        }
+        i += 1;
+    }
+    i = 0;
+    while (i < f.kids2.len()) {
+        let p = *f.kids2.get(i);
+        let pn = node::get(&c.nodes, p);
+        if (pn.sval == "self" || pn.sval == "&self" || pn.sval == "&mut self"
+            || pn.sval == "mut self") {
+            let sr = new_region(l, 1, TAG_ABSTRACT, p);
+            l.self_region = sr;
+            bind(l, "self", sr);
+            set_decl_r(l, p, sr);
+            set_storage(l, p, sr);
+            set_node_r(l, p, sr);
+        } else {
+            // `&mut` owners (arenas, emitters) never lend the returned
+            // reference, so they do not make elision ambiguous.
+            if (pn.a >= 0 && node::get(&c.nodes, pn.a).kind == node::AST_TYPE_REF
+                && node::get(&c.nodes, pn.a).ival == 1) {
+                l.has_mut_param = true;
+            }
+            let mut pr = scan_type(l, c, pn.a, 1, true);
+            if (pr == 0) { pr = new_region(l, 1, TAG_LOCAL, p); }
+            set_decl_r(l, p, pr);
+            set_storage(l, p, pr);
+            set_node_r(l, p, pr);
+        }
+        i += 1;
+    }
+    // In a methods block, a life parameter names a type argument of the
+    // receiver, not a direct argument. At body-check time its concrete region
+    // is unknown, so use the receiver's region; this keeps field views such as
+    // `self.text` consistent with an output `&life(a) str`.
+    i = 0;
+    while (i < f.kids.len()) {
+        let gp = node::get(&c.nodes, *f.kids.get(i));
+        if (gp.ival == 1 && gp.sval != "" && l.self_region > 0) {
+            bind(l, gp.sval, l.self_region);
+        }
+        i += 1;
+    }
+    let mut out: i32 = 0;
+    if (f.a >= 0) {
+        let an = node::get(&c.nodes, f.a);
+        let ref_out = an.kind == node::AST_TYPE_REF || check::is_life_use(an.sval)
+            || types::is_ref(&c.types, f.ty);
+        if (ref_out) {
+            let life = check::life_name(an.sval);
+            if (life == "static") {
+                out = R_STATIC;
+            } else if (life != "") {
+                out = bound(&*l, life);
+                if (l.self_region > 0 && !declared_life(&*c, fh, life)) {
+                    // A method's life parameter comes from the receiver type,
+                    // not from a direct argument: use the self region.
+                    out = l.self_region;
+                    bind(l, life, out);
+                }
+                if (out == 0) { out = new_region(l, 1, TAG_ABSTRACT, f.a); bind(l, life, out); }
+            } else if (l.self_region > 0) {
+                out = l.self_region;
+            } else if (l.has_mut_param) {
+                // An `&mut` arena/emitter owns the returned arena string; the
+                // shared parameters are read-only inputs, not its lender.
+                out = R_STATIC;
+            } else if (l.shared_count == 1) {
+                out = l.shared_region;
+            } else if (l.shared_count == 0) {
+                // A function returning only literals needs no input life. If a
+                // body returns a borrow instead, LIFE-03 is reported there.
+                out = R_STATIC;
+                l.out_missing = true;
+                l.out_node = f.a;
+            } else {
+                let mut s: str::String = str::String::make();
+                s.push("`"); s.push(f.sval);
+                s.push("` returns a reference but has ");
+                s.push_u64(l.shared_count as u64);
+                s.push(" shared reference input(s); name a `life` for the output");
+                report(l, c, "LIFE-03", "can't pick a life", s.as_str(), f.a);
+                out = new_region(l, 1, TAG_ABSTRACT, f.a);
+            }
+            set_node_r(l, f.a, out);
+        }
+    }
+    l.out_region = out;
+}
+
+// Walks statements to give each declaration a lexical depth.
+fn scan_stmt(l: &mut Lifetimes, c: &check::Checker, h: i32, depth: i32) {
+    if (h < 0) { return; }
+    let n = node::get(&c.nodes, h);
+    if (n.kind == node::AST_BLOCK) {
+        scan_stmt(l, c, n.a, depth);
+        let mut i: usize = 0;
+        while (i < n.kids.len()) { scan_stmt(l, c, *n.kids.get(i), depth + 1); i += 1; }
+        return;
+    }
+    if (n.kind == node::AST_LET || n.kind == node::AST_PAT_BIND
+        || (n.kind == node::AST_FOR && n.sval != "")) {
+        let r = new_region(l, depth, TAG_LOCAL, h);
+        set_decl_r(l, h, r);
+        set_storage(l, h, r);
+    }
+    scan_stmt(l, c, n.a, depth);
+    scan_stmt(l, c, n.b, depth);
+    scan_stmt(l, c, n.c, depth);
+    let mut i: usize = 0;
+    while (i < n.kids.len()) { scan_stmt(l, c, *n.kids.get(i), depth); i += 1; }
+    i = 0;
+    while (i < n.kids2.len()) { scan_stmt(l, c, *n.kids2.get(i), depth); i += 1; }
+    i = 0;
+    while (i < n.kids3.len()) { scan_stmt(l, c, *n.kids3.get(i), depth); i += 1; }
+}
+
+fn place_root(c: &check::Checker, h: i32) -> i32 {
+    if (h < 0) { return -1; }
+    let n = node::get(&c.nodes, h);
+    if (n.kind == node::AST_PATH) { return n.target; }
+    if (n.kind == node::AST_FIELD_ACC || n.kind == node::AST_INDEX
+        || n.kind == node::AST_DEREF || n.kind == node::AST_BORROW) {
+        return place_root(c, n.a);
+    }
+    return -1;
+}
+
+// Only reference-typed bindings carry a lifetime. Raw pointers, integers and
+// owning handles are regions for move/borrow analysis, not for M4.
+fn decl_is_ref(c: &check::Checker, h: i32) -> bool {
+    if (h < 0) { return false; }
+    let n = node::get(&c.nodes, h);
+    if (n.ty > 0 && (types::is_ref(&c.types, n.ty)
+        || types::is_slice(&c.types, n.ty))) { return true; }
+    if (n.a >= 0 && node::get(&c.nodes, n.a).kind == node::AST_TYPE_REF) { return true; }
+    return check::is_life_use(n.sval);
+}
+
+fn is_static_expr(c: &check::Checker, h: i32) -> bool {
+    if (h < 0) { return false; }
+    let n = node::get(&c.nodes, h);
+    return n.kind == node::AST_STRING_LIT;
+}
+
+// Resolves a callee's return region from its signature and the call arguments.
+// Lifetimes are implicit at a call, so each named parameter region is bound to
+// the corresponding argument region for the duration of this call.
+fn call_region(l: &mut Lifetimes, c: &mut check::Checker, h: i32,
+               n: &node::Node) -> i32 {
+    // `String::as_str` views a bump-arena buffer that lives for the whole
+    // compilation; the compiler itself returns such views from local Strings.
+    if (n.a >= 0 && node::get(&c.nodes, n.a).kind == node::AST_FIELD_ACC
+        && node::get(&c.nodes, n.a).sval == "as_str") {
+        set_node_r(l, h, R_STATIC);
+        return R_STATIC;
+    }
+    let mut target = n.target;
+    if (target < 0) { target = n.b; }
+    let mut recv_region: i32 = 0;
+    if (n.a >= 0 && node::get(&c.nodes, n.a).kind == node::AST_FIELD_ACC) {
+        recv_region = eval_expr(l, c, node::get(&c.nodes, n.a).a);
+    }
+    if (target < 0 || target as usize >= c.nodes.items.len()) {
+        // Built-in accessors return a view of their receiver.
+        return recv_region;
+    }
+    let f = node::get(&c.nodes, target);
+    let saved = l.bindings.len();
+    let mut arg_regions: vec::Vec<i32> = vec::Vec<i32>::make();
+    let mut i: usize = 0;
+    while (i < n.kids.len()) {
+        arg_regions.push(eval_expr(l, c, *n.kids.get(i)));
+        i += 1;
+    }
+    let mut callee_shared: usize = 0;
+    let mut callee_shared_r: i32 = 0;
+    let mut callee_has_mut: bool = false;
+    i = 0;
+    while (i < f.kids2.len()) {
+        let p = node::get(&c.nodes, *f.kids2.get(i));
+        let pr = scan_type(l, c, p.a, 1, true);
+        if (p.a >= 0 && node::get(&c.nodes, p.a).kind == node::AST_TYPE_REF
+            && node::get(&c.nodes, p.a).ival == 1) {
+            callee_has_mut = true;
+        }
+        let life = check::life_name(pr_name(&*l, &*c, p.a));
+        let mut arg_r: i32 = 0;
+        if (i < arg_regions.len()) { arg_r = *arg_regions.get(i); }
+        if (life != "") {
+            let old = bound(&*l, life);
+            bind(l, life, shorten(&*l, old, arg_r));
+        } else if (p.sval == "self" || p.sval == "&self" || p.sval == "&mut self") {
+            bind(l, "self", shorten(&*l, recv_region, pr));
+        } else if (pr > 0) {
+            if (node::get(&c.nodes, p.a).kind == node::AST_TYPE_REF
+                && node::get(&c.nodes, p.a).ival == 0) {
+                callee_shared += 1;
+                callee_shared_r = shorten(&*l, callee_shared_r, arg_r);
+            }
+        }
+        i += 1;
+    }
+    // A methods block's life parameter describes the receiver's type argument,
+    // not a direct function argument. Bind any still-unbound names from the
+    // receiver region before resolving the return type.
+    i = 0;
+    while (i < f.kids.len()) {
+        let gp = node::get(&c.nodes, *f.kids.get(i));
+        if (gp.ival == 1 && gp.sval != "" && bound(&*l, gp.sval) == 0) {
+            bind(l, gp.sval, recv_region);
+        }
+        i += 1;
+    }
+    let mut out: i32 = 0;
+    if (f.a >= 0) {
+        let an = node::get(&c.nodes, f.a);
+        let life = check::life_name(an.sval);
+        if (life == "static") {
+            out = R_STATIC;
+        } else if (life != "") {
+            out = bound(&*l, life);
+        } else if (bound(&*l, "self") > 0) {
+            out = bound(&*l, "self");
+        } else if (callee_has_mut) {
+            out = R_STATIC;
+        } else if (callee_shared == 1) {
+            out = callee_shared_r;
+        }
+    }
+    while (l.bindings.len() > saved) { l.bindings.pop(); }
+    if (out != 0) { set_node_r(l, h, out); }
+    return out;
+}
+
+fn pr_name(l: &Lifetimes, c: &check::Checker, h: i32) -> &str {
+    if (h < 0) { return ""; }
+    let n = node::get(&c.nodes, h);
+    if (check::is_life_use(n.sval)) { return n.sval; }
+    let mut i: usize = 0;
+    while (i < n.kids.len()) {
+        let s = pr_name(&*l, c, *n.kids.get(i));
+        if (s != "") { return s; }
+        i += 1;
+    }
+    return "";
+}
+
+fn eval_expr(l: &mut Lifetimes, c: &mut check::Checker, h: i32) -> i32 {
+    if (h < 0) { return 0; }
+    let cached = node_r(&*l, h);
+    if (cached != 0) { return cached; }
+    let n = node::get(&c.nodes, h);
+    let mut r: i32 = 0;
+    if (n.kind == node::AST_STRING_LIT) {
+        r = R_STATIC;
+    } else if (n.kind == node::AST_BORROW) {
+        if (is_static_expr(&*c, n.a)) {
+            r = R_STATIC;
+        } else {
+            let root = place_root(&*c, n.a);
+            r = storage_r(&*l, root);
+            if (r == 0) { r = decl_r(&*l, root); }
+            if (r == 0) {
+                let base = eval_expr(l, c, n.a);
+                if (base != 0) { r = new_region(l, region_depth(&*l, base) + 1, TAG_LOCAL, h); }
+            }
+        }
+    } else if (n.kind == node::AST_PATH) {
+        r = decl_r(&*l, n.target);
+        if (r == 0 && n.target >= 0) {
+            let d = node::get(&c.nodes, n.target);
+            r = scan_type(l, c, d.a, 1, false);
+        }
+    } else if (n.kind == node::AST_FIELD_ACC || n.kind == node::AST_INDEX
+        || n.kind == node::AST_DEREF) {
+        let base = eval_expr(l, c, n.a);
+        r = base;
+        if (r == 0) {
+            let root = place_root(&*c, n.a);
+            if (root >= 0) { r = decl_r(&*l, root); }
+        }
+    } else if (n.kind == node::AST_CALL) {
+        r = call_region(l, c, h, &n);
+    } else if (n.kind == node::AST_STRUCT_INIT) {
+        let mut i: usize = 0;
+        while (i < n.kids.len()) {
+            let f = node::get(&c.nodes, *n.kids.get(i));
+            let fr = eval_expr(l, c, f.a);
+            if (fr != 0) { r = shorten(&*l, r, fr); }
+            i += 1;
+        }
+        // An explicit `Type<life(x)>` argument sets the aggregate's region.
+        i = 0;
+        while (i < n.kids2.len()) {
+            let tr = scan_type(l, c, *n.kids2.get(i), 1, false);
+            if (tr != 0) { r = shorten(&*l, r, tr); }
+            i += 1;
+        }
+    } else if (n.kind == node::AST_BINARY) {
+        r = eval_expr(l, c, n.a);
+        let rr = eval_expr(l, c, n.b);
+        if (r == 0) { r = rr; }
+    } else if (n.kind == node::AST_UNARY || n.kind == node::AST_AS) {
+        r = eval_expr(l, c, n.a);
+    }
+    if (r != 0) { set_node_r(l, h, r); }
+    return r;
+}
+
+fn check_return(l: &mut Lifetimes, c: &mut check::Checker, h: i32,
+                expr: i32) {
+    let want = l.out_region;
+    if (want == 0 || expr == 0) { return; }
+    if (l.out_missing) { return; }
+    if (expr == want || expr == R_STATIC) { return; }
+    let wt = region_tag(&*l, want);
+    let et = region_tag(&*l, expr);
+    if (want == R_STATIC && et == TAG_ABSTRACT) { return; }
+    if (wt == TAG_ABSTRACT && et == TAG_ABSTRACT) {
+        report(l, c, "LIFE-04", "body contradicts the life signature",
+               "this reference has a different named life than the return type",
+               h);
+        return;
+    }
+    if (region_depth(&*l, expr) > region_depth(&*l, want)) {
+        report(l, c, "LIFE-01", "a reference is leaving the function",
+               "the borrowed value dies when this function returns", h);
+        return;
+    }
+    if (wt == TAG_LOCAL && et == TAG_ABSTRACT) {
+        report(l, c, "LIFE-04", "body contradicts the life signature",
+               "this reference borrows a different life than the return type",
+               h);
+    }
+}
+
+fn eval_stmt(l: &mut Lifetimes, c: &mut check::Checker, h: i32) {
+    if (h < 0) { return; }
+    let n = node::get(&c.nodes, h);
+    if (n.kind == node::AST_LET) {
+        let r = eval_expr(l, c, n.b);
+        if (r != 0 && decl_is_ref(&*c, h)) { set_decl_r(l, h, r); }
+    } else if (n.kind == node::AST_ASSIGN) {
+        let r = eval_expr(l, c, n.b);
+        let root = place_root(&*c, n.a);
+        let old = decl_r(&*l, root);
+        let rb = node::get(&c.nodes, n.b);
+        let mut rhs_is_borrow = rb.kind == node::AST_BORROW;
+        if (rb.kind == node::AST_PATH && rb.target >= 0) {
+            rhs_is_borrow = decl_is_ref(&*c, rb.target);
+        }
+        if (rhs_is_borrow && r != 0 && decl_is_ref(&*c, root) && old != 0
+            && region_depth(&*l, r) > region_depth(&*l, old)) {
+            let dn = node::get(&c.nodes, root);
+            let mut s: str::String = str::String::make();
+            s.push("`"); s.push(dn.sval);
+            s.push("` does not live as long as the reference stored in it");
+            report(l, c, "LIFE-02", "doesn't live long enough", s.as_str(), n.a);
+        }
+        if (r != 0 && root >= 0 && decl_is_ref(&*c, root)) { set_decl_r(l, root, r); }
+    } else if (n.kind == node::AST_RETURN) {
+        if (l.out_missing && n.a >= 0
+            && node::get(&c.nodes, n.a).kind == node::AST_BORROW) {
+            let root = place_root(&*c, n.a);
+            if (root >= 0 && region_tag(&*l, storage_r(&*l, root)) == TAG_LOCAL) {
+                report(l, c, "LIFE-03", "can't pick a life",
+                       "this function returns a borrow but has no input to borrow from",
+                       l.out_node);
+            }
+        }
+        let r = eval_expr(l, c, n.a);
+        check_return(l, c, h, r);
+    } else {
+        eval_expr(l, c, h);
+    }
+    let mut i: usize = 0;
+    while (i < n.kids.len()) { eval_stmt(l, c, *n.kids.get(i)); i += 1; }
+    i = 0;
+    while (i < n.kids2.len()) { eval_stmt(l, c, *n.kids2.get(i)); i += 1; }
+}
+
+// Runs M4 for one concrete function, after type, move and loan checking.
+export fn check_fn(c: &mut check::Checker, fh: i32) -> Lifetimes {
+    let mut l = Lifetimes {
+        .node_region = new_map(),
+        .decl_region = new_map(),
+        .decl_storage = new_map(),
+        .regions = vec::Vec<Region>::make(),
+        .bindings = vec::Vec<Binding>::make(),
+        .reported = vec::Vec<i64>::make(),
+        .out_region = 0,
+        .out_node = -1,
+        .out_missing = false,
+        .self_region = 0,
+        .has_mut_param = false,
+        .shared_count = 0,
+        .shared_region = 0,
+    };
+    l.regions.push(Region { .depth = 0, .tag = 0, .owner = -1 });   // slot 0
+    let f = node::get(&c.nodes, fh);
+    setup_signature(&mut l, c, fh);
+    scan_stmt(&mut l, &*c, f.b, 2);
+    eval_stmt(&mut l, c, f.b);
+    return l;
+}

@@ -333,7 +333,7 @@ fn rfind_colons(s: &str) -> i32 {
 fn prefix(s: &str, n: usize) -> &str { return &s[0..n]; }
 fn suffix(s: &str, n: usize) -> &str { return &s[n..s.len()]; }
 
-fn concat3(a: &str, b: &str, d: &str) -> &str {
+fn concat3(a: &str, b: &str, d: &str) -> &life(static) str {
     let mut s: str::String = str::String::make();
     s.push(a); s.push(b); s.push(d);
     return s.as_str();
@@ -685,6 +685,7 @@ fn check_ability_bounds(c: &mut Checker, tmpl: i32,
     let t = node::get(&c.nodes, tmpl);
     let mut i: usize = 0;
     while (i < t.kids.len() && i < concrete.len()) {
+        if (is_life_param(&*c, *t.kids.get(i))) { i += 1; continue; }
         let names = bound_names(node::get(&c.nodes, *t.kids.get(i)).sval);
         let mut j: usize = 0;
         while (j < names.len()) {
@@ -1058,6 +1059,10 @@ export fn resolve_type(c: &mut Checker, h: i32) -> i32 {
 
 fn resolve_type_name(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
     let name = n.sval;
+    // M4: a lifetime argument is a compile-time region, not a type. It keeps
+    // its AST slot in a generic instantiation but contributes no layout, so
+    // the generic machinery substitutes a placeholder type for it.
+    if (is_life_use(name)) { return types::TY_INVALID; }
     // `str` is unsized: it only appears behind & (handled above); a bare str
     // is an error.
     if (name == "str") {
@@ -1184,7 +1189,9 @@ fn subst_type(c: &mut Checker, h: i32, params: &node::Node, args: &vec::Vec<i32>
         while (i < params.kids.len()) {
             let pn = node::get(&c.nodes, *params.kids.get(i));
             let pname = param_base(&pn.sval);
-            if (pname == n.sval && i < args.len()) {
+            let mut wanted = n.sval;
+            if (is_life_use(wanted)) { wanted = life_name(wanted); }
+            if (pname == wanted && i < args.len()) {
                 return *args.get(i);
             }
             i += 1;
@@ -1220,6 +1227,16 @@ fn subst_type(c: &mut Checker, h: i32, params: &node::Node, args: &vec::Vec<i32>
     // For composite type nodes, substitute recursively into a temporary by
     // stamping the child nodes (the template is cloned by the caller in R6;
     // here a fresh type is built directly from the resolved children).
+    if (n.kind == node::AST_TYPE_REF) {
+        // `str` is unsized and only exists behind a reference (§5.3). A
+        // substituted `&life(a) str` must stay the fat string type, not fall
+        // through to the generic `&T` path with an invalid `str` element.
+        if (n.a >= 0 && node::get(&c.nodes, n.a).kind == node::AST_TYPE_NAME
+            && node::get(&c.nodes, n.a).sval == "str") {
+            return types::new_type(&mut c.types, types::CTY_STRREF,
+                "&str", types::TY_U8, 0);
+        }
+    }
     if (n.kind == node::AST_TYPE_REF || n.kind == node::AST_TYPE_RAW) {
         let mut inner = subst_type(c, n.a, params, args);
         if (inner == types::TY_INVALID) { return types::TY_INVALID; }
@@ -1279,6 +1296,9 @@ fn subst_tree(c: &mut Checker, h: i32, params: &node::Node,
         if (ty != types::TY_INVALID) {
             let fresh = ty_to_ast_h(c, ty);
             node::put(&mut c.nodes, h, node::get(&c.nodes, fresh));
+            // M4: the region annotation is not part of the type id; keep it on
+            // the substituted node so the lifetime pass can still see it.
+            if (is_life_use(n.sval)) { node::set_sval(&mut c.nodes, h, n.sval); }
         }
         return;
     }
@@ -1372,6 +1392,44 @@ fn param_base(s: &str) -> &str {
         i += 1;
     }
     return s;
+}
+
+// M4: `life` is contextual. A declaration node has `ival == 1`; a use is the
+// string `life(name)` on a reference type or a generic type argument.
+export fn is_life_param(c: &Checker, h: i32) -> bool {
+    if (h < 0) { return false; }
+    return node::get(&c.nodes, h).ival == 1;
+}
+
+fn prefix_eq(s: &str, p: &str) -> bool {
+    if (p.len() > s.len()) { return false; }
+    let mut i: usize = 0;
+    while (i < p.len()) {
+        if (s.as_bytes()[i] != p.as_bytes()[i]) { return false; }
+        i += 1;
+    }
+    return true;
+}
+
+export fn is_life_use(s: &str) -> bool {
+    if (!prefix_eq(s, "life(")) { return false; }
+    return s.len() > 6 && s.as_bytes()[s.len() - 1] == 41u8;   // ')'
+}
+
+// Returns the name inside `life(name)`, or "" for other strings.
+export fn life_name(s: &str) -> &str {
+    if (!is_life_use(s)) { return ""; }
+    return prefix(suffix(s, 5), s.len() - 6);
+}
+
+// A type node's explicit lifetime annotation ("" when elided).
+export fn type_life(c: &Checker, h: i32) -> &str {
+    if (h < 0) { return ""; }
+    let n = node::get(&c.nodes, h);
+    if (n.kind == node::AST_TYPE_REF || n.kind == node::AST_TYPE_NAME) {
+        return life_name(n.sval);
+    }
+    return "";
 }
 
 // Instantiates a generic type template with concrete type arguments.
@@ -3316,15 +3374,34 @@ export fn check_expr(c: &mut Checker, h: i32) -> i32 {
 
 // ---- generic function instantiation --------------------------------------
 
+// M4: name the i-th *type* parameter. Lifetime parameters are implicit at a
+// call site (they are inferred from the argument regions), so they do not
+// consume a generic type argument.
 fn gen_param_name(c: &Checker, tmpl: i32, i: usize) -> &str {
     let t = node::get(&c.nodes, tmpl);
-    if (i >= t.kids.len()) { return ""; }
-    return param_base(node::get(&c.nodes, *t.kids.get(i)).sval);
+    let mut seen: usize = 0;
+    let mut k: usize = 0;
+    while (k < t.kids.len()) {
+        let gp = *t.kids.get(k);
+        if (!is_life_param(&*c, gp)) {
+            if (seen == i) { return param_base(node::get(&c.nodes, gp).sval); }
+            seen += 1;
+        }
+        k += 1;
+    }
+    return "";
 }
 
-// Count a template's generic parameters.
+// Count a template's generic type parameters (lifetimes are implicit).
 fn gen_param_count(c: &Checker, tmpl: i32) -> usize {
-    return node::get(&c.nodes, tmpl).kids.len();
+    let t = node::get(&c.nodes, tmpl);
+    let mut n: usize = 0;
+    let mut k: usize = 0;
+    while (k < t.kids.len()) {
+        if (!is_life_param(&*c, *t.kids.get(k))) { n += 1; }
+        k += 1;
+    }
+    return n;
 }
 
 // Converts a type id back into a type AST node (for inference slots).
@@ -3376,12 +3453,20 @@ fn unify(c: &mut Checker, tn_h: i32, ty: i32, names: &RawStrList,
             return;
         }
         if (tn.kids.len() == 0) {
+            let mut want = tn.sval;
+            if (is_life_use(want)) { want = life_name(want); }
             let mut i: usize = 0;
             while (i < names.len) {
                 let nm: &str = names.at(i);
-                if (nm == tn.sval) {
+                if (nm == want) {
                     if (*slots.get(i) == 0) {
-                        *slots.get(i) = ty_to_ast(c, ty);
+                        // A life parameter has no type to bind; a placeholder
+                        // keeps the substitution table aligned.
+                        if (is_life_use(tn.sval)) {
+                            *slots.get(i) = ty_to_ast(c, types::TY_I32);
+                        } else {
+                            *slots.get(i) = ty_to_ast(c, ty);
+                        }
                     }
                     return;
                 }
@@ -3440,15 +3525,23 @@ fn unify(c: &mut Checker, tn_h: i32, ty: i32, names: &RawStrList,
 fn instantiate_fn(c: &mut Checker, ti: i32, at: i32, targs: &vec::Vec<i32>) -> i32 {
     let tmpl = *c.gen_fns.get(ti as usize);
     let t = node::get(&c.nodes, tmpl);
-    let nparams = t.kids.len();
+    let nparams = gen_param_count(&*c, tmpl);
     if (targs.len() != nparams) {
         err_arity(c, at, t.sval, nparams, targs.len());
         return -1;
     }
     let mut concrete: vec::Vec<i32> = vec::Vec<i32>::make();
     let mut i: usize = 0;
-    while (i < targs.len()) {
-        concrete.push(resolve_type(c, *targs.get(i)));
+    let mut arg: usize = 0;
+    while (i < t.kids.len()) {
+        if (is_life_param(&*c, *t.kids.get(i))) {
+            // Lifetimes have no layout; a placeholder keeps the substitution
+            // table aligned while the region pass reads the annotation.
+            concrete.push(types::TY_I32);
+        } else {
+            concrete.push(resolve_type(c, *targs.get(arg)));
+            arg += 1;
+        }
         i += 1;
     }
     // v1: check user-defined ability bounds against the concrete arguments.
@@ -3525,7 +3618,7 @@ fn instance_fn_name(c: &mut Checker, tmpl: i32, args: &vec::Vec<i32>) -> &str {
 fn infer_fn(c: &mut Checker, ti: i32, at: i32, args: &vec::Vec<i32>) -> i32 {
     let tmpl = *c.gen_fns.get(ti as usize);
     let t = node::get(&c.nodes, tmpl);
-    let nparams = t.kids.len();
+    let nparams = gen_param_count(&*c, tmpl);
     let mut names: RawStrList = RawStrList { .items = Raw::null(), .len = 0 };
     let mut slots: vec::Vec<i32> = vec::Vec<i32>::make();
     let mut i: usize = 0;
@@ -4305,12 +4398,14 @@ fn check_template_body(c: &mut Checker, fh: i32) {
     scope_push(c);
     let mut i: usize = 0;
     while (i < f.kids.len()) {
-        let gp = node::get(&c.nodes, *f.kids.get(i));
+        let gp_h = *f.kids.get(i);
+        let gp = node::get(&c.nodes, gp_h);
         let pname = param_base(&gp.sval);
-        if (pname != "") {
-            let gt = types::new_named(&mut c.types, types::CTY_GENPARAM, pname, *f.kids.get(i));
-            declare(c, *f.kids.get(i), pname, SK_GEN, gt, 0);
-            validate_bounds(c, *f.kids.get(i));
+        // M4: a life parameter is a region, not a type symbol.
+        if (pname != "" && !is_life_param(&*c, gp_h)) {
+            let gt = types::new_named(&mut c.types, types::CTY_GENPARAM, pname, gp_h);
+            declare(c, gp_h, pname, SK_GEN, gt, 0);
+            validate_bounds(c, gp_h);
         }
         i += 1;
     }
@@ -4359,11 +4454,12 @@ fn check_fn_body(c: &mut Checker, fh: i32) {
     // Generic parameters are types in this scope.
     let mut i: usize = 0;
     while (i < f.kids.len()) {
-        let gp = node::get(&c.nodes, *f.kids.get(i));
+        let gp_h = *f.kids.get(i);
+        let gp = node::get(&c.nodes, gp_h);
         let pname = param_base(&gp.sval);
-        if (pname != "") {
-            let gt = types::new_named(&mut c.types, types::CTY_GENPARAM, pname, *f.kids.get(i));
-            declare(c, *f.kids.get(i), pname, SK_GEN, gt, 0);
+        if (pname != "" && !is_life_param(&*c, gp_h)) {
+            let gt = types::new_named(&mut c.types, types::CTY_GENPARAM, pname, gp_h);
+            declare(c, gp_h, pname, SK_GEN, gt, 0);
         }
         i += 1;
     }
@@ -4820,7 +4916,9 @@ export fn check_program(c: &mut Checker, program: i32) -> i32 {
         let gtn = node::get(&c.nodes, gt);
         let mut j: usize = 0;
         while (j < gtn.kids.len()) {
-            validate_bounds(c, *gtn.kids.get(j));
+            if (!is_life_param(&*c, *gtn.kids.get(j))) {
+                validate_bounds(c, *gtn.kids.get(j));
+            }
             j += 1;
         }
         i += 1;
@@ -4857,10 +4955,21 @@ export fn check_program(c: &mut Checker, program: i32) -> i32 {
         k += 1;
     }
     // Generic templates: check each body once with its parameters bound.
+    let checked_before_templates = c.fns.len();
     k = 0;
     while (k < c.gen_fns.len()) {
         let fh = *c.gen_fns.get(k);
         check_template_body(c, fh);
+        k += 1;
+    }
+    // A generic template body can instantiate a method (or another generic
+    // function) that is appended to `fns` after the first body pass. Check
+    // those late instances too, or their bodies reach codegen with stale
+    // types and call targets.
+    k = checked_before_templates;
+    while (k < c.fns.len()) {
+        let fh = *c.fns.get(k);
+        check_fn_body(c, fh);
         k += 1;
     }
     return c.diags.len() as i32;

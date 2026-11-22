@@ -1,0 +1,4 @@
+// M4: three elided reference inputs are ambiguous too.
+fn first(a: &str, b: &str, c: &str) -> &str { return a; }
+
+fn main() -> i32 { return 0; }

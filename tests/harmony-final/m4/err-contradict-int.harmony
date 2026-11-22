@@ -1,0 +1,11 @@
+// M4: the same contradiction with integer references.
+fn pick<life a, life b>(x: &life(a) i32, y: &life(b) i32) -> &life(a) i32 {
+    return y;
+}
+
+fn main() -> i32 {
+    let x: i32 = 1;
+    let y: i32 = 2;
+    let r = pick(&x, &y);
+    return *r;
+}

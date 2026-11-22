@@ -1,0 +1,11 @@
+// M4: the return type promises life(a), but the body returns life(b).
+fn pick<life a, life b>(x: &life(a) str, y: &life(b) str) -> &life(a) str {
+    return y;
+}
+
+fn main() -> i32 {
+    let x = "abc";
+    let y = "de";
+    let r = pick(x, y);
+    return r.len() as i32;
+}

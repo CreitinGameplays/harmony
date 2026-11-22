@@ -1,0 +1,11 @@
+// M4: two inputs can share one named life.
+fn longest<life a>(x: &life(a) str, y: &life(a) str) -> &life(a) str {
+    if (x.len() > y.len()) { return x; }
+    return y;
+}
+
+fn main() -> i32 {
+    let x = "abc";
+    let y = "de";
+    return longest(x, y).len() as i32;
+}

@@ -1,0 +1,4 @@
+// M4: `life(static)` needs no input and outlives every caller.
+fn greeting() -> &life(static) str { return "hi"; }
+
+fn main() -> i32 { return greeting().len() as i32; }

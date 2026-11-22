@@ -1,0 +1,9 @@
+// M4: a reference stored outside a block cannot borrow the block's local.
+fn main() -> i32 {
+    let mut r: &i32;
+    {
+        let x: i32 = 1;
+        r = &x;
+    }
+    return *r;
+}

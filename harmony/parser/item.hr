@@ -419,13 +419,26 @@ export fn parse_methods(p: &mut pctx::Parser) -> i32 {
         // `kids3`, so they do not collide with the block's generics in `kids`.
         pctx::advance(p);
         while (true) {
-            let t = parse::parse_type(p);
-            if (t < 0) { return -1; }
-            node::push_kid3(p.nodes, h, t);
+            // M4: a methods header may name lifetimes in its receiver type,
+            // e.g. `methods<life a> Words<life(a)>`. A bare `life` followed by
+            // `(` is a life use here, not a type named `life`.
+            if (pctx::at(&*p, token::TokKind::Ident) && pctx::cur_word(p) == "life"
+                && pctx::peek(&*p, 1).kind == token::TokKind::LParen) {
+                let lt = pctx::node_here(p, node::AST_TYPE_NAME);
+                node::set_sval(p.nodes, lt, parse::parse_life_use(p));
+                node::set_ival(p.nodes, lt, 1);
+                node::push_kid3(p.nodes, h, lt);
+            } else {
+                let t = parse::parse_type(p);
+                if (t < 0) { return -1; }
+                node::push_kid3(p.nodes, h, t);
+            }
             if (!pctx::eat(p, token::TokKind::Comma)) { break; }
         }
-        if (!pctx::expect(p, token::TokKind::Gt,
-                         "add `>` to close the type arguments")) {
+        if (!parse::eat_gt_split(p)) {
+            pctx::syntax_stop(p, "SYN-05",
+                              "add `>` to close the type arguments",
+                              "Generic arguments close with `>`, even after a `life(...)`.");
             return -1;
         }
     }

@@ -32,6 +32,10 @@ fn known(code: &str) -> bool {
     if (code == "LOAN-02") { return true; }
     if (code == "LOAN-03") { return true; }
     if (code == "MUT-03") { return true; }
+    if (code == "LIFE-01") { return true; }
+    if (code == "LIFE-02") { return true; }
+    if (code == "LIFE-03") { return true; }
+    if (code == "LIFE-04") { return true; }
     return false;
 }
 
@@ -324,6 +328,49 @@ fn mut03() {
     print("SEE    docs/harmony.md - 10.3, 16.10 Code catalogue\n\n");
 }
 
+fn life01() {
+    print("LIFE-01 - a reference is leaving the function\n\n");
+    print("WHAT   The returned reference points at a value owned by this\n");
+    print("       function; that value dies at the closing brace.\n");
+    print("WHY    The caller would receive a pointer to demolished storage.\n");
+    print("BAD    fn f<life a>() -> &life(a) str {{ let s = \"hi\"; return &s; }}\n");
+    print("GOOD   Return the owner, or a `life(static)` literal.\n");
+    print("SEE    docs/harmony.md - 11.7, 16.10 Code catalogue\n\n");
+}
+
+fn life02() {
+    print("LIFE-02 - doesn't live long enough\n\n");
+    print("WHAT   A reference was stored in a binding that outlives the\n");
+    print("       value it borrows.\n");
+    print("WHY    The binding would keep a dangling view after the inner\n");
+    print("       scope ends.\n");
+    print("BAD    let mut r: &i32; {{ let x = 1; r = &x; }} use(r);\n");
+    print("GOOD   Declare the owner next to the reference, or copy the value.\n");
+    print("SEE    docs/harmony.md - 11.1, 16.10 Code catalogue\n\n");
+}
+
+fn life03() {
+    print("LIFE-03 - can't pick a life\n\n");
+    print("WHAT   The signature has no unique input for an elided output, or\n");
+    print("       it returns a borrow with no input to borrow from.\n");
+    print("WHY    The compiler cannot prove which lifetime the result needs.\n");
+    print("BAD    fn pick(a: &str, b: &str) -> &str {{ return a; }}\n");
+    print("GOOD   Name a life: `fn pick<life x>(a: &life(x) str, ...) -> &life(x) str`.\n");
+    print("SEE    docs/harmony.md - 11.3, 11.7, 16.10 Code catalogue\n\n");
+}
+
+fn life04() {
+    print("LIFE-04 - body contradicts the life signature\n\n");
+    print("WHAT   The function returns a reference with a different named\n");
+    print("       life than the one its signature promises.\n");
+    print("WHY    The caller relies on the signature to know how long the\n");
+    print("       result stays valid.\n");
+    print("BAD    fn f<life a, life b>(x: &life(a) i32, y: &life(b) i32)\n");
+    print("       -> &life(a) i32 {{ return y; }}\n");
+    print("GOOD   Return `x`, or change the return type to `&life(b) i32`.\n");
+    print("SEE    docs/harmony.md - 11.4, 16.10 Code catalogue\n\n");
+}
+
 // Returns 0 for a known code, or -1 for an unknown one.
 export fn run(code: &str) -> i32 {
     if (!known(code)) { return -1; }
@@ -344,6 +391,10 @@ export fn run(code: &str) -> i32 {
     if (code == "LOAN-02") { loan02(); return 0; }
     if (code == "LOAN-03") { loan03(); return 0; }
     if (code == "MUT-03") { mut03(); return 0; }
+    if (code == "LIFE-01") { life01(); return 0; }
+    if (code == "LIFE-02") { life02(); return 0; }
+    if (code == "LIFE-03") { life03(); return 0; }
+    if (code == "LIFE-04") { life04(); return 0; }
     if (code == "SYN-01") { syn01(); return 0; }
     if (code == "SYN-02") { syn02(); return 0; }
     if (code == "SYN-03") { syn03(); return 0; }

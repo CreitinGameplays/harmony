@@ -699,8 +699,18 @@ directly into its binary and (b) support **multi-core compilation by default**.
       Also fixed a monomorphization quirk where `&&str` in substituted generic
       signatures no longer collapsed to `&str`, and removed simultaneous
       exclusive borrows in the module loader's diagnostic/infos bookkeeping.
-- [ ] **M4 Lifetimes**: `life` parameters, `life(static)`, elision (§11.3),
-      inference + region constraints (`LIFE-01..04`).
+- [x] **M4 Lifetimes** (final compiler only): `harmony/borrowck/lifetimes.hr`
+      assigns lexical regions to borrows, reference values and aggregates that
+      hold references. `life` declarations and uses, `life(static)`, elision
+      (one input life or `self`), structs and methods with named lives, and
+      call-site region inference are supported. `LIFE-01/02/03/04` reject
+      escaping locals, references stored beyond their owner, ambiguous elision
+      and bodies that contradict a named life. Lifetimes are compile-time only
+      and emit no runtime code. `tests/harmony-final/m4.sh` covers 5 accepted
+      and 12 rejected programs. Its node/declaration maps are sparse hash
+      tables: flat maps sized to the whole node table once per function leaked
+      gigabytes through the bump allocator during self-hosting; the sparse form
+      keeps a full compile near 430 MiB and its worker count memory-aware.
 - [ ] **M6 `unchecked`, `raw`, FFI, audit**: the seven-powers gate (§13.2),
       blast-radius warn (`UNCK-03`), calling an `unchecked fn` outside a block
       (`UNCK-04`), `audit`/`audit --json` (§13.6), raw pointer operations.
@@ -843,12 +853,14 @@ directly into its binary and (b) support **multi-core compilation by default**.
   - Multi-core compilation is on by default: `harmony/codegen/llvm/emit.hr`
     forks `--jobs` workers (auto = three per available CPU, capped at 32) over
     contiguous slices of the deterministic function order and merges their IR
-    chunks in that same order. Large builds also pipe each chunk to its own
-    clang and link the objects in stable order, cutting self-hosting from
-    ~9.3 s to ~4.9 s here. `--jobs=1`/`--sequential` force the single-core
-    path. The checker and monomorphizer remain sequential because they share
-    one type table whose ids and instantiation order are observable in the
-    emitted IR; a safe split needs explicit stable id assignment (M2+ work).
+    chunks in that same order. The worker count is also capped by
+    `MemAvailable` from `/proc/meminfo` (~1 GiB per worker), including
+    explicit `--jobs`, so parallel tests and a 4 GiB box do not swap. Large
+    native builds compile each chunk with LLVM-C and link the objects in stable
+    order. `--jobs=1`/`--sequential` force the single-core path. The checker
+    and monomorphizer remain sequential because they share one type table whose
+    ids and instantiation order are observable in the emitted IR; a safe split
+    needs explicit stable id assignment (M2+ work).
   - `make harmony` now builds a harmony-base stage 0 and then rebuilds stage 1
     with it, so canonical stage 1, stage 2 and stage 3 all use the same native
     backend schedule and stay byte-identical.

@@ -335,13 +335,16 @@ The R6 byte-diff found ten rewrite-only bugs, all fixed at the source:
 - [x] **Deterministic multi-core lowering by default.** `emit.hr` builds the
   exact sequential function order (free functions, non-generic methods, then
   monomorphized instances), then forks `--jobs` workers (default: three per CPU
-  in this process's affinity mask, via `sched_getaffinity(2)`, capped at 32)
-  over contiguous slices. Workers inherit the checked program through
+  in this process's affinity mask, via `sched_getaffinity(2)`, capped at 32 and
+  then by `MemAvailable` from `/proc/meminfo`, ~1 GiB per worker) over
+  contiguous slices. Explicit job counts obey the same memory cap, so a 4 GiB
+  box never forks a swap storm. Workers inherit the checked program through
   copy-on-write and write their IR chunk to a private `/tmp` file; the parent
   joins in spawn order and concatenates the chunks. Small programs stay
   sequential. `--jobs=1` / `--sequential` are the explicit single-core paths.
-  `tests/harmony-final/parallel.sh` diffs every job count against
-  harmony-base and traces actual forks on the compiler's own source.
+  `tests/harmony-final/parallel.sh` diffs the safe job count against
+  harmony-base, traces actual forks, and asserts that even `--jobs=8` respects
+  the memory cap; it uses serial self-builds on small-memory machines.
 - [x] **R8 native LLVM-C + embedded LLD backend.** `build`/`run` link against
   `libLLVM` through `extern "C"` bindings in `library/std/llvm.hr`. The shim
   `library/runtime/llvmc.cpp` parses the deterministic IR text, runs LLVM's
@@ -411,6 +414,27 @@ The R6 byte-diff found ten rewrite-only bugs, all fixed at the source:
 - Two small compiler bugs surfaced while making the compiler pass its own
   borrow check: substituted `&&str` signatures now collapse to `&str`, and the
   loader passes its diagnostic buffer separately from its module list.
+
+### M4 — Lifetimes [x]
+
+- [x] **Region assignment.** `harmony/borrowck/lifetimes.hr` gives each borrow,
+  reference value and reference-holding aggregate a compile-time region with a
+  lexical depth. `life(static)` is depth 0; parameters are depth 1; each block
+  adds one. Lifetimes emit no IR and have no runtime cost.
+- [x] **Syntax and elision.** `life` parameters and `life(a)`/`life(static)`
+  uses resolve in types and generic arguments. An elided output takes the sole
+  shared reference input's life, or `self`'s life for a method; other shapes
+  are `LIFE-03`. A methods header may write `methods<life a> Words<life(a)>`.
+- [x] **Escape checks.** `LIFE-01` reports a borrow of a local that escapes the
+  function; `LIFE-02` reports a reference stored in a longer-lived binding;
+  `LIFE-04` reports a return whose region differs from the named output life.
+  Reborrowing and struct fields propagate the region through calls and values.
+- The compiler's own arena-backed helpers were annotated with
+  `&life(static) str` returns where they hand out compilation-lifetime
+  strings; no `harmony-base` semantics changed. The region pass uses sparse
+  hash maps instead of flat node-indexed tables: the latter leaked gigabytes
+  through the bump allocator once per checked function and triggered swap on a
+  4 GiB box. Full self-compiles now stay near 430 MiB.
 
 ### V1 batch 1 — final compiler only [/]
 

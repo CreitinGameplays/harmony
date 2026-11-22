@@ -1,0 +1,15 @@
+// M4: a struct and its methods can carry a named life.
+struct Words<life a> {
+    text: &life(a) str;
+    pos: usize;
+}
+
+methods<life a> Words<life(a)> {
+    fn pos(&self) -> usize { return self.pos; }
+    fn text(&self) -> &life(a) str { return self.text; }
+}
+
+fn main() -> i32 {
+    let w = Words<life(static)> { .text = "abc", .pos = 3 };
+    return w.pos() as i32 + w.text().len() as i32;
+}

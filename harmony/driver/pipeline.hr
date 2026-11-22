@@ -21,6 +21,7 @@ import "../../harmony/driver/loader.hr";
 import "../../harmony/sema/check.hr";
 import "../../harmony/borrowck/moves.hr";
 import "../../harmony/borrowck/loans.hr";
+import "../../harmony/borrowck/lifetimes.hr";
 import "../../harmony/codegen/llvm/emit.hr";
 import "diagnostics.hr";
 import "process.hr";
@@ -129,7 +130,7 @@ fn print_clang_error(log_path: &str) {
     eprintln("harmony: clang rejected the generated IR");
 }
 
-fn temp_path(stem: &str, suffix: &str) -> &str {
+fn temp_path(stem: &str, suffix: &str) -> &life(static) str {
     let mut s: str::String = str::String::make();
     s.push("/tmp/harmony-");
     s.push_i64(sys::getpid() as i64);
@@ -503,6 +504,21 @@ export fn run(cmd: i32, input: &str, output: &str, opt: &str,
         let f = node::get(&c.nodes, fh);
         if (f.b >= 0 && f.instance != 4) {
             let _ = loans::check_fn(&mut c, fh);
+        }
+        fi += 1;
+    }
+    if (c.diags.len() > 0) {
+        diagnostics::render_all(&c.diags, format);
+        return process::EXIT_STOP;
+    }
+    // M4: region/lifetime checking is the last semantic gate. It runs only
+    // for programs that are type-, move- and loan-correct.
+    fi = 0;
+    while (fi < c.fns.len()) {
+        let fh = *c.fns.get(fi);
+        let f = node::get(&c.nodes, fh);
+        if (f.b >= 0 && f.instance != 4) {
+            let _ = lifetimes::check_fn(&mut c, fh);
         }
         fi += 1;
     }

@@ -1,0 +1,10 @@
+// M4: separate lives stay separate; the result borrows only x.
+fn pick<life a, life b>(x: &life(a) str, y: &life(b) str) -> &life(a) str {
+    return x;
+}
+
+fn main() -> i32 {
+    let x = "abc";
+    let y = "de";
+    return pick(x, y).len() as i32;
+}

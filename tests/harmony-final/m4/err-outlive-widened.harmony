@@ -1,0 +1,13 @@
+// M4: a borrow from a deeper block cannot be stored in an outer binding.
+fn main() -> i32 {
+    let mut r: &i32;
+    {
+        let y: i32 = 9;
+        {
+            let x: i32 = 7;
+            r = &x;
+        }
+        r = &y;
+    }
+    return *r;
+}

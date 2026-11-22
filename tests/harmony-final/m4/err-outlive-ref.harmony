@@ -1,0 +1,9 @@
+// M4: the storage of a local reference is shorter than an outer binding.
+fn main() -> i32 {
+    let mut r: &str;
+    {
+        let s = "x";
+        r = &s;
+    }
+    return r.len() as i32;
+}

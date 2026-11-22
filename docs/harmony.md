@@ -65,6 +65,7 @@ File extension: `.harmony`
 | impl (rewrite) | v1 abilities | The final compiler accepts `abilities Name { fn sig; ... }` blocks and user-defined ability bounds (`<T: Drawable + ord>`). Satisfaction is structural: a type with matching methods has the ability; calls through a bounded parameter resolve to the concrete method after monomorphization. `ABLT-01`/`ABLT-02` report unsatisfied or unknown abilities, and a foreign `trait` block gets the `NAME-02` hint. harmony-base stays v0. |
 | impl (rewrite) | M2 ownership | The final compiler runs definite-move dataflow over a CFG IR, validates `copy` declarations and `eq`/`ord` bounds, generates structural clone helpers, and elaborates drop glue with per-local drop flags. Cleanup hooks run once, `Vec` drops its elements and `Heap` its pointee. `MOVE-01/02/04`, `TYPE-05/06` and `DROP-01` cover the rejections. harmony-base stays v0; byte-identical IR is preserved for M2-neutral programs only. |
 | impl (rewrite) | M3 borrowing | The final compiler computes reference liveness over the CFG and checks live loans against overlapping place accesses. `LOAN-01/02/03` cover shared-write, double-exclusive and read-under-exclusive conflicts; `MUT-03` rejects `&mut` of an immutable binding. Non-lexical lifetimes, reborrowing, disjoint fields, two-phase method calls and collection-wide element loans are supported. harmony-base stays v0. |
+| impl (rewrite) | M4 lifetimes | The final compiler assigns compile-time regions to borrows, reference values and aggregates holding references. `life` parameters, `life(static)`, single-input/method-receiver elision, and structs/methods with named lives are supported; `LIFE-01..04` cover escaping locals, references that outlive their owner, ambiguous elision and signatures contradicted by the body. Lifetimes have no runtime representation or IR effect. harmony-base stays v0. |
 | design (future) | §20.5 scoped AST macros | Documented the intended macro system: expansion at stage 3.5, `#name(...)` calls, `expr`/`code`/`block`/`type`/`ident` parameter kinds, hygienic scopes, scoped `return`, variadic packs, `MACRO-01..04`, and the grammar extension. **Design only — no implementation, not in v1.** |
 | impl (rewrite) | R6 LLVM backend | The self-hosted compiler now has its own LLVM IR emitter (`harmony/codegen/llvm/`). On all 95 programs in the codegen corpus, its IR is **byte-identical** to harmony-base's, including checked arithmetic, traps, slices, aggregates, generics, methods, enums, switches, formatting calls, and multi-module programs. |
 
@@ -2780,8 +2781,11 @@ the default path; a self rebuild executes no child process at all.
 the previous clang text path for debugging, and `emit-llvm` always prints the
 unchanged byte-deterministic IR. Small programs take the single-process path.
 The default worker count is three per CPU in the process's affinity mask
-(`sched_getaffinity(2)`), capped at 32 workers; `--jobs=1`/`--sequential`
-force one worker. Type checking and monomorphization stay sequential because
+(`sched_getaffinity(2)`), capped at 32 workers and then capped again by
+available memory (`/proc/meminfo` `MemAvailable`, ~1 GiB reserved per worker)
+so a 4 GiB box never forks a swap storm; `--jobs=1`/`--sequential` force one
+worker, and explicit job counts obey the same memory cap. Type checking and
+monomorphization stay sequential because
 they share one type table whose ids and first-instantiation order are visible
 in the IR.
 

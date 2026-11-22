@@ -153,7 +153,7 @@ fn normalize(path: &str) -> &str {
     return out.as_str();
 }
 
-fn join(dir: &str, path: &str) -> &str {
+fn join(dir: &str, path: &str) -> &life(static) str {
     if (dir == "") { return normalize(path); }
     let mut s: str::String = str::String::make();
     s.push(dir);
@@ -163,7 +163,9 @@ fn join(dir: &str, path: &str) -> &str {
 }
 
 // The normalized path of an import relative to its importing module.
-export fn resolve_path(dir: &str, path: &str) -> &str { return join(dir, path); }
+export fn resolve_path(dir: &str, path: &str) -> &life(static) str {
+    return join(dir, path);
+}
 
 // The directory part of a normalized module path.
 export fn module_dir(path: &str) -> &str { return dir_of(path); }
@@ -260,7 +262,7 @@ fn has_colons(s: &str) -> bool {
     return false;
 }
 
-fn concat(pre: &str, s: &str) -> &str {
+fn concat(pre: &str, s: &str) -> &life(static) str {
     let mut out: str::String = str::String::make();
     out.push(pre);
     out.push(s);

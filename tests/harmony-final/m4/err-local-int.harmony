@@ -1,0 +1,7 @@
+// M4: borrowing a local integer with an annotated output is LIFE-01.
+fn broken<life a>() -> &life(a) i32 {
+    let x: i32 = 1;
+    return &x;
+}
+
+fn main() -> i32 { let r = broken(); return *r; }

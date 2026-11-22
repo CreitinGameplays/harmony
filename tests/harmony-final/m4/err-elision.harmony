@@ -1,0 +1,4 @@
+// M4: two elided reference inputs cannot pick one output life.
+fn pick(a: &str, b: &str) -> &str { return a; }
+
+fn main() -> i32 { return 0; }

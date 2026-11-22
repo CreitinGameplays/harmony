@@ -1160,10 +1160,24 @@ def shrink(src_text, oracle_fn, tmpdir, tries=200, budget_secs=20.0):
 # its own temp files, and returns findings; the parent shrinks and reports.
 # --------------------------------------------------------------------------
 
+def _available_memory_mb():
+    try:
+        with open("/proc/meminfo", "r") as fh:
+            for line in fh:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0
+
+
 def _worker_count(args):
-    if args.jobs and args.jobs > 0:
-        return args.jobs
-    n = os.cpu_count() or 1
+    n = args.jobs if args.jobs and args.jobs > 0 else (os.cpu_count() or 1)
+    # Each worker runs a harmony process. A 4 GiB box cannot host a dozen of
+    # them without swapping, even when the CPU count is large.
+    avail = _available_memory_mb()
+    if avail:
+        n = min(n, max(1, avail // 512))
     return max(1, n)
 
 
@@ -1610,7 +1624,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--jobs", type=int, default=0,
-                    help="parallel workers (0 = one per CPU core)")
+                    help="parallel workers (0 = one per CPU core, capped by memory)")
     ap.add_argument("--iterations", type=int, default=500,
                     help="programs per sampling engine (gen/mut)")
     ap.add_argument("--max-findings", dest="max_findings", type=int,

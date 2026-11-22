@@ -1,0 +1,4 @@
+// M4: no input life exists, so a returned borrow is LIFE-03.
+fn broken() -> &str { let s = "hi"; return &s; }
+
+fn main() -> i32 { let r = broken(); return r.len() as i32; }

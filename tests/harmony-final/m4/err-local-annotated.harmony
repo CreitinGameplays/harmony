@@ -1,0 +1,4 @@
+// M4: an annotated life still cannot make a local outlive the function.
+fn broken<life a>() -> &life(a) str { let s = "hi"; return &s; }
+
+fn main() -> i32 { let r = broken(); return r.len() as i32; }

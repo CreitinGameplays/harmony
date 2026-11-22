@@ -1,0 +1,4 @@
+// M4: one shared input gives its life to an elided output.
+fn first(s: &str) -> &str { return s; }
+
+fn main() -> i32 { return first("abc").len() as i32; }

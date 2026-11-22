@@ -1,0 +1,12 @@
+// M4: method elision ties the output to self, not to another argument.
+struct P { x: i32; }
+
+methods P {
+    fn other(&self, r: &i32) -> &i32 { return r; }
+}
+
+fn main() -> i32 {
+    let p = P { .x = 1 };
+    let n: i32 = 2;
+    return *p.other(&n);
+}

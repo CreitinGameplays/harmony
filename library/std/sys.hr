@@ -233,6 +233,41 @@ export fn read_file(path: &str) -> File {
     return File { .ok = 0, .data = out };
 }
 
+// Memory the kernel says is available without swapping, in MiB. Zero means
+// the file could not be read; callers then fall back to the CPU-only limit.
+// Forking a large compiler after it has loaded its own source can copy several
+// gigabytes of dirty arena pages, so worker counts must respect this limit.
+export fn available_memory_mb() -> usize {
+    let f = read_file("/proc/meminfo");
+    if (f.ok != 0) { return 0; }
+    let b = f.data.as_bytes();
+    let key = "MemAvailable:";
+    let mut i: usize = 0;
+    let mut at: i32 = -1;
+    while (i + key.len() <= b.len()) {
+        let mut same = true;
+        let mut j: usize = 0;
+        while (j < key.len()) {
+            if (b[i + j] != key.as_bytes()[j]) { same = false; }
+            j += 1;
+        }
+        if (same) { at = i as i32; }
+        i += 1;
+    }
+    if (at < 0) { return 0; }
+    let mut j: usize = at as usize + key.len();
+    while (j < b.len() && (b[j] == 32u8 || b[j] == 9u8)) { j += 1; }
+    let mut kb: usize = 0;
+    let mut seen = false;
+    while (j < b.len() && b[j] >= 48u8 && b[j] <= 57u8) {
+        kb = kb * 10 + (b[j] - 48u8) as usize;
+        seen = true;
+        j += 1;
+    }
+    if (!seen) { return 0; }
+    return kb / 1024;
+}
+
 // Writes a whole file, returning 0 or a negative errno.
 export fn write_file(path: &str, text: &str) -> i32 {
     let fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 420);

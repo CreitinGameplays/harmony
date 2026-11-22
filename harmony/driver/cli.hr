@@ -47,7 +47,7 @@ fn usage() {
     eprintln("--backend=llvm-c|clang: native LLVM-C or the clang text path");
 }
 
-fn flag_value(a: &str, flag: &str) -> &str {
+fn flag_value(a: &str, flag: &str) -> &life(static) str {
     if (!str::starts_with(a, flag)) { return ""; }
     if (a.len() <= flag.len()) { return ""; }
     return &a[flag.len()..a.len()];

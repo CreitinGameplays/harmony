@@ -1,0 +1,236 @@
+# Harmony CI — build, test, package and publish a GitLab release.
+#
+# Flow
+#   1. On the default branch, run the manual `release:tag` job. It validates
+#      VERSION, creates a release tag through the GitLab API, and exits. The
+#      new tag starts a tag pipeline automatically.
+#   2. The tag pipeline rebuilds the compiler from scratch, runs the full test
+#      suite, packages source + binaries, then publishes a GitLab release with
+#      all supported custom fields and permanent asset links.
+#   3. Branch and merge-request pipelines run the same build + test gates but
+#      never publish.
+#
+# Required project CI/CD variable
+#   RELEASE_TOKEN — a project access token with the `api` scope and at least
+#                   the Developer role. It is used as GITLAB_TOKEN in the
+#                   release job; do NOT set GITLAB_TOKEN to CI_JOB_TOKEN.
+#
+# Optional project CI/CD variables
+#   RELEASE_NAME       — release title (default: "Harmony <VERSION>")
+#   RELEASE_MILESTONE  — milestone title to attach and close
+#   RELEASE_TAG        — override the manual job's default tag (v<VERSION base>)
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS'
+      when: never
+    - if: '$CI_COMMIT_BRANCH'
+    - if: '$CI_COMMIT_TAG'
+
+variables:
+  GIT_DEPTH: "0"
+  GIT_STRATEGY: fetch
+  DEBIAN_FRONTEND: noninteractive
+
+# Debian packages that satisfy Makefile's llvm-config/clang/fasm requirements.
+.toolchain:
+  image: debian:testing
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y --no-install-recommends
+        ca-certificates curl git make gcc clang llvm-dev liblld-dev fasm
+        python3 python-is-python3 file xxd
+    - rm -rf /var/lib/apt/lists/*
+    - export JOBS=$(nproc)
+    - if [ "$JOBS" -gt 32 ]; then JOBS=32; fi
+    - export JOBS
+
+stages:
+  - prepare
+  - build
+  - test
+  - package
+  - publish
+
+# ---------------------------------------------------------------------------
+# Manual tag preparation. Runs only on the default branch. It does not build:
+# the tag pipeline is the single source of truth for release artifacts.
+# ---------------------------------------------------------------------------
+release:tag:
+  stage: prepare
+  extends: .toolchain
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+  variables:
+    RELEASE_TAG:
+      description: 'Release tag to create, e.g. v0.3.3 (defaults to the VERSION base)'
+      value: ''
+  script:
+    - test -n "${RELEASE_TOKEN:-}" || { echo "RELEASE_TOKEN is required"; exit 1; }
+    - git fetch --tags --force || true
+    - BASE=$(sed -n 's/^\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' VERSION | head -1)
+    - test -n "$BASE" || { echo "VERSION has no MAJOR.MINOR.PATCH base"; exit 1; }
+    - TAG="${RELEASE_TAG:-v$BASE}"
+    - case "$TAG" in v[0-9]*.[0-9]*.[0-9]*) ;; *) echo "bad tag: $TAG"; exit 1;; esac
+    - test "${TAG#v}" = "$BASE" || { echo "tag $TAG does not match VERSION base $BASE"; exit 1; }
+    - STATUS=$(curl -s -o /dev/null -w '%{http_code}' -H "PRIVATE-TOKEN: $RELEASE_TOKEN" "$CI_API_V4_URL/projects/$CI_PROJECT_ID/repository/tags/$TAG")
+    - if [ "$STATUS" = "200" ]; then echo "tag $TAG already exists"; exit 1; fi
+    - |
+      curl --fail --show-error --silent \
+        --request POST \
+        --header "PRIVATE-TOKEN: $RELEASE_TOKEN" \
+        --data-urlencode "tag_name=$TAG" \
+        --data-urlencode "ref=$CI_COMMIT_SHA" \
+        --data-urlencode "message=Harmony $BASE" \
+        "$CI_API_V4_URL/projects/$CI_PROJECT_ID/repository/tags"
+    - echo "Created tag $TAG; the tag pipeline will build and publish it."
+
+# ---------------------------------------------------------------------------
+# Build and test. Tag artifacts are rebuilt from the tagged commit so VERSION
+# is stable and the release binary matches the release notes exactly.
+# ---------------------------------------------------------------------------
+build:final:
+  stage: build
+  extends: .toolchain
+  interruptible: true
+  script:
+    - git fetch --tags --force || true
+    - bash tools/version.sh
+    - make -j"$JOBS" all
+    - ./build/harmony-base --version
+    - ./build/harmony --version
+  artifacts:
+    name: harmony-build-$CI_COMMIT_SHORT_SHA
+    paths:
+      - build/harmony
+      - build/harmony-base
+      - build/c2x-seed
+      - VERSION
+    expire_in: 1 week
+
+test:full:
+  stage: test
+  extends: .toolchain
+  needs:
+    - job: build:final
+      artifacts: true
+  interruptible: true
+  timeout: 60m
+  script:
+    - git fetch --tags --force || true
+    - touch build/harmony build/harmony-base build/c2x-seed
+    - make -j"$JOBS" test
+
+# ---------------------------------------------------------------------------
+# Package. Source tarball + binary bundle + checksums + generated release notes.
+# ---------------------------------------------------------------------------
+package:release:
+  stage: package
+  extends: .toolchain
+  rules:
+    - if: '$CI_COMMIT_TAG'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  needs:
+    - job: build:final
+      artifacts: true
+    - job: test:full
+      artifacts: false
+  script:
+    - git fetch --tags --force || true
+    - VERSION=$(cat VERSION)
+    - TAG="${CI_COMMIT_TAG:-v$VERSION}"
+    - mkdir -p dist "pkg/harmony-$VERSION/bin"
+    # Full source tree, including docs, library, compiler sources and tests.
+    - git archive --format=tar.gz --prefix="harmony-$VERSION/" -o "dist/harmony-$VERSION-source.tar.gz" HEAD
+    # Runtime bundle. LLVM/LLD shared libraries are documented as dependencies.
+    - cp build/harmony build/harmony-base "pkg/harmony-$VERSION/bin/"
+    - cp VERSION README.md LICENSE "pkg/harmony-$VERSION/"
+    - cp -R docs library harmony "pkg/harmony-$VERSION/"
+    - |
+      {
+        echo "product: harmony"
+        echo "version: $VERSION"
+        echo "tag: $TAG"
+        echo "commit: $CI_COMMIT_SHA"
+        echo "built_at: $CI_JOB_STARTED_AT"
+        echo "runner: $CI_RUNNER_DESCRIPTION"
+        echo "llvm: $(llvm-config --version)"
+        echo "clang: $(clang --version | head -1)"
+        echo "uname: $(uname -a)"
+      } > "pkg/harmony-$VERSION/BUILD_INFO.txt"
+    - tar -czf "dist/harmony-$VERSION-linux-x86_64.tar.gz" -C pkg "harmony-$VERSION"
+    - (cd dist && sha256sum "harmony-$VERSION-source.tar.gz" "harmony-$VERSION-linux-x86_64.tar.gz" > SHA256SUMS)
+    # Release notes: changelog since the previous tag, plus build information.
+    - PREV=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)
+    - |
+      {
+        echo "## Harmony $VERSION"
+        echo
+        echo "Tag: \`$TAG\`"
+        echo
+        if [ -n "$PREV" ]; then
+          echo "Changes since \`$PREV\`:"
+          echo
+          git log --no-merges --pretty='- %h %s' "$PREV..HEAD"
+        else
+          echo "Initial tagged release."
+        fi
+        echo
+        echo '### Assets'
+        echo
+        echo "- \`harmony-$VERSION-linux-x86_64.tar.gz\` — compiler binaries and docs. Requires LLVM/LLD runtime libraries."
+        echo "- \`harmony-$VERSION-source.tar.gz\` — complete source tree."
+        echo "- \`SHA256SUMS\` — checksums for both assets."
+      } > dist/RELEASE_NOTES.md
+  artifacts:
+    name: harmony-dist-$CI_COMMIT_SHORT_SHA
+    paths:
+      - dist/
+    expire_in: 1 week
+
+# ---------------------------------------------------------------------------
+# Publish. glab is the current GitLab CLI; release-cli is deprecated. The
+# project access token supports all custom release fields, including milestones.
+# ---------------------------------------------------------------------------
+publish:release:
+  stage: publish
+  image: registry.gitlab.com/gitlab-org/cli:latest
+  rules:
+    - if: '$CI_COMMIT_TAG'
+  needs:
+    - job: package:release
+      artifacts: true
+  variables:
+    GITLAB_TOKEN: "$RELEASE_TOKEN"
+  script:
+    - test -n "${RELEASE_TOKEN:-}" || { echo "RELEASE_TOKEN is required"; exit 1; }
+    - VERSION=$(cat VERSION)
+    - NAME="${RELEASE_NAME:-Harmony $VERSION}"
+    - |
+      if [ -n "${RELEASE_MILESTONE:-}" ]; then
+        glab release create "$CI_COMMIT_TAG" \
+          --name "$NAME" \
+          --notes-file dist/RELEASE_NOTES.md \
+          --released-at "$CI_JOB_STARTED_AT" \
+          --ref "$CI_COMMIT_SHA" \
+          --tag-message "Harmony $VERSION" \
+          --milestone "$RELEASE_MILESTONE" \
+          --use-package-registry \
+          "dist/harmony-$VERSION-linux-x86_64.tar.gz#harmony-$VERSION-linux-x86_64.tar.gz#package" \
+          "dist/harmony-$VERSION-source.tar.gz#harmony-$VERSION-source.tar.gz#other" \
+          "dist/SHA256SUMS#SHA256SUMS#other"
+      else
+        glab release create "$CI_COMMIT_TAG" \
+          --name "$NAME" \
+          --notes-file dist/RELEASE_NOTES.md \
+          --released-at "$CI_JOB_STARTED_AT" \
+          --ref "$CI_COMMIT_SHA" \
+          --tag-message "Harmony $VERSION" \
+          --use-package-registry \
+          "dist/harmony-$VERSION-linux-x86_64.tar.gz#harmony-$VERSION-linux-x86_64.tar.gz#package" \
+          "dist/harmony-$VERSION-source.tar.gz#harmony-$VERSION-source.tar.gz#other" \
+          "dist/SHA256SUMS#SHA256SUMS#other"
+      fi

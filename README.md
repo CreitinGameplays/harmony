@@ -44,6 +44,31 @@ sudo apt install make gcc clang llvm-dev file liblld-dev python3 qemu-system-x86
 ```
 Also install (for fuzzing tests): https://github.com/google/honggfuzz
 
+## GitLab CI and releases
+
+`.gitlab-ci.yml` builds and tests the compiler on every branch and merge
+request. Releases are manual:
+
+1. In **Settings → CI/CD → Variables**, add `RELEASE_TOKEN`: a project access
+   token with the `api` scope and at least the Developer role. Optional
+   variables: `RELEASE_NAME`, `RELEASE_MILESTONE`, and `RELEASE_TAG`.
+2. On the default branch, run the manual **`release:tag`** job. It validates
+   `VERSION`, creates the release tag from that commit through the GitLab API,
+   and exits. Do not push the tag by hand unless you want the same flow.
+3. The tag pipeline rebuilds from the tag, runs `make test`, and packages:
+   - `harmony-<VERSION>-source.tar.gz` — the complete source tree;
+   - `harmony-<VERSION>-linux-x86_64.tar.gz` — compiler binaries, docs and
+     `BUILD_INFO.txt`;
+   - `SHA256SUMS`.
+4. The tag pipeline publishes the GitLab release automatically with generated
+   notes, name, release time, milestone (when set), and asset links uploaded
+   to the project's generic package registry.
+
+`git archive`, `tools/version.sh`, and the release notes need history and tags,
+so the pipeline uses a full clone (`GIT_DEPTH: 0`). The published binary is
+linked against LLVM/LLD shared libraries; the source tarball is the portable
+artifact, and `BUILD_INFO.txt` records the exact toolchain versions.
+
 ## Layout
 
 | Path | What it is |

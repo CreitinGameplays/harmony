@@ -21,7 +21,7 @@ import tempfile
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 HB = os.path.join(ROOT, "build", "harmony-base")
 DRIVER = os.path.join(ROOT, "tests", "harmony-final", "tokdriver.hr")
-TMP = tempfile.mkdtemp(prefix="harmony-tok-", dir="/tmp/opencode")
+TMP = tempfile.mkdtemp(prefix="harmony-tok-")
 
 # Each entry is a source snippet. They are deliberately dense: a single
 # snippet covering many classes is faster than one per token, and a mismatch
@@ -226,9 +226,8 @@ def main():
             failures += 1
             continue
         drv = os.path.join(TMP, "d%d.harmony" % idx)
-        # The template's imports assume the driver lives in
-        # tests/harmony-final (../../ reaches the repo root). The generated
-        # driver lives in /tmp/opencode, so add one more level.
+        # The driver is generated in a system temp directory, so compute the
+        # relative path back to the repo for its imports.
         rel = os.path.relpath(ROOT, TMP)
         tpl = TEMPLATE.replace("REL/", rel + "/")
         tpl = tpl % ('"' + hs_escape(src) + '"',)

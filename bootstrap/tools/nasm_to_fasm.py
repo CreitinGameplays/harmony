@@ -29,9 +29,13 @@ Key NASM -> FASM differences handled here:
 """
 import re
 import sys
+import tempfile
 from pathlib import Path
 
-SRC = Path("/tmp/opencode/c2x-fasm")
+# The converter works on a copy of the NASM tree. Let the caller name that
+# directory; the default is a plain system-temp location, never a host-specific
+# path.
+SRC = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(tempfile.gettempdir()) / "c2x-fasm"
 
 # Labels that collide with FASM reserved words / directives.
 RENAME = {"match": "match_tok"}

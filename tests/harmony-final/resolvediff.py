@@ -23,7 +23,7 @@ import tempfile
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 HB = os.path.join(ROOT, "build", "harmony-base")
-TMP = tempfile.mkdtemp(prefix="harmony-resolve-", dir="/tmp/opencode")
+TMP = tempfile.mkdtemp(prefix="harmony-resolve-")
 
 # (name, modules dict path->source, root path)
 CASES = [

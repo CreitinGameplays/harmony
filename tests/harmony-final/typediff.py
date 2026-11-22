@@ -16,7 +16,7 @@ import typeharness
 
 ROOT = typeharness.ROOT
 HB = typeharness.HB
-TMP = tempfile.mkdtemp(prefix="hd-type-", dir="/tmp/opencode")
+TMP = tempfile.mkdtemp(prefix="hd-type-")
 
 CASES = [
     ("add", "fn add(a: i32, b: i32) -> i32 { return a + b; }\nfn main() -> i32 { return add(1, 2); }\n"),

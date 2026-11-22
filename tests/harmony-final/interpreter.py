@@ -220,7 +220,7 @@ FIXTURE_SOURCES = FIXTURES
 
 
 def main():
-    tmp = tempfile.mkdtemp(prefix="harmony-interp-", dir="/tmp/opencode")
+    tmp = tempfile.mkdtemp(prefix="harmony-interp-")
     failures = 0
     for i, (src, expected) in enumerate(FIXTURE_SOURCES):
         path = os.path.join(tmp, "c%d.harmony" % i)

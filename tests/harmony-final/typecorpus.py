@@ -12,7 +12,7 @@ import typeharness
 
 ROOT = typeharness.ROOT
 HB = typeharness.HB
-TMP = tempfile.mkdtemp(prefix="hd-corpus-", dir="/tmp/opencode")
+TMP = tempfile.mkdtemp(prefix="hd-corpus-")
 
 
 def hb_codes(src):

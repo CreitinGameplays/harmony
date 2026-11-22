@@ -2,7 +2,7 @@
 import "../../library/std/sys.hr";
 
 fn main() -> i32 {
-    let path = "/tmp/opencode/harmony-sys-smoke.txt";
+    let path = "/tmp/harmony-sys-smoke.txt";
     if (sys::write_file(path, "harmony") != 0) { return 1; }
     let f = sys::read_file(path);
     if (f.ok != 0) { return 2; }

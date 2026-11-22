@@ -113,7 +113,7 @@ def build_driver(singles, module_cases):
     body = replace_array(body, "module_ends", "i32", [str(v) for v in ends] or ["1"])
     body = replace_array(body, "sources", "&str", [src for _n, _p, src in singles])
     open(DRIVER, "w").write(body)
-    work = tempfile.mkdtemp(prefix="harmony-irbatch-", dir="/tmp/opencode")
+    work = tempfile.mkdtemp(prefix="harmony-irbatch-")
     out = os.path.join(work, "batch")
     b = subprocess.run([HB, "build", DRIVER, "-o", out],
                        capture_output=True, text=True)

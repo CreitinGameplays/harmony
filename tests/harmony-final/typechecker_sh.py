@@ -16,7 +16,7 @@ import typeharness
 
 ROOT = typeharness.ROOT
 HB = typeharness.HB
-TMP = tempfile.mkdtemp(prefix="hd-checker-", dir="/tmp/opencode")
+TMP = tempfile.mkdtemp(prefix="hd-checker-")
 
 
 def extract():

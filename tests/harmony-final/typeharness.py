@@ -17,7 +17,7 @@ import tempfile
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 HB = os.path.join(ROOT, "build", "harmony-base")
-TMP = tempfile.mkdtemp(prefix="hd-batch-", dir="/tmp/opencode")
+TMP = tempfile.mkdtemp(prefix="hd-batch-")
 BATCH = os.path.join(ROOT, "tests/harmony-final/typebatch.hr")
 
 

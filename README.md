@@ -47,37 +47,6 @@ sudo apt install make gcc clang llvm-dev file liblld-dev python3 qemu-system-x86
 ```
 Also install (for fuzzing tests): https://github.com/google/honggfuzz
 
-## GitHub Actions and releases
-
-`.github/workflows/ci.yml` builds and tests the compiler on every push and pull
-request. Releases are manual:
-
-1. In **Settings → Actions → General → Workflow permissions**, grant
-   `GITHUB_TOKEN` **read and write permissions**. Alternatively add a
-   `RELEASE_TOKEN` secret (a fine-grained token with `Contents: write`).
-   Optional repository variables: `RELEASE_NAME` (release title) and
-   `RELEASE_TAG` (override the default `v<VERSION base>` tag).
-2. On the default branch, run the **`Release: tag`** workflow via
-   **Actions → CI → Run workflow**. It validates `VERSION`, creates an
-   annotated release tag from that commit through the GitHub API, and exits.
-   Do not push the tag by hand unless you want the same flow.
-3. Pushing the tag starts the release pipeline, which rebuilds from the tag,
-   runs `make test`, and packages:
-   - `harmony-<VERSION>-source.tar.gz` — the complete source tree;
-   - `harmony-<VERSION>-linux-x86_64.tar.gz` — compiler binaries, their LLVM/LLD
-     runtime libraries, docs and `BUILD_INFO.txt`; the binary uses a relative
-     RPATH, so it runs without a system LLVM install (glibc/loader still come
-     from the host);
-   - `SHA256SUMS`.
-4. The tag pipeline publishes a GitHub release automatically with generated
-   notes and the three assets attached directly to the release.
-
-`git archive`, `tools/version.sh`, and the release notes need history and tags,
-so the workflow checks out the repository with `fetch-depth: 0` (full clone).
-The published binary is linked against LLVM/LLD shared libraries; the source
-tarball is the portable artifact, and `BUILD_INFO.txt` records the exact
-toolchain versions.
-
 ## Layout
 
 | Path | What it is |

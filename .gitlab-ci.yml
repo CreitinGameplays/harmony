@@ -64,10 +64,6 @@ release:tag:
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
       when: manual
       allow_failure: true
-  variables:
-    RELEASE_TAG:
-      description: 'Release tag to create, e.g. v0.3.3 (defaults to the VERSION base)'
-      value: ''
   script:
     - test -n "${RELEASE_TOKEN:-}" || { echo "RELEASE_TOKEN is required"; exit 1; }
     - git fetch --tags --force || true

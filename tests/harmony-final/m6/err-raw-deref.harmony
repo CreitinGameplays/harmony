@@ -1,0 +1,6 @@
+// M6: dereferencing a raw pointer is one of the seven powers.
+fn main() -> i32 {
+    let x: i32 = 1;
+    let p = raw(&x);
+    return *p;
+}

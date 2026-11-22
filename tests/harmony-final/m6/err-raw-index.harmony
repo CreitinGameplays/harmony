@@ -1,0 +1,6 @@
+// M6: indexing through a raw pointer needs an unchecked promise.
+fn main() -> i32 {
+    let a: [i32; 2] = [1, 2];
+    let p = raw(&a[0]);
+    return p[0];
+}

@@ -1,0 +1,22 @@
+// M6: the seven powers are available inside short, justified `unchecked`s.
+extern "C" fn abs(x: i32) -> i32;
+
+unchecked("x is a small literal, so the contract of this helper holds")
+fn passthrough(x: i32) -> i32 { return x; }
+
+fn main() -> i32 {
+    let mut x: i32 = 7;
+    let p = raw(&mut x);
+    unchecked("p points at the live local x") {
+        *p = 10;
+    }
+    let mut a: i32 = 0;
+    unchecked("abs(-5) is defined because -5 is not i32::MIN") {
+        a = abs(-5);
+    }
+    let mut b: i32 = 0;
+    unchecked("5 is a small literal, so passthrough's contract holds") {
+        b = passthrough(5);
+    }
+    return x + a + b;
+}

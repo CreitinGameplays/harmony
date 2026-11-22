@@ -436,6 +436,21 @@ The R6 byte-diff found ten rewrite-only bugs, all fixed at the source:
   through the bump allocator once per checked function and triggered swap on a
   4 GiB box. Full self-compiles now stay near 430 MiB.
 
+### M6 — `unchecked`, raw pointers, FFI and audit [x]
+
+- [x] **Seven powers.** The final checker gates raw dereference, raw index and
+  raw writes in addition to the already-gated `read`/`write`/`plus`/`minus`,
+  casts, FFI calls, `alloc`/`dealloc`, `reinterpret`, `get_unchecked` and
+  `Heap::from_raw`. Creating a raw pointer and `is_null` remain safe.
+- [x] **Reasons, contracts and blast radius.** `UNCK-02` validates both block
+  justifications and `unchecked fn` contracts. `UNCK-03` warns (on stderr) for
+  blocks longer than 10 lines; a warning does not stop the build unless
+  `--strict` is passed. The final CLI now supports `--deny-unchecked` and
+  `--strict`, and explain lessons exist for `UNCK-01..05`.
+- [x] **Audit.** `harmony audit` and `harmony audit --format=json` already
+  matched harmony-base byte for byte; tagged sites keep their tag in JSON and
+  pretty output. `tests/harmony-final/m6.sh` is the new semantics gate.
+
 ### V1 batch 1 — final compiler only [/]
 
 - [x] **Structured `unchecked` reasons.** `unchecked(tag, "free text")`

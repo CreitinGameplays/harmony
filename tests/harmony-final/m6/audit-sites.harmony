@@ -1,0 +1,13 @@
+// M6: audit sees tagged blocks and unchecked fn contracts without type checking.
+unchecked(index_checked, "i < len was verified before this call")
+fn read_at(p: raw u8, i: usize) -> u8 {
+    return 0;
+}
+
+fn main() -> i32 {
+    let mut v: i32 = 0;
+    unchecked("p points to one live byte in the small local array") {
+        v = 1;
+    }
+    return v;
+}

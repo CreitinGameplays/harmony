@@ -1,0 +1,17 @@
+// M6: a long unchecked block is WARN UNCK-03, not a stop by default.
+fn main() -> i32 {
+    unchecked("this promise covers more than ten source lines, so keep it short") {
+        let a: i32 = 1;
+        let b: i32 = 2;
+        let c: i32 = 3;
+        let d: i32 = 4;
+        let e: i32 = 5;
+        let f: i32 = 6;
+        let g: i32 = 7;
+        let h: i32 = 8;
+        let i: i32 = 9;
+        let j: i32 = 10;
+        let k: i32 = 11;
+    }
+    return 0;
+}

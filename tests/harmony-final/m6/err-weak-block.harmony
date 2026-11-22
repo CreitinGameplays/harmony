@@ -1,0 +1,7 @@
+// M6: a block reason shorter than 12 characters is UNCK-02.
+fn main() -> i32 {
+    unchecked("trust me") {
+        let x: i32 = 1;
+    }
+    return 0;
+}

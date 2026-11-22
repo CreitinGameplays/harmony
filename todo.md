@@ -711,9 +711,16 @@ directly into its binary and (b) support **multi-core compilation by default**.
       tables: flat maps sized to the whole node table once per function leaked
       gigabytes through the bump allocator during self-hosting; the sparse form
       keeps a full compile near 430 MiB and its worker count memory-aware.
-- [ ] **M6 `unchecked`, `raw`, FFI, audit**: the seven-powers gate (§13.2),
-      blast-radius warn (`UNCK-03`), calling an `unchecked fn` outside a block
-      (`UNCK-04`), `audit`/`audit --json` (§13.6), raw pointer operations.
+- [x] **M6 `unchecked`, `raw`, FFI, audit** (final compiler only): all seven
+      powers are gated, including raw deref/index/write, FFI calls,
+      `alloc`/`dealloc`, `reinterpret`, `get_unchecked`, `Heap::from_raw` and
+      `unchecked fn` calls. `UNCK-02` now checks contracts as well as blocks;
+      `UNCK-03` is a WARN (>10 lines) that only stops under `--strict`, and
+      warnings go to stderr so IR stdout stays byte-identical. The final CLI
+      accepts `--deny-unchecked` (`UNCK-05`) and `--strict`, and all five
+      lessons are in `explain`. `audit`/`audit --json` match harmony-base
+      byte for byte. `tests/harmony-final/m6.sh` covers an accepted program,
+      7 rejections, warning/strict/deny behavior, audit and explain.
 
 ### Diagnostics polish (compiler UX, beyond the driver part above)
 

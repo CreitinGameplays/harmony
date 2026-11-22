@@ -1,0 +1,4 @@
+// M6: every call across the C boundary needs an unchecked promise.
+extern "C" fn abs(x: i32) -> i32;
+
+fn main() -> i32 { return abs(-5); }

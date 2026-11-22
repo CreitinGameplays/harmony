@@ -67,10 +67,13 @@ export fn arena_raw(a: &mut Arena, n: usize) -> raw mut u8 {
     let mut c: raw mut Chunk = Raw::null<Chunk>();
     want = align8(n);
     c = a.cur;
-    // Grow when the current chunk cannot serve the request. A big request
-    // still fits: the new chunk is sized `want` when that exceeds the
-    // doubling default, so a single huge node does not need two chunks.
-    if (c.is_null() || (*c).cap - (*c).used < want) {
+    // Grow when the current chunk cannot serve the request. The header is
+    // valid whenever `c` is non-null, so the promise is local and short.
+    let mut need_grow = true;
+    unchecked("c is null or an arena chunk whose header is alive") {
+        need_grow = c.is_null() || (*c).cap - (*c).used < want;
+    }
+    if (need_grow) {
         let mut nc: usize = 0;
         nc = 65536;
         if (want > nc) { nc = want; }

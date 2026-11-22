@@ -134,6 +134,57 @@ fn add_diag(c: &mut Checker, code: &str, title: &str, summary: &str, at: i32) {
     });
 }
 
+fn warn_diag(c: &mut Checker, code: &str, title: &str, summary: &str, at: i32) {
+    let mut line: u32 = 0;
+    let mut col: u32 = 0;
+    let mut file: &str = c.path;
+    if (at >= 0) {
+        let n = node::get(&c.nodes, at);
+        line = n.line;
+        col = n.col;
+        if (n.src_path != "") { file = n.src_path; }
+    }
+    c.diags.push(fmt::Diag {
+        .code = code,
+        .severity = fmt::Severity::Warn,
+        .title = title,
+        .summary = summary,
+        .file = file,
+        .line = line,
+        .col = col,
+    });
+}
+
+// Line span of a block, from the resolved line of its first and last nodes.
+// The loader stamps every parsed node, so this needs no source text.
+fn block_lines(c: &Checker, h: i32) -> i32 {
+    if (h < 0) { return 0; }
+    let n = node::get(&c.nodes, h);
+    let mut lo: i32 = n.line as i32;
+    let mut hi: i32 = n.line as i32;
+    if (lo == 0) { return 0; }
+    let mut i: usize = 0;
+    while (i < n.kids.len()) {
+        let child = block_lines(c, *n.kids.get(i));
+        if (child > 0) {
+            if (child < lo) { lo = child; }
+            if (child > hi) { hi = child; }
+        }
+        i += 1;
+    }
+    let a = block_lines(c, n.a);
+    if (a > 0) {
+        if (a < lo) { lo = a; }
+        if (a > hi) { hi = a; }
+    }
+    let b = block_lines(c, n.b);
+    if (b > 0) {
+        if (b < lo) { lo = b; }
+        if (b > hi) { hi = b; }
+    }
+    return hi - lo + 1;
+}
+
 // M3: mutability of a local declaration, looked up by its AST handle.
 export fn decl_mutbl(c: &Checker, decl: i32) -> bool {
     let dn = node::get(&c.nodes, decl);
@@ -150,6 +201,18 @@ export fn decl_mutbl(c: &Checker, decl: i32) -> bool {
         i += 1;
     }
     return false;
+}
+
+// Counts only STOP diagnostics; WARN diagnostics (e.g. UNCK-03) must not make
+// a batch driver discard otherwise valid IR.
+export fn stop_count(c: &Checker) -> i32 {
+    let mut n: i32 = 0;
+    let mut i: usize = 0;
+    while (i < c.diags.len()) {
+        if (c.diags.get(i).severity == fmt::Severity::Stop) { n += 1; }
+        i += 1;
+    }
+    return n;
 }
 
 // Ownership analyses run after type checking and append their own stops here.
@@ -2086,6 +2149,9 @@ fn check_index(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
             mismatch(c, n.b, types::TY_USIZE, it, "index");
             return types::TY_INVALID;
         }
+        if (c.unchecked_depth == 0) {
+            err_needs_unchecked(c, h, "indexing through a raw pointer");
+        }
         stamp_lits(c, n.b, types::TY_USIZE);
         node::set_ival(&mut c.nodes, h, 9);
         return types::elem(&c.types, base);
@@ -3267,6 +3333,9 @@ fn check_borrow(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
 fn check_deref(c: &mut Checker, h: i32, n: &node::Node) -> i32 {
     let t = check_expr(c, n.a);
     if (t == types::TY_INVALID) { return t; }
+    if (types::is_ptr(&c.types, t) && c.unchecked_depth == 0) {
+        err_needs_unchecked(c, h, "dereferencing a raw pointer");
+    }
     if (!types::is_ref(&c.types, t) && !types::is_heap(&c.types, t)
         && !types::is_ptr(&c.types, t)) {
         add_diag(c, "TYPE-02", "cannot dereference this type",
@@ -3685,6 +3754,10 @@ fn check_place_mut(c: &mut Checker, h: i32) {
     if (n.kind == node::AST_DEREF) {
         // `*r` is writable iff r is an exclusive reference or a raw mut
         // pointer; that belongs to the borrow checker (M3), so accept here.
+        let bt = get_ty(&*c, n.a);
+        if (types::is_ptr(&c.types, bt) && c.unchecked_depth == 0) {
+            err_needs_unchecked(c, h, "writing through a raw pointer");
+        }
         return;
     }
     if (n.kind == node::AST_PATH && n.a < 0 && !has_colons(n.sval)) {
@@ -4363,6 +4436,14 @@ fn check_stmt(c: &mut Checker, h: i32) {
             add_diag(c, "UNCK-02", "the reason has to be a reason",
                      "`unchecked` reasons must be at least 12 characters.", h);
         }
+        let span = block_lines(&*c, n.a);
+        if (span > 10) {
+            let mut s: str::String = str::String::make();
+            s.push("this `unchecked` block is ");
+            s.push_i64(span as i64);
+            s.push(" lines long; keep only the risky operations inside it");
+            warn_diag(c, "UNCK-03", "shrink the blast radius", s.as_str(), h);
+        }
         c.unchecked_depth += 1;
         check_stmt_block(c, n.a);
         c.unchecked_depth -= 1;
@@ -4582,8 +4663,26 @@ fn fill_enum(c: &mut Checker, h: i32) {
     }
 }
 
+// An `unchecked fn` carries a caller-facing contract. Its body is checked
+// normally; only the declaration promise is validated here (§13.1/§13.4).
+fn check_unchecked_contract(c: &mut Checker, h: i32) {
+    let n = node::get(&c.nodes, h);
+    if ((n.ival & 1) == 0) { return; }
+    if (c.deny_unchecked == 1) {
+        add_diag(c, "UNCK-05", "`unchecked` is disabled by --deny-unchecked",
+                 "Remove the contract or drop the flag.", h);
+    }
+    if (n.c < 0) { return; }
+    let reason = node::get(&c.nodes, n.c).sval;
+    if (reason.len() < 12) {
+        add_diag(c, "UNCK-02", "the reason has to be a reason",
+                 "An `unchecked fn` contract must be at least 12 characters.", h);
+    }
+}
+
 fn register_fn(c: &mut Checker, h: i32) {
     let n = node::get(&c.nodes, h);
+    check_unchecked_contract(c, h);
     if (n.kids.len() > 0) {   // generic params
         c.gen_fns.push(h);
         return;

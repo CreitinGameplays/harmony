@@ -1,0 +1,5 @@
+// M6: calling an unchecked fn without a promise is UNCK-04.
+unchecked("x is a small literal chosen by the caller, always in range")
+fn passthrough(x: i32) -> i32 { return x; }
+
+fn main() -> i32 { return passthrough(5); }

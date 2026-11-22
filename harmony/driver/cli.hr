@@ -26,6 +26,7 @@ export struct Options {
     verbose: i32;
     all: i32;
     strict: i32;
+    deny_unchecked: i32;
 }
 
 // ok: 1 = run, 0 = print usage, -1 = bad option.
@@ -45,6 +46,8 @@ fn usage() {
     eprintln("-O<level>: -O0 -O1 -O2 -O3 -Os -Oz -Og -Ofast (default -O2)");
     eprintln("-j<N>, --jobs=<N>: parallel LLVM workers (0 = all CPUs)");
     eprintln("--backend=llvm-c|clang: native LLVM-C or the clang text path");
+    eprintln("--strict: turn WARN diagnostics into a stop");
+    eprintln("--deny-unchecked: reject any `unchecked` site (UNCK-05)");
 }
 
 fn flag_value(a: &str, flag: &str) -> &life(static) str {
@@ -96,6 +99,7 @@ export fn parse(av: &[&str]) -> ParseResult {
         .verbose = 0,
         .all = 0,
         .strict = 0,
+        .deny_unchecked = 0,
     };
     if (av.len() < 2) { usage(); return ParseResult { .ok = 0, .opts = o }; }
     let mut i: usize = 1;
@@ -116,6 +120,7 @@ export fn parse(av: &[&str]) -> ParseResult {
         if (a == "-v" || a == "--verbose") { o.verbose = 1; i += 1; continue; }
         if (a == "--all") { o.all = 1; i += 1; continue; }
         if (a == "--strict") { o.strict = 1; i += 1; continue; }
+        if (a == "--deny-unchecked") { o.deny_unchecked = 1; i += 1; continue; }
         if (a == "--version") { o.cmd = CMD_VERSION; i += 1; continue; }
         if (a == "--sequential") { o.jobs = 1; i += 1; continue; }
         let backend = flag_value(a, "--backend=");

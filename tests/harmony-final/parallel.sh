@@ -26,14 +26,22 @@ fi
 cd "$ROOT"
 
 # The compiler caps workers by available memory as well as CPUs. Do the same
-# here: on a 4 GiB box a single self-compile can dirty ~2.7 GiB, so spawning
-# the CPU-derived default would swap the machine to a standstill.
-AVAIL_MB=$(awk '/MemAvailable:/ { print int($2 / 1024) }' /proc/meminfo 2>/dev/null || echo 0)
-SAFE_JOBS=$(( AVAIL_MB / 1024 ))
-if [ "$SAFE_JOBS" -lt 1 ]; then SAFE_JOBS=1; fi
-if [ "$SAFE_JOBS" -gt 4 ]; then SAFE_JOBS=4; fi
+# here, and refresh it before the fork assertions: memory can drop while the
+# earlier self-builds run, and a stale worker count would make the gate flaky.
+available_mb() {
+    awk '/MemAvailable:/ { print int($2 / 1024) }' /proc/meminfo 2>/dev/null || echo 0
+}
+safe_jobs() {
+    local mb n
+    mb=$(available_mb)
+    n=$(( mb / 1024 ))
+    if [ "$n" -lt 1 ]; then n=1; fi
+    if [ "$n" -gt 4 ]; then n=4; fi
+    printf '%s' "$n"
+}
+SAFE_JOBS=$(safe_jobs)
 printf 'memory: %s MiB available, using %s worker(s) in this gate\n' \
-    "${AVAIL_MB:-0}" "$SAFE_JOBS"
+    "$(available_mb)" "$SAFE_JOBS"
 
 BIG="harmony/main.hr"
 SMALL="tests/harmony/codegen/return-constant.harmony"
@@ -119,10 +127,11 @@ else bad "clang debug backend still works"; fi
 
 # Optional: prove the default really forks. On a memory-constrained box the
 # compiler deliberately uses one worker, so this check is skipped there.
+SAFE_JOBS=$(safe_jobs)
 if command -v strace >/dev/null 2>&1 && [ "$SAFE_JOBS" -ge 2 ]; then
-    timeout 120 strace -f -e trace=fork,clone,vfork \
+    timeout 120 strace -f -e trace=fork,clone,vfork,clone3 \
         "$HC" emit-llvm --jobs="$SAFE_JOBS" "$BIG" >/dev/null 2>"$TMP/trace"
-    forks=$(grep -c -E 'fork\(|clone\(|vfork\(' "$TMP/trace" || true)
+    forks=$(grep -c -E 'fork\(|clone\(|vfork\(|clone3\(' "$TMP/trace" || true)
     if [ "${forks:-0}" -ge 2 ]; then
         ok "default large compile forks multiple workers ($forks)"
     else
@@ -135,10 +144,11 @@ fi
 # An explicit large job count must still obey the memory cap; otherwise a test
 # or a user script can recreate the swap storm even with a safe default.
 if command -v strace >/dev/null 2>&1; then
-    timeout 120 strace -f -e trace=fork,clone,vfork \
+    CAP_JOBS=$(safe_jobs)
+    timeout 120 strace -f -e trace=fork,clone,vfork,clone3 \
         "$HC" emit-llvm --jobs=8 "$BIG" >/dev/null 2>"$TMP/cap.trace"
-    capped=$(grep -c -E 'fork\(|clone\(|vfork\(' "$TMP/cap.trace" || true)
-    if [ "${capped:-0}" -le "$SAFE_JOBS" ]; then
+    capped=$(grep -c -E 'fork\(|clone\(|vfork\(|clone3\(' "$TMP/cap.trace" || true)
+    if [ "${capped:-0}" -le "$CAP_JOBS" ]; then
         ok "explicit jobs obey the memory cap ($capped forks)"
     else
         bad "explicit jobs ignored the memory cap ($capped forks)"

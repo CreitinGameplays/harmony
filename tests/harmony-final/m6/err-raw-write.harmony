@@ -1,0 +1,7 @@
+// M6: writing through a raw pointer needs an unchecked promise.
+fn main() -> i32 {
+    let mut x: i32 = 1;
+    let p = raw(&mut x);
+    *p = 2;
+    return x;
+}

@@ -453,7 +453,8 @@ fn compile_llvmc_chunks(chunks: &vec::Vec<str::String>, output: &str,
 
 // Runs the full compiler pipeline for one command.
 export fn run(cmd: i32, input: &str, output: &str, opt: &str,
-             opt_given: i32, format: i32, jobs: i32, llvmc: i32) -> i32 {
+             opt_given: i32, format: i32, jobs: i32, llvmc: i32,
+             strict: i32, deny_unchecked: i32) -> i32 {
     if (input == "") {
         eprintln("harmony: no input file");
         return process::EXIT_USAGE;
@@ -475,9 +476,10 @@ export fn run(cmd: i32, input: &str, output: &str, opt: &str,
     }
 
     let mut c = check::make(ns, root);
+    c.deny_unchecked = deny_unchecked;
     check::check_program(&mut c, loaded.program);
-    diagnostics::render_all(&c.diags, format);
     if (diagnostics::stop_count(&c.diags) != 0) {
+        diagnostics::render_all(&c.diags, format);
         return process::EXIT_STOP;
     }
     // M2: type-correct programs get definite-move dataflow. A type error in
@@ -492,7 +494,7 @@ export fn run(cmd: i32, input: &str, output: &str, opt: &str,
         }
         fi += 1;
     }
-    if (c.diags.len() > 0) {
+    if (diagnostics::stop_count(&c.diags) != 0) {
         diagnostics::render_all(&c.diags, format);
         return process::EXIT_STOP;
     }
@@ -507,7 +509,7 @@ export fn run(cmd: i32, input: &str, output: &str, opt: &str,
         }
         fi += 1;
     }
-    if (c.diags.len() > 0) {
+    if (diagnostics::stop_count(&c.diags) != 0) {
         diagnostics::render_all(&c.diags, format);
         return process::EXIT_STOP;
     }
@@ -522,8 +524,12 @@ export fn run(cmd: i32, input: &str, output: &str, opt: &str,
         }
         fi += 1;
     }
-    if (c.diags.len() > 0) {
+    if (diagnostics::stop_count(&c.diags) != 0) {
         diagnostics::render_all(&c.diags, format);
+        return process::EXIT_STOP;
+    }
+    diagnostics::render_all(&c.diags, format);
+    if (strict != 0 && diagnostics::warn_count(&c.diags) > 0) {
         return process::EXIT_STOP;
     }
     if (cmd == 2) { return process::EXIT_OK; }   // check

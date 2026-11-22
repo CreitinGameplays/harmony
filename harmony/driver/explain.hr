@@ -36,6 +36,11 @@ fn known(code: &str) -> bool {
     if (code == "LIFE-02") { return true; }
     if (code == "LIFE-03") { return true; }
     if (code == "LIFE-04") { return true; }
+    if (code == "UNCK-01") { return true; }
+    if (code == "UNCK-02") { return true; }
+    if (code == "UNCK-03") { return true; }
+    if (code == "UNCK-04") { return true; }
+    if (code == "UNCK-05") { return true; }
     return false;
 }
 
@@ -371,6 +376,63 @@ fn life04() {
     print("SEE    docs/harmony.md - 11.4, 16.10 Code catalogue\n\n");
 }
 
+fn unck01() {
+    print("UNCK-01 - an unlocked operation outside `unchecked`\n\n");
+    print("WHAT   One of the seven powers was used without an enclosing\n");
+    print("       `unchecked(\"why\")` block: raw use, FFI, alloc/dealloc,\n");
+    print("       reinterpret, get_unchecked, or Heap::from_raw.\n");
+    print("WHY    These are the operations the compiler cannot verify.\n");
+    print("BAD    let x = *p;\n");
+    print("GOOD   unchecked(\"p came from into_raw and is still allocated\") {{ x = *p; }}\n");
+    print("NOTE   Creating a raw pointer, is_null, and comparisons stay safe.\n");
+    print("SEE    docs/harmony.md - 13.2, 13.5, 16.10 Code catalogue\n\n");
+}
+
+fn unck02() {
+    print("UNCK-02 - the reason has to be a reason\n\n");
+    print("WHAT   An `unchecked` block or contract has no plain string\n");
+    print("       reason of at least 12 characters.\n");
+    print("WHY    A weak promise is not greppable and not reviewable.\n");
+    print("BAD    unchecked(\"trust me\") {{ ... }}\n");
+    print("GOOD   unchecked(\"i < len was checked on line 5\") {{ ... }}\n");
+    print("NOTE   The rule checks length, not truth: say what you checked.\n");
+    print("SEE    docs/harmony.md - 13.1, 13.4, 16.10 Code catalogue\n\n");
+}
+
+fn unck03() {
+    print("UNCK-03 - shrink the blast radius\n\n");
+    print("WHAT   An `unchecked` block spans more than 10 source lines.\n");
+    print("WHY    The longer the block, the more places a false claim\n");
+    print("       can hide. Only risky operations need the promise.\n");
+    print("BAD    unchecked(\"the whole helper is fine\") {{ ... 30 lines ... }}\n");
+    print("GOOD   Move safe lines out; leave two or three risky lines in.\n");
+    print("NOTE   This is a WARN: it stops only under `--strict`.\n");
+    print("SEE    docs/harmony.md - 13.4, 16.10 Code catalogue\n\n");
+}
+
+fn unck04() {
+    print("UNCK-04 - calling a contract without promising it\n\n");
+    print("WHAT   A function declared with `unchecked(\"why\") fn` was\n");
+    print("       called outside an `unchecked` block.\n");
+    print("WHY    The caller must promise the contract the callee relies on.\n");
+    print("BAD    let t = sum_bytes(p, 4);\n");
+    print("GOOD   unchecked(\"p covers 4 readable bytes here\") {{ t = sum_bytes(p, 4); }}\n");
+    print("NOTE   The body of an unchecked fn is NOT automatically unchecked.\n");
+    print("SEE    docs/harmony.md - 13.1, 13.4, 16.10 Code catalogue\n\n");
+}
+
+fn unck05() {
+    print("UNCK-05 - `unchecked` is disabled\n\n");
+    print("WHAT   The build used `--deny-unchecked`, but an `unchecked`\n");
+    print("       block or contract appears in the program.\n");
+    print("WHY    A trusted surface of zero is a stronger guarantee than\n");
+    print("       a reviewed list of promises.\n");
+    print("BAD    harmony --deny-unchecked build src/main.harmony   // with unchecked inside\n");
+    print("GOOD   Remove the site, or build without the flag.\n");
+    print("NOTE   `harmony audit --format=json` lists the sites for review.\n");
+    print("SEE    docs/harmony.md - 13.4, 16.10 Code catalogue\n\n");
+}
+
 // Returns 0 for a known code, or -1 for an unknown one.
 export fn run(code: &str) -> i32 {
     if (!known(code)) { return -1; }
@@ -395,6 +457,11 @@ export fn run(code: &str) -> i32 {
     if (code == "LIFE-02") { life02(); return 0; }
     if (code == "LIFE-03") { life03(); return 0; }
     if (code == "LIFE-04") { life04(); return 0; }
+    if (code == "UNCK-01") { unck01(); return 0; }
+    if (code == "UNCK-02") { unck02(); return 0; }
+    if (code == "UNCK-03") { unck03(); return 0; }
+    if (code == "UNCK-04") { unck04(); return 0; }
+    if (code == "UNCK-05") { unck05(); return 0; }
     if (code == "SYN-01") { syn01(); return 0; }
     if (code == "SYN-02") { syn02(); return 0; }
     if (code == "SYN-03") { syn03(); return 0; }

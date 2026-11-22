@@ -1,0 +1,5 @@
+// M6: an unchecked fn contract also needs a real reason.
+unchecked("short")
+fn passthrough(x: i32) -> i32 { return x; }
+
+fn main() -> i32 { return 0; }

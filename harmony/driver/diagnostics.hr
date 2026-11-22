@@ -12,12 +12,27 @@ export const FORMAT_LINE: i32 = 1;
 export const FORMAT_JSON: i32 = 2;
 
 export fn render(d: &fmt::Diag, format: i32) {
+    // Warnings are advisory: keep them off stdout so `emit-llvm` still prints
+    // only IR bytes (the byte-identity gates compare that stream).
+    let to_stderr = d.severity == fmt::Severity::Warn;
     if (format == FORMAT_LINE) {
-        print("{}", fmt::render_line(*d).as_str());
+        let line = fmt::render_line(*d).as_str();
+        if (to_stderr) { eprintln("{}", line); }
+        else { print("{}", line); }
         return;
     }
     if (format == FORMAT_JSON) {
-        print("{}", fmt::render_json(*d).as_str());
+        let json = fmt::render_json(*d).as_str();
+        if (to_stderr) { eprintln("{}", json); }
+        else { print("{}", json); }
+        return;
+    }
+    if (to_stderr) {
+        eprintln("{}  {}  {}:{}:{}\n", fmt::severity_word(d.severity), d.code,
+                 d.file, d.line, d.col);
+        eprintln("{}\n", d.title);
+        if (d.summary != "") { eprintln("\n   {}\n", d.summary); }
+        eprintln("\n   learn: harmony explain {}\n", d.code);
         return;
     }
     print("{}  {}  {}:{}:{}\n", fmt::severity_word(d.severity), d.code,
@@ -42,6 +57,16 @@ export fn stop_count(ds: &vec::Vec<fmt::Diag>) -> i32 {
     let mut i: usize = 0;
     while (i < ds.len()) {
         if (ds.get(i).severity == fmt::Severity::Stop) { n += 1; }
+        i += 1;
+    }
+    return n;
+}
+
+export fn warn_count(ds: &vec::Vec<fmt::Diag>) -> i32 {
+    let mut n: i32 = 0;
+    let mut i: usize = 0;
+    while (i < ds.len()) {
+        if (ds.get(i).severity == fmt::Severity::Warn) { n += 1; }
         i += 1;
     }
     return n;

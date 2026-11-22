@@ -29,7 +29,7 @@ fn run_one(i: usize, src: &str) {
     let mut c = check::make(ns, "main.harmony");
     check::check_program(&mut c, program);
     print("@@@CASE {}\n", i);
-    if (program >= 0 && p.stops == 0 && c.diags.len() == 0) {
+    if (program >= 0 && p.stops == 0 && check::stop_count(&c) == 0) {
         let ir = emit::emit_module(&mut c, program, 0);
         print("@@@IR\n");
         print("{}", ir);
@@ -114,7 +114,7 @@ fn main() -> i32 {
     if (loaded.program >= 0 && loaded.diags.len() == 0) {
         let mut c = check::make(ns, root);
         check::check_program(&mut c, loaded.program);
-        if (c.diags.len() == 0) {
+        if (check::stop_count(&c) == 0) {
             let ir = emit::emit_module(&mut c, loaded.program, 0);
             print("@@@IR\n");
             print("{}", ir);

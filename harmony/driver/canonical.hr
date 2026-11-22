@@ -1,0 +1,197 @@
+// harmony/driver/fmt.hr — the canonical formatter (`harmony fmt`, §19.5).
+//
+// The printer is deliberately token-based. Re-printing the AST would require
+// inventing names for synthesized nodes, while a token pass can guarantee the
+// one property a formatter must have: the output lexes to the *same* token
+// stream as the input. One style, no options, no parenthesized rewrites.
+//
+// Comments are copied from the gaps between tokens, trimmed and re-indented;
+// they are never interpreted, so a formatting run cannot change the program.
+import "../../library/core/mem.hr";
+import "../../library/core/str.hr";
+import "../lexer/token.hr";
+import "../lexer/ctx.hr";
+import "../lexer/scan.hr";
+
+fn is_no_space_before(t: &str) -> bool {
+    if (t == ")" || t == "]" || t == "}" || t == "," || t == ";") { return true; }
+    if (t == "." || t == "::" || t == ":") { return true; }
+    return false;
+}
+
+// A `>` immediately before a call/comma closes a generic argument list, not
+// a comparison: `twice<i32>(4)`, `Vec<i32>, Vec<u8>`.
+fn no_space_after_pair(prev: &str, t: &str) -> bool {
+    if (prev == "<") { return true; }
+    if (prev != ">") { return false; }
+    return t == "(" || t == "," || t == ")" || t == ">";
+}
+
+fn is_no_space_after(t: &str) -> bool {
+    if (t == "(" || t == "[" || t == "." || t == "::") { return true; }
+    return false;
+}
+
+fn is_block_open(t: &str) -> bool { return t == "{"; }
+fn is_block_close(t: &str) -> bool { return t == "}"; }
+fn is_stmt_end(t: &str) -> bool { return t == ";"; }
+
+// Looks ahead for the matching `>` of a generic argument list. Comparison
+// operators have no such closer before the next statement boundary.
+fn generic_open(src: &str, toks: &vec::Vec<token::Token>, at: usize,
+                prev_word: bool) -> bool {
+    if (!prev_word || at >= toks.len()) { return false; }
+    let cur = toks.get(at);
+    let text = str::slice(src, cur.start, cur.end);
+    if (text != "<") { return false; }
+    let mut depth: usize = 1;
+    let mut j = at + 1;
+    while (j < toks.len()) {
+        let t = toks.get(j);
+        let s = str::slice(src, t.start, t.end);
+        if (s == "<") { depth += 1; }
+        else if (s == ">" || s == ">>") {
+            depth -= 1;
+            if (depth == 0) { return true; }
+        } else if (s == ";" || s == "{" || s == "=") {
+            return false;
+        }
+        j += 1;
+    }
+    return false;
+}
+
+fn call_paren(t: &str, prev: &str, prev_word: bool) -> bool {
+    if (t != "(") { return false; }
+    if (prev == "if" || prev == "while" || prev == "for"
+        || prev == "switch" || prev == "unchecked") { return false; }
+    return prev_word || prev == ")" || prev == "]";
+}
+
+fn indent(out: &mut str::String, level: i32) {
+    let mut i: i32 = 0;
+    while (i < level) { out.push("    "); i += 1; }
+}
+
+// Copies any comment lines in `src[from..to]` as trimmed, indented lines.
+// Whitespace-only gaps do not produce output.
+fn gap(out: &mut str::String, src: &str, from: usize, to: usize,
+       level: i32, at_start: &mut bool) {
+    if (to <= from || to > src.len()) { return; }
+    let text = str::slice(src, from, to);
+    let bytes = text.as_bytes();
+    let mut start: usize = 0;
+    let mut i: usize = 0;
+    while (i <= bytes.len()) {
+        if (i == bytes.len() || bytes[i] == 10u8) {
+            let mut line = str::slice(text, start, i);
+            line = str::trim(line);
+            if (line != "") {
+                if (!*at_start) { out.push("\n"); }
+                indent(out, level);
+                out.push(line);
+                out.push("\n");
+                *at_start = true;
+            }
+            start = i + 1;
+        }
+        i += 1;
+    }
+}
+
+// `scan` reports malformed source as diagnostics; the formatter still prints
+// the tokens it recovered so editors can show the partial result.
+export fn format(src: &str, path: &str) -> str::String {
+    let mut arena: mem::Arena = mem::Arena { .cur = Raw::null() };
+    let mut lx: ctx::Ctx = ctx::make(src, path);
+    scan::scan(&mut lx, &mut arena);
+    let mut out: str::String = str::String::make();
+    let mut level: i32 = 0;
+    let mut at_start = true;
+    let mut prev: &str = "";
+    let mut prev_word = false;
+    let mut gen_depth: usize = 0;
+    let mut from: usize = 0;
+    let mut i: usize = 0;
+    while (i < lx.toks.len()) {
+        let t = lx.toks.get(i);
+        if (t.kind == token::TokKind::Eof) { break; }
+        gap(&mut out, src, from, t.start, level, &mut at_start);
+        let text = str::slice(src, t.start, t.end);
+        let word = token::is_word_or_literal(t.kind);
+        if (prev == "}" && (text == ";" || text == ",")) {
+            // Keep `};`, `},` and `} else` on the closing brace's line.
+            out.push(text);
+            prev = text;
+            prev_word = word;
+            if (text == ";") {
+                out.push("\n");
+                at_start = true;
+            } else {
+                at_start = false;
+            }
+            from = t.end;
+            i += 1;
+            continue;
+        }
+        if (is_block_close(text)) {
+            // Dedent before printing the closing brace.
+            level -= 1;
+            if (level < 0) { level = 0; }
+            if (!at_start) { out.push("\n"); }
+            indent(&mut out, level);
+            out.push(text);
+            let mut next_else = false;
+            if (i + 1 < lx.toks.len()) {
+                let nt = lx.toks.get(i + 1);
+                next_else = str::slice(src, nt.start, nt.end) == "else";
+            }
+            if (next_else) {
+                out.push(" ");
+                at_start = false;
+            } else {
+                out.push("\n");
+                at_start = true;
+            }
+            prev = text;
+            prev_word = word;
+            from = t.end;
+            i += 1;
+            continue;
+        }
+        let mut opens_generic = false;
+        let mut closes_generic = false;
+        if (at_start) {
+            indent(&mut out, level);
+            at_start = false;
+        } else {
+            opens_generic = text == "<"
+                && generic_open(src, &lx.toks, i, prev_word);
+            closes_generic = gen_depth > 0 && (text == ">" || text == ">>");
+            let no_before = is_no_space_before(text) || opens_generic || closes_generic;
+            let space = !no_before
+                && !is_no_space_after(prev)
+                && !no_space_after_pair(prev, text)
+                && !call_paren(text, prev, prev_word);
+            if (space) { out.push(" "); }
+        }
+        out.push(text);
+        if (opens_generic) { gen_depth += 1; }
+        if (closes_generic) { gen_depth -= 1; }
+        prev = text;
+        prev_word = word;
+        if (is_block_open(text)) {
+            level += 1;
+            out.push("\n");
+            at_start = true;
+        } else if (is_stmt_end(text)) {
+            out.push("\n");
+            at_start = true;
+        }
+        from = t.end;
+        i += 1;
+    }
+    gap(&mut out, src, from, src.len(), level, &mut at_start);
+    if (!at_start) { out.push("\n"); }
+    return out;
+}

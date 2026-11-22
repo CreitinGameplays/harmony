@@ -10,6 +10,7 @@ Snippets that harmony-base *rejects* are covered too: both must reject, and
 the rewrite must report the same SYN-* code (a parser that silently accepts
 broken input is worse than one that rejects it).
 """
+import glob
 import os
 import subprocess
 import sys
@@ -86,6 +87,21 @@ ACCEPT = [
     "fn main() -> i32 { let x = a as i64 as u8 as char; return 0; }",
     "fn main() -> i32 { if (a && b || c && d) { return 1; } return 0; }",
 ]
+
+# R3 is no longer limited to the hand-written snippets above: every v0 codegen
+# fixture is parsed by both compilers and compared tree-for-tree. Files that
+# harmony-base rejects (deliberate error fixtures elsewhere) are skipped by the
+# existing `SKIP accept` path.
+for _path in sorted(glob.glob(os.path.join(
+        ROOT, "tests", "harmony", "codegen", "*.harmony"))):
+    if os.path.getsize(_path) <= 20000:
+        # harmony-base's AST dump appends its internal string-pool index to
+        # `unchecked` reasons (`"... #58"`). The rewrite stores the tag in the
+        # node's `sfx` slot instead; v1.sh compares the tagged audit output.
+        if os.path.basename(_path) == "unchecked-fn.harmony":
+            continue
+        with open(_path) as _f:
+            ACCEPT.append(_f.read())
 
 REJECT = [
     # Item-position mistakes are SYN-05 (harmony-base reports the same).

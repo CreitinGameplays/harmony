@@ -109,6 +109,17 @@ export fn slice(s: &str, lo: usize, hi: usize) -> &str {
     return &s[lo..hi];
 }
 
+// Trims ASCII whitespace from both ends. Formatting and comment handling need
+// this without allocating a new String.
+export fn trim(s: &str) -> &str {
+    let b = s.as_bytes();
+    let mut lo: usize = 0;
+    let mut hi: usize = b.len();
+    while (lo < hi && is_space(b[lo])) { lo += 1; }
+    while (hi > lo && is_space(b[hi - 1])) { hi -= 1; }
+    return slice(s, lo, hi);
+}
+
 // ---------------------------------------------------------------------------
 // `String`: an owned, growable, valid-UTF-8 byte buffer.
 // ---------------------------------------------------------------------------

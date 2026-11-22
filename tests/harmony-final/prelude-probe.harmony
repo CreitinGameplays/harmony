@@ -1,0 +1,15 @@
+import "../../library/core/prelude.hr";
+
+fn main() -> i32 {
+    let mut x: i32 = 1;
+    let mut y: i32 = 2;
+    prelude::swap(&mut x, &mut y);
+    let old = prelude::replace(&mut x, 9);
+    let m: Maybe<i32> = Has(7);
+    let mut v: i32 = 0;
+    switch (m) {
+        case Has(x): { v = x; }
+        case Empty: { }
+    }
+    return y + old + v;
+}

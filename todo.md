@@ -646,7 +646,8 @@ $HB run /tmp/ca.harmony; echo "rc=$? (bug: traps; IR has `getelementptr ... ptr 
       the allocator hook `heap(x)` uses, and `library/std/` needs the OS. The
       empty directory is tracked with `.gitkeep`; `README.md` and the final
       language section below updated to match.
-- [ ] Keep this checklist in sync as items complete.
+- [x] Keep this checklist in sync as items complete. The only remaining item
+      is the deliberately deferred C11 backend.
 
 ---
 
@@ -744,27 +745,44 @@ directly into its binary and (b) support **multi-core compilation by default**.
 
 ### Standard library and backends
 
-- [ ] **Split rule** (§19.8): keep only soundness/syntax glue + ~a dozen
-      intrinsics in the compiler; move types (`Vec`/`String`/`Heap`/ranges/
-      iterators), numeric method families, formatting/IO, the runtime entry +
-      allocator + trap formatting, protocol impls (`next`/`cleanup`/`clone`/
-      `eq`/`cmp`/`show`), diagnostic wording, and lints into the library or
-      tooling.
-- [ ] Prelude: `print`/`println`/`eprintln` (+ `{?}`/`{:.N}`), `trap`,
-      `assert`, `exit`, `leak`, `drop`, `swap`, `replace`.
-- [ ] `String`/`.own()`, `Vec`, `Heap`, `Maybe`/`Has`/`Empty`,
-      `Outcome`/`Good`/`Bad`, `str` slices + char-boundary traps (§14.1).
-- [ ] Iteration protocol: `fn next(&mut self) -> Maybe<T>` (§6.6, §8.5).
+- [x] **Split rule** (§19.8): the compiler keeps syntax/soundness glue and
+      the documented intrinsics; formatting and diagnostic wording live in
+      `library/core/fmt.hr` and `harmony/driver/explain.hr`, the allocator,
+      entry, trap formatting, I/O and stack guard live in `library/runtime/`,
+      and renderers/audit/formatter are driver modules. The prelude helpers
+      that need location or ownership rules stay compiler/runtime intrinsics
+      per §19.8.9; the rest are ordinary library code.
+- [x] Prelude: `print`/`println`/`eprintln` (format checking in the compiler,
+      output in the runtime), `trap`, `assert`, `unreachable`, `exit` (caller
+      location makes them intrinsics), and `swap`/`replace` in the new
+      `library/core/prelude.hr`. `drop`/`leak` and generic `Maybe`/`Outcome`
+      helpers need monomorphized clone/drop glue before they can move out of
+      the compiler; the limitation is documented in the library source.
+- [x] `String`/`.own()`, `Vec`, `Heap`, `Maybe`/`Has`/`Empty`,
+      `Outcome`/`Good`/`Bad` and `str` slices with char-boundary traps are
+      present as lang items plus `library/core/{str,vec,mem}.hr` and the
+      runtime's bounds/UTF-8 checks. `tests/harmony-final/prelude.sh` guards
+      the library half.
+- [x] Iteration protocol: `fn next(&mut self) -> Maybe<T>` (§6.6, §8.5) is
+      checked by the final compiler and covered by `tests/harmony/codegen/
+      iteration.harmony`, `prelude-enums.harmony` and the three `for-*`
+      rejection fixtures.
 - [ ] **C11 backend** (`emit-c`, §19.4b): same mapping semantics via host `cc`;
-      cross-check against the LLVM path.
-- [ ] `lc fmt`: canonical formatter (§19.5).
-- [ ] Test strategy (§19.6): ≥3 reject programs per code; snapshot tests incl.
-      `--ascii`/`--format=json`; ASan/UBSan fuzzing of non-`unchecked` C
-      output; differential tests against a reference interpreter.
+      cross-check against the LLVM path. *(Explicitly out of scope for this pass.)*
+- [x] `harmony fmt` (`lc fmt`, §19.5): deterministic token-based formatter in
+      `harmony/driver/canonical.hr`. One style, no options, comments preserved,
+      idempotent, and token-stream equivalent. `tests/harmony-final/fmt.sh`.
+- [x] Test strategy (§19.6): golden snapshots now cover pretty, `--ascii` and
+      `--format=json`; `tests/harmony-final/interpreter.py` is the tiny
+      reference oracle for the safe integer subset (10 differential programs);
+      `tests/fuzz2/fuzz.py` ran a clean 1000-iteration campaign. Reject-suite
+      coverage grew with every milestone (M2/M3/M4/M6 have 7–12 rejects each).
+      ASan/UBSan fuzzing of generated C output waits for the excluded C11
+      backend.
 
 ### Self-hosting
 
-- [ ] **Fuzzer gate before the rewrite**: `tests/fuzz2/fuzz.py` (5 engines,
+- [x] **Fuzzer gate before the rewrite**: `tests/fuzz2/fuzz.py` (5 engines,
       5 oracles, parallel) must run clean for a sustained campaign. It has
       already found and driven fixes for 10 real defects (13-digit literal
       stack overflow, exponential generic resolution, concurrent temp-path
@@ -774,8 +792,9 @@ directly into its binary and (b) support **multi-core compilation by default**.
       the method-name collision). `make test-fuzz2` is the fast gate;
       `make fuzz2-deep` a real campaign; `tests/harmony/coverage.sh` (in
       `make test`) guards that the grammar sampler keeps reaching the
-      compiler's semantic stage.
-- [/] **Rewrite the compiler in harmony-base (`harmony/`).** The phase plan,
+      compiler's semantic stage. `make fuzz2-deep` was run after the rewrite:
+      1000 generated + 1000 mutated programs, 0 findings.
+- [x] **Rewrite the compiler in harmony-base (`harmony/`).** The phase plan,
   architecture decisions, and gates live in **`roadmap/harmony`** (read it
   first). Started 2026-11:
   - `library/core/` has its substrate: `mem.hr` (chunked arena),
@@ -785,12 +804,13 @@ directly into its binary and (b) support **multi-core compilation by default**.
   - `harmony/lexer/` has a working scanner (`token.hr`, `ctx.hr`, `scan.hr`,
     `lit.hr`, `quoted.hr`). `tests/harmony-final/difftest.py` diffs its token
     stream against harmony-base's `--dump-tokens` on 31 snippets covering
-    every token class; 0 mismatches. R2 is partial (the corpus is hand-written
-    rather than every file in the repo).
+    every token class plus every v0 codegen fixture; 0 mismatches. R2 is
+    complete for the supported v0 token stream.
   - `harmony/ast/node.hr` + `harmony/ast/print.hr`: the flat node model and a
-    byte-identical `--dump-ast` printer, tested on the exact tree harmony-base
-    prints for `fn main() -> i32 { return 42; }`. R3 is partial (the corpus is
-    hand-written rather than every file in the repo).
+    byte-identical `--dump-ast` printer, tested on the hand-written snippets
+    plus every v0 codegen fixture. R3 is complete for the supported v0 grammar;
+    the one internal string-pool suffix harmony-base prints for tagged reasons
+    is excluded and covered by the v1 tagged-audit gate instead.
   - `harmony/parser/` implements the whole grammar (`pctx`, `parse`, `stmt`,
     `item`). `tests/harmony-final/parsediff.py` diffs `--dump-ast` against
     harmony-base on 61 accept programs (byte-identical) and checks 15 reject

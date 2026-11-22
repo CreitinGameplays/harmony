@@ -471,6 +471,22 @@ The R6 byte-diff found ten rewrite-only bugs, all fixed at the source:
   byte-identical for the driver differential gate. `tests/harmony-final/diag.sh`
   is the new UX gate (16 checks) and runs from `make test`.
 
+### Final library, tooling and test sweep [x]
+
+- [x] **Formatter.** `harmony fmt` prints one canonical token-based style with
+  four-space indentation, preserved comments and stable generic spacing. The
+  output is idempotent and lexes to the same token stream; `fmt.sh` checks both.
+- [x] **Prelude boundary.** `library/core/prelude.hr` implements `swap` and
+  `replace` as ordinary library code. Format output, traps with caller
+  locations, `drop`/`leak` and generic `Maybe`/`Outcome` helpers stay on the
+  compiler/runtime side while their glue needs an abstract type (§19.8.9).
+- [x] **Corpus expansion.** The token and AST differential harnesses now also
+  consume every v0 codegen fixture, not just hand-written snippets.
+- [x] **Test strategy.** Pretty, `--ascii` and `--format=json` golden snapshots
+  plus a safe-subset reference interpreter. A 1000-iteration generated and
+  1000-iteration mutation fuzz campaign was clean. C-output sanitizer fuzzing
+  is deferred with the C11 backend.
+
 ### V1 batch 1 — final compiler only [/]
 
 - [x] **Structured `unchecked` reasons.** `unchecked(tag, "free text")`

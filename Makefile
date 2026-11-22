@@ -134,6 +134,9 @@ test: test-seed harmony-base harmony
 	bash tests/harmony-final/m4.sh
 	bash tests/harmony-final/m6.sh
 	bash tests/harmony-final/diag.sh
+	bash tests/harmony-final/fmt.sh
+	bash tests/harmony-final/prelude.sh
+	bash tests/harmony-final/strategy.sh
 
 # c2x-seed regression corpus (guards the compiler bugs fixed during bring-up).
 test-seed: seed
@@ -169,6 +172,9 @@ test-final: harmony-base harmony
 	bash tests/harmony-final/m4.sh
 	bash tests/harmony-final/m6.sh
 	bash tests/harmony-final/diag.sh
+	bash tests/harmony-final/fmt.sh
+	bash tests/harmony-final/prelude.sh
+	bash tests/harmony-final/strategy.sh
 
 test-fuzz: harmony-base
 	bash tests/harmony/fuzz.sh

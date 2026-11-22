@@ -1,0 +1,13 @@
+STOP  MOVE-01  tests/harmony-final/diag/fold.harmony:9:12
+use of moved value
+
+   `a` is no longer available
+
+   (1)  7  let a = Owner { .v = 1 };   born: this name owns the value
+   (2)  8  take(a);   moved: ownership was handed over
+   (3)  9  let b = a.v;   used again  <-- here
+   also used at lines 10
+
+   try:  borrow or clone it   consume(&value);
+
+   learn: harmony explain MOVE-01

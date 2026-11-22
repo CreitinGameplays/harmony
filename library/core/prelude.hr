@@ -1,0 +1,35 @@
+// library/core/prelude.hr — the small free functions from §15.1/§15.4 that can
+// be written in Harmony itself (§19.8.2).
+//
+// The compiler keeps only the pieces that need syntax or soundness: format
+// string checking, traps with a caller location, move/drop elaboration, and
+// the three raw-pointer intrinsics. Everything here is auditable library code
+// and is imported explicitly so the compiler's prelude namespace stays small.
+import "mem.hr";
+
+// `drop<T>` and `leak<T>` stay compiler/runtime intrinsics for now: a generic
+// parameter of abstract type T makes the backend emit drop glue for an
+// unmonomorphized T, which has no definition. They are listed as library-code
+// goals in §19.8.2 but cannot be expressed until monomorphized drop glue lands.
+// Exchanges two mutable places through one small raw block.
+export fn swap<T>(a: &mut T, b: &mut T) {
+    unchecked("callers pass two live, disjoint mutable places") {
+        let tmp: T = *a;
+        *a = *b;
+        *b = tmp;
+    }
+}
+
+// Replaces a place's value and returns the old one in one ownership transfer.
+export fn replace<T>(dst: &mut T, fresh: T) -> T {
+    unchecked("dst is a live mutable place; fresh is owned by this call") {
+        let old: T = *dst;
+        *dst = fresh;
+        return old;
+    }
+}
+
+// The `Maybe<T>`/`Outcome<T, E>` convenience methods stay lang-item methods
+// for now. A generic payload of abstract type T makes the backend emit clone
+// and drop glue for T before instantiation, with no definition to call. They
+// move here when monomorphized glue lands; callers pattern-match today.

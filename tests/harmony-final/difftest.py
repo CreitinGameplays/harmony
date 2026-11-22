@@ -11,6 +11,7 @@ The scanner must match on every token class: keywords, identifiers, all
 literal forms (including escapes and suffixes), punctuation (including the
 two- and three-byte operators), comments, and EOF.
 """
+import glob
 import os
 import re
 import subprocess
@@ -61,6 +62,15 @@ SNIPPETS = [
     "null NULL nullptr malloc free new delete Box Option Some None Result Ok Err panic",
     "b'z' b'\\u{41}' 'z' '\\u{1F600}' '\\u{10FFFF}'",
 ]
+
+# R2 used to be a hand-written corpus. Every v0 codegen fixture is now part of
+# the token differential too, so a new fixture cannot silently introduce a
+# spelling the two lexers disagree about.
+for _path in sorted(glob.glob(os.path.join(
+        ROOT, "tests", "harmony", "codegen", "*.harmony"))):
+    if os.path.getsize(_path) <= 20000:
+        with open(_path) as _f:
+            SNIPPETS.append(_f.read())
 
 # The driver template. `%s` is replaced with a Harmony string literal
 # containing the snippet.

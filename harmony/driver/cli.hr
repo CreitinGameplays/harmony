@@ -8,6 +8,7 @@ export const CMD_EMIT_LLVM: i32 = 3;
 export const CMD_AUDIT: i32 = 4;
 export const CMD_EXPLAIN: i32 = 5;
 export const CMD_VERSION: i32 = 6;
+export const CMD_FMT: i32 = 7;
 
 export const FORMAT_PRETTY: i32 = 0;
 export const FORMAT_LINE: i32 = 1;
@@ -43,6 +44,7 @@ fn usage() {
     eprintln("       harmony check <file.harmony>");
     eprintln("       harmony emit-llvm <file.harmony> [-O<level>]");
     eprintln("       harmony audit [file.harmony] [--format=json]");
+    eprintln("       harmony fmt   <file.harmony>   canonical formatter");
     eprintln("       harmony explain <CODE>");
     eprintln("       harmony --version");
     eprintln("-O<level>: -O0 -O1 -O2 -O3 -Os -Oz -Og -Ofast (default -O2)");
@@ -116,6 +118,7 @@ export fn parse(av: &[&str]) -> ParseResult {
         if (a == "run") { o.cmd = CMD_RUN; i += 1; continue; }
         if (a == "check") { o.cmd = CMD_CHECK; i += 1; continue; }
         if (a == "emit-llvm") { o.cmd = CMD_EMIT_LLVM; i += 1; continue; }
+        if (a == "fmt") { o.cmd = CMD_FMT; i += 1; continue; }
         if (a == "audit") { o.cmd = CMD_AUDIT; i += 1; continue; }
         if (a == "explain") {
             o.cmd = CMD_EXPLAIN;

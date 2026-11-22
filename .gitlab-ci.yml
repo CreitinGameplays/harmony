@@ -76,15 +76,36 @@ release:tag:
         *) echo "bad tag: $TAG"; exit 1;;
       esac
       test "${TAG#v}" = "$BASE" || { echo "tag $TAG does not match VERSION base $BASE"; exit 1; }
-      STATUS=$(curl -s -o /dev/null -w '%{http_code}' -H "PRIVATE-TOKEN: $RELEASE_TOKEN" "$CI_API_V4_URL/projects/$CI_PROJECT_ID/repository/tags/$TAG")
+      RESP=$(mktemp)
+      # Validate the token against a read the token must be able to perform.
+      STATUS=$(curl -s -o "$RESP" -w '%{http_code}' -H "PRIVATE-TOKEN: $RELEASE_TOKEN" "$CI_API_V4_URL/projects/$CI_PROJECT_ID")
+      if [ "$STATUS" != "200" ]; then
+        echo "RELEASE_TOKEN cannot read this project (HTTP $STATUS):"
+        cat "$RESP"; echo
+        echo "Use a project access token with the 'api' scope and at least the Developer role."
+        exit 1
+      fi
+      STATUS=$(curl -s -o "$RESP" -w '%{http_code}' -H "PRIVATE-TOKEN: $RELEASE_TOKEN" "$CI_API_V4_URL/projects/$CI_PROJECT_ID/repository/tags/$TAG")
       if [ "$STATUS" = "200" ]; then echo "tag $TAG already exists"; exit 1; fi
-      curl --fail --show-error --silent \
+      if [ "$STATUS" = "403" ]; then
+        echo "RELEASE_TOKEN cannot read repository tags (HTTP 403):"
+        cat "$RESP"; echo
+        exit 1
+      fi
+      STATUS=$(curl -s -o "$RESP" -w '%{http_code}' \
         --request POST \
         --header "PRIVATE-TOKEN: $RELEASE_TOKEN" \
         --data-urlencode "tag_name=$TAG" \
         --data-urlencode "ref=$CI_COMMIT_SHA" \
         --data-urlencode "message=Harmony $BASE" \
-        "$CI_API_V4_URL/projects/$CI_PROJECT_ID/repository/tags"
+        "$CI_API_V4_URL/projects/$CI_PROJECT_ID/repository/tags")
+      if [ "$STATUS" != "201" ]; then
+        echo "Tag creation failed (HTTP $STATUS):"
+        cat "$RESP"; echo
+        echo "If the response mentions a protected tag, grant the token's bot user"
+        echo "permission to create it, or use an unprotected tag name."
+        exit 1
+      fi
       echo "Created tag $TAG; the tag pipeline will build and publish it."
 
 # ---------------------------------------------------------------------------

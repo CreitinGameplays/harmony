@@ -1,0 +1,298 @@
+# Harmony CI — build, test, package and publish a GitHub release.
+#
+# Flow
+#   1. Pushes and pull requests run the build and test gates. They never
+#      publish. The default-branch push also refreshes the release archives.
+#   2. To release, run the manual "Release: tag" workflow on the default
+#      branch. It validates VERSION and creates an annotated tag through the
+#      GitHub API, then exits. The new tag starts the release run.
+#   3. The tag run rebuilds the compiler from the tagged commit so VERSION is
+#      stable, runs the full test suite, packages source + binaries, then
+#      publishes a GitHub release with the archives attached.
+#
+# Permissions
+#   GITHUB_TOKEN needs "Contents: read" for the build/test jobs and
+#   "Contents: write" for the tag/release jobs. Grant read/write in
+#   Settings -> Actions -> General -> Workflow permissions, or provide a
+#   RELEASE_TOKEN secret (fine-grained PAT with Contents: write), which takes
+#   precedence in the tag/release jobs.
+#
+# Optional repository variables
+#   RELEASE_NAME — release title (default: "Harmony <VERSION>")
+#   RELEASE_TAG  — override the manual job's default tag (v<VERSION base>)
+
+name: CI
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Build. Debian testing matches the toolchain versions used by the original
+  # bootstrap pipeline (llvm-config, clang, fasm).
+  # -------------------------------------------------------------------------
+  build:
+    name: Build
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    container: debian:testing
+    steps:
+      - name: Install toolchain
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git make gcc clang llvm-dev liblld-dev fasm \
+            python3 python-is-python3 file xxd patchelf
+          rm -rf /var/lib/apt/lists/*
+          JOBS=$(nproc)
+          if [ "$JOBS" -gt 32 ]; then JOBS=32; fi
+          echo "JOBS=$JOBS" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fix workspace ownership
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Stamp VERSION and compile
+        run: |
+          bash tools/version.sh
+          make -j"$JOBS" all
+          ./build/harmony-base --version
+          ./build/harmony --version
+      - name: Collect build outputs
+        run: |
+          mkdir -p dist-build
+          cp build/harmony build/harmony-base build/c2x-seed dist-build/
+          cp VERSION dist-build/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: harmony-build-${{ github.sha }}
+          path: dist-build/
+          retention-days: 7
+
+  # -------------------------------------------------------------------------
+  # Test. Reuses the binaries from the build job; touching them keeps make
+  # from rebuilding against a checkout whose timestamps are all identical.
+  # -------------------------------------------------------------------------
+  test:
+    name: Test
+    if: github.event_name != 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
+    container: debian:testing
+    timeout-minutes: 60
+    steps:
+      - name: Install toolchain
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git make gcc clang llvm-dev liblld-dev fasm \
+            python3 python-is-python3 file xxd
+          rm -rf /var/lib/apt/lists/*
+          JOBS=$(nproc)
+          if [ "$JOBS" -gt 32 ]; then JOBS=32; fi
+          echo "JOBS=$JOBS" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fix workspace ownership
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: actions/download-artifact@v4
+        with:
+          name: harmony-build-${{ github.sha }}
+          path: build-artifacts/
+      - name: Restore build outputs
+        run: |
+          mkdir -p build
+          cp build-artifacts/harmony build-artifacts/harmony-base \
+            build-artifacts/c2x-seed build/
+          cp build-artifacts/VERSION VERSION
+          touch build/harmony build/harmony-base build/c2x-seed
+      - name: make test
+        run: make -j"$JOBS" test
+
+  # -------------------------------------------------------------------------
+  # Manual tag preparation. Runs only on the default branch. It does not
+  # build: the tag run is the single source of truth for release artifacts.
+  # -------------------------------------------------------------------------
+  release-tag:
+    name: "Release: tag"
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create annotated release tag
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+          RELEASE_TAG: ${{ vars.RELEASE_TAG }}
+        run: |
+          set -eu
+          BASE=$(sed -n 's/^\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' VERSION | head -1)
+          test -n "$BASE" || { echo "VERSION has no MAJOR.MINOR.PATCH base"; exit 1; }
+          TAG="${RELEASE_TAG:-v$BASE}"
+          case "$TAG" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "bad tag: $TAG"; exit 1;;
+          esac
+          test "${TAG#v}" = "$BASE" || { echo "tag $TAG does not match VERSION base $BASE"; exit 1; }
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "tag $TAG already exists; bump VERSION base to release again"
+            exit 1
+          fi
+          TAG_OBJECT=$(gh api --method POST "repos/$GITHUB_REPOSITORY/git/tags" \
+            -f tag="$TAG" -f message="Harmony $BASE" \
+            -f object="$GITHUB_SHA" -f type=commit --jq '.sha')
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/tags/$TAG" -f sha="$TAG_OBJECT" >/dev/null
+          echo "Created tag $TAG; the tag run will build and publish it."
+
+  # -------------------------------------------------------------------------
+  # Package. Source tarball + binary bundle + checksums + generated notes.
+  # -------------------------------------------------------------------------
+  package:
+    name: Package
+    if: >-
+      github.event_name != 'workflow_dispatch' &&
+      (startsWith(github.ref, 'refs/tags/v') ||
+       github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+    needs: [build, test]
+    runs-on: ubuntu-latest
+    container: debian:testing
+    steps:
+      - name: Install toolchain
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git make gcc clang llvm-dev liblld-dev fasm \
+            python3 python-is-python3 file xxd patchelf
+          rm -rf /var/lib/apt/lists/*
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fix workspace ownership
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: actions/download-artifact@v4
+        with:
+          name: harmony-build-${{ github.sha }}
+          path: build-artifacts/
+      - name: Build release archives
+        run: |
+          set -eu
+          cp build-artifacts/VERSION VERSION
+          VERSION=$(cat VERSION)
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            TAG="$GITHUB_REF_NAME"
+          else
+            TAG="v$VERSION"
+          fi
+          mkdir -p dist "pkg/harmony-$VERSION/bin"
+          # Full source tree, including docs, library, compiler sources and tests.
+          git archive --format=tar.gz --prefix="harmony-$VERSION/" \
+            -o "dist/harmony-$VERSION-source.tar.gz" HEAD
+          # Runtime bundle. LLVM/LLD shared libraries travel with the binary and
+          # are found through a relative RPATH; core libc/loader stay host-side.
+          cp build-artifacts/harmony build-artifacts/harmony-base "pkg/harmony-$VERSION/bin/"
+          mkdir -p "pkg/harmony-$VERSION/lib"
+          for lib in $(ldd build-artifacts/harmony | awk '/=> \// {print $3} /^\t\// {print $1}'); do
+            case "$lib" in
+              *linux-vdso*|*ld-linux*|*libc.so*|*libm.so*|*libgcc_s.so*) continue;;
+            esac
+            cp -L "$lib" "pkg/harmony-$VERSION/lib/" || true
+          done
+          patchelf --set-rpath '$ORIGIN/../lib' "pkg/harmony-$VERSION/bin/harmony"
+          cp VERSION README.md LICENSE "pkg/harmony-$VERSION/"
+          cp -R docs library harmony "pkg/harmony-$VERSION/"
+          {
+            echo "product: harmony"
+            echo "version: $VERSION"
+            echo "tag: $TAG"
+            echo "commit: $GITHUB_SHA"
+            echo "built_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "runner: $RUNNER_NAME"
+            echo "llvm: $(llvm-config --version)"
+            echo "clang: $(clang --version | head -1)"
+            echo "bundled_libs: $(find "pkg/harmony-$VERSION/lib" -maxdepth 1 -type f | wc -l)"
+            echo "uname: $(uname -a)"
+          } > "pkg/harmony-$VERSION/BUILD_INFO.txt"
+          tar -czf "dist/harmony-$VERSION-linux-x86_64.tar.gz" -C pkg "harmony-$VERSION"
+          (cd dist && sha256sum "harmony-$VERSION-source.tar.gz" \
+            "harmony-$VERSION-linux-x86_64.tar.gz" > SHA256SUMS)
+          # Release notes: changelog since the previous tag, plus asset list.
+          PREV=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)
+          {
+            echo "## Harmony $VERSION"
+            echo
+            echo "Tag: \`$TAG\`"
+            echo
+            if [ -n "$PREV" ]; then
+              echo "Changes since \`$PREV\`:"
+              echo
+              git log --no-merges --pretty='- %h %s' "$PREV..HEAD"
+            else
+              echo "Initial tagged release."
+            fi
+            echo
+            echo '### Assets'
+            echo
+            echo "- \`harmony-$VERSION-linux-x86_64.tar.gz\` — compiler binaries and docs. Requires LLVM/LLD runtime libraries."
+            echo "- \`harmony-$VERSION-source.tar.gz\` — complete source tree."
+            echo "- \`SHA256SUMS\` — checksums for both assets."
+          } > dist/RELEASE_NOTES.md
+          cp VERSION dist/VERSION
+      - uses: actions/upload-artifact@v4
+        with:
+          name: harmony-dist-${{ github.sha }}
+          path: dist/
+          retention-days: 7
+
+  # -------------------------------------------------------------------------
+  # Publish. gh is preinstalled on GitHub-hosted runners; the annotated tag
+  # created by release-tag is verified before the release is created.
+  # -------------------------------------------------------------------------
+  publish:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [package]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: harmony-dist-${{ github.sha }}
+          path: dist/
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+          RELEASE_NAME: ${{ vars.RELEASE_NAME }}
+        run: |
+          set -eu
+          VERSION=$(cat dist/VERSION)
+          NAME="${RELEASE_NAME:-Harmony $VERSION}"
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$NAME" \
+            --notes-file dist/RELEASE_NOTES.md \
+            --target "$GITHUB_SHA" \
+            --verify-tag \
+            "dist/harmony-$VERSION-linux-x86_64.tar.gz" \
+            "dist/harmony-$VERSION-source.tar.gz" \
+            "dist/SHA256SUMS"

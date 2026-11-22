@@ -1,3 +1,3 @@
-*.c2 gitlab-language=c
-*.harmony gitlab-language=rust
-*.hr gitlab-language=rust
+*.c2 linguist-language=C
+*.harmony linguist-language=Rust
+*.hr linguist-language=Rust

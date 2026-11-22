@@ -55,7 +55,9 @@ SNIPPETS = [
     "if else while for switch case default return break continue",
     "fn let mut const struct enum methods copy export import extern",
     "true false as sizeof heap unchecked raw self",
-    "abilities async await macro try unsafe impl match trait pub use loop goto",
+    # `abilities` is a v1 keyword in the final compiler only; harmony-base
+    # stays v0 and lexes it as an identifier. It is covered by the v1 gate.
+    "async await macro try unsafe impl match trait pub use loop goto",
     "null NULL nullptr malloc free new delete Box Option Some None Result Ok Err panic",
     "b'z' b'\\u{41}' 'z' '\\u{1F600}' '\\u{10FFFF}'",
 ]

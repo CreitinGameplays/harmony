@@ -2,472 +2,731 @@
 //
 // Lessons are data (§19.8.7). The compiler owns the stable code; this module
 // owns the prose, so the driver's `explain` output can be updated without
-// touching a lexer, parser, or checker.
+// touching a lexer, parser, or checker. Every code in the §16.10 catalogue has
+// a full WHAT/WHY/BAD/GOOD/NOTE/SEE page; stable codes never change meaning.
 import "../../library/core/str.hr";
 
-fn known(code: &str) -> bool {
-    if (code == "ICE-01") { return true; }
-    if (code == "SYN-01") { return true; }
-    if (code == "SYN-02") { return true; }
-    if (code == "SYN-03") { return true; }
-    if (code == "SYN-04") { return true; }
-    if (code == "SYN-05") { return true; }
-    if (code == "LEX-01") { return true; }
-    if (code == "NAME-02") { return true; }
-    if (code == "USE-01") { return true; }
-    if (code == "CFG-01") { return true; }
-    if (code == "FFI-01") { return true; }
-    if (code == "CONST-01") { return true; }
-    if (code == "FLOW-01") { return true; }
-    if (code == "FLOW-02") { return true; }
-    if (code == "FLOW-03") { return true; }
-    if (code == "ABLT-01") { return true; }
-    if (code == "ABLT-02") { return true; }
-    if (code == "MOVE-01") { return true; }
-    if (code == "MOVE-02") { return true; }
-    if (code == "MOVE-03") { return true; }
-    if (code == "MOVE-04") { return true; }
-    if (code == "DROP-01") { return true; }
-    if (code == "LOAN-01") { return true; }
-    if (code == "LOAN-02") { return true; }
-    if (code == "LOAN-03") { return true; }
-    if (code == "MUT-03") { return true; }
-    if (code == "LIFE-01") { return true; }
-    if (code == "LIFE-02") { return true; }
-    if (code == "LIFE-03") { return true; }
-    if (code == "LIFE-04") { return true; }
-    if (code == "UNCK-01") { return true; }
-    if (code == "UNCK-02") { return true; }
-    if (code == "UNCK-03") { return true; }
-    if (code == "UNCK-04") { return true; }
-    if (code == "UNCK-05") { return true; }
-    return false;
+fn page(code: &str, what: &str, why: &str, bad: &str, good: &str,
+        note: &str, see: &str) {
+    print("{}\n\n", code);
+    print("WHAT   {}\n", what);
+    print("WHY    {}\n", why);
+    print("\nBAD    {}\n", bad);
+    print("\nGOOD   {}\n", good);
+    print("\nNOTE   {}\n", note);
+    print("\nSEE    docs/harmony.md - {}\n\n", see);
 }
 
-fn stub(code: &str) {
-    print("{}\n\n", code);
-    print("WHAT   This diagnostic code exists but its long-form lesson has\n");
-    print("       not been written for this build yet.\n");
-    print("WHY    Stable codes, one lesson each (docs/harmony.md 16.8).\n");
-    print("SEE    docs/harmony.md - 16.10 Code catalogue\n\n");
+// The driver's differential gate compares `explain` byte for byte with
+// harmony-base for the codes harmony-base documented first. Keep those pages
+// identical; the expanded catalogue below adds the remaining codes.
+fn compat_ice01() {
+    print("{}", "ICE-01 - the compiler broke its own rules\n\nWHAT   The compiler hit a condition it promises is unreachable:\n       a stage failed before its output could be produced.\nWHY    The compiler's job is a verdict for every input; bail-outs\n       mean a bug in the compiler, not in your program.\nBAD    any input that ends in a compiler crash\nGOOD   the same input getting a diagnostic, or compiling\nNOTE   Please report it: the source that triggered it is the\n       most useful thing you can attach.\nSEE    docs/harmony.md - 16.10 Code catalogue\n\n");
+}
+
+fn compat_syn01() {
+    print("{}", "SYN-01 - the condition needs parentheses\n\nWHAT   if, while, for, and switch write their condition in\n       parentheses, C-style. This keeps `Point { .x = 1 }` and\n       other brace forms unambiguous inside a condition.\nWHY    Conditions in `if (x > 5) { ... }` read the same as C;\n       the grammar never guesses where a condition ends.\nBAD    if x > 5 { return; }\nGOOD   if (x > 5) { return; }\nNOTE   The braces around the body are not optional either\n       (SYN-02). Two small rules, no surprises later.\nSEE    docs/harmony.md - 8.1, 16.10 Code catalogue\n\n");
+}
+
+fn compat_syn02() {
+    print("{}", "SYN-02 - the body needs braces\n\nWHAT   Every if/else/while/for/switch body is a braced block.\n       There is no single-statement form.\nWHY    The goto-fail bug class (Apple's `goto fail;`) came from a\n       brace-less body. Mandatory braces make that mistake\n       impossible to write and invisible to diffs.\nBAD    if (x) return;\nGOOD   if (x) { return; }\nNOTE   There is no `loop` keyword; `while (true) { ... }` is the\n       infinite loop, with `break` to leave.\nSEE    docs/harmony.md - 8.1, 16.10 Code catalogue\n\n");
+}
+
+fn compat_syn03() {
+    print("{}", "SYN-03 - assignment used as a condition\n\nWHAT   `=` assigns; it is a statement form and cannot appear\n       inside a condition.\nWHY    `if (x = 5)` compiles in C and silently overwrites x.\n       Here the grammar cannot express it, so the stop fires at\n       the `=` itself.\nBAD    if (x = 5) { ... }\nGOOD   if (x == 5) { ... }\nNOTE   All compound assignments (+=, -=, ...) are statements too.\nSEE    docs/harmony.md - 8.1, 16.10 Code catalogue\n\n");
+}
+
+fn compat_syn04() {
+    print("{}", "SYN-04 - missing `;`\n\nWHAT   Simple statements (let, assignment, expression, return,\n       break, continue) end with `;`. Block statements (if,\n       while, for, switch, unchecked, bare `{ }`) do not.\nWHY    The rule from C, minus its exceptions: one look at the\n       line ending tells you whether the statement continues.\nBAD    let n = 5\nGOOD   let n = 5;\nNOTE   Struct fields also end with `;`; enum variants and struct\n       initializer fields are `,`-separated (trailing comma ok).\nSEE    docs/harmony.md - 4.4, 16.10 Code catalogue\n\n");
+}
+
+fn compat_syn05() {
+    print("{}", "SYN-05 - unexpected token\n\nWHAT   This token does not fit the grammar at this position (or\n       a delimiter is unbalanced).\nWHY    One honest stop at the exact byte beats a cascade; the\n       parser recovers at the next `;` or `}` and keeps going, so\n       several mistakes are reported per run.\nBAD    fn main() { return; )\nGOOD   fn main() { return; }\nNOTE   Nested generics close the `>>` cleanly: Vec<Vec<i32>>.\n       Comparisons do not chain: write `a < b && b < c`.\nSEE    docs/harmony.md - 18, 16.10 Code catalogue\n\n");
+}
+
+fn compat_lex01() {
+    print("{}", "LEX-01 - malformed literal or comment\n\nWHAT   A literal (number, char, byte, string) or a block comment\n       is not written in one of the legal forms.\nWHY    The token the rest of the compiler would see does not\n       exist, so naming the exact bytes is cheaper than a\n       confusing parse error downstream.\nBAD    'ab   1_000_   42q   \\q   \"unterminated   /* unclosed\nGOOD   'a'   1_000    42u8   \\n   \"closed\"       /* closed */\nNOTE   Numbers: `42`, `1_000_000`, `0xFF`, `0o17`, `0b1010`, a\n       suffix from the primitive types (42u8). Chars hold one\n       Unicode scalar: '\\n', '\\u{1F980}'. b'...' holds one byte.\n       Block comments nest.\nSEE    docs/harmony.md - 4.3, 16.10 Code catalogue\n\n");
+}
+
+fn compat_ffi01() {
+    print("{}", "FFI-01 - unknown ABI\n\nWHAT   An `extern` declaration names the calling convention\n       it uses, in a string: `extern \"C\" fn ...`.\nWHY    The convention decides how arguments are passed, who\n       cleans the stack, and where the return value lands.\n       Only the C ABI is implemented, so any other name is a\n       promise the compiler cannot keep.\nBAD    extern \"Win64\" fn abs(x: i32) -> i32;\nGOOD   extern \"C\" fn abs(x: i32) -> i32;\nNOTE   The ABI string is mandatory: `extern fn ...` without\n       one is a syntax error (SYN-05), never a default.\nSEE    docs/harmony.md - 6.8, 16.10 Code catalogue\n\n");
+}
+
+fn compat_const01() {
+    print("{}", "CONST-01 - not a compile-time constant\n\nWHAT   A `const` is inlined at every use site, so its value must\n       be known when the program is compiled.\nWHY    There is no storage for a constant to read at run time;\n       the initializer is copied into each use. A value that\n       depends on run-time work cannot be inlined.\nBAD    const N: i32 = compute();\nGOOD   const N: i32 = 42;   let n = compute();\nNOTE   Literals, arithmetic on literals, other constants, and\n       array/struct literals are all allowed.\nSEE    docs/harmony.md - 6.2, 16.10 Code catalogue\n\n");
 }
 
 fn ice01() {
-    print("ICE-01 - the compiler broke its own rules\n\n");
-    print("WHAT   The compiler hit a condition it promises is unreachable:\n");
-    print("       a stage failed before its output could be produced.\n");
-    print("WHY    The compiler's job is a verdict for every input; bail-outs\n");
-    print("       mean a bug in the compiler, not in your program.\n");
-    print("BAD    any input that ends in a compiler crash\n");
-    print("GOOD   the same input getting a diagnostic, or compiling\n");
-    print("NOTE   Please report it: the source that triggered it is the\n");
-    print("       most useful thing you can attach.\n");
-    print("SEE    docs/harmony.md - 16.10 Code catalogue\n\n");
-}
-
-fn ffi01() {
-    print("FFI-01 - unknown ABI\n\n");
-    print("WHAT   An `extern` declaration names the calling convention\n");
-    print("       it uses, in a string: `extern \"C\" fn ...`.\n");
-    print("WHY    The convention decides how arguments are passed, who\n");
-    print("       cleans the stack, and where the return value lands.\n");
-    print("       Only the C ABI is implemented, so any other name is a\n");
-    print("       promise the compiler cannot keep.\n");
-    print("BAD    extern \"Win64\" fn abs(x: i32) -> i32;\n");
-    print("GOOD   extern \"C\" fn abs(x: i32) -> i32;\n");
-    print("NOTE   The ABI string is mandatory: `extern fn ...` without\n");
-    print("       one is a syntax error (SYN-05), never a default.\n");
-    print("SEE    docs/harmony.md - 6.8, 16.10 Code catalogue\n\n");
-}
-
-fn const01() {
-    print("CONST-01 - not a compile-time constant\n\n");
-    print("WHAT   A `const` is inlined at every use site, so its value must\n");
-    print("       be known when the program is compiled.\n");
-    print("WHY    There is no storage for a constant to read at run time;\n");
-    print("       the initializer is copied into each use. A value that\n");
-    print("       depends on run-time work cannot be inlined.\n");
-    print("BAD    const N: i32 = compute();\n");
-    print("GOOD   const N: i32 = 42;   let n = compute();\n");
-    print("NOTE   Literals, arithmetic on literals, other constants, and\n");
-    print("       array/struct literals are all allowed.\n");
-    print("SEE    docs/harmony.md - 6.2, 16.10 Code catalogue\n\n");
+    page("ICE-01",
+         "The compiler hit a condition it promises is unreachable.",
+         "A stage failed before it could produce its output; that is a\n       compiler bug, never a fault in your program.",
+         "any input that ends in a compiler crash",
+         "the same input getting a diagnostic, or compiling",
+         "Please report it: the source that triggered it is the most useful\n       thing you can attach.",
+         "16.10 Code catalogue");
 }
 
 fn syn01() {
-    print("SYN-01 - the condition needs parentheses\n\n");
-    print("WHAT   if, while, for, and switch write their condition in\n");
-    print("       parentheses, C-style. This keeps `Point {{ .x = 1 }}` and\n");
-    print("       other brace forms unambiguous inside a condition.\n");
-    print("WHY    Conditions in `if (x > 5) {{ return; }}` read the same as C;\n");
-    print("       the grammar never guesses where a condition ends.\n");
-    print("BAD    if x > 5 {{ return; }}\n");
-    print("GOOD   if (x > 5) {{ return; }}\n");
-    print("NOTE   The braces around the body are not optional either\n");
-    print("       (SYN-02). Two small rules, no surprises later.\n");
-    print("SEE    docs/harmony.md - 8.1, 16.10 Code catalogue\n\n");
+    page("SYN-01",
+         "if, while, for, and switch write their condition in parentheses.",
+         "Conditions read the same as in C, so the grammar never has to\n       guess where a condition ends.",
+         "if x > 5 { return; }",
+         "if (x > 5) { return; }",
+         "Bodies need braces too (SYN-02); both rules are deliberate.",
+         "8.1, 16.10 Code catalogue");
 }
 
 fn syn02() {
-    print("SYN-02 - the body needs braces\n\n");
-    print("WHAT   Every if/else/while/for/switch body is a braced block.\n");
-    print("       There is no single-statement form.\n");
-    print("WHY    The goto-fail bug class (Apple's `goto fail;`) came from a\n");
-    print("       brace-less body. Mandatory braces make that mistake\n");
-    print("       impossible to write and invisible to diffs.\n");
-    print("BAD    if (x) return;\n");
-    print("GOOD   if (x) {{ return; }}\n");
-    print("NOTE   There is no `loop` keyword; `while (true) {{ ... }}` is the\n");
-    print("       infinite loop, with `break` to leave.\n");
-    print("SEE    docs/harmony.md - 8.1, 16.10 Code catalogue\n\n");
+    page("SYN-02",
+         "Every control-flow body is a braced block; there is no\n       single-statement form.",
+         "The goto-fail bug class came from brace-less bodies. Mandatory\n       braces make that mistake impossible to write.",
+         "if (x) return;",
+         "if (x) { return; }",
+         "The infinite loop is while (true) { ... }, not a `loop` keyword.",
+         "8.1, 16.10 Code catalogue");
 }
 
 fn syn03() {
-    print("SYN-03 - assignment used as a condition\n\n");
-    print("WHAT   `=` assigns; it is a statement form and cannot appear\n");
-    print("       inside a condition.\n");
-    print("WHY    `if (x = 5)` compiles in C and silently overwrites x.\n");
-    print("       Here the grammar cannot express it, so the stop fires at\n");
-    print("       the `=` itself.\n");
-    print("BAD    if (x = 5) {{ ... }}\n");
-    print("GOOD   if (x == 5) {{ ... }}\n");
-    print("NOTE   All compound assignments (+=, -=, ...) are statements too.\n");
-    print("SEE    docs/harmony.md - 8.1, 16.10 Code catalogue\n\n");
+    page("SYN-03",
+         "`=` assigns; it cannot appear inside a condition.",
+         "C lets `if (x = 5)` overwrite x silently. Here the grammar cannot\n       express it, so the stop points at the `=` itself.",
+         "if (x = 5) { ... }",
+         "if (x == 5) { ... }",
+         "All compound assignments are statements as well.",
+         "8.1, 16.10 Code catalogue");
 }
 
 fn syn04() {
-    print("SYN-04 - missing `;`\n\n");
-    print("WHAT   Simple statements (let, assignment, expression, return,\n");
-    print("       break, continue) end with `;`. Block statements (if,\n");
-    print("       while, for, switch, unchecked, bare `{{ }}`) do not.\n");
-    print("WHY    The rule from C, minus its exceptions: one look at the\n");
-    print("       line ending tells you whether the statement continues.\n");
-    print("BAD    let n = 5\n");
-    print("GOOD   let n = 5;\n");
-    print("NOTE   Struct fields also end with `;`; enum variants and struct\n");
-    print("       initializer fields are `,`-separated (trailing comma ok).\n");
-    print("SEE    docs/harmony.md - 4.4, 16.10 Code catalogue\n\n");
+    page("SYN-04",
+         "Simple statements end with `;`; block statements do not.",
+         "One look at the line ending tells you whether a statement\n       continues, with no C-style exceptions.",
+         "let n = 5",
+         "let n = 5;",
+         "Struct fields also end with `;`; initializer fields use `,`.",
+         "4.4, 16.10 Code catalogue");
 }
 
 fn syn05() {
-    print("SYN-05 - unexpected token\n\n");
-    print("WHAT   This token does not fit the grammar at this position (or\n");
-    print("       a delimiter is unbalanced).\n");
-    print("WHY    One honest stop at the exact byte beats a cascade; the\n");
-    print("       parser recovers at the next `;` or `}}` and keeps going, so\n");
-    print("       several mistakes are reported per run.\n");
-    print("BAD    fn main() {{ return; )\n");
-    print("GOOD   fn main() {{ return; }}\n");
-    print("NOTE   Nested generics close the `>>` cleanly: Vec<Vec<i32>>.\n");
-    print("       Comparisons do not chain: write `a < b && b < c`.\n");
-    print("SEE    docs/harmony.md - 18, 16.10 Code catalogue\n\n");
+    page("SYN-05",
+         "This token does not fit the grammar here, or a delimiter is\n       unbalanced.",
+         "One honest stop at the exact byte beats a cascade; the parser\n       recovers at the next `;` or `}`.",
+         "fn main() { return; )",
+         "fn main() { return; }",
+         "Nested generics close cleanly: Vec<Vec<i32>>.",
+         "18, 16.10 Code catalogue");
 }
 
 fn lex01() {
-    print("LEX-01 - malformed literal or comment\n\n");
-    print("WHAT   A literal (number, char, byte, string) or a block comment\n");
-    print("       is not written in one of the legal forms.\n");
-    print("WHY    The token the rest of the compiler would see does not\n");
-    print("       exist, so naming the exact bytes is cheaper than a\n");
-    print("       confusing parse error downstream.\n");
-    print("BAD    'ab   1_000_   42q   \\q   \"unterminated   /* unclosed\n");
-    print("GOOD   'a'   1_000    42u8   \\n   \"closed\"       /* closed */\n");
-    print("NOTE   Numbers: `42`, `1_000_000`, `0xFF`, `0o17`, `0b1010`, a\n");
-    print("       suffix from the primitive types (42u8). Chars hold one\n");
-    print("       Unicode scalar: '\\n', '\\u{{1F980}}'. b'...' holds one byte.\n");
-    print("       Block comments nest.\n");
-    print("SEE    docs/harmony.md - 4.3, 16.10 Code catalogue\n\n");
+    page("LEX-01",
+         "A literal or block comment is not in one of the legal forms.",
+         "The token the rest of the compiler would see does not exist, so\n       naming the exact bytes is cheaper than a confusing parse error.",
+         "'ab   1_000_   42q   \\q   \"unterminated   /* unclosed",
+         "'a'   1_000   42u8   \\n   \"closed\"   /* closed */",
+         "Numbers accept radix prefixes and primitive-type suffixes;\n       block comments nest.",
+         "4.3, 16.10 Code catalogue");
 }
 
-fn flow01() {
-    print("FLOW-01 - the else clause falls through\n\n");
-    print("WHAT   An `else` clause is an exit, not an alternative body.\n");
-    print("       Every path through it must end in `return`, `break`,\n");
-    print("       `continue`, `trap(...)` or `exit(...)` (§20.3 item 5).\n");
-    print("WHY    The failure case must not continue with a binding that was\n");
-    print("       never made. A visual exit is the whole point of the form.\n");
-    print("BAD    let x = f() else (e) {{ println(\"oops\"); }};\n");
-    print("GOOD   let x = f() else (e) {{ return Bad(e); }};\n");
-    print("NOTE   `else return;` forwards the failure; `else continue;` and\n");
-    print("       `else break;` work inside loops.\n");
-    print("SEE    docs/harmony.md - 14.4, 16.10 Code catalogue\n\n");
+fn use01() {
+    page("USE-01",
+         "A value was used in a context that does not accept it.",
+         "The checker tracks which names and types each context allows,\n       so an illegal use is reported at the point of use.",
+         "return a value the function's return type cannot hold",
+         "return a value of the declared return type",
+         "The primary location points at the offending expression.",
+         "16.10 Code catalogue");
 }
 
-fn flow02() {
-    print("FLOW-02 - cannot forward this failure\n\n");
-    print("WHAT   `else return;` forwards Bad(e) (or Empty) to the caller,\n");
-    print("       so the enclosing function must return the same shape with\n");
-    print("       an identical error type (§20.3 item 5).\n");
-    print("WHY    Otherwise the error would silently change meaning or vanish\n");
-    print("       at a type boundary; convert it explicitly with a block.\n");
-    print("BAD    fn f() -> Outcome<i32, F> {{ let x = g() else return; ... }}\n");
-    print("       // g() returns Outcome<i32, E>, E != F\n");
-    print("GOOD   let x = g() else (e) {{ return Bad(F::from(e)); }};\n");
-    print("NOTE   For `Maybe`, the enclosing function must also return `Maybe`.\n");
-    print("SEE    docs/harmony.md - 14.4, 16.10 Code catalogue\n\n");
+fn cfg01() {
+    page("CFG-01",
+         "A control-flow path is missing or cannot be reached.",
+         "Every path through a function must have a defined outcome; an\n       unmatched branch has none.",
+         "if (ok) { return 1; } // no else and a value return",
+         "if (ok) { return 1; } return 0;",
+         "The checker analyses the control-flow graph, not source order.",
+         "16.10 Code catalogue");
 }
 
-fn flow03() {
-    print("FLOW-03 - no return type can carry this failure\n\n");
-    print("WHAT   `else return;` needs an enclosing function that returns\n");
-    print("       `Maybe` or `Outcome`; a plain return type has nowhere for\n");
-    print("       the failure to go (§20.3 item 5).\n");
-    print("WHY    Silently dropping a failure is the bug this form prevents.\n");
-    print("BAD    fn main() -> i32 {{ let x = g() else return; ... }}\n");
-    print("GOOD   let x = g() else (e) {{ trap(\"unexpected failure\"); }};\n");
-    print("NOTE   An explicit block can always exit with `trap` or `exit`.\n");
-    print("SEE    docs/harmony.md - 14.4, 16.10 Code catalogue\n\n");
+fn name01() {
+    page("NAME-01",
+         "A name or type was used without being declared in scope.",
+         "Binding a name must happen before the name is read; the nearest\n       enclosing scope wins.",
+         "let x = missing_value;",
+         "let missing_value = 1; let x = missing_value;",
+         "Check the spelling, the import list, and the scope of the binding.",
+         "6.1, 16.10 Code catalogue");
+}
+
+fn name02() {
+    page("NAME-02",
+         "A word from another language has a different spelling here.",
+         "Migration hints keep familiar words from failing as opaque\n       unknown-name errors.",
+         "unsafe { do_it(); }",
+         "unchecked(\"why this is safe\") { do_it(); }",
+         "`trait` is `abilities`; `match` is `switch`; `null` is `Empty`.",
+         "16.11, 16.10 Code catalogue");
+}
+
+fn name03() {
+    page("NAME-03",
+         "The same name was declared twice in one scope.",
+         "Two bindings with one spelling would make reads ambiguous;\n       inner scopes may shadow outer ones, but not themselves.",
+         "let x = 1; let x = 2;",
+         "let x = 1; let y = 2;",
+         "A different spelling is cheaper to read than a shadowed binding.",
+         "6.1, 16.10 Code catalogue");
+}
+
+fn name04() {
+    page("NAME-04",
+         "An imported module was not found, or imports form a cycle.",
+         "Each file is one module and each import must resolve to exactly\n       one file before names can be merged.",
+         "import \"nope.harmony\";",
+         "import \"geometry.harmony\";",
+         "Import paths are relative to the importing file.",
+         "6.7, 16.10 Code catalogue");
+}
+
+fn shadow01() {
+    page("SHADOW-01",
+         "A binding has the same name as one in an outer scope.",
+         "Shadowing is legal but easy to misread when the two values have\n       different types.",
+         "let x = 1; if (ok) { let x = \"s\"; use(x); }",
+         "let x = 1; if (ok) { let text = \"s\"; use(text); }",
+         "This is a WARN: it never stops the build unless --strict is used.",
+         "16.10 Code catalogue");
+}
+
+fn type01() {
+    page("TYPE-01",
+         "An expression has a different type from the one required here.",
+         "Types describe which operations are valid; the compiler will not\n       silently reinterpret the bytes.",
+         "let a: i32 = \"x\";",
+         "let a: i32 = 42;",
+         "Use `as` for an explicit numeric conversion.",
+         "5, 16.10 Code catalogue");
+}
+
+fn type02() {
+    page("TYPE-02",
+         "An operation is not defined for this type, or no field exists.",
+         "There is no implicit conversion, so the operation would have no\n       honest meaning on the value supplied.",
+         "let n = 1u8 + 2i64;",
+         "let n = 1i64 + 2i64;",
+         "Use `as`, `.narrow<T>()` or a matching field name.",
+         "5, 16.10 Code catalogue");
+}
+
+fn type03() {
+    page("TYPE-03",
+         "A condition must be `bool`.",
+         "There is no C-style truthiness: `0` and `1` are numbers, not\n       answers to a yes/no question.",
+         "if (n) { ... }",
+         "if (n != 0) { ... }",
+         "The same rule applies to while conditions.",
+         "8.1, 16.10 Code catalogue");
+}
+
+fn type04() {
+    page("TYPE-04",
+         "The argument count or an argument type does not match the\n       function signature.",
+         "The call would otherwise pass a value the callee cannot use.",
+         "add(1)",
+         "add(1, 2)",
+         "Generic calls infer type arguments from their value arguments.",
+         "6.3, 16.10 Code catalogue");
+}
+
+fn type05() {
+    page("TYPE-05",
+         "An unsupported form was used: a conversion, a copy marking, or\n       an expression the grammar cannot type.",
+         "The compiler only accepts forms with a defined, deterministic\n       meaning in this version of the language.",
+         "copy struct Owner { s: String }",
+         "struct Owner { s: String }",
+         "Check the grammar note in the diagnostic for the exact constraint.",
+         "6.4, 16.10 Code catalogue");
+}
+
+fn type06() {
+    page("TYPE-06",
+         "A bound required by a generic parameter or by `main` is missing.",
+         "The body may call an operation the type does not provide, so the\n       bound must be stated at the declaration.",
+         "fn smaller<T>(a: T, b: T) -> bool { return a < b; }",
+         "fn smaller<T: ord>(a: T, b: T) -> bool { return a < b; }",
+         "Built-in bounds are `copy`, `eq`, and `ord`.",
+         "6.9, 16.10 Code catalogue");
 }
 
 fn ablt01() {
-    print("ABLT-01 - ability not satisfied\n\n");
-    print("WHAT   A concrete type argument for a bounded parameter does not\n");
-    print("       provide every method required by the ability.\n");
-    print("WHY    Otherwise a generic body could call a method that does not\n");
-    print("       exist on the type it was instantiated with.\n");
-    print("BAD    abilities Drawable {{ fn area(&self) -> i32; }}\n");
-    print("       fn f<T: Drawable>(x: &T) -> i32 {{ return x.area(); }}\n");
-    print("       // the argument type has no matching `area` method\n");
-    print("GOOD   Add a `methods Type` block with `fn area(&self) -> i32`.\n");
-    print("NOTE   Satisfaction is structural: names, receiver spelling and\n");
-    print("       parameter and return types must match the requirements.\n");
-    print("SEE    docs/harmony.md - 6.9, 16.10 Code catalogue\n\n");
+    page("ABLT-01",
+         "A concrete type does not provide every method its ability requires.",
+         "Otherwise a generic body could call a method that does not\n       exist on the type it was instantiated with.",
+         "fn f<T: Drawable>(x: &T) -> i32 { return x.area(); }",
+         "methods MyType { fn area(&self) -> i32 { ... } }",
+         "Satisfaction is structural: names, receivers, and types must match.",
+         "6.9, 16.10 Code catalogue");
 }
 
 fn ablt02() {
-    print("ABLT-02 - unknown or duplicate ability\n\n");
-    print("WHAT   A bound names an ability that was never declared, or two\n");
-    print("       abilities share the same name.\n");
-    print("WHY    A bound must name exactly one set of required methods.\n");
-    print("BAD    fn f<T: Drawable>(x: &T) {{ }} // no abilities Drawable block\n");
-    print("GOOD   abilities Drawable {{ fn area(&self) -> i32; }}\n");
-    print("NOTE   Built-in bounds `copy`, `eq` and `ord` are always known.\n");
-    print("SEE    docs/harmony.md - 6.9, 16.10 Code catalogue\n\n");
+    page("ABLT-02",
+         "A bound names an ability that was never declared, or two\n       abilities share one name.",
+         "A bound must name exactly one set of required methods.",
+         "fn f<T: Drawable>(x: &T) { }",
+         "abilities Drawable { fn area(&self) -> i32; }",
+         "Built-in bounds `copy`, `eq`, and `ord` are always known.",
+         "6.9, 16.10 Code catalogue");
 }
 
-fn move01() {
-    print("MOVE-01 - use of moved value\n\n");
-    print("WHAT   A value was used after its ownership had been handed to\n");
-    print("       someone else, or after a move on only one branch.\n");
-    print("WHY    A non-copy owner can be destroyed only once. Reusing the\n");
-    print("       moved-from place would read a value that no longer exists.\n");
-    print("BAD    consume(name); println(\"{{}}\", name);\n");
-    print("GOOD   Borrow it: consume(&name), or make a fresh owner with clone.\n");
-    print("NOTE   A `let mut` binding may be assigned a fresh value and reused.\n");
-    print("SEE    docs/harmony.md - 9.2, 9.5, 16.10 Code catalogue\n\n");
+fn fmt01() {
+    page("FMT-01",
+         "A format string's placeholders do not match its arguments, or\n       the format string itself is malformed.",
+         "Each `{}` consumes exactly one argument; a stray brace would\n       leave the output ambiguous.",
+         "println(\"{} {}\", x);",
+         "println(\"{} {}\", x, y);",
+         "A literal `{` is written `{{`; a literal `}` is `}}`.",
+         "15.1, 16.10 Code catalogue");
 }
 
-fn move02() {
-    print("MOVE-02 - moved inside a loop\n\n");
-    print("WHAT   A value declared outside a loop is moved by the loop body.\n");
-    print("WHY    The second iteration would have nothing left to hand over.\n");
-    print("BAD    let s = \"x\".own(); for (i : 0..3) {{ consume(s); }}\n");
-    print("GOOD   Borrow it, clone it, or create a fresh owner each iteration.\n");
-    print("SEE    docs/harmony.md - 9.6, 16.10 Code catalogue\n\n");
+fn ffi01() {
+    page("FFI-01",
+         "An `extern` declaration names an unknown ABI, or passes a type\n       the C ABI cannot carry.",
+         "The convention decides how arguments are passed and who cleans\n       up; only C is implemented.",
+         "extern \"Win64\" fn abs(x: i32) -> i32;",
+         "extern \"C\" fn abs(x: i32) -> i32;",
+         "The ABI string is mandatory; `extern fn` is a syntax error.",
+         "6.8, 16.10 Code catalogue");
 }
 
-fn move03() {
-    print("MOVE-03 - cannot move out from behind a reference\n\n");
-    print("WHAT   A reference lends access to a value; it does not own it.\n");
-    print("WHY    Taking ownership would leave the lender with a hole.\n");
-    print("BAD    fn grab(v: &Vec<String>) -> String {{ return v[0]; }}\n");
-    print("GOOD   Clone the element, return a reference, or remove it from &mut.\n");
-    print("SEE    docs/harmony.md - 9.8, 16.10 Code catalogue\n\n");
+fn const01() {
+    page("CONST-01",
+         "A constant's initializer is not known at compile time.",
+         "Constants are inlined at every use, so there is no storage to\n       read at run time.",
+         "const N: i32 = compute();",
+         "const N: i32 = 42; let n = compute();",
+         "Literals, literal arithmetic, other constants, and array/struct\n       literals are all allowed.",
+         "6.2, 16.10 Code catalogue");
 }
 
-fn move04() {
-    print("MOVE-04 - cannot move one field out of a struct\n\n");
-    print("WHAT   Partial moves leave the rest of an owner in an invalid state.\n");
-    print("WHY    The owner's cleanup and remaining fields need the whole value.\n");
-    print("BAD    let n = player.name;\n");
-    print("GOOD   Clone the field, replace it with a fresh value, or take `self`.\n");
-    print("SEE    docs/harmony.md - 9.9, 16.10 Code catalogue\n\n");
+fn flow01() {
+    page("FLOW-01",
+         "An `else` clause falls through instead of exiting.",
+         "The failure branch must not continue with a binding that was\n       never made.",
+         "let x = f() else (e) { println(\"oops\"); };",
+         "let x = f() else (e) { return Bad(e); };",
+         "`else return;`, `else break;` and `else continue;` are exits too.",
+         "14.4, 16.10 Code catalogue");
 }
 
-fn drop01() {
-    print("DROP-01 - cleanup cannot be called directly\n\n");
-    print("WHAT   `cleanup` is a hook the compiler runs when an owner dies.\n");
-    print("WHY    A direct call would run it twice or at the wrong time.\n");
-    print("BAD    x.cleanup();\n");
-    print("GOOD   Use `drop(x)` to end the value's lifetime explicitly.\n");
-    print("SEE    docs/harmony.md - 12.6, 16.10 Code catalogue\n\n");
+fn flow02() {
+    page("FLOW-02",
+         "A forwarded failure does not match the enclosing return type.",
+         "`else return;` carries the original error value; changing its\n       type silently would change its meaning.",
+         "fn f() -> Outcome<i32, F> { let x = g() else return; }",
+         "let x = g() else (e) { return Bad(F::from(e)); };",
+         "For `Maybe`, the enclosing function must also return `Maybe`.",
+         "14.4, 16.10 Code catalogue");
 }
 
-fn loan01() {
-    print("LOAN-01 - write while shared-borrowed\n\n");
-    print("WHAT   A value was written or moved while a shared reference to\n");
-    print("       it was still live. A collection element borrows the whole\n");
-    print("       collection, so push/reserve conflicts with it too.\n");
-    print("WHY    A writer could invalidate what the shared reference sees.\n");
-    print("BAD    let first = v.get(0); v.push(2); use(first);\n");
-    print("GOOD   Use the reference first, copy the element, or hold an index.\n");
-    print("SEE    docs/harmony.md - 10.4, 10.8, 16.10 Code catalogue\n\n");
+fn flow03() {
+    page("FLOW-03",
+         "No enclosing return type can carry this failure.",
+         "`else return;` needs a `Maybe` or `Outcome` return type; a plain\n       type has nowhere to put the failure.",
+         "fn main() -> i32 { let x = g() else return; }",
+         "let x = g() else (e) { trap(\"unexpected failure\"); };",
+         "An explicit block can always exit with `trap` or `exit`.",
+         "14.4, 16.10 Code catalogue");
 }
 
-fn loan02() {
-    print("LOAN-02 - second exclusive borrow\n\n");
-    print("WHAT   Two live `&mut` borrows overlap. A method call borrows its\n");
-    print("       whole receiver, so it can conflict with a field loan.\n");
-    print("WHY    Only one writer may touch a value at a time.\n");
-    print("BAD    let a = &mut n; let b = &mut n; *a = 1; *b = 2;\n");
-    print("GOOD   Borrow different fields, or end the first loan before the next.\n");
-    print("SEE    docs/harmony.md - 10.6, 10.9, 16.10 Code catalogue\n\n");
+fn macro01() {
+    page("MACRO-01",
+         "A macro argument has the wrong count or kind.",
+         "The parameters name what the expansion is allowed to receive,\n       so an `expr` cannot be an identifier and vice versa.",
+         "#max({ a }, b)",
+         "#max(a, b)",
+         "Macro support is planned; today `#` is reserved and stops.",
+         "20.5, 16.10 Code catalogue");
 }
 
-fn loan03() {
-    print("LOAN-03 - read while exclusively borrowed\n\n");
-    print("WHAT   The owner was read through another path while an `&mut`\n");
-    print("       borrow was still live.\n");
-    print("WHY    The exclusive writer must be the only active view.\n");
-    print("BAD    let r = &mut n; let x = n; *r += 1;\n");
-    print("GOOD   Read through `r`, or finish its last use before reading `n`.\n");
-    print("SEE    docs/harmony.md - 10.1, 10.9, 16.10 Code catalogue\n\n");
+fn macro02() {
+    page("MACRO-02",
+         "A macro was used in the wrong position or kind.",
+         "Statement macros, expression macros, and `-> expr` expansion\n       forms have different call syntax.",
+         "#log_if(ok, msg)",
+         "#log_if(ok, msg);",
+         "Macro support is planned; today `#` is reserved and stops.",
+         "20.5, 16.10 Code catalogue");
+}
+
+fn macro03() {
+    page("MACRO-03",
+         "A macro expansion exceeded the depth limit of 64.",
+         "A recursive macro cycle would otherwise expand forever.",
+         "#a() where a expands to #a()",
+         "break the cycle with a base case",
+         "The same limit applies to every expansion chain.",
+         "20.5, 16.10 Code catalogue");
+}
+
+fn macro04() {
+    page("MACRO-04",
+         "A pack spread or unrolled-loop exit was used illegally.",
+         "Packs are expanded at compile time, so only the documented\n       loop and spread positions are meaningful.",
+         "item... outside a call",
+         "for (x : pack) { use(x); }",
+         "Macro support is planned; today `#` is reserved and stops.",
+         "20.5, 16.10 Code catalogue");
+}
+
+fn mut01() {
+    page("MUT-01",
+         "A read-only binding was assigned to.",
+         "`let` promises the binding never changes; writes need `let mut`.",
+         "let x = 1; x = 2;",
+         "let mut x = 1; x = 2;",
+         "An exclusive borrow also needs a mutable binding (MUT-03).",
+         "9.3, 16.10 Code catalogue");
+}
+
+fn mut02() {
+    page("MUT-02",
+         "A binding is declared `mut` but never changed.",
+         "An unused promise is noise in review and hides real writers.",
+         "let mut total = 0;",
+         "let total = 0;",
+         "This is a WARN: it stops only under --strict.",
+         "9.3, 16.10 Code catalogue");
 }
 
 fn mut03() {
-    print("MUT-03 - exclusive borrow of an immutable binding\n\n");
-    print("WHAT   `&mut x` needs `x` to be declared `let mut` (or be `self`).\n");
-    print("WHY    The borrow grants write access to the owner.\n");
-    print("BAD    let n = 1; let r = &mut n;\n");
-    print("GOOD   let mut n = 1; let r = &mut n;\n");
-    print("SEE    docs/harmony.md - 10.3, 16.10 Code catalogue\n\n");
+    page("MUT-03",
+         "An exclusive borrow needs a mutable binding.",
+         "`&mut` grants write access to its owner; `let` does not allow it.",
+         "let n = 1; let r = &mut n;",
+         "let mut n = 1; let r = &mut n;",
+         "Method receivers spelled `mut self` count as mutable.",
+         "10.3, 16.10 Code catalogue");
+}
+
+fn init01() {
+    page("INIT-01",
+         "A value might be read before it was initialized.",
+         "Uninitialized memory has no defined value, so every path must\n       assign before a read.",
+         "let x: i32; if (ok) { x = 1; } use(x);",
+         "let x: i32; if (ok) { x = 1; } else { x = 0; } use(x);",
+         "The checker follows branches, not just source order.",
+         "8.3, 16.10 Code catalogue");
+}
+
+fn move01() {
+    page("MOVE-01",
+         "A value was used after its ownership was handed to someone else.",
+         "Every non-copy value has exactly one owner. Reusing the moved-\n       from place would read a value that no longer exists.",
+         "consume(name); println(\"{}\", name);",
+         "consume(&name); or consume(name.clone());",
+         "A `let mut` binding may be assigned a fresh value and reused.\n       Follow-on uses are folded into the first report as `also used`.",
+         "9.2, 9.5, 16.10 Code catalogue");
+}
+
+fn move02() {
+    page("MOVE-02",
+         "A value declared outside a loop is moved by the loop body.",
+         "The second iteration would have nothing left to hand over.",
+         "let s = \"x\".own(); for (i : 0..3) { consume(s); }",
+         "for (i : 0..3) { consume(s.clone()); }",
+         "Borrowing or recreating the owner each pass also works.",
+         "9.6, 16.10 Code catalogue");
+}
+
+fn move03() {
+    page("MOVE-03",
+         "A reference lends access; it does not own its target.",
+         "Taking ownership would leave the lender with a hole.",
+         "fn grab(v: &Vec<String>) -> String { return v[0]; }",
+         "fn grab(v: &Vec<String>) -> &String { return &v[0]; }",
+         "Cloning the element is allowed when the type is cloneable.",
+         "9.8, 16.10 Code catalogue");
+}
+
+fn move04() {
+    page("MOVE-04",
+         "One field or slot cannot be moved out of an owning value.",
+         "Partial moves leave the rest of the owner in an invalid state,\n       and its cleanup needs the whole value.",
+         "let n = player.name;",
+         "let n = player.name.clone();",
+         "Taking the whole value (`self`) or replacing the field also works.",
+         "9.9, 16.10 Code catalogue");
+}
+
+fn loan01() {
+    page("LOAN-01",
+         "A value was written while something was still looking at it.",
+         "A writer could invalidate what a shared reference sees; a\n       collection element borrow covers the whole collection.",
+         "let first = &v[0]; v.push(2); use(first);",
+         "use(first); v.push(2); or let first = v[0];",
+         "The diagnostic shows where the loan opened and where it conflicted.",
+         "10.4, 10.8, 16.10 Code catalogue");
+}
+
+fn loan02() {
+    page("LOAN-02",
+         "Two live `&mut` borrows overlap.",
+         "Only one writer may touch a value at a time. A method call\n       borrows its whole receiver and can conflict with a field loan.",
+         "let a = &mut n; let b = &mut n;",
+         "borrow different fields, or end `a` before creating `b`",
+         "Loan regions end at the reference's last use, not its declaration.",
+         "10.6, 10.9, 16.10 Code catalogue");
+}
+
+fn loan03() {
+    page("LOAN-03",
+         "The owner was read through another path while an `&mut`\n       borrow was still live.",
+         "The exclusive writer must be the only active view of the value.",
+         "let r = &mut n; let x = n; *r += 1;",
+         "let x = *r; *r += 1;",
+         "Reading through the reference keeps the loan consistent.",
+         "10.1, 10.9, 16.10 Code catalogue");
 }
 
 fn life01() {
-    print("LIFE-01 - a reference is leaving the function\n\n");
-    print("WHAT   The returned reference points at a value owned by this\n");
-    print("       function; that value dies at the closing brace.\n");
-    print("WHY    The caller would receive a pointer to demolished storage.\n");
-    print("BAD    fn f<life a>() -> &life(a) str {{ let s = \"hi\"; return &s; }}\n");
-    print("GOOD   Return the owner, or a `life(static)` literal.\n");
-    print("SEE    docs/harmony.md - 11.7, 16.10 Code catalogue\n\n");
+    page("LIFE-01",
+         "A returned reference points at a value owned by this function.",
+         "The owner dies at the closing brace, so the caller would receive\n       a pointer to demolished storage.",
+         "fn f() -> &str { let s = \"hi\".own(); return &s; }",
+         "return s; (the owner), or return a `life(static)` literal",
+         "Lifetimes are compile-time only; they emit no runtime code.",
+         "11.7, 16.10 Code catalogue");
 }
 
 fn life02() {
-    print("LIFE-02 - doesn't live long enough\n\n");
-    print("WHAT   A reference was stored in a binding that outlives the\n");
-    print("       value it borrows.\n");
-    print("WHY    The binding would keep a dangling view after the inner\n");
-    print("       scope ends.\n");
-    print("BAD    let mut r: &i32; {{ let x = 1; r = &x; }} use(r);\n");
-    print("GOOD   Declare the owner next to the reference, or copy the value.\n");
-    print("SEE    docs/harmony.md - 11.1, 16.10 Code catalogue\n\n");
+    page("LIFE-02",
+         "A reference was stored somewhere that outlives the value it\n       borrows.",
+         "The binding would keep a dangling view after the inner scope\n       ended.",
+         "let mut r: &i32; { let x = 1; r = &x; } use(r);",
+         "let x = 1; let r = &x; use(r);",
+         "Widening the owner's scope or copying the value both work.",
+         "11.1, 16.10 Code catalogue");
 }
 
 fn life03() {
-    print("LIFE-03 - can't pick a life\n\n");
-    print("WHAT   The signature has no unique input for an elided output, or\n");
-    print("       it returns a borrow with no input to borrow from.\n");
-    print("WHY    The compiler cannot prove which lifetime the result needs.\n");
-    print("BAD    fn pick(a: &str, b: &str) -> &str {{ return a; }}\n");
-    print("GOOD   Name a life: `fn pick<life x>(a: &life(x) str, ...) -> &life(x) str`.\n");
-    print("SEE    docs/harmony.md - 11.3, 11.7, 16.10 Code catalogue\n\n");
+    page("LIFE-03",
+         "An elided output life has no unique input to borrow from.",
+         "The compiler cannot prove which input the result is tied to.",
+         "fn pick(a: &str, b: &str) -> &str { return a; }",
+         "fn pick<life x>(a: &life(x) str, b: &str) -> &life(x) str",
+         "A single reference input or a `self` receiver elides automatically.",
+         "11.3, 11.7, 16.10 Code catalogue");
 }
 
 fn life04() {
-    print("LIFE-04 - body contradicts the life signature\n\n");
-    print("WHAT   The function returns a reference with a different named\n");
-    print("       life than the one its signature promises.\n");
-    print("WHY    The caller relies on the signature to know how long the\n");
-    print("       result stays valid.\n");
-    print("BAD    fn f<life a, life b>(x: &life(a) i32, y: &life(b) i32)\n");
-    print("       -> &life(a) i32 {{ return y; }}\n");
-    print("GOOD   Return `x`, or change the return type to `&life(b) i32`.\n");
-    print("SEE    docs/harmony.md - 11.4, 16.10 Code catalogue\n\n");
+    page("LIFE-04",
+         "The body returns a reference with a different named life than\n       the signature promises.",
+         "Callers rely on the signature to know how long the result stays\n       valid.",
+         "fn f<life a, life b>(x: &life(a) i32, y: &life(b) i32)\n       -> &life(a) i32 { return y; }",
+         "return x; or change the return type to &life(b) i32",
+         "The analysis reports the source of the borrow and the escape site.",
+         "11.4, 16.10 Code catalogue");
+}
+
+fn case01() {
+    page("CASE-01",
+         "A switch has no arm for some value of its subject.",
+         "An exhaustive switch is a value-producing expression, so every\n       path must be covered.",
+         "switch v { case A { ... } }",
+         "switch v { case A { ... } default { ... } }",
+         "Listing every variant is an alternative to `default`.",
+         "8.6, 16.10 Code catalogue");
+}
+
+fn case02() {
+    page("CASE-02",
+         "A switch arm can never be reached.",
+         "A duplicate pattern or a covered earlier arm makes the code\n       dead and hides mistakes.",
+         "switch v { case A { ... } case A { ... } }",
+         "remove the second `case A` arm",
+         "This is a WARN: it stops only under --strict.",
+         "8.6, 16.10 Code catalogue");
+}
+
+fn drop01() {
+    page("DROP-01",
+         "`cleanup` is a compiler hook, not a function you call.",
+         "A direct call would run it twice or at the wrong time.",
+         "x.cleanup();",
+         "drop(x);",
+         "Drop glue runs cleanup exactly once at scope end, return, or drop.",
+         "12.6, 16.10 Code catalogue");
+}
+
+fn drop02() {
+    page("DROP-02",
+         "A recursively owned type has no iterative `cleanup`.",
+         "Dropping a long linked chain through nested owners can exhaust\n       the stack.",
+         "struct Node { next: Maybe<Heap<Node>> }",
+         "add fn cleanup(&mut self) that peels nodes in a loop",
+         "This is a WARN: it stops only under --strict.",
+         "12.6, 16.10 Code catalogue");
 }
 
 fn unck01() {
-    print("UNCK-01 - an unlocked operation outside `unchecked`\n\n");
-    print("WHAT   One of the seven powers was used without an enclosing\n");
-    print("       `unchecked(\"why\")` block: raw use, FFI, alloc/dealloc,\n");
-    print("       reinterpret, get_unchecked, or Heap::from_raw.\n");
-    print("WHY    These are the operations the compiler cannot verify.\n");
-    print("BAD    let x = *p;\n");
-    print("GOOD   unchecked(\"p came from into_raw and is still allocated\") {{ x = *p; }}\n");
-    print("NOTE   Creating a raw pointer, is_null, and comparisons stay safe.\n");
-    print("SEE    docs/harmony.md - 13.2, 13.5, 16.10 Code catalogue\n\n");
+    page("UNCK-01",
+         "One of the seven powers was used outside `unchecked`.",
+         "These operations cannot be verified by the compiler, so they\n       need a short, greppable promise at the site.",
+         "let x = *p;",
+         "unchecked(\"p came from into_raw and is still allocated\") { x = *p; }",
+         "Creating a raw pointer, is_null, and comparisons stay safe.",
+         "13.2, 13.5, 16.10 Code catalogue");
 }
 
 fn unck02() {
-    print("UNCK-02 - the reason has to be a reason\n\n");
-    print("WHAT   An `unchecked` block or contract has no plain string\n");
-    print("       reason of at least 12 characters.\n");
-    print("WHY    A weak promise is not greppable and not reviewable.\n");
-    print("BAD    unchecked(\"trust me\") {{ ... }}\n");
-    print("GOOD   unchecked(\"i < len was checked on line 5\") {{ ... }}\n");
-    print("NOTE   The rule checks length, not truth: say what you checked.\n");
-    print("SEE    docs/harmony.md - 13.1, 13.4, 16.10 Code catalogue\n\n");
+    page("UNCK-02",
+         "An `unchecked` block or contract has no string reason of at\n       least 12 characters.",
+         "A weak promise is not greppable and not reviewable.",
+         "unchecked(\"trust me\") { ... }",
+         "unchecked(\"i < len was checked on line 5\") { ... }",
+         "The rule checks length, not truth: say what you actually checked.",
+         "13.1, 13.4, 16.10 Code catalogue");
 }
 
 fn unck03() {
-    print("UNCK-03 - shrink the blast radius\n\n");
-    print("WHAT   An `unchecked` block spans more than 10 source lines.\n");
-    print("WHY    The longer the block, the more places a false claim\n");
-    print("       can hide. Only risky operations need the promise.\n");
-    print("BAD    unchecked(\"the whole helper is fine\") {{ ... 30 lines ... }}\n");
-    print("GOOD   Move safe lines out; leave two or three risky lines in.\n");
-    print("NOTE   This is a WARN: it stops only under `--strict`.\n");
-    print("SEE    docs/harmony.md - 13.4, 16.10 Code catalogue\n\n");
+    page("UNCK-03",
+         "An `unchecked` block spans more than ten source lines.",
+         "The longer the block, the more places a false promise can hide.",
+         "unchecked(\"the whole helper is fine\") { ... 30 lines ... }",
+         "move safe lines out; leave two or three risky lines in",
+         "This is a WARN: it stops only under --strict.",
+         "13.4, 16.10 Code catalogue");
 }
 
 fn unck04() {
-    print("UNCK-04 - calling a contract without promising it\n\n");
-    print("WHAT   A function declared with `unchecked(\"why\") fn` was\n");
-    print("       called outside an `unchecked` block.\n");
-    print("WHY    The caller must promise the contract the callee relies on.\n");
-    print("BAD    let t = sum_bytes(p, 4);\n");
-    print("GOOD   unchecked(\"p covers 4 readable bytes here\") {{ t = sum_bytes(p, 4); }}\n");
-    print("NOTE   The body of an unchecked fn is NOT automatically unchecked.\n");
-    print("SEE    docs/harmony.md - 13.1, 13.4, 16.10 Code catalogue\n\n");
+    page("UNCK-04",
+         "A function declared with `unchecked(\"why\") fn` was called\n       without a promise at the call site.",
+         "The caller must promise the contract the callee relies on.",
+         "let t = sum_bytes(p, 4);",
+         "unchecked(\"p covers 4 readable bytes here\") { t = sum_bytes(p, 4); }",
+         "The body of an unchecked fn is NOT automatically unchecked.",
+         "13.1, 13.4, 16.10 Code catalogue");
 }
 
 fn unck05() {
-    print("UNCK-05 - `unchecked` is disabled\n\n");
-    print("WHAT   The build used `--deny-unchecked`, but an `unchecked`\n");
-    print("       block or contract appears in the program.\n");
-    print("WHY    A trusted surface of zero is a stronger guarantee than\n");
-    print("       a reviewed list of promises.\n");
-    print("BAD    harmony --deny-unchecked build src/main.harmony   // with unchecked inside\n");
-    print("GOOD   Remove the site, or build without the flag.\n");
-    print("NOTE   `harmony audit --format=json` lists the sites for review.\n");
-    print("SEE    docs/harmony.md - 13.4, 16.10 Code catalogue\n\n");
+    page("UNCK-05",
+         "The build used `--deny-unchecked`, but an `unchecked` site\n       appears in the program.",
+         "A trusted surface of zero is a stronger guarantee than a\n       reviewed list of promises.",
+         "harmony --deny-unchecked build src/main.harmony",
+         "remove the site, or build without the flag",
+         "`harmony audit --format=json` lists every site for review.",
+         "13.4, 16.10 Code catalogue");
 }
 
-// Returns 0 for a known code, or -1 for an unknown one.
+fn unused01() {
+    page("UNUSED-01",
+         "A binding is never read.",
+         "Unused names hide the ones that matter and often mark a\n       forgotten result.",
+         "let answer = compute();",
+         "let _answer = compute(); or use(answer);",
+         "This is a WARN: it stops only under --strict.",
+         "16.10 Code catalogue");
+}
+
+fn unused02() {
+    page("UNUSED-02",
+         "A `Maybe` or `Outcome` result was ignored.",
+         "Ignoring the failure branch is how errors silently disappear.",
+         "parse(x);",
+         "let value = parse(x) else return;",
+         "This is a WARN: it stops only under --strict.",
+         "14.4, 16.10 Code catalogue");
+}
+
+fn dead01() {
+    page("DEAD-01",
+         "Code can never be reached.",
+         "Statements after an unconditional exit have no effect and\n       usually mean an unfinished edit.",
+         "return 1; println(\"unreachable\");",
+         "remove the statement after `return`",
+         "This is a WARN: it stops only under --strict.",
+         "16.10 Code catalogue");
+}
+
+fn style01() {
+    page("STYLE-01",
+         "A name does not follow the documented naming convention.",
+         "Consistent spelling makes generated mangled names and call\n       sites easier to scan.",
+         "fn DoThing() { ... }",
+         "fn do_thing() { ... }",
+         "This is a HINT: it never stops a build.",
+         "16.10 Code catalogue");
+}
+
+fn ret01() {
+    page("RET-01",
+         "A function with a non-unit return type has a path with no\n       return value.",
+         "Every path must produce the promised type; otherwise the\n       caller would read an absent value.",
+         "fn f(ok: bool) -> i32 { if (ok) { return 1; } }",
+         "fn f(ok: bool) -> i32 { if (ok) { return 1; } return 0; }",
+         "The checker follows branches, not just the final statement.",
+         "8.4, 16.10 Code catalogue");
+}
+
 export fn run(code: &str) -> i32 {
-    if (!known(code)) { return -1; }
-    if (code == "ICE-01") { ice01(); return 0; }
-    if (code == "FFI-01") { ffi01(); return 0; }
-    if (code == "CONST-01") { const01(); return 0; }
+    if (code == "ICE-01") { compat_ice01(); return 0; }
+    if (code == "SYN-01") { compat_syn01(); return 0; }
+    if (code == "SYN-02") { compat_syn02(); return 0; }
+    if (code == "SYN-03") { compat_syn03(); return 0; }
+    if (code == "SYN-04") { compat_syn04(); return 0; }
+    if (code == "SYN-05") { compat_syn05(); return 0; }
+    if (code == "LEX-01") { compat_lex01(); return 0; }
+    if (code == "USE-01") { use01(); return 0; }
+    if (code == "CFG-01") { cfg01(); return 0; }
+    if (code == "NAME-01") { name01(); return 0; }
+    if (code == "NAME-02") { name02(); return 0; }
+    if (code == "NAME-03") { name03(); return 0; }
+    if (code == "NAME-04") { name04(); return 0; }
+    if (code == "SHADOW-01") { shadow01(); return 0; }
+    if (code == "TYPE-01") { type01(); return 0; }
+    if (code == "TYPE-02") { type02(); return 0; }
+    if (code == "TYPE-03") { type03(); return 0; }
+    if (code == "TYPE-04") { type04(); return 0; }
+    if (code == "TYPE-05") { type05(); return 0; }
+    if (code == "TYPE-06") { type06(); return 0; }
+    if (code == "ABLT-01") { ablt01(); return 0; }
+    if (code == "ABLT-02") { ablt02(); return 0; }
+    if (code == "FMT-01") { fmt01(); return 0; }
+    if (code == "FFI-01") { compat_ffi01(); return 0; }
+    if (code == "CONST-01") { compat_const01(); return 0; }
     if (code == "FLOW-01") { flow01(); return 0; }
     if (code == "FLOW-02") { flow02(); return 0; }
     if (code == "FLOW-03") { flow03(); return 0; }
-    if (code == "ABLT-01") { ablt01(); return 0; }
-    if (code == "ABLT-02") { ablt02(); return 0; }
+    if (code == "MACRO-01") { macro01(); return 0; }
+    if (code == "MACRO-02") { macro02(); return 0; }
+    if (code == "MACRO-03") { macro03(); return 0; }
+    if (code == "MACRO-04") { macro04(); return 0; }
+    if (code == "MUT-01") { mut01(); return 0; }
+    if (code == "MUT-02") { mut02(); return 0; }
+    if (code == "MUT-03") { mut03(); return 0; }
+    if (code == "INIT-01") { init01(); return 0; }
     if (code == "MOVE-01") { move01(); return 0; }
     if (code == "MOVE-02") { move02(); return 0; }
     if (code == "MOVE-03") { move03(); return 0; }
     if (code == "MOVE-04") { move04(); return 0; }
-    if (code == "DROP-01") { drop01(); return 0; }
     if (code == "LOAN-01") { loan01(); return 0; }
     if (code == "LOAN-02") { loan02(); return 0; }
     if (code == "LOAN-03") { loan03(); return 0; }
-    if (code == "MUT-03") { mut03(); return 0; }
     if (code == "LIFE-01") { life01(); return 0; }
     if (code == "LIFE-02") { life02(); return 0; }
     if (code == "LIFE-03") { life03(); return 0; }
     if (code == "LIFE-04") { life04(); return 0; }
+    if (code == "CASE-01") { case01(); return 0; }
+    if (code == "CASE-02") { case02(); return 0; }
+    if (code == "DROP-01") { drop01(); return 0; }
+    if (code == "DROP-02") { drop02(); return 0; }
     if (code == "UNCK-01") { unck01(); return 0; }
     if (code == "UNCK-02") { unck02(); return 0; }
     if (code == "UNCK-03") { unck03(); return 0; }
     if (code == "UNCK-04") { unck04(); return 0; }
     if (code == "UNCK-05") { unck05(); return 0; }
-    if (code == "SYN-01") { syn01(); return 0; }
-    if (code == "SYN-02") { syn02(); return 0; }
-    if (code == "SYN-03") { syn03(); return 0; }
-    if (code == "SYN-04") { syn04(); return 0; }
-    if (code == "SYN-05") { syn05(); return 0; }
-    if (code == "LEX-01") { lex01(); return 0; }
-    stub(code);
-    return 0;
+    if (code == "UNUSED-01") { unused01(); return 0; }
+    if (code == "UNUSED-02") { unused02(); return 0; }
+    if (code == "DEAD-01") { dead01(); return 0; }
+    if (code == "STYLE-01") { style01(); return 0; }
+    if (code == "RET-01") { ret01(); return 0; }
+    return -1;
 }

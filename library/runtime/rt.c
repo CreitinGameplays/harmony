@@ -874,12 +874,39 @@ static int install_stack_guard(void) {
 // ---------------------------------------------------------------------------
 static long g_argc;
 static char **g_argv;
+static char **g_envp;
 
 // Host-linked builds use the C runtime's `main` instead of the freestanding
-// `_start`; the wrapper calls this before `harmony_main` so `args()` works.
-void lc_host_init(int argc, char **argv) {
+// `_start`; the wrapper calls this before `harmony_main` so `args()` and the
+// NO_COLOR check work without calling libc from generated code.
+void lc_host_init(int argc, char **argv, char **envp) {
     g_argc = argc;
     g_argv = argv;
+    g_envp = envp;
+}
+
+// Returns 1 when an environment variable is present. The driver uses this for
+// NO_COLOR (§16.3); it is implemented in the runtime so compiled programs stay
+// freestanding. Any value, including the empty string, counts as present.
+int lc_env_has(const char *name) {
+    long i;
+    long n;
+    char *entry;
+    if (g_envp == 0 || name == 0) { return 0; }
+    n = 0;
+    while (name[n] != 0) { n = n + 1; }
+    if (n == 0) { return 0; }
+    i = 0;
+    while (g_envp[i] != 0) {
+        entry = g_envp[i];
+        if (entry[0] == name[0]) {
+            long j = 1;
+            while (j < n && entry[j] == name[j]) { j = j + 1; }
+            if (j == n && entry[n] == '=') { return 1; }
+        }
+        i = i + 1;
+    }
+    return 0;
 }
 
 #define LC_MAX_ARGS 4096
@@ -930,6 +957,7 @@ __attribute__((noreturn)) void lc_start(long *sp) {
     int code;
     g_argc = sp[0];
     g_argv = (char **) &sp[1];
+    g_envp = (char **) &sp[1 + g_argc + 1];
     install_stack_guard();
     code = harmony_main();
     out_flush();

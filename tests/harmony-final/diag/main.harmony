@@ -1,0 +1,4 @@
+// M5 polish: diagnostics from an imported module keep their own path/source.
+import "child.harmony";
+
+fn main() -> i32 { return child::bad(); }

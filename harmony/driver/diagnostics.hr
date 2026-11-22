@@ -1,9 +1,9 @@
 // harmony/driver/diagnostics.hr — diagnostic rendering for the CLI.
 //
 // The compiler records structured diagnostics; this module turns them into
-// the three documented formats (§16.7). The detailed story/fix model grows
-// with the analyses, but the envelope — stable code, location, title,
-// summary, and learn hint — is already fixed.
+// the three documented formats (§16.7) and enforces §16.9: sort by primary
+// location, cap 5 stops / 10 warns, then print `…and N more stops (use --all)`.
+// Warnings go to stderr so `emit-llvm` stdout remains pure IR bytes.
 import "../../library/core/fmt.hr";
 import "../../library/core/str.hr";
 
@@ -11,44 +11,109 @@ export const FORMAT_PRETTY: i32 = 0;
 export const FORMAT_LINE: i32 = 1;
 export const FORMAT_JSON: i32 = 2;
 
-export fn render(d: &fmt::Diag, format: i32) {
-    // Warnings are advisory: keep them off stdout so `emit-llvm` still prints
-    // only IR bytes (the byte-identity gates compare that stream).
-    let to_stderr = d.severity == fmt::Severity::Warn;
-    if (format == FORMAT_LINE) {
-        let line = fmt::render_line(*d).as_str();
-        if (to_stderr) { eprintln("{}", line); }
-        else { print("{}", line); }
-        return;
-    }
-    if (format == FORMAT_JSON) {
-        let json = fmt::render_json(*d).as_str();
-        if (to_stderr) { eprintln("{}", json); }
-        else { print("{}", json); }
-        return;
-    }
-    if (to_stderr) {
-        eprintln("{}  {}  {}:{}:{}\n", fmt::severity_word(d.severity), d.code,
-                 d.file, d.line, d.col);
-        eprintln("{}\n", d.title);
-        if (d.summary != "") { eprintln("\n   {}\n", d.summary); }
-        eprintln("\n   learn: harmony explain {}\n", d.code);
-        return;
-    }
-    print("{}  {}  {}:{}:{}\n", fmt::severity_word(d.severity), d.code,
-          d.file, d.line, d.col);
-    print("{}\n", d.title);
-    if (d.summary != "") {
-        print("\n   {}\n", d.summary);
-    }
-    print("\n   learn: harmony explain {}\n", d.code);
+export struct Options {
+    format: i32;
+    all: i32;
+    ascii: i32;
+    color: i32;
 }
 
-export fn render_all(ds: &vec::Vec<fmt::Diag>, format: i32) {
+fn put(line: &str, stderr: bool) {
+    // Renderers return one line without its terminator, so the caller owns
+    // the newline (and streams warnings to stderr without polluting IR).
+    if (stderr) { eprintln("{}", line); }
+    else { print("{}\n", line); }
+}
+
+fn render_one(d: &fmt::Diag, opts: &Options) {
+    let stderr = d.severity == fmt::Severity::Warn;
+    if (opts.format == FORMAT_LINE) {
+        let line = fmt::render_line(d).as_str();
+        put(line, stderr);
+        return;
+    }
+    if (opts.format == FORMAT_JSON) {
+        let json = fmt::render_json(d).as_str();
+        put(json, stderr);
+        return;
+    }
+    let pretty = fmt::render_pretty(d, opts.ascii != 0, opts.color != 0);
+    put(pretty.as_str(), stderr);
+}
+
+fn str_before(a: &str, b: &str) -> bool {
+    let ab = a.as_bytes();
+    let bb = b.as_bytes();
     let mut i: usize = 0;
-    while (i < ds.len()) {
-        render(ds.get(i), format);
+    while (i < ab.len() && i < bb.len()) {
+        if (ab[i] != bb[i]) { return ab[i] < bb[i]; }
         i += 1;
+    }
+    return ab.len() < bb.len();
+}
+
+fn before(ds: &vec::Vec<fmt::Diag>, a: usize, b: usize) -> bool {
+    let x = ds.get(a);
+    let y = ds.get(b);
+    if (x.file != y.file) { return str_before(x.file, y.file); }
+    if (x.line != y.line) { return x.line < y.line; }
+    return x.col < y.col;
+}
+
+export fn render_all(ds: &vec::Vec<fmt::Diag>, opts: &Options) {
+    // Stable insertion sort by primary location (§16.9). Insertion sort is
+    // enough for the small diagnostic tables and keeps equal-location reports
+    // in generation order.
+    let mut order: vec::Vec<usize> = vec::Vec<usize>::make();
+    let mut i: usize = 0;
+    while (i < ds.len()) { order.push(i); i += 1; }
+    i = 1;
+    while (i < order.len()) {
+        let mut j = i;
+        while (j > 0 && before(ds, *order.get(j), *order.get(j - 1))) {
+            let a = *order.get(j - 1);
+            order.set(j - 1, *order.get(j));
+            order.set(j, a);
+            j -= 1;
+        }
+        i += 1;
+    }
+
+    let mut stops: i32 = 0;
+    let mut warns: i32 = 0;
+    let mut hidden_stops: i32 = 0;
+    let mut blank_after_stops = false;
+    let mut blank_after_warns = false;
+    i = 0;
+    while (i < order.len()) {
+        let d = ds.get(*order.get(i));
+        if (d.severity == fmt::Severity::Stop) {
+            if (opts.all == 0 && stops >= 5) { hidden_stops += 1; i += 1; continue; }
+            if (blank_after_warns && opts.format == FORMAT_PRETTY) {
+                print("\n");
+                blank_after_warns = false;
+            }
+            render_one(d, opts);
+            stops += 1;
+            blank_after_stops = true;
+        } else if (d.severity == fmt::Severity::Warn) {
+            if (opts.all == 0 && warns >= 10) { i += 1; continue; }
+            if (blank_after_stops && opts.format == FORMAT_PRETTY) {
+                eprintln("");
+                blank_after_stops = false;
+            }
+            render_one(d, opts);
+            warns += 1;
+            blank_after_warns = true;
+        } else {
+            render_one(d, opts);
+        }
+        i += 1;
+    }
+
+    if (hidden_stops > 0 && opts.format != FORMAT_JSON) {
+        let dots = fmt::more_glyph(opts.ascii != 0);
+        eprintln("{}{} more stops (use --all)", dots, hidden_stops);
     }
 }
 

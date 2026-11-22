@@ -86,8 +86,8 @@ export fn push(c: &mut Ctx, kind: token::TokKind, text: &str,
 // one bad byte does not hide the rest of the file; the driver decides whether
 // diagnostics stop the compile.
 export fn error(c: &mut Ctx, code: &str, title: &str, summary: &str) {
-    c.diags.push(fmt::diag(code, fmt::Severity::Stop, title, summary,
-                           c.path, c.line, c.col));
+    c.diags.push(fmt::make(code, fmt::Severity::Stop, title, summary,
+                           c.path, c.line, c.col, c.src));
 }
 
 // The number of diagnostics recorded so far.

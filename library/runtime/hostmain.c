@@ -6,10 +6,11 @@
 // `harmony_main`, then flushes the runtime's output buffer.
 extern int harmony_main(void);
 extern void lc_flush(void);
-extern void lc_host_init(int argc, char **argv);
+extern void lc_host_init(int argc, char **argv, char **envp);
+extern char **environ;
 
 int main(int argc, char **argv) {
-    lc_host_init(argc, argv);
+    lc_host_init(argc, argv, environ);
     int code = harmony_main();
     lc_flush();
     return code & 0xff;

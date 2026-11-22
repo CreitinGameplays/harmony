@@ -724,14 +724,23 @@ directly into its binary and (b) support **multi-core compilation by default**.
 
 ### Diagnostics polish (compiler UX, beyond the driver part above)
 
-- [ ] Glyph fallbacks `--ascii` (§16.3); color, honoring
-      `--no-color`/`NO_COLOR` (decoration only).
-- [ ] Full `explain` corpus: one lesson per code (WHAT/WHY/BAD/GOOD/NOTE/SEE).
-- [ ] Story alignment: right-aligned line numbers, trimmed 48-column source,
-      60-char labels, other-file steps (`lib/x.src:3:5`) (§16.2/16.3).
-- [ ] Cascade control (§16.9): type errors suppress ownership analysis in the
-      same function; `also used at …` folding.
-- [ ] Every STOP carries ≥1 `try:` fix (§16.1; enforced by tests).
+- [x] Glyph fallbacks `--ascii` (§16.3); color, honoring
+      `--no-color`/`NO_COLOR` (decoration only). Colour is enabled only on a
+      terminal, and `NO_COLOR` is read by the freestanding runtime hook
+      `lc_env_has` so generated programs never link libc.
+- [x] Full `explain` corpus: one WHAT/WHY/BAD/GOOD/NOTE/SEE lesson per
+      documented code. Pages harmony-base already rendered are kept byte for
+      byte so the driver differential gate still passes.
+- [x] Story alignment: right-aligned line numbers, trimmed 48-column source,
+      60-char labels, other-file steps (`lib/x.src:3:5`) (§16.2/16.3). The
+      M2/M3/M4 analyses now attach their event timelines to diagnostics.
+- [x] Cascade control (§16.9): type errors suppress ownership analysis in the
+      same function; repeat uses of a moved place fold into one report as
+      `also used at lines …`. Diagnostics sort by primary location and cap at
+      5 stops / 10 warns unless `--all` is given.
+- [x] Every STOP carries ≥1 `try:` fix (§16.1). `fmt::make` attaches a
+      code-specific concrete fix at construction, so no stage can emit a bare
+      stop. `tests/harmony-final/diag.sh` (16 checks) is wired into `make test`.
 
 ### Standard library and backends
 

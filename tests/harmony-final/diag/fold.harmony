@@ -1,0 +1,12 @@
+// M5 polish: follow-on uses of one moved value fold into one report.
+struct Owner { v: i32; }
+
+fn take(o: Owner) { }
+
+fn main() -> i32 {
+    let a = Owner { .v = 1 };
+    take(a);
+    let b = a.v;
+    let c = a.v;
+    return b + c;
+}

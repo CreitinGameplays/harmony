@@ -9,6 +9,9 @@ import "../core/vec.hr";
 
 extern "C" fn lc_syscall3(n: i64, a: i64, b: i64, c: i64) -> i64;
 extern "C" fn lc_syscall4(n: i64, a: i64, b: i64, c: i64, d: i64) -> i64;
+// The runtime captures envp at startup, so even freestanding Harmony programs
+// can check NO_COLOR without linking libc (§16.3).
+extern "C" fn lc_env_has(name: raw u8) -> i32;
 
 // Linux x86-64 syscall numbers used by the driver.
 export const SYS_READ: i64 = 0;
@@ -25,6 +28,8 @@ export const SYS_EXIT: i64 = 60;
 export const SYS_PIPE2: i64 = 293;
 export const SYS_SYSINFO: i64 = 99;
 export const SYS_SCHED_GETAFFINITY: i64 = 204;
+export const SYS_IOCTL: i64 = 16;
+export const TCGETS: i64 = 0x5401;
 
 export const FD_STDIN: i32 = 0;
 export const FD_STDOUT: i32 = 1;
@@ -52,6 +57,26 @@ export fn cstr(s: &str) -> raw mut u8 {
         p.plus(s.len()).write(0u8);
     }
     return p;
+}
+
+// True when an environment variable is present (NO_COLOR checks any value).
+export fn env_has(name: &str) -> bool {
+    let s = cstr(name);
+    unchecked("the runtime only reads this NUL-terminated name") {
+        return lc_env_has(s) != 0;
+    }
+}
+
+// Colour is decoration, so it is enabled only for an interactive terminal and
+// is switched off by --no-color, NO_COLOR, or --ascii. A failed ioctl (a
+// redirected pipe, a non-Linux host) means "not a terminal".
+export fn is_terminal(fd: i32) -> bool {
+    let mut tio: [u8; 64] = [0u8; 64];
+    unchecked("tio is a writable 64-byte ioctl argument buffer") {
+        let rc = lc_syscall3(SYS_IOCTL, fd as i64, TCGETS,
+                             raw(&mut tio[0]) as usize as i64);
+        return rc >= 0;
+    }
 }
 
 export fn read(fd: i32, buf: raw mut u8, count: usize) -> i64 {

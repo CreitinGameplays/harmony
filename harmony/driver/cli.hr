@@ -27,6 +27,8 @@ export struct Options {
     all: i32;
     strict: i32;
     deny_unchecked: i32;
+    ascii: i32;                 // §16.3 glyph fallbacks
+    no_color: i32;              // --no-color / NO_COLOR
 }
 
 // ok: 1 = run, 0 = print usage, -1 = bad option.
@@ -48,6 +50,9 @@ fn usage() {
     eprintln("--backend=llvm-c|clang: native LLVM-C or the clang text path");
     eprintln("--strict: turn WARN diagnostics into a stop");
     eprintln("--deny-unchecked: reject any `unchecked` site (UNCK-05)");
+    eprintln("--ascii: use ASCII glyph fallbacks for story steps");
+    eprintln("--no-color: never decorate diagnostics with ANSI colour");
+    eprintln("--all: lift the 5-stop / 10-warn display caps");
 }
 
 fn flag_value(a: &str, flag: &str) -> &life(static) str {
@@ -100,6 +105,8 @@ export fn parse(av: &[&str]) -> ParseResult {
         .all = 0,
         .strict = 0,
         .deny_unchecked = 0,
+        .ascii = 0,
+        .no_color = 0,
     };
     if (av.len() < 2) { usage(); return ParseResult { .ok = 0, .opts = o }; }
     let mut i: usize = 1;
@@ -121,6 +128,8 @@ export fn parse(av: &[&str]) -> ParseResult {
         if (a == "--all") { o.all = 1; i += 1; continue; }
         if (a == "--strict") { o.strict = 1; i += 1; continue; }
         if (a == "--deny-unchecked") { o.deny_unchecked = 1; i += 1; continue; }
+        if (a == "--ascii") { o.ascii = 1; i += 1; continue; }
+        if (a == "--no-color") { o.no_color = 1; i += 1; continue; }
         if (a == "--version") { o.cmd = CMD_VERSION; i += 1; continue; }
         if (a == "--sequential") { o.jobs = 1; i += 1; continue; }
         let backend = flag_value(a, "--backend=");

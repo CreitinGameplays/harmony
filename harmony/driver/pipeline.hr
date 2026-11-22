@@ -5,6 +5,7 @@
 // generated IR stays in memory and is piped to clang on stdin, so the default
 // path never creates a `.ll` temporary file (docs/harmony.md §19.4).
 import "../../library/core/mem.hr";
+import "../../library/core/fmt.hr";
 import "../../library/core/str.hr";
 import "../../library/core/vec.hr";
 import "../../library/std/sys.hr";
@@ -451,10 +452,24 @@ fn compile_llvmc_chunks(chunks: &vec::Vec<str::String>, output: &str,
     return rc;
 }
 
+fn render_diags(ds: &vec::Vec<fmt::Diag>, format: i32, all: i32,
+                ascii: i32, no_color: i32) {
+    // Colour is decoration only (§16.3). It is on for an interactive terminal
+    // unless the user asks for ASCII, plain output, or sets NO_COLOR.
+    let mut color = 1;
+    if (ascii != 0 || no_color != 0 || sys::env_has("NO_COLOR")) { color = 0; }
+    if (!sys::is_terminal(1)) { color = 0; }
+    let opts = diagnostics::Options {
+        .format = format, .all = all, .ascii = ascii, .color = color,
+    };
+    diagnostics::render_all(ds, &opts);
+}
+
 // Runs the full compiler pipeline for one command.
 export fn run(cmd: i32, input: &str, output: &str, opt: &str,
              opt_given: i32, format: i32, jobs: i32, llvmc: i32,
-             strict: i32, deny_unchecked: i32) -> i32 {
+             strict: i32, deny_unchecked: i32, all: i32,
+             ascii: i32, no_color: i32) -> i32 {
     if (input == "") {
         eprintln("harmony: no input file");
         return process::EXIT_USAGE;
@@ -470,16 +485,21 @@ export fn run(cmd: i32, input: &str, output: &str, opt: &str,
     let mut arena: mem::Arena = mem::Arena { .cur = Raw::null() };
     let mut ns: node::Nodes = node::nodes_make();
     let loaded = loader::load(&mut ns, &mut arena, &d.mods, root);
-    diagnostics::render_all(&loaded.diags, format);
+    render_diags(&loaded.diags, format, all, ascii, no_color);
     if (loaded.program < 0 || diagnostics::stop_count(&loaded.diags) != 0) {
         return process::EXIT_STOP;
     }
 
     let mut c = check::make(ns, root);
+    let mut smi: usize = 0;
+    while (smi < d.mods.len()) {
+        check::add_source(&mut c, d.mods.get(smi).path, d.mods.get(smi).src);
+        smi += 1;
+    }
     c.deny_unchecked = deny_unchecked;
     check::check_program(&mut c, loaded.program);
     if (diagnostics::stop_count(&c.diags) != 0) {
-        diagnostics::render_all(&c.diags, format);
+        render_diags(&c.diags, format, all, ascii, no_color);
         return process::EXIT_STOP;
     }
     // M2: type-correct programs get definite-move dataflow. A type error in
@@ -495,7 +515,7 @@ export fn run(cmd: i32, input: &str, output: &str, opt: &str,
         fi += 1;
     }
     if (diagnostics::stop_count(&c.diags) != 0) {
-        diagnostics::render_all(&c.diags, format);
+        render_diags(&c.diags, format, all, ascii, no_color);
         return process::EXIT_STOP;
     }
     // M3: loan checking runs only for programs that are type-correct and
@@ -510,7 +530,7 @@ export fn run(cmd: i32, input: &str, output: &str, opt: &str,
         fi += 1;
     }
     if (diagnostics::stop_count(&c.diags) != 0) {
-        diagnostics::render_all(&c.diags, format);
+        render_diags(&c.diags, format, all, ascii, no_color);
         return process::EXIT_STOP;
     }
     // M4: region/lifetime checking is the last semantic gate. It runs only
@@ -525,10 +545,10 @@ export fn run(cmd: i32, input: &str, output: &str, opt: &str,
         fi += 1;
     }
     if (diagnostics::stop_count(&c.diags) != 0) {
-        diagnostics::render_all(&c.diags, format);
+        render_diags(&c.diags, format, all, ascii, no_color);
         return process::EXIT_STOP;
     }
-    diagnostics::render_all(&c.diags, format);
+    render_diags(&c.diags, format, all, ascii, no_color);
     if (strict != 0 && diagnostics::warn_count(&c.diags) > 0) {
         return process::EXIT_STOP;
     }

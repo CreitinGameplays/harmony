@@ -7,15 +7,15 @@ fn render_line() -> i32 {
     let d = fmt::diag("TYPE-01", fmt::Severity::Stop, "type mismatch",
                       "Expected `i32`, found `&str`.", "main.harmony", 12, 34);
     let s = fmt::render_line(&d);
-    if (s.as_str() != "main.harmony:12:34: stop[TYPE-01]: type mismatch\n") { return 1; }
+    if (s.as_str() != "main.harmony:12:34: stop[TYPE-01]: type mismatch") { return 1; }
     let w = fmt::diag("MUT-02", fmt::Severity::Warn, "prefer a const",
                       "This binding never changes.", "lib/x.harmony", 1, 0);
     let sw = fmt::render_line(&w);
-    if (sw.as_str() != "lib/x.harmony:1:0: warn[MUT-02]: prefer a const\n") { return 2; }
+    if (sw.as_str() != "lib/x.harmony:1:0: warn[MUT-02]: prefer a const") { return 2; }
     let h = fmt::diag("SHADOW-01", fmt::Severity::Hint, "shadows a name",
                       "An outer name has the same spelling.", "a.hr", 9, 7);
     let sh = fmt::render_line(&h);
-    if (sh.as_str() != "a.hr:9:7: hint[SHADOW-01]: shadows a name\n") { return 3; }
+    if (sh.as_str() != "a.hr:9:7: hint[SHADOW-01]: shadows a name") { return 3; }
     return 42;
 }
 
@@ -23,7 +23,7 @@ fn render_json() -> i32 {
     let d = fmt::diag("LEX-01", fmt::Severity::Stop, "bad escape",
                       "Unknown escape.", "x.harmony", 3, 11);
     let s = fmt::render_json(&d);
-    let want = "{\"severity\": \"stop\", \"code\": \"LEX-01\", \"title\": \"bad escape\", \"summary\": \"Unknown escape.\", \"primary\": {\"file\": \"x.harmony\", \"line\": 3, \"col\": 11}, \"story\": [], \"fixes\": []}\n";
+    let want = "{\"severity\": \"stop\", \"code\": \"LEX-01\", \"title\": \"bad escape\", \"summary\": \"Unknown escape.\", \"primary\": {\"file\": \"x.harmony\", \"line\": 3, \"col\": 11}, \"story\": [], \"fixes\": [{\"label\": \"write a valid literal\", \"edits\": [ {\"file\": \"x.harmony\", \"line\": 3, \"col\": 11, \"len\": 0, \"with\": \"check the code at the reported location\"} ]}], \"learn\": \"harmony explain LEX-01\"}";
     if (s.as_str() != want) {
         println("got: {}", s.as_str());
         return 1;

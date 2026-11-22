@@ -4,6 +4,7 @@
 // points where the reference value holding the loan is still live; temporary
 // borrows (an argument or auto-borrow consumed by one call) end at that call.
 // Accesses to overlapping places are then checked against live loans.
+import "../../library/core/fmt.hr";
 import "../../library/core/vec.hr";
 import "../../harmony/ast/node.hr";
 import "../../harmony/sema/check.hr";
@@ -172,7 +173,7 @@ fn active(b: &Loans, l: &Loan, blk: i32, pos: usize) -> bool {
 }
 
 fn report(b: &mut Loans, c: &mut check::Checker, code: &str, title: &str,
-          summary: &str, at: i32) {
+          summary: &str, at: i32) -> i32 {
     let mut h: i64 = 0;
     let cb = code.as_bytes();
     let mut i: usize = 0;
@@ -180,11 +181,20 @@ fn report(b: &mut Loans, c: &mut check::Checker, code: &str, title: &str,
     h = h * 4099 + at as i64;
     i = 0;
     while (i < b.reported.len()) {
-        if (*b.reported.get(i) == h) { return; }
+        if (*b.reported.get(i) == h) { return -1; }
         i += 1;
     }
     b.reported.push(h);
-    check::diag_ownership(c, code, title, summary, at);
+    return check::diag_ownership(c, code, title, summary, at);
+}
+
+// A loan conflict is a story in two parts: where the loan opened and where it
+// was contradicted. Both nodes carry their own module location (§16.2).
+fn story(c: &mut check::Checker, idx: i32, prior: i32, role: i32,
+         label: &str, at: i32) {
+    if (idx < 0) { return; }
+    check::attach_step(c, idx, role, prior, label, 0);
+    check::attach_step(c, idx, fmt::ROLE_USED, at, "conflicting access", 1);
 }
 
 fn place_name(c: &check::Checker, p: &Path) -> &str {
@@ -212,26 +222,33 @@ fn check_access(b: &mut Loans, c: &mut check::Checker, p: &Path, access: i32,
             continue;
         }
         let name = place_name(&*c, p);
+        let loan_node = l.node;
         if (l.kind == K_EXCL) {
             if (access == A_READ || access == A_SHARED) {
                 let mut s: str::String = str::String::make();
                 s.push("`"); s.push(name);
                 s.push("` is exclusively borrowed here");
-                report(b, c, "LOAN-03", "read while exclusively borrowed",
-                       s.as_str(), at);
+                let idx = report(b, c, "LOAN-03", "read while exclusively borrowed",
+                                 s.as_str(), at);
+                story(c, idx, loan_node, fmt::ROLE_BORROWED,
+                      "exclusive loan opened here", at);
             } else {
                 let mut s: str::String = str::String::make();
                 s.push("`"); s.push(name);
                 s.push("` is already exclusively borrowed");
-                report(b, c, "LOAN-02", "second exclusive borrow",
-                       s.as_str(), at);
+                let idx = report(b, c, "LOAN-02", "second exclusive borrow",
+                                 s.as_str(), at);
+                story(c, idx, loan_node, fmt::ROLE_BORROWED,
+                      "first exclusive loan opened here", at);
             }
         } else if (access != A_READ && access != A_SHARED) {
             let mut s: str::String = str::String::make();
             s.push("`"); s.push(name);
             s.push("` is still shared-borrowed here");
-            report(b, c, "LOAN-01", "write while shared-borrowed",
-                   s.as_str(), at);
+            let idx = report(b, c, "LOAN-01", "write while shared-borrowed",
+                             s.as_str(), at);
+            story(c, idx, loan_node, fmt::ROLE_BORROWED,
+                  "shared loan opened here", at);
         }
         i += 1;
     }
@@ -253,8 +270,10 @@ fn make_loan(b: &mut Loans, c: &mut check::Checker, p: &Path, kind: i32,
         let mut s: str::String = str::String::make();
         s.push("`"); s.push(place_name(&*c, p));
         s.push("` is not declared `mut`");
-        report(b, c, "MUT-03", "exclusive borrow of an immutable binding",
-               s.as_str(), at);
+        let idx = report(b, c, "MUT-03", "exclusive borrow of an immutable binding",
+                         s.as_str(), at);
+        story(c, idx, p.root, fmt::ROLE_DECLARED,
+              "this binding was declared without `mut`", at);
     }
     let mut path = new_path(p.root);
     path.whole = p.whole;

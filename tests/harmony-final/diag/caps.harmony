@@ -1,0 +1,10 @@
+// M5 polish: six independent stops exercise the 5-stop display cap.
+fn main() -> i32 {
+    let a: i32 = "one";
+    let b: i32 = "two";
+    let c: i32 = "three";
+    let d: i32 = "four";
+    let e: i32 = "five";
+    let f: i32 = "six";
+    return 0;
+}

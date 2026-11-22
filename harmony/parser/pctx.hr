@@ -99,15 +99,10 @@ export fn eat_kw(p: &mut Parser, kw: &str) -> bool {
 // decides how to recover.
 export fn syntax_stop(p: &mut Parser, code: &str, title: &str, summary: &str) {
     let t = cur(&*p);
-    p.diags.push(fmt::Diag {
-        .code = code,
-        .severity = fmt::Severity::Stop,
-        .title = title,
-        .summary = summary,
-        .file = p.path,
-        .line = t.line,
-        .col = t.col,
-    });
+    // The loader fills in the source line once the whole module is known;
+    // batch harnesses that parse a single string still get a valid envelope.
+    p.diags.push(fmt::make(code, fmt::Severity::Stop, title, summary,
+                           p.path, t.line, t.col, ""));
     p.stops += 1;
     p.panic = true;
 }

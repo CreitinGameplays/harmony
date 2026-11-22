@@ -5,6 +5,7 @@
 // point, whether a place is initialized, moved, or maybe moved. It records
 // timeline events (born/moved/used) and stamps moved path nodes so codegen can
 // clear their drop flags.
+import "../../library/core/fmt.hr";
 import "../../library/core/vec.hr";
 import "../../harmony/ast/node.hr";
 import "../../harmony/sema/check.hr";
@@ -85,7 +86,7 @@ fn event(b: &mut Borrow, role: i32, node_h: i32, decl: i32) {
 }
 
 fn report(b: &mut Borrow, c: &mut check::Checker, code: &str, title: &str,
-          summary: &str, at: i32) {
+          summary: &str, at: i32) -> i32 {
     let mut h: i64 = 0;
     let cb = code.as_bytes();
     let mut i: usize = 0;
@@ -93,13 +94,40 @@ fn report(b: &mut Borrow, c: &mut check::Checker, code: &str, title: &str,
     h = h * 4099 + at as i64;
     i = 0;
     while (i < b.reported.len()) {
-        if (*b.reported.get(i) == h) { return; }
+        if (*b.reported.get(i) == h) { return -1; }
         i += 1;
     }
     b.reported.push(h);
     let mut s: str::String = str::String::make();
     s.push(summary);
-    check::diag_ownership(c, code, title, s.as_str(), at);
+    return check::diag_ownership(c, code, title, s.as_str(), at);
+}
+
+// The move analysis already records `born`/`moved`/`used` events. Reuse the
+// events of the reported place as the diagnostic's timeline (§16.1): the
+// reader sees where the value came from and where it was used again.
+fn story(b: &Borrow, c: &mut check::Checker, idx: i32, decl: i32, at: i32) {
+    if (idx < 0) { return; }
+    let mut i: usize = 0;
+    while (i < b.events.len()) {
+        let ev = b.events.get(i);
+        if (ev.decl != decl || ev.node < 0) { i += 1; continue; }
+        let mut role: i32 = fmt::ROLE_USED;
+        let mut label: &str = "used here";
+        if (ev.role == EV_BORN) {
+            role = fmt::ROLE_BORN;
+            label = "born: this name owns the value";
+        } else if (ev.role == EV_MOVED) {
+            role = fmt::ROLE_MOVED;
+            label = "moved: ownership was handed over";
+        } else if (ev.role == EV_REINIT) {
+            role = fmt::ROLE_DECLARED;
+            label = "re-initialized with a fresh value";
+        }
+        check::attach_step(c, idx, role, ev.node, label, 0);
+        i += 1;
+    }
+    check::attach_step(c, idx, fmt::ROLE_USED, at, "used again", 1);
 }
 
 // Is this expression a place rooted at a local variable?
@@ -153,18 +181,23 @@ fn use_place(b: &mut Borrow, c: &mut check::Checker, h: i32, mov: bool,
             let title: &str = "use of moved value";
             let mut s: str::String = str::String::make();
             s.push("`"); s.push(p.name); s.push("` was already moved");
-            report(b, c, code, title, s.as_str(), h);
+            let idx = report(b, c, code, title, s.as_str(), h);
+            story(&*b, c, idx, root, h);
             let mut q = *b.places.get(pi as usize);
-            q.reported = 1;
+            q.reported = idx + 1;
             b.places.set(pi as usize, q);
+        } else if (p.state != ST_LIVE && p.reported > 0) {
+            // One root cause, one report (§16.9): fold the next use into it.
+            check::fold_diag(c, p.reported - 1, h);
         }
         if (depth > p.loop_depth && p.reported == 0) {
             let mut s: str::String = str::String::make();
             s.push("`"); s.push(p.name);
             s.push("` is moved on every loop iteration");
-            report(b, c, "MOVE-02", "moved inside a loop", s.as_str(), h);
+            let idx = report(b, c, "MOVE-02", "moved inside a loop", s.as_str(), h);
+            story(&*b, c, idx, root, h);
             let mut q = *b.places.get(pi as usize);
-            q.reported = 1;
+            q.reported = idx + 1;
             b.places.set(pi as usize, q);
         }
         let mut q = *b.places.get(pi as usize);
@@ -177,9 +210,17 @@ fn use_place(b: &mut Borrow, c: &mut check::Checker, h: i32, mov: bool,
         return;
     }
     if (p.state != ST_LIVE) {
-        let mut s: str::String = str::String::make();
-        s.push("`"); s.push(p.name); s.push("` is no longer available");
-        report(b, c, "MOVE-01", "use of moved value", s.as_str(), h);
+        if (p.reported > 0) {
+            check::fold_diag(c, p.reported - 1, h);
+        } else {
+            let mut s: str::String = str::String::make();
+            s.push("`"); s.push(p.name); s.push("` is no longer available");
+            let idx = report(b, c, "MOVE-01", "use of moved value", s.as_str(), h);
+            story(&*b, c, idx, root, h);
+            let mut q = *b.places.get(pi as usize);
+            q.reported = idx + 1;
+            b.places.set(pi as usize, q);
+        }
     }
     event(b, EV_USED, h, root);
 }

@@ -451,6 +451,26 @@ The R6 byte-diff found ten rewrite-only bugs, all fixed at the source:
   matched harmony-base byte for byte; tagged sites keep their tag in JSON and
   pretty output. `tests/harmony-final/m6.sh` is the new semantics gate.
 
+### M5 — Diagnostics polish [x]
+
+- [x] **Data model.** `fmt::Diag` carries up to five story steps and three
+  fixes, plus folded follow-on lines. Stories come from the M2/M3/M4 event
+  logs, so the timeline the checker used to decide is also the one the reader
+  sees.
+- [x] **Rendering.** Pretty output right-aligns line numbers, trims source to
+  48 columns and labels to 60, and prints `file:line:col` for steps in another
+  module. `--ascii` swaps `①`/`▸`/`◂ here`/`…` for ASCII; colour is a terminal
+  decoration switched off by `--no-color` or `NO_COLOR`.
+- [x] **Cascade control and fixes.** Type errors still suppress ownership
+  analysis at the driver gate. Repeated uses of a moved place now fold into
+  one report as `also used at lines …`. Diagnostics sort by primary location;
+  5 stops / 10 warns are shown unless `--all` is passed. Every STOP is made
+  through `fmt::make`, which attaches a code-specific `try:` fix.
+- [x] **Explain corpus.** Every code listed in §16.10 has a complete
+  WHAT/WHY/BAD/GOOD/NOTE/SEE lesson. Pages harmony-base already printed stay
+  byte-identical for the driver differential gate. `tests/harmony-final/diag.sh`
+  is the new UX gate (16 checks) and runs from `make test`.
+
 ### V1 batch 1 — final compiler only [/]
 
 - [x] **Structured `unchecked` reasons.** `unchecked(tag, "free text")`

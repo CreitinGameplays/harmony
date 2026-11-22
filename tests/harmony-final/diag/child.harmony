@@ -1,0 +1,2 @@
+// M5 polish: the unknown name is in this file, not in the importing root.
+export fn bad() -> i32 { return missing_name; }

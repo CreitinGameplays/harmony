@@ -1,15 +1,17 @@
 // library/core/fmt.hr — diagnostics as data, rendering as library code
 // (roadmap/harmony R1; docs/harmony.md §19.8.7).
 //
-// The compiler core records `(code, severity, span, arguments)`. It does not
-// decide how a diagnostic *looks*. That is this module's job, and it is
-// ordinary auditable library code rather than compiler code -- §19.8.7's rule
-// ("the compiler emits events only").
+// The compiler core records `(code, severity, span, arguments)` plus its
+// analysis events. It does not decide how a diagnostic *looks*. That is this
+// module's job, and it is ordinary auditable library code rather than compiler
+// code -- §19.8.7's rule ("the compiler emits events only").
 //
-// Rendering must match harmony-base byte for byte: the rewrite's accept/reject
-// gate compares diagnostic codes, and the golden fixtures compare rendered
-// text. `render_line` and `render_json` therefore follow the existing formats
-// exactly, including punctuation and field order.
+// Rendering must match harmony-base byte for byte for the envelope: the
+// accept/reject gates compare diagnostic codes, and the golden fixtures compare
+// rendered line/JSON text. The extended story/fix fields are additive: an
+// event-free diagnostic still renders with the same envelope and an empty
+// `story`/`fixes` list, except that every STOP now carries a concrete fix
+// (§16.1 rule 3).
 import "str.hr";
 
 // Severities (§16.4). STOP stops the build, WARN only under --strict, and
@@ -20,18 +22,56 @@ copy enum Severity {
     Hint,
 }
 
-// One diagnostic. A real checker attaches a story (time-ordered events,
-// §19.3) and fixes; those land with the analyses (R4/R5). The fields here are
-// the ones every stage needs, and they are enough for the lexer's LEX-01 and
-// the parser's SYN-*.
+// Story step roles (§16.7 `story[].role`), kept in time order rather than
+// source order when they differ.
+export const ROLE_BORN: i32 = 0;
+export const ROLE_MOVED: i32 = 1;
+export const ROLE_BORROWED: i32 = 2;
+export const ROLE_USED: i32 = 3;
+export const ROLE_MUTATED: i32 = 4;
+export const ROLE_DROPPED: i32 = 5;
+export const ROLE_DECLARED: i32 = 6;
+export const ROLE_DEFINED: i32 = 7;
+
+export const MAX_STORY: usize = 5;
+export const MAX_FIXES: usize = 3;
+export const MAX_ALSO: usize = 8;
+
+copy struct Step {
+    role: i32;
+    file: &str;
+    line: u32;
+    col: u32;
+    source: &str;       // the source line, before trimming
+    label: &str;
+    trigger: i32;       // exactly one step per report carries `◂ here`
+}
+
+copy struct Fix {
+    label: &str;        // "lend it", "give a copy", ...
+    text: &str;         // compilable replacement code
+}
+
+// One diagnostic. The fixed-size arrays are the documented caps (§16.2: 1..5
+// story steps, 1..3 fixes). They are copies, so a report can travel from an
+// analysis into the renderer without borrowing a mutable checker.
 copy struct Diag {
-    code: &str;       // stable code, e.g. "LEX-01"
+    code: &str;
     severity: Severity;
-    title: &str;      // short, lowercase, no period
-    summary: &str;    // one or two plain-English sentences
-    file: &str;       // source path
-    line: u32;        // 1-based
-    col: u32;         // 0-based
+    title: &str;
+    summary: &str;
+    file: &str;
+    line: u32;
+    col: u32;
+    source: &str;
+    story: [Step; 5];
+    nstory: usize;
+    fixes: [Fix; 3];
+    nfixes: usize;
+    // Follow-on uses of one root cause are folded here instead of becoming
+    // new reports (§16.9).
+    also: [u32; 8];
+    nalso: usize;
 }
 
 // ---------------------------------------------------------------------------
@@ -90,6 +130,205 @@ export fn here_glyph(ascii: bool) -> &str {
     return "\u{25c2} here";
 }
 
+export fn more_glyph(ascii: bool) -> &str {
+    if (ascii) { return "..."; }
+    return "…";
+}
+
+fn role_word(role: i32) -> &str {
+    // Literal cases: the final compiler does not resolve named i32 constants
+    // in switch labels (an enum would be safe, but roles are plain i32).
+    switch (role) {
+        case 0: { return "born"; }
+        case 1: { return "moved"; }
+        case 2: { return "borrowed"; }
+        case 3: { return "used"; }
+        case 4: { return "mutated"; }
+        case 5: { return "dropped"; }
+        case 6: { return "declared"; }
+        case 7: { return "defined"; }
+        default: { return "defined"; }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Construction. Every constructor routes through `make`, so no caller can
+// accidentally emit a STOP without a `try:` line.
+// ---------------------------------------------------------------------------
+
+fn blank_step() -> Step {
+    return Step {
+        .role = ROLE_DEFINED, .file = "", .line = 0, .col = 0,
+        .source = "", .label = "", .trigger = 0,
+    };
+}
+
+fn standard_fix_label(code: &str) -> &str {
+    if (code == "SYN-01") { return "parenthesize the condition"; }
+    if (code == "SYN-02") { return "brace the body"; }
+    if (code == "SYN-03") { return "compare instead of assign"; }
+    if (code == "SYN-04") { return "end the statement"; }
+    if (code == "SYN-05") { return "fix the token"; }
+    if (code == "LEX-01") { return "write a valid literal"; }
+    if (code == "NAME-01") { return "fix the name"; }
+    if (code == "NAME-03") { return "rename one binding"; }
+    if (code == "NAME-04") { return "fix the module path"; }
+    if (code == "TYPE-01") { return "fix the type"; }
+    if (code == "TYPE-02") { return "use a supported operation"; }
+    if (code == "TYPE-03") { return "use a bool condition"; }
+    if (code == "TYPE-04") { return "pass the right arguments"; }
+    if (code == "TYPE-05") { return "remove the unsupported form"; }
+    if (code == "TYPE-06") { return "add the missing bound"; }
+    if (code == "ABLT-01") { return "add the required methods"; }
+    if (code == "ABLT-02") { return "declare the ability once"; }
+    if (code == "FMT-01") { return "match placeholders to arguments"; }
+    if (code == "FFI-01") { return "use the C ABI"; }
+    if (code == "CONST-01") { return "use a constant expression"; }
+    if (code == "FLOW-01") { return "end the else with an exit"; }
+    if (code == "FLOW-02") { return "convert the failure explicitly"; }
+    if (code == "FLOW-03") { return "trap or exit explicitly"; }
+    if (code == "MACRO-01") { return "pass the right arguments"; }
+    if (code == "MACRO-02") { return "use the macro in the right position"; }
+    if (code == "MACRO-03") { return "break the expansion cycle"; }
+    if (code == "MACRO-04") { return "use a legal pack form"; }
+    if (code == "MUT-01") { return "declare it mutable"; }
+    if (code == "MUT-03") { return "declare it mutable"; }
+    if (code == "INIT-01") { return "initialize every path"; }
+    if (code == "MOVE-01") { return "borrow or clone it"; }
+    if (code == "MOVE-02") { return "clone or borrow in the loop"; }
+    if (code == "MOVE-03") { return "clone or return a reference"; }
+    if (code == "MOVE-04") { return "clone the field"; }
+    if (code == "LOAN-01") { return "end the shared borrow first"; }
+    if (code == "LOAN-02") { return "use one writer at a time"; }
+    if (code == "LOAN-03") { return "read through the writer"; }
+    if (code == "LIFE-01") { return "return the owner"; }
+    if (code == "LIFE-02") { return "widen the owner's scope"; }
+    if (code == "LIFE-03") { return "name the input life"; }
+    if (code == "LIFE-04") { return "fix the signature or the body"; }
+    if (code == "CASE-01") { return "add the missing case"; }
+    if (code == "DROP-01") { return "use drop(x)"; }
+    if (code == "UNCK-01") { return "wrap it in unchecked"; }
+    if (code == "UNCK-02") { return "write a real reason"; }
+    if (code == "UNCK-04") { return "promise the contract"; }
+    if (code == "UNCK-05") { return "remove the site or the flag"; }
+    if (code == "RET-01") { return "return a value"; }
+    if (code == "ICE-01") { return "use the LLVM backend"; }
+    if (code == "UNCK-03") { return "shrink the block"; }
+    if (code == "MUT-02") { return "remove mut"; }
+    if (code == "CASE-02") { return "remove the case"; }
+    if (code == "DROP-02") { return "add an iterative cleanup"; }
+    if (code == "UNUSED-01") { return "prefix with _"; }
+    if (code == "UNUSED-02") { return "handle the result"; }
+    if (code == "DEAD-01") { return "remove the code"; }
+    if (code == "STYLE-01") { return "rename it"; }
+    if (code == "NAME-02") { return "use this language's word"; }
+    return "review this site";
+}
+
+fn standard_fix_text(code: &str) -> &str {
+    if (code == "SYN-01") { return "if (condition) { ... }"; }
+    if (code == "SYN-02") { return "{ ... }"; }
+    if (code == "SYN-03") { return "if (x == 5) { ... }"; }
+    if (code == "SYN-04") { return ";"; }
+    if (code == "NAME-01") { return "check the spelling and the imports"; }
+    if (code == "NAME-03") { return "use a different name in this scope"; }
+    if (code == "NAME-04") { return "check the quoted import path"; }
+    if (code == "TYPE-01") { return "convert with `as` or fix the operand type"; }
+    if (code == "TYPE-03") { return "if (n != 0) { ... }"; }
+    if (code == "TYPE-06") { return "fn f<T: ord>(x: T) { ... }"; }
+    if (code == "FFI-01") { return "extern \"C\" fn name(...);"; }
+    if (code == "CONST-01") { return "const N: i32 = 42;"; }
+    if (code == "FLOW-01") { return "return Bad(e);"; }
+    if (code == "MUT-01") { return "let mut x = value;"; }
+    if (code == "MUT-03") { return "let mut x = value;"; }
+    if (code == "MOVE-01") { return "consume(&value);"; }
+    if (code == "MOVE-02") { return "consume(value.clone());"; }
+    if (code == "MOVE-03") { return "return value.clone();"; }
+    if (code == "LOAN-01") { return "use the borrow before the write"; }
+    if (code == "LOAN-02") { return "finish the first borrow before the second"; }
+    if (code == "LIFE-01") { return "return the owner instead of a reference to it"; }
+    if (code == "LIFE-03") { return "fn f<life a>(x: &life(a) str) -> &life(a) str"; }
+    if (code == "CASE-01") { return "case Variant { ... } or default { ... }"; }
+    if (code == "DROP-01") { return "drop(x);"; }
+    if (code == "UNCK-01") { return "unchecked(\"why this is safe\") { ... }"; }
+    if (code == "UNCK-02") { return "unchecked(\"i < len was checked above\") { ... }"; }
+    if (code == "UNCK-04") { return "unchecked(\"the contract holds here\") { f(x); }"; }
+    if (code == "UNCK-05") { return "remove the unchecked site"; }
+    if (code == "RET-01") { return "return value;"; }
+    if (code == "ICE-01") { return "harmony emit-llvm main.harmony"; }
+    if (code == "MUT-02") { return "let x = value;"; }
+    if (code == "UNUSED-01") { return "_value"; }
+    if (code == "DEAD-01") { return "remove this statement"; }
+    if (code == "NAME-02") { return "unchecked(\"reason\") { ... }"; }
+    if (code == "UNCK-03") { return "leave only the risky lines inside the block"; }
+    return "check the code at the reported location";
+}
+
+export fn make(code: &str, severity: Severity, title: &str, summary: &str,
+               file: &str, line: u32, col: u32, source: &str) -> Diag {
+    let blank = blank_step();
+    let empty_fix = Fix { .label = "", .text = "" };
+    let mut d = Diag {
+        .code = code,
+        .severity = severity,
+        .title = title,
+        .summary = summary,
+        .file = file,
+        .line = line,
+        .col = col,
+        .source = source,
+        .story = [blank, blank, blank, blank, blank],
+        .nstory = 0,
+        .fixes = [empty_fix, empty_fix, empty_fix],
+        .nfixes = 0,
+        .also = [0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32],
+        .nalso = 0,
+    };
+    if (severity == Severity::Stop) {
+        add_fix(&mut d, standard_fix_label(code), standard_fix_text(code));
+    }
+    return d;
+}
+
+// Compatible constructor for the common "one site, no source text" case.
+export fn diag(code: &str, severity: Severity, title: &str, summary: &str,
+               file: &str, line: u32, col: u32) -> Diag {
+    return make(code, severity, title, summary, file, line, col, "");
+}
+
+export fn set_source(d: &mut Diag, source: &str) {
+    if (d.source == "") { d.source = source; }
+}
+
+export fn add_step(d: &mut Diag, role: i32, file: &str, line: u32, col: u32,
+                   source: &str, label: &str, trigger: i32) {
+    if (d.nstory >= MAX_STORY) { return; }
+    let s = Step {
+        .role = role, .file = file, .line = line, .col = col,
+        .source = source, .label = label, .trigger = trigger,
+    };
+    d.story[d.nstory] = s;
+    d.nstory += 1;
+}
+
+export fn add_fix(d: &mut Diag, label: &str, text: &str) {
+    if (d.nfixes >= MAX_FIXES) { return; }
+    d.fixes[d.nfixes] = Fix { .label = label, .text = text };
+    d.nfixes += 1;
+}
+
+// Adds one follow-on line to a folded report, ignoring duplicates (§16.9).
+export fn add_also(d: &mut Diag, line: u32) {
+    if (line == 0 || d.nalso >= MAX_ALSO) { return; }
+    let mut i: usize = 0;
+    while (i < d.nalso) {
+        if (d.also[i] == line) { return; }
+        i += 1;
+    }
+    d.also[d.nalso] = line;
+    d.nalso += 1;
+}
+
 // ---------------------------------------------------------------------------
 // JSON escaping. harmony-base's `out_json_str` escapes only `"` `\` `\n`
 // `\r` `\t`; everything else (including UTF-8 bytes) passes through. This
@@ -114,10 +353,15 @@ export fn json_escape(s: &str) -> str::String {
     return out;
 }
 
-// ---------------------------------------------------------------------------
-// Renderers. Each returns a String, so the caller decides where it goes
-// (stdout, a log, an editor's diagnostics channel).
-// ---------------------------------------------------------------------------
+fn push_json_loc(out: &mut str::String, file: &str, line: u32, col: u32) {
+    let f = json_escape(file);
+    out.push("\"file\": ");
+    out.push(f.as_str());
+    out.push(", \"line\": ");
+    out.push_u64(line as u64);
+    out.push(", \"col\": ");
+    out.push_u64(col as u64);
+}
 
 // §16.7 `--format=line`:
 //
@@ -138,12 +382,12 @@ export fn render_line(d: &Diag) -> str::String {
     out.push(d.code);
     out.push("]: ");
     out.push(d.title);
-    out.push("\n");
     return out;
 }
 
 // §16.7 `--format=json`: one compact object per diagnostic, with the same
-// field order and spacing as harmony-base's `diag_emit_json`.
+// field order and spacing as harmony-base's `diag_emit_json`. The story and
+// fixes are now populated by the analyses; the envelope is unchanged.
 export fn render_json(d: &Diag) -> str::String {
     let mut out: str::String = str::String::make();
     out.push("{\"severity\": ");
@@ -158,28 +402,251 @@ export fn render_json(d: &Diag) -> str::String {
     out.push(", \"summary\": ");
     let s = json_escape(d.summary);
     out.push(s.as_str());
-    out.push(", \"primary\": {\"file\": ");
-    let f = json_escape(d.file);
-    out.push(f.as_str());
-    out.push(", \"line\": ");
-    out.push_u64(d.line as u64);
-    out.push(", \"col\": ");
-    out.push_u64(d.col as u64);
-    out.push("}, \"story\": [], \"fixes\": []}\n");
+    out.push(", \"primary\": {");
+    push_json_loc(&mut out, d.file, d.line, d.col);
+    out.push("}, \"story\": [");
+    let mut i: usize = 0;
+    while (i < d.nstory) {
+        if (i > 0) { out.push(", "); }
+        let st = d.story[i];
+        out.push("{\"step\": ");
+        out.push_u64((i + 1) as u64);
+        out.push(", \"role\": \"");
+        out.push(role_word(st.role));
+        out.push("\"");
+        out.push(", ");
+        push_json_loc(&mut out, st.file, st.line, st.col);
+        out.push(", \"label\": ");
+        let lab = json_escape(st.label);
+        out.push(lab.as_str());
+        if (st.trigger != 0) { out.push(", \"trigger\": true"); }
+        out.push("}");
+        i += 1;
+    }
+    out.push("], \"fixes\": [");
+    i = 0;
+    while (i < d.nfixes) {
+        if (i > 0) { out.push(", "); }
+        let f = d.fixes[i];
+        out.push("{\"label\": ");
+        let lab = json_escape(f.label);
+        out.push(lab.as_str());
+        out.push(", \"edits\": [ {");
+        push_json_loc(&mut out, d.file, d.line, d.col);
+        out.push(", \"len\": 0, \"with\": ");
+        let txt = json_escape(f.text);
+        out.push(txt.as_str());
+        out.push("} ]}");
+        i += 1;
+    }
+    out.push("]");
+    if (d.nalso > 0) {
+        out.push(", \"also_used\": [");
+        i = 0;
+        while (i < d.nalso) {
+            if (i > 0) { out.push(", "); }
+            out.push_u64(d.also[i] as u64);
+            i += 1;
+        }
+        out.push("]");
+    }
+    out.push(", \"learn\": \"harmony explain ");
+    out.push(d.code);
+    out.push("\"}");
     return out;
 }
 
-// A constructor for the common "one site, no story yet" case, which is what
-// the lexer and parser emit.
-export fn diag(code: &str, severity: Severity, title: &str, summary: &str,
-              file: &str, line: u32, col: u32) -> Diag {
-    return Diag {
-        .code = code,
-        .severity = severity,
-        .title = title,
-        .summary = summary,
-        .file = file,
-        .line = line,
-        .col = col,
-    };
+// ---------------------------------------------------------------------------
+// Pretty format (§16.2). The source line comes from the diagnostic itself, so
+// no global file table is needed. Lines are right-aligned to the widest line
+// number; source and label columns line up across every step.
+// ---------------------------------------------------------------------------
+
+export fn source_line(src: &str, line: u32) -> &str {
+    if (line == 0 || src == "") { return ""; }
+    let b = src.as_bytes();
+    let mut want: u32 = 1;
+    let mut start: usize = 0;
+    let mut i: usize = 0;
+    while (i < b.len()) {
+        if (b[i] == 10u8) {
+            if (want == line) { return str::slice(src, start, i); }
+            want += 1;
+            start = i + 1;
+        }
+        i += 1;
+    }
+    if (want == line) { return str::slice(src, start, b.len()); }
+    return "";
+}
+
+fn trim_source(s: &str) -> str::String {
+    let b = s.as_bytes();
+    let mut i: usize = 0;
+    while (i < b.len() && (b[i] == 32u8 || b[i] == 9u8)) { i += 1; }
+    let mut end: usize = b.len();
+    while (end > i && (b[end - 1] == 32u8 || b[end - 1] == 9u8
+                       || b[end - 1] == 13u8)) { end -= 1; }
+    let mut s2 = str::slice(s, i, end);
+    let mut out: str::String = str::String::make();
+    if (s2.len() > 48) {
+        s2 = str::slice(s2, 0, 48);
+        out.push(s2);
+        out.push("\u{2026}");
+    } else {
+        out.push(s2);
+    }
+    return out;
+}
+
+fn trim_label(s: &str) -> str::String {
+    let b = s.as_bytes();
+    let mut end: usize = b.len();
+    while (end > 0 && (b[end - 1] == 32u8 || b[end - 1] == 9u8)) { end -= 1; }
+    let mut s2 = str::slice(s, 0, end);
+    let mut out: str::String = str::String::make();
+    if (s2.len() > 60) {
+        s2 = str::slice(s2, 0, 60);
+        out.push(s2);
+        out.push("\u{2026}");
+    } else {
+        out.push(s2);
+    }
+    return out;
+}
+
+fn push_repeat(out: &mut str::String, ch: &str, n: usize) {
+    let mut i: usize = 0;
+    while (i < n) { out.push(ch); i += 1; }
+}
+
+fn paint(out: &mut str::String, color: bool, code: &str, text: &str) {
+    if (!color) { out.push(text); return; }
+    out.push("\u{1b}[");
+    out.push(code);
+    out.push("m");
+    out.push(text);
+    out.push("\u{1b}[0m");
+}
+
+export fn render_pretty(d: &Diag, ascii: bool, color: bool) -> str::String {
+    let mut out: str::String = str::String::make();
+
+    // Header (always one line): SEVERITY  CODE  file:line:col.
+    let sev = severity_word(d.severity);
+    if (color) {
+        if (d.severity == Severity::Stop) { paint(&mut out, true, "31", sev); }
+        else if (d.severity == Severity::Warn) { paint(&mut out, true, "33", sev); }
+        else { paint(&mut out, true, "36", sev); }
+    } else { out.push(sev); }
+    out.push("  ");
+    paint(&mut out, color, "2", d.code);
+    out.push("  ");
+    out.push(d.file);
+    out.push(":");
+    out.push_u64(d.line as u64);
+    out.push(":");
+    out.push_u64(d.col as u64);
+    out.push("\n");
+
+    out.push(d.title);
+    out.push("\n\n");
+    if (d.summary != "") {
+        out.push("   ");
+        out.push(d.summary);
+        out.push("\n\n");
+    }
+
+    // A report with no analysis events still gets a single-site story so the
+    // offending source line is visible (§16.2 `▸`).
+    let mut shown = *d;
+    if (shown.nstory == 0) {
+        add_step(&mut shown, ROLE_DEFINED, d.file, d.line, d.col,
+                 d.source, "", 1);
+    }
+    let d = &shown;
+
+    // Story: one entry is rendered as a single site (`▸`), several as a
+    // numbered timeline. The trigger gets `◂ here` (§16.2/§16.3).
+    let n = d.nstory;
+    let mut width: usize = 0;
+    let mut wi: usize = 0;
+    while (wi < n) {
+        let mut v = d.story[wi].line as u64;
+        let mut len: usize = 1;
+        while (v >= 10) { v /= 10; len += 1; }
+        if (len > width) { width = len; }
+        wi += 1;
+    }
+    wi = 0;
+    while (wi < n) {
+        let st = d.story[wi];
+        out.push("   ");
+        if (n == 1) { out.push(site_glyph(ascii)); }
+        else { out.push(step_glyph((wi + 1) as u32, ascii)); }
+        out.push("  ");
+        if (st.file != "" && st.file != d.file) {
+            // §16.3: steps from another module print their own location.
+            out.push(st.file);
+            out.push(":");
+            out.push_u64(st.line as u64);
+            out.push(":");
+            out.push_u64(st.col as u64);
+        } else if (st.file != "") {
+            let mut v = st.line as u64;
+            let mut len: usize = 1;
+            while (v >= 10) { v /= 10; len += 1; }
+            push_repeat(&mut out, " ", width - len);
+            out.push_u64(st.line as u64);
+        } else {
+            push_repeat(&mut out, " ", width);
+        }
+        out.push("  ");
+        let mut src = st.source;
+        if (src == "" && wi == 0) { src = d.source; }
+        let text = trim_source(source_line(src, st.line));
+        out.push(text.as_str());
+        if (st.label != "") {
+            out.push("   ");
+            let label = trim_label(st.label);
+            out.push(label.as_str());
+        }
+        if (st.trigger != 0) {
+            out.push("  ");
+            paint(&mut out, color, "1", here_glyph(ascii));
+        }
+        out.push("\n");
+        wi += 1;
+    }
+
+    if (d.nalso > 0) {
+        out.push("   also used at lines ");
+        wi = 0;
+        while (wi < d.nalso) {
+            if (wi > 0) { out.push(", "); }
+            out.push_u64(d.also[wi] as u64);
+            wi += 1;
+        }
+        out.push("\n");
+    }
+    if (n > 0 || d.nalso > 0) { out.push("\n"); }
+
+    wi = 0;
+    while (wi < d.nfixes) {
+        let f = d.fixes[wi];
+        out.push("   ");
+        if (wi == 0) { out.push("try:  "); } else { out.push("or:   "); }
+        if (f.label != "") {
+            out.push(f.label);
+            if (f.text != "") { out.push("   "); }
+        }
+        if (f.text != "") { out.push(f.text); }
+        out.push("\n");
+        wi += 1;
+    }
+    if (d.nfixes > 0) { out.push("\n"); }
+
+    out.push("   learn: harmony explain ");
+    out.push(d.code);
+    return out;
 }

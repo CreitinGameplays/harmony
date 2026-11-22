@@ -11,6 +11,7 @@
 // 0, parameters are 1, and each entered block adds one. A region with a larger
 // depth is shorter-lived. Named and elided parameter regions are tagged as
 // abstract so returning a different one is reported as LIFE-04, not LIFE-01.
+import "../../library/core/fmt.hr";
 import "../../library/core/str.hr";
 import "../../library/core/vec.hr";
 import "../../harmony/ast/node.hr";
@@ -204,7 +205,15 @@ fn report(l: &mut Lifetimes, c: &mut check::Checker, code: &str,
         i += 1;
     }
     l.reported.push(h);
-    check::diag_ownership(c, code, title, summary, at);
+    let idx = check::diag_ownership(c, code, title, summary, at);
+    // The return expression is where the region escapes; the source of the
+    // borrowed value (when the analysis has one) is the earlier story step.
+    if (l.out_node >= 0 && l.out_node != at) {
+        check::attach_step(c, idx, fmt::ROLE_BORN, l.out_node,
+                           "borrowed value is created here", 0);
+    }
+    check::attach_step(c, idx, fmt::ROLE_USED, at,
+                       "reference escapes here", 1);
 }
 
 // Scans a type annotation. Explicit `life(x)` uses bind to `x`; an elided

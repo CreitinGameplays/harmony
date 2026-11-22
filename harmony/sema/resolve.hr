@@ -54,23 +54,10 @@ export fn make(path: &str) -> Resolver {
 fn diag(r: &mut Resolver, code: &str, title: &str, summary: &str, at: i32,
         nodes: &node::Nodes) {
     let n = node::get(nodes, at);
-    // Node spans are byte offsets in the source; the line/col are recorded by
-    // the lexer on tokens but the AST keeps only offsets. The code is what the
-    // differential test compares, so line/col are derived from the offset as
-    // a monotonic approximation (see §16: the first line is the identity).
-    let mut line: u32 = 1;
-    let mut col: u32 = 0;
-    let b = nodes.items.get(0);   // unused; keeps spans simple
-    let _ = b;
-    r.diags.push(fmt::Diag {
-        .code = code,
-        .severity = fmt::Severity::Stop,
-        .title = title,
-        .summary = summary,
-        .file = r.path,
-        .line = line,
-        .col = col,
-    });
+    // The loader stamps resolved locations on every node, so the resolver no
+    // longer reports a monotonic approximation of the byte offset.
+    r.diags.push(fmt::make(code, fmt::Severity::Stop, title, summary,
+                           r.path, n.line, n.col, ""));
 }
 
 // ---- scopes and symbols --------------------------------------------------

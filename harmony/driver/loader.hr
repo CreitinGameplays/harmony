@@ -186,15 +186,8 @@ fn find_path(infos: &vec::Vec<ModuleInfo>, path: &str) -> i32 {
 
 fn load_error(diags: &mut vec::Vec<fmt::Diag>, code: &str, title: &str,
               summary: &str) {
-    diags.push(fmt::Diag {
-        .code = code,
-        .severity = fmt::Severity::Stop,
-        .title = title,
-        .summary = summary,
-        .file = "",
-        .line = 0,
-        .col = 0,
-    });
+    diags.push(fmt::make(code, fmt::Severity::Stop, title, summary,
+                         "", 0, 0, ""));
 }
 
 // The import paths of a module's AST_PROGRAM.
@@ -406,7 +399,10 @@ fn parse_one(nodes: &mut node::Nodes, arena: &mut mem::Arena,
     // silently lost its items.
     let mut i: usize = 0;
     while (i < p.diags.len()) {
-        let d = *p.diags.get(i);
+        let mut d = *p.diags.get(i);
+        // The parser sees tokens, not the source bytes. Give its report the
+        // module text now so the pretty renderer can quote the offending line.
+        fmt::set_source(&mut d, src);
         diags.push(d);
         i += 1;
     }

@@ -40,6 +40,14 @@ copy struct Sym {
 
 // ---- checker context ------------------------------------------------------
 
+// A module's source text. The driver registers every discovered module so a
+// diagnostic (or a story step) can quote its own source line, including from
+// an imported file.
+export copy struct Source {
+    path: &str;
+    text: &str;
+}
+
 export struct Checker {
     nodes: node::Nodes;
     types: types::Types;
@@ -55,6 +63,7 @@ export struct Checker {
     inst_args: vec::Vec<i32>;   // resolved args, max_targs per row
     max_targs: usize;           // fixed row width for inst_args
     diags: vec::Vec<fmt::Diag>;
+    sources: vec::Vec<Source>;
     path: &str;
     cur_fn: i32;                // current function handle, -1 outside
     ret_ty: i32;                // current function's return type
@@ -88,6 +97,7 @@ export fn make(nodes: node::Nodes, path: &str) -> Checker {
         .inst_args = vec::Vec<i32>::make(),
         .max_targs = 8,
         .diags = vec::Vec<fmt::Diag>::make(),
+        .sources = vec::Vec<Source>::make(),
         .path = path,
         .cur_fn = -1,
         .ret_ty = 0,
@@ -110,7 +120,20 @@ export fn make(nodes: node::Nodes, path: &str) -> Checker {
 
 // ---- diagnostics ----------------------------------------------------------
 
-fn add_diag(c: &mut Checker, code: &str, title: &str, summary: &str, at: i32) {
+export fn add_source(c: &mut Checker, path: &str, text: &str) {
+    c.sources.push(Source { .path = path, .text = text });
+}
+
+fn source_for(c: &Checker, file: &str) -> &str {
+    let mut i: usize = 0;
+    while (i < c.sources.len()) {
+        if (c.sources.get(i).path == file) { return c.sources.get(i).text; }
+        i += 1;
+    }
+    return "";
+}
+
+fn add_diag(c: &mut Checker, code: &str, title: &str, summary: &str, at: i32) -> i32 {
     let mut line: u32 = 0;
     let mut col: u32 = 0;
     let mut file: &str = c.path;
@@ -123,18 +146,13 @@ fn add_diag(c: &mut Checker, code: &str, title: &str, summary: &str, at: i32) {
         col = n.col;
         if (n.src_path != "") { file = n.src_path; }
     }
-    c.diags.push(fmt::Diag {
-        .code = code,
-        .severity = fmt::Severity::Stop,
-        .title = title,
-        .summary = summary,
-        .file = file,
-        .line = line,
-        .col = col,
-    });
+    let source = source_for(&*c, file);
+    c.diags.push(fmt::make(code, fmt::Severity::Stop, title, summary,
+                           file, line, col, source));
+    return c.diags.len() as i32 - 1;
 }
 
-fn warn_diag(c: &mut Checker, code: &str, title: &str, summary: &str, at: i32) {
+fn warn_diag(c: &mut Checker, code: &str, title: &str, summary: &str, at: i32) -> i32 {
     let mut line: u32 = 0;
     let mut col: u32 = 0;
     let mut file: &str = c.path;
@@ -144,15 +162,33 @@ fn warn_diag(c: &mut Checker, code: &str, title: &str, summary: &str, at: i32) {
         col = n.col;
         if (n.src_path != "") { file = n.src_path; }
     }
-    c.diags.push(fmt::Diag {
-        .code = code,
-        .severity = fmt::Severity::Warn,
-        .title = title,
-        .summary = summary,
-        .file = file,
-        .line = line,
-        .col = col,
-    });
+    let source = source_for(&*c, file);
+    c.diags.push(fmt::make(code, fmt::Severity::Warn, title, summary,
+                           file, line, col, source));
+    return c.diags.len() as i32 - 1;
+}
+
+// Attaches one timeline step to an existing report. The node carries its own
+// module path and resolved location, so an imported step prints `lib/x.hr:3`.
+export fn attach_step(c: &mut Checker, idx: i32, role: i32, node_h: i32,
+                      label: &str, trigger: i32) {
+    if (idx < 0 || node_h < 0) { return; }
+    let n = node::get(&c.nodes, node_h);
+    let mut file = c.path;
+    if (n.src_path != "") { file = n.src_path; }
+    let source = source_for(&*c, file);
+    let mut d = *c.diags.get(idx as usize);
+    fmt::add_step(&mut d, role, file, n.line, n.col, source, label, trigger);
+    c.diags.set(idx as usize, d);
+}
+
+// Folds one more use into an existing MOVE-01 report (§16.9).
+export fn fold_diag(c: &mut Checker, idx: i32, node_h: i32) {
+    if (idx < 0 || node_h < 0) { return; }
+    let n = node::get(&c.nodes, node_h);
+    let mut d = *c.diags.get(idx as usize);
+    fmt::add_also(&mut d, n.line);
+    c.diags.set(idx as usize, d);
 }
 
 // Line span of a block, from the resolved line of its first and last nodes.
@@ -217,8 +253,8 @@ export fn stop_count(c: &Checker) -> i32 {
 
 // Ownership analyses run after type checking and append their own stops here.
 export fn diag_ownership(c: &mut Checker, code: &str, title: &str,
-                         summary: &str, at: i32) {
-    add_diag(c, code, title, summary, at);
+                         summary: &str, at: i32) -> i32 {
+    return add_diag(c, code, title, summary, at);
 }
 
 fn mismatch(c: &mut Checker, at: i32, want: i32, got: i32, what: &str) {

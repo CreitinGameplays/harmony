@@ -2788,11 +2788,16 @@ lc fmt     <file.harmony>   canonical formatter (one style, no options)
 lc --dump-ast <file.harmony> print the parse tree, no type checking
 
 flags:  --format=pretty|line|json   --all   --strict   --deny-unchecked
-        --no-color   --ascii   -o <out>
+        --no-color   --ascii   -o <out>   -v|--verbose
         -O0 -O1 -O2 -O3 -Os -Oz -Og -Ofast   optimization level (-O2 default)
         -j<N>  --jobs=<N>  --sequential   parallel LLVM workers (default: CPUs)
         --backend=llvm-c|clang             native LLVM-C (default) or clang debug path
 ```
+
+`-v`/`--verbose` writes a stage trace to stderr: bytes read per root module,
+items parsed, stops after checking, and the output path on a successful build.
+Program stdout and exit codes are unchanged, so verbose output never affects
+byte-deterministic `emit-llvm` comparisons.
 
 `-O<level>` selects the LLVM optimization level for code generation and is
 passed straight through to the LLVM pipeline, so `-O3` runs the full

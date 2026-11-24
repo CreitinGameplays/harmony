@@ -12,7 +12,9 @@
 # file is never hand-edited:
 #
 #   channel  stable — HEAD carries a release tag.
-#            beta   — HEAD is on a release branch (`1.0`, `1.1`, ...).
+#            beta   — HEAD is on a release branch (`1.0`, `1.1`, ...), or the
+#                     existing VERSION already declares beta (a release line
+#                     being prepared on the default branch).
 #            dev    — anything else.
 #   NUMBER   commits since the last release tag (all commits when there is no
 #            tag yet). A release resets it, because the tag moves the base.
@@ -45,10 +47,15 @@ fi
 
 file_base=""
 file_patch=""
+file_channel=""
 if [ -f "$VERSION_FILE" ]; then
     file_base="$(sed -n 's/^\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
         "$VERSION_FILE" | head -1)"
     file_patch="$(printf '%s' "$file_base" | cut -d. -f3)"
+    # A release line can be prepared on the default branch before its
+    # `MAJOR.MINOR` branch is cut. Preserve an already-declared beta channel.
+    file_channel="$(sed -n 's/^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*-\([a-z]*\)\..*/\1/p' \
+        "$VERSION_FILE" | head -1)"
 fi
 
 if [ -n "$branch_base" ]; then
@@ -95,6 +102,7 @@ elif [ -n "$branch_base" ]; then
     fi
 else
     channel="dev"
+    if [ "$file_channel" = "beta" ]; then channel="beta"; fi
     if [ -n "$last_tag" ]; then
         number="$(git rev-list --count "${last_tag}^{commit}..HEAD" 2>/dev/null || echo 1)"
     else

@@ -58,13 +58,15 @@ else
     bad "version-script-computes-a-valid-version (got '$P1')"
 fi
 
-# An archive tag (e.g. legacy/bootstrap-final) must not be treated as a
-# release: on a normal dev commit the computed channel stays `dev`.
+# An archive tag (e.g. legacy/bootstrap-final, stage0-v1) must not be treated
+# as a release: on an untagged commit the channel stays dev or beta, never
+# stable. A beta line may be prepared on the default branch before its release
+# branch is cut.
 BRANCH="$(cd "$ROOT" && git rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
 HEADTAG="$(cd "$ROOT" && git tag --points-at HEAD 2>/dev/null | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)"
 if [ -z "$HEADTAG" ] && ! printf '%s' "$BRANCH" | grep -Eq '^[0-9]+\.[0-9]+$'; then
     case "$P1" in
-        *-dev.*) ok "archive-tags-do-not-mark-a-release ($P1)" ;;
+        *-dev.*|*-beta.*) ok "archive-tags-do-not-mark-a-release ($P1)" ;;
         *) bad "archive-tags-do-not-mark-a-release (got '$P1')" ;;
     esac
 fi

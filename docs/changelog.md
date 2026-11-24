@@ -33,6 +33,8 @@ into `docs/harmony.md`.
 | design (future) | §20.5 scoped AST macros | Documented the intended macro system: expansion at stage 3.5, `#name(...)` calls, `expr`/`code`/`block`/`type`/`ident` parameter kinds, hygienic scopes, scoped `return`, variadic packs, `MACRO-01..04`, and the grammar extension. **Design only — no implementation, not in v1.** |
 | impl (rewrite) | R6 LLVM backend | The self-hosted compiler now has its own LLVM IR emitter (`harmony/codegen/llvm/`). On all 95 programs in the codegen corpus, its IR was **byte-identical** to harmony-base's, including checked arithmetic, traps, slices, aggregates, generics, methods, enums, switches, formatting calls, and multi-module programs. |
 | impl (bootstrap) | Seed-only build | The legacy `c2x-seed`/`harmony-base` toolchain was frozen on `legacy/bootstrap` (tag `legacy/bootstrap-final`) and archived as the `v0.3.3` release. The current seed is published separately on `stage0-v1`; `make harmony` downloads and verifies it before rebuilding the compiler. The latest compiler release always becomes the next seed. |
+| impl (driver) | Verbose trace | `-v`/`--verbose` now reports each pipeline stage on stderr (bytes read, items parsed, stops checked, binary written), matching the legacy trace without changing stdout or exit codes. |
+| version | 1.0.0 line opened | The `VERSION` base moved to `1.0.0` with the `beta` channel while the language is still being finished; the first seed-native final release is still `1.0.0`. |
 
 ## Bug fixed in v0.3
 

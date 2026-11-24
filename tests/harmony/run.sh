@@ -35,11 +35,9 @@ fi
 printf 'fn main() {\n    let x = 1;\n}\n' > "$TMP/hello.harmony"
 : > "$TMP/empty.harmony"
 
-# Capability probes for the dual-runner burn-in. The legacy lane runs every
-# check; the v1 lane skips only features v1 does not implement yet (C backend,
-# verbose trace). Every skip is printed so a divergence can never be hidden.
-"$HB" -v check "$TMP/hello.harmony" >/dev/null 2>"$TMP/v.txt"
-if grep -q "read" "$TMP/v.txt"; then HAS_VERBOSE=1; else HAS_VERBOSE=0; fi
+# Capability probe for the one feature still unimplemented (the C backend).
+# The verbose trace is implemented and checked strictly below; every remaining
+# skip is printed so a divergence can never be hidden.
 if "$HB" emit-c "$TMP/hello.harmony" 2>/dev/null | grep -q "ICE-01"; then
     HAS_EMITC=1
 else
@@ -71,15 +69,25 @@ check "check empty exits 0" 0 $?
 "$HB" check "$TMP/does-not-exist.harmony" >/dev/null 2>&1
 check "check missing file exits 2" 2 $?
 
-# Verbose output goes to stderr but exit stays 0.
+# Verbose output goes to stderr but exit stays 0, and each stage is named.
 "$HB" -v check "$TMP/hello.harmony" >/dev/null 2>"$TMP/v.txt"
 check "verbose check exits 0" 0 $?
-if [ "$HAS_VERBOSE" -eq 0 ]; then
-    printf 'SKIP verbose prints byte count (v1 has no verbose trace yet)\n'
-elif grep -q "read" "$TMP/v.txt"; then
+if grep -q "read" "$TMP/v.txt"; then
     pass=$((pass + 1)); printf 'ok   verbose prints byte count\n'
 else
     fail=$((fail + 1)); printf 'FAIL verbose prints byte count\n'
+fi
+if grep -q "parsed" "$TMP/v.txt" && grep -q "checked" "$TMP/v.txt"; then
+    pass=$((pass + 1)); printf 'ok   verbose names the parse and check stages\n'
+else
+    fail=$((fail + 1)); printf 'FAIL verbose stage trace\n'
+fi
+"$HB" -v build "$TMP/hello.harmony" -o "$TMP/vbin" >/dev/null 2>"$TMP/vbuild.txt"
+check "verbose build exits 0" 0 $?
+if grep -q "wrote" "$TMP/vbuild.txt"; then
+    pass=$((pass + 1)); printf 'ok   verbose reports the written binary\n'
+else
+    fail=$((fail + 1)); printf 'FAIL verbose binary trace\n'
 fi
 
 # Codegen paths. The LLVM backend works for the M1 slice; emit-c is still M7.

@@ -26,8 +26,8 @@ bootstrap items remain.
       through two further self-host passes (stage1 == stage2 == stage3).
 - [x] `tests/env.sh` / `tests/env.py` provide `HARMONY`, `HC` and `ORACLE`
       overrides so the full suite can run in a legacy lane and a v1 lane.
-- [x] `make test-v1` runs the v1 lane. The only remaining CLI gap (no verbose
-      trace) is reported as an explicit `SKIP`, never a silent pass.
+- [x] `make test-v1` ran the v1 lane; the C backend was the only CLI gap left
+      before it was retired with the legacy oracle.
 - [x] Fixed four v1 harnesses that moved `lx.toks` out of an owning struct
       field; the compiler's own driver code already used `.clone()`.
 - [x] Fixed genuine v1 lexer/driver bugs found by the burn-in: lexer diagnostics

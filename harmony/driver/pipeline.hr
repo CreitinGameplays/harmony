@@ -504,7 +504,7 @@ export fn emit_c_stub(format: i32, all: i32, ascii: i32, no_color: i32) -> i32 {
 export fn run(cmd: i32, input: &str, output: &str, opt: &str,
              opt_given: i32, format: i32, jobs: i32, llvmc: i32,
              strict: i32, deny_unchecked: i32, all: i32,
-             ascii: i32, no_color: i32) -> i32 {
+             ascii: i32, no_color: i32, verbose: i32) -> i32 {
     if (input == "") {
         eprintln("harmony: no input file");
         return process::EXIT_USAGE;
@@ -525,6 +525,9 @@ export fn run(cmd: i32, input: &str, output: &str, opt: &str,
         render_diags(&ds, format, all, ascii, no_color);
         return process::EXIT_STOP;
     }
+    if (verbose != 0) {
+        eprintln("harmony: read {} bytes from {}", str::len(d.mods.get(0).src), root);
+    }
     let need_core = uses_llvmc(&d.mods);
 
     let mut arena: mem::Arena = mem::Arena { .cur = Raw::null() };
@@ -533,6 +536,9 @@ export fn run(cmd: i32, input: &str, output: &str, opt: &str,
     render_diags(&loaded.diags, format, all, ascii, no_color);
     if (loaded.program < 0 || diagnostics::stop_count(&loaded.diags) != 0) {
         return process::EXIT_STOP;
+    }
+    if (verbose != 0) {
+        eprintln("harmony: parsed {} items", node::get(&ns, loaded.program).kids.len());
     }
 
     let mut c = check::make(ns, root);
@@ -596,6 +602,9 @@ export fn run(cmd: i32, input: &str, output: &str, opt: &str,
     render_diags(&c.diags, format, all, ascii, no_color);
     if (strict != 0 && diagnostics::warn_count(&c.diags) > 0) {
         return process::EXIT_STOP;
+    }
+    if (verbose != 0) {
+        eprintln("harmony: checked {} stop(s)", diagnostics::stop_count(&c.diags));
     }
     if (cmd == 2) { return process::EXIT_OK; }   // check
 
@@ -666,6 +675,7 @@ export fn run(cmd: i32, input: &str, output: &str, opt: &str,
         }
     }
     if (rc != 0) { return process::EXIT_STOP; }
+    if (verbose != 0) { eprintln("harmony: wrote {}", binary); }
     if (cmd == 0) { return process::EXIT_OK; }   // build
     let run_rc = run_binary(binary);
     if (output == "") { sys::unlink(binary); }

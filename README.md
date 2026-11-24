@@ -28,12 +28,14 @@ by the build), never hand-edited:
   a release branch (`1.0`, `1.1`, ...) where the branch name gives the
   major/minor.
 - **channel** — `stable` when HEAD carries a release tag, `beta` on a release
-  branch, `dev` otherwise.
+  branch (or when an existing `VERSION` already declares beta, so a 1.0 line
+  can be prepared before its branch is cut), `dev` otherwise.
 - **NUMBER** — commits since the last release tag.
 - **sha** — the short commit sha of HEAD, as SemVer build metadata.
 
-`1.0` is reserved: it comes only when the final `harmony` language is fully
-implemented.
+The `1.0.0` line is open in beta while the language is still being finished;
+the final `1.0.0` release comes only when it is fully implemented. The first
+seed-native final release is `1.0.0` (there is no `0.4.0`).
 
 ```bash
 make version            # regenerate the VERSION file

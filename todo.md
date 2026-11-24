@@ -65,11 +65,14 @@ bootstrap items remain.
       legacy toolchain, goldens, two-lane knobs and legacy-only suites are gone
       from master's tree. No `0.4.0`: the line stays `0.3.3-dev` and the first
       seed-native final release is `1.0.0`.
-- [ ] **Manual follow-ups (external services, not doable from the build
-      environment):** publish the `v0.3.3` legacy seed/archive release from
-      `legacy/bootstrap-final`, protect `master` / `legacy/bootstrap` / the
-      tags, and archive the GitLab mirror. Steps are in
-      `docs/bootstrap-retirement.md`.
+- [x] Published the `v0.3.3` legacy seed/archive release from
+      `legacy/bootstrap-final` with a source archive + checksums, and skipped
+      every CI job for that tag so the archive cannot be overwritten.
+- [x] Protected `master` (PR + `Build`/`Test` checks, no force push/delete)
+      and `legacy/bootstrap` (no force push/delete). Protected tags are not
+      offered on this GitHub plan, so the two tags are protected by convention.
+- [ ] Archive the GitLab mirror: no `glab` CLI or GitLab API token here; the
+      browser steps are in `docs/bootstrap-retirement.md`.
 
 ---
 

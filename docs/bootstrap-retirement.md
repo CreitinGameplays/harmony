@@ -24,49 +24,44 @@ commit was force-pushed; the separation is current-tree only. The version line
 stays `0.3.3-dev`: there is no `0.4.0`, and the first seed-native final release
 is `1.0.0`.
 
-## Manual follow-ups
+## Follow-up status
 
-These steps need a GitHub token and a web session. They could not be performed
-from the build environment (no `gh` CLI or token), so they are recorded here
-as explicit follow-ups rather than silently skipped.
+### 1. `v0.3.3` legacy seed/archive release — done
 
-### 1. Publish the `v0.3.3` legacy seed/archive release
+Published at <https://github.com/CreitinGameplays/harmony/releases/tag/v0.3.3>,
+tagged from the legacy commit (`643a04d`) rather than master. Assets: a source
+archive of the frozen tree and its `SHA256SUMS`. The `VERSION` stamp was
+regenerated after the tag because `git describe` now sees `v0.3.3`.
 
-Run from a checkout with credentials and `gh` installed. Create the release
-tag from the **legacy** tag, not from `master` (the CI `Release: tag`
-workflow only runs on the default branch and would tag the post-cutover
-commit):
+The CI workflow skips **every** job for `refs/tags/v0.3.3`. Without those
+guards the tag push started a tag run that would have published the master
+binary over the archive release; that run was cancelled. Do **not** run
+`Release: tag` on `master` until the version base is bumped to `1.0.0`.
 
-```bash
-git fetch origin --tags
-git tag -a v0.3.3 legacy/bootstrap-final \
-  -m "Harmony v0.3.3 — legacy bootstrap seed and oracle archive"
-git push origin v0.3.3
-gh release create v0.3.3 \
-  --target legacy/bootstrap-final \
-  --verify-tag \
-  --title "Harmony v0.3.3 — legacy bootstrap seed" \
-  --notes "Frozen c2x-seed + harmony-base toolchain, golden oracle outputs and two-lane harness. Preserved on \`legacy/bootstrap\` / \`legacy/bootstrap-final\`; superseded by the seed-only build on master."
-```
+### 2. Branch/tag protection — branches done, tags blocked
 
-Pushing `v0.3.3` will change `git describe` for `master`, so regenerate the
-stamp afterwards with `make version` and commit the one-line `VERSION` change.
-Do **not** run `Release: tag` on `master` until the version base is bumped to
-`1.0.0`; the workflow validates the tag against `VERSION`.
+`master` requires a pull request, dismisses stale approvals, requires the
+`Build` and `Test` checks, and blocks force pushes and deletion.
+`legacy/bootstrap` blocks force pushes and deletion. Admins can still bypass
+(`enforce_admins: false`) so maintenance commits remain possible.
 
-### 2. Protect branches and tags
+Protected **tags** could not be configured: both `POST /tags/protection` and
+the GraphQL `createTagProtectionRule` mutation return 404/undefined on this
+repository's GitHub plan. Until that changes, treat `v0.3.3` and
+`legacy/bootstrap-final` as manually protected — do not delete or force-move
+them.
 
-In GitHub → Settings → Branches / Tags, add rules so the freeze cannot be
-lost accidentally:
+### 3. Archive the GitLab mirror — pending
 
-- `master`: require a pull request, dismiss stale approvals, require the CI
-  build/test checks, block force pushes and deletion.
-- `legacy/bootstrap`: block force pushes and deletion (it is the only
-  preserved copy of the legacy tree).
-- `v*` and `legacy/*` tags: prevent deletion (or restrict deletion to
-  maintainers).
+The `gitlab` remote is still reachable but no `glab` CLI or GitLab API token
+is available here, so the archive must be done in a browser (or with a PAT):
 
-### 3. Archive the GitLab mirror
+1. Confirm nothing depends on GitLab CI or its issue tracker.
+2. GitLab → Project settings → General → Archive the project
+   (<https://gitlab.com/CreitinGameplays/harmony/-/settings/general>).
+3. Remove the `gitlab` remote locally (`git remote remove gitlab`) and from
+   any collaborator checkouts. Do **not** configure push mirroring from GitLab
+   toward GitHub — GitHub is the source of truth.
 
 `gitlab` still points at `git@gitlab.com:CreitinGameplays/harmony.git` and is
 behind `origin`. Once the GitHub state above is verified:

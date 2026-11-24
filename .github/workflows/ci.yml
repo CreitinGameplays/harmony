@@ -35,7 +35,9 @@ name: CI
 on:
   push:
     branches: ['**']
-    tags: ['v*']
+    # v0.3.3 belongs to the archived legacy toolchain and is published
+    # manually from legacy/bootstrap-final; it must not start this workflow.
+    tags: ['v*', '!v0.3.3']
   pull_request:
   workflow_dispatch:
 

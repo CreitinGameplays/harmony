@@ -1,9 +1,0 @@
-program
-  fn f2
-    type-name T
-    block
-      return
-        path x
-    param T:copy + ord
-    param x
-      type-name T

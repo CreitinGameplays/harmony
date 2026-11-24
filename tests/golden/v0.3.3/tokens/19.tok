@@ -1,6 +1,0 @@
-str ""
-str "a"
-str "\x00"
-str "\xf0\x9f\x98\x80"
-str "a\nb"
-eof <eof>

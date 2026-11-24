@@ -1,8 +1,0 @@
-program
-  fn main
-    type-name i32
-    block
-      let u
-        unit
-      return
-        int

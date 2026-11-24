@@ -1,6 +1,0 @@
-program
-  enum Shape
-    variant Dot
-    variant Rect
-      type-name f64
-      type-name f64

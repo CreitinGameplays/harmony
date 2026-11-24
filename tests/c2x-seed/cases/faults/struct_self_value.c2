@@ -1,7 +1,0 @@
-// WANT: struct cannot contain itself by value
-// A struct containing itself by value has infinite size. This used to make
-// struct_total_size recurse into the struct's own (still incomplete) field
-// array forever and segfault the compiler; it is now a plain parser fault.
-struct Bad1 { int n; struct Bad1 s; };
-
-int main(void) { return 0; }

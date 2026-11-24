@@ -1,9 +1,0 @@
-program
-  fn main
-    type-name i32
-    block
-      let h
-        heap
-          int u8
-      return
-        int

@@ -58,15 +58,26 @@ else
     bad "version-script-computes-a-valid-version (got '$P1')"
 fi
 
+# An archive tag (e.g. legacy/bootstrap-final) must not be treated as a
+# release: on a normal dev commit the computed channel stays `dev`.
+BRANCH="$(cd "$ROOT" && git rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
+HEADTAG="$(cd "$ROOT" && git tag --points-at HEAD 2>/dev/null | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)"
+if [ -z "$HEADTAG" ] && ! printf '%s' "$BRANCH" | grep -Eq '^[0-9]+\.[0-9]+$'; then
+    case "$P1" in
+        *-dev.*) ok "archive-tags-do-not-mark-a-release ($P1)" ;;
+        *) bad "archive-tags-do-not-mark-a-release (got '$P1')" ;;
+    esac
+fi
+
 # The compiler must report the same version.
-if [ -x "$ROOT/build/harmony-base" ]; then
-    OUT="$(cd "$ROOT" && ./build/harmony-base --version 2>/dev/null)"
+if [ -x "$ROOT/build/harmony" ]; then
+    OUT="$(cd "$ROOT" && ./build/harmony --version 2>/dev/null)"
     case "$OUT" in
         *" $V") ok "compiler-reports-version ($OUT)" ;;
         *) bad "compiler-reports-version (got '$OUT', want '$V')" ;;
     esac
 else
-    printf 'skip compiler-reports-version (harmony-base not built)\n'
+    printf 'skip compiler-reports-version (harmony not built)\n'
 fi
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"

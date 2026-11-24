@@ -1,7 +1,0 @@
-// WANT: struct cannot contain itself by value
-// A struct containing an inline array of itself has infinite size (C says
-// "array type has incomplete element type"). This used to segfault the
-// compiler via unbounded recursion in struct_total_size.
-struct Bad2 { int n; struct Bad2 arr[2]; };
-
-int main(void) { return 0; }

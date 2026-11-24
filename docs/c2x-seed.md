@@ -1,5 +1,11 @@
 # C2X Seed (Stage 0) — Reference
 
+> **Archived.** c2x-seed and the `harmony-base` compiler it builds were retired
+> from this tree after the self-hosted `harmony` compiler was qualified as the
+> stage-0 seed. This document describes the historical toolchain, preserved on
+> the `legacy/bootstrap` branch (tag `legacy/bootstrap-final`). The current
+> seed is the binary in `bootstrap/seed/`; see `docs/bootstrap-retirement.md`.
+
 The seed compiler is the bootstrap stage of the C2X compiler chain. Written in x86_64 assembly, it compiles `c2x-proto` source files into x86_64 assembly. It has no dependencies beyond Linux syscalls.
 
 **Assembler:** the source is written for the **flat assembler (FASM)**. It is ~100× faster than NASM on the 89k-line programs c2x-seed emits (a full harmony-base bootstrap is ~0.5 s instead of ~26 s) and produces smaller, byte-reproducible objects (FASM does not embed the input path). The pre-migration NASM sources are kept under `bootstrap/c2x-seed-nasm/` for reference; `bootstrap/tools/nasm_to_fasm.py` is the mechanical converter between the two dialects.

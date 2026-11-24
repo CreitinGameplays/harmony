@@ -1,9 +1,0 @@
-program
-  fn main
-    type-name i32
-    block
-      let p
-        field x
-          path self
-      return
-        int

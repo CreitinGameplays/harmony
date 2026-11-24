@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# harmony-base determinism test (docs/harmony.md §19.1: the C backend must be
+# Compiler determinism test (docs/harmony.md §19.1: the C backend must be
 # byte-reproducible). Same input -> identical output bytes: no timestamps, no
 # temp paths, no random state, stable symbol names.
 #
@@ -42,9 +42,9 @@ compare_bytes() {
 BUILD1="$TMP/b1"; BUILD2="$TMP/b2"
 mkdir -p "$BUILD1" "$BUILD2"
 ( cd "$ROOT" && make clean >/dev/null 2>&1 )
-( cd "$ROOT" && make harmony-base >/dev/null 2>&1 && cp build/harmony-base "$BUILD1/hb" )
+( cd "$ROOT" && make harmony >/dev/null 2>&1 && cp build/harmony "$BUILD1/hb" )
 ( cd "$ROOT" && make clean >/dev/null 2>&1 )
-( cd "$ROOT" && make harmony-base >/dev/null 2>&1 && cp build/harmony-base "$BUILD2/hb" )
+( cd "$ROOT" && make harmony >/dev/null 2>&1 && cp build/harmony "$BUILD2/hb" )
 
 if [ -f "$BUILD1/hb" ] && [ -f "$BUILD2/hb" ]; then
     compare_bytes "compiler binary is byte-identical across rebuilds" \

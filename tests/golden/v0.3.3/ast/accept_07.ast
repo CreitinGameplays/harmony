@@ -1,5 +1,0 @@
-program
-  struct Box
-    param T
-    field v
-      type-name T

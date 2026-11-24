@@ -1,8 +1,0 @@
-STOP  ICE-01  main.harmony:1:0
-the C backend is not implemented in this build yet
-
-   The C backend (`emit-c`) is the cross-check backend and lands with milestone M7 (§19.4b). The LLVM path (`emit-llvm`, `build`, `run`) works today.
-
-   try:  use the LLVM backend   harmony-base emit-llvm main.harmony
-
-   learn: harmony-base explain ICE-01

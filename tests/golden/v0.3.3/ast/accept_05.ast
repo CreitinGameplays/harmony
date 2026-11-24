@@ -1,4 +1,0 @@
-program
-  struct P2 #1
-    field a
-      type-name u8

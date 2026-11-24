@@ -4,10 +4,11 @@ Legend: `[ ]` not started · `[/]` partial · `[x]` done.
 
 This file tracks **two separate things**, and they must not be conflated:
 
-1. **harmony-base** — the c2x-seed bootstrap compiler (`bootstrap/harmony-base/*.c2`).
-   Freestanding and stdlib-free (AGENTS.md, docs/harmony.md §19.8): the bare
-   minimum needed to express the `harmony` rewrite. This is what the section
-   below is about.
+1. **harmony-base** — the retired c2x-seed bootstrap compiler
+   (`bootstrap/harmony-base/*.c2`). Freestanding and stdlib-free (AGENTS.md,
+   docs/harmony.md §19.8): the bare minimum needed to express the `harmony`
+   rewrite. This is what the section below records historically; the sources
+   are archived on `legacy/bootstrap` (tag `legacy/bootstrap-final`).
 2. **harmony — the final language** — the full-featured compiler written in
    harmony-base itself, plus `library/core/`, `library/alloc/` and
    `library/std/` (AGENTS.md).
@@ -19,7 +20,7 @@ checker → LLVM IR text → clang + freestanding runtime → runnable programs
 (`emit-llvm`, `build`, `run`, `check`), byte-deterministic. Only a few small
 bootstrap items remain.
 
-## Bootstrap retirement — Phase 0-1 (in progress, additive)
+## Bootstrap retirement — Phase 0-2 (complete)
 
 - [x] `make qualify-seed` proves a v1 binary rebuilds itself byte-identically
       through two further self-host passes (stage1 == stage2 == stage3).
@@ -53,11 +54,22 @@ bootstrap items remain.
       programs and the v0 LISP interpreter move out of owning fields and are
       therefore rejected by v1's M2 ownership rules. Rewriting those fixtures
       would change what they test; keep them visible with `DIVERGENCE` lines.
-- [ ] Run both full lanes (`make test`, `make test-v1`) to completion; fix any
-      remaining genuine v1 divergence before the next phase.
-- [ ] Phase 2+: freeze `legacy/bootstrap`, publish the v0.3.3 seed, rewire the
-      build/CI, then retire the legacy paths from the master tree. No `0.4.0`:
-      the first seed-native final release is `1.0.0`.
+- [x] Ran both full lanes to completion with zero failures; the only remaining
+      lines are explicit `DIVERGENCE`/`SKIP`s for v0 fixtures that v1's M2
+      ownership rules reject and for wording/features that intentionally differ.
+- [x] **Phase 2 cutover.** Froze the legacy tree on the `legacy/bootstrap`
+      branch and tagged it `legacy/bootstrap-final` (both pushed). Committed
+      the qualified stage-1 binary as `bootstrap/seed/harmony-seed` with a
+      checksum; `make harmony` now rebuilds the compiler from that seed through
+      the same native LLVM-C path every stage uses. CI is single-lane; the
+      legacy toolchain, goldens, two-lane knobs and legacy-only suites are gone
+      from master's tree. No `0.4.0`: the line stays `0.3.3-dev` and the first
+      seed-native final release is `1.0.0`.
+- [ ] **Manual follow-ups (external services, not doable from the build
+      environment):** publish the `v0.3.3` legacy seed/archive release from
+      `legacy/bootstrap-final`, protect `master` / `legacy/bootstrap` / the
+      tags, and archive the GitLab mirror. Steps are in
+      `docs/bootstrap-retirement.md`.
 
 ---
 

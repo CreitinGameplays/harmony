@@ -1,4 +1,0 @@
-program
-  struct E1 #2
-    field f
-      type-name i32

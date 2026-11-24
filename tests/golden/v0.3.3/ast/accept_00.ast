@@ -1,6 +1,0 @@
-program
-  fn main
-    type-name i32
-    block
-      return
-        int #42

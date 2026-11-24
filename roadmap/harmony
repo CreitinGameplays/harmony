@@ -7,16 +7,21 @@ written in Harmony itself and built by `harmony-base` (which is written in
 c2x-seed). It is the compiler AGENTS.md calls the final `harmony`; the
 bootstrap under `bootstrap/` stays as the stage-0/1 toolchain that builds it.
 
-## Bootstrap retirement (Phase 0-1, additive)
+## Bootstrap retirement (Phase 0-2, complete)
 
-The v1 compiler is being qualified as the next stage-0 seed **before** any
-legacy code is removed. `make qualify-seed` checks stage1 == stage2 == stage3
-byte identity; `make test-v1` drives the full suite with `build/harmony`;
-`make goldens` / `make verify-goldens` freeze and re-check the legacy oracle
-outputs in `tests/golden/v0.3.3/`. Nothing is deleted and no tag is created in
-this phase. The planned retirement puts the legacy tree on a frozen
-`legacy/bootstrap` branch, keeps legacy commits in master's ancestry, and
-waits for `1.0.0` as the first seed-native final release.
+The v1 compiler was qualified as the next stage-0 seed before any legacy code
+was removed: `make qualify-seed` proved stage1 == stage2 == stage3 byte
+identity, `make test-v1` burned in the full suite with `build/harmony`, and
+`make goldens` / `make verify-goldens` froze the legacy oracle outputs.
+
+The cutover froze the legacy tree on the `legacy/bootstrap` branch (tag
+`legacy/bootstrap-final`, both pushed) and committed the qualified stage-1
+binary as `bootstrap/seed/harmony-seed`. `make harmony` rebuilds the compiler
+from that seed on the same native LLVM-C path every stage uses, CI is
+single-lane, and the legacy toolchain/goldens/harness knobs are absent from
+master's tree while remaining in its history. The line stays `0.3.3-dev`;
+`1.0.0` is the first seed-native final release. Manual GitHub/GitLab steps are
+in `docs/bootstrap-retirement.md`.
 
 Target layout (AGENTS.md):
 

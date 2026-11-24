@@ -1,9 +1,0 @@
-program
-  fn main
-    type-name i32
-    block
-      expr-stmt
-        call
-          path unreachable
-      return
-        int

@@ -1,7 +1,0 @@
-program
-  fn main
-    type-name i32
-    block
-      return
-        unary ~
-          int

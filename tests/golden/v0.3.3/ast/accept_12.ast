@@ -1,9 +1,0 @@
-program
-  fn id
-    type-name T
-    block
-      return
-        path x
-    param T
-    param x
-      type-name T

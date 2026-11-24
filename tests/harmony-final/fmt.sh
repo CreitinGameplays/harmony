@@ -15,7 +15,7 @@ ok()   { pass=$((pass + 1)); printf 'ok   %s\n' "$1"; }
 bad()  { fail=$((fail + 1)); printf 'FAIL %s\n' "$1"; }
 
 if [ ! -x "$HC" ] || [ ! -x "$HB" ]; then
-    echo "error: build HARMONY=$HARMONY and ORACLE=$ORACLE first" >&2
+    echo "error: build HARMONY=$HARMONY first" >&2
     exit 1
 fi
 cd "$ROOT"

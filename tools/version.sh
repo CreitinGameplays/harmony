@@ -76,7 +76,10 @@ channel="dev"
 number=0
 sha="$(git rev-parse --short=8 HEAD 2>/dev/null || echo "unknown")"
 
-last_tag="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+# Only `vX.Y.Z` tags mark a release. Archive tags such as
+# `legacy/bootstrap-final` are bookkeeping and must not flip the channel to
+# stable or reset the dev counter.
+last_tag="$(git describe --tags --match 'v[0-9]*.[0-9]*.[0-9]*' --abbrev=0 2>/dev/null || true)"
 
 if [ -n "$last_tag" ] && git diff --quiet HEAD "${last_tag}^{commit}" 2>/dev/null; then
     # HEAD *is* the tagged release.

@@ -37,7 +37,7 @@ implemented.
 
 ```bash
 make version            # regenerate the VERSION file
-./build/harmony-base --version
+./build/harmony --version
 ```
 
 ## Toolchain (debian)
@@ -52,66 +52,59 @@ Also install (for fuzzing tests): https://github.com/google/honggfuzz
 | Path | What it is |
 |---|---|
 | `docs/harmony.md` | The language design / reference. |
-| `docs/c2x-seed.md` | The bootstrap compiler (stage 0), written in x86_64 assembly. |
+| `docs/c2x-seed.md` | The retired stage-0 compiler (x86_64 assembly); archived with the legacy tree. |
 | `docs/keywords.md` | Keyword / builtin reference. |
-| `bootstrap/c2x-seed/` | Stage-0 compiler in flat-assembler (FASM) assembly (`build.sh` builds it). |
-| `bootstrap/c2x-seed-nasm/` | Pre-migration NASM sources (reference only). |
-| `bootstrap/tools/` | Migration helpers (e.g. `nasm_to_fasm.py`). |
-| `bootstrap/harmony-base/` | First Harmony compiler, written in c2x-seed. |
-| `library/runtime/` | The freestanding runtime `harmony-base` links in. |
-| `harmony/` | Self-hosted rewrite (`*.hr`); phase plan in `roadmap/harmony`. |
+| `bootstrap/seed/` | The frozen stage-0 seed: a byte-identical stage-1 `harmony` binary plus its checksum. |
+| `library/runtime/` | The freestanding runtime the compiler links in. |
+| `harmony/` | The self-hosted compiler (`*.hr`); phase plan in `roadmap/harmony`. |
 | `library/core/`, `library/alloc/`, `library/std/` | Standard library for the final language. `core` (arena, `Vec`, `String`) is started. |
 | `tests/` | Test suites and fuzzing. |
-| `tests/env.sh`, `tests/env.py` | Shared harness config for the two-lane bootstrap burn-in (`HARMONY`, `HC`, `ORACLE`). |
-| `tests/golden/v0.3.3/` | Legacy oracle outputs frozen before bootstrap retirement; checked by `make verify-goldens`. |
-| `tools/capture-goldens.py` | Capture / verify those goldens from the legacy compiler. |
+| `tests/env.sh`, `tests/env.py` | Shared harness config (`HARMONY`, `HC`, `HB`); no legacy lane remains. |
+| `docs/bootstrap-retirement.md` | Legacy freeze, release and repository-protection follow-ups. |
 | `roadmap/` | Milestone checklists. |
 | `todo.md` | Detailed implementation checklist. |
+
+The legacy `c2x-seed` / `harmony-base` toolchain, its golden oracle outputs and
+its two-lane harness are preserved on the `legacy/bootstrap` branch, tagged
+`legacy/bootstrap-final`. They are intentionally absent from this tree.
 
 ## Build
 
 ```bash
-bash build.sh      # build c2x-seed (stage 0) -> build/c2x-seed
-make               # build the harmony-base compiler -> build/harmony-base
-make test          # seed corpus + driver + golden fixtures + determinism + lisp
-make test-seed     # c2x-seed regression corpus + determinism only
-make test-fuzz     # aggressive/fuzz tests for the harmony-base driver
-make test-lisp     # the harmony-base LISP interpreter suite
-make test-final    # the self-hosted compiler's library/ tests (tests/harmony-final)
-make lisp          # run the LISP interpreter demo (a multi-module program)
+make               # build build/harmony from the frozen stage-0 seed
+make verify-seed   # check the seed binary's sha256
+make test          # full single-lane suite (compiler under test: build/harmony)
+make test-final    # the compiler's own tests (tests/harmony-final)
+make test-fuzz     # aggressive/fuzz driver tests
+make test-fuzz2    # the fast adversarial fuzz smoke gate
+make qualify-seed  # assert stage1 == stage2 == stage3 byte-for-byte
+make version       # regenerate the VERSION stamp
 make clean
-
-# Bootstrap-retirement burn-in (Phase 0-1: additive, nothing removed yet)
-make test-v1        # full suite driven by build/harmony instead of harmony-base
-make qualify-seed   # assert stage1 == stage2 == stage3 byte-for-byte
-make goldens        # capture legacy oracle outputs into tests/golden/v0.3.3/
-make verify-goldens # re-capture into a temp dir and diff (machine-independent)
 ```
 
-Test-harness knobs (also settable as environment variables): `HARMONY` selects
-the compiler under test for compatibility suites (default: legacy
-`build/harmony-base`), `HC` selects the self-hosted compiler used by the v1 and
-differential suites (default: `build/harmony`), and `ORACLE` selects the legacy
-reference compiler for differential suites (default: `build/harmony-base`).
-Only explicit `SKIP`s are allowed for v1 features that are not implemented yet;
-every other v1 failure fails the lane.
+`HARMONY`, `HC` and `HB` (settable as environment variables) all default to
+`build/harmony`. There is no second compiler to select: suites that used to
+compare against the legacy oracle were retired with it, and now check
+determinism against this binary. Only explicit `SKIP`s are allowed for features
+that are not implemented yet; every other failure fails the suite.
 
-`harmony-base` is bootstrapped with `c2x-seed`; `c2x-seed` is bootstrapped with
-`fasm` + `ld` and needs no libc.
+`build/harmony` is rebuilt from `bootstrap/seed/harmony-seed`, a byte-identical
+stage-1 build of the compiler. The seed needs the LLVM/LLD runtime libraries
+that `llvm-config` points at (LLVM 21 in the CI image).
 
 ## Usage (docs/harmony.md §19.5)
 
 ```bash
-harmony-base check main.harmony              # analyses only, no codegen
-harmony-base check --dump-ast main.harmony   # print the parse tree (M0)
-harmony-base --dump-tokens main.harmony      # print the token stream (differential oracle)
-harmony-base --version                       # SemVer 2.0.0 stamp from VERSION
-harmony-base build main.harmony -o hello     # compile to an executable
-harmony-base run main.harmony                # build and run
-harmony-base emit-llvm main.harmony           # print the generated LLVM IR
-harmony-base emit-c main.harmony             # print the generated C (secondary)
-harmony-base explain MOVE-01                 # long-form lesson for a code
-harmony-base audit                           # list every `unchecked` site
+harmony check main.harmony              # analyses only, no codegen
+harmony --dump-ast check main.harmony   # print the parse tree
+harmony --dump-tokens main.harmony     # print the token stream
+harmony --version                      # SemVer 2.0.0 stamp from VERSION
+harmony build main.harmony -o hello    # compile to an executable
+harmony run main.harmony               # build and run
+harmony emit-llvm main.harmony         # print the generated LLVM IR
+harmony emit-c main.harmony            # C11 backend (not implemented yet)
+harmony explain MOVE-01                # long-form lesson for a code
+harmony audit                          # list every `unchecked` site
 # flags: --format=pretty|line|json  --all  --strict  --deny-unchecked
 #        --no-color  --ascii  -o <out>
 ```

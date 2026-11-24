@@ -1,5 +1,10 @@
 # Harmony CI — build, test, package and publish a GitHub release.
 #
+# The canonical build is seed-only: `harmony` is rebuilt from the frozen
+# stage-0 seed in bootstrap/seed/. The legacy c2x-seed/harmony-base toolchain
+# is archived on the `legacy/bootstrap` branch (tag `legacy/bootstrap-final`)
+# and has no lane in this workflow.
+#
 # Flow
 #   1. Pushes and pull requests run the build and test gates. They never
 #      publish. The default-branch push also refreshes the release archives.
@@ -9,6 +14,10 @@
 #   3. The tag run rebuilds the compiler from the tagged commit so VERSION is
 #      stable, runs the full test suite, packages source + binaries, then
 #      publishes a GitHub release with the archives attached.
+#
+#   The v0.3.3 legacy seed/archive release is published manually from the
+#   `legacy/bootstrap-final` tag (see docs/bootstrap-retirement.md). The first
+#   seed-native release from this workflow is 1.0.0; do not bump to 0.4.0.
 #
 # Permissions
 #   GITHUB_TOKEN needs "Contents: read" for the build/test jobs and
@@ -42,8 +51,9 @@ env:
 
 jobs:
   # -------------------------------------------------------------------------
-  # Build. Debian testing matches the toolchain versions used by the original
-  # bootstrap pipeline (llvm-config, clang, fasm).
+  # Build. Debian testing supplies llvm-config/clang for the LLVM-C backend.
+  # fasm/patchelf are kept so this workflow still runs on the archived
+  # legacy/bootstrap branch, whose tree builds c2x-seed from assembly.
   # -------------------------------------------------------------------------
   build:
     name: Build
@@ -70,12 +80,11 @@ jobs:
         run: |
           bash tools/version.sh
           make -j"$JOBS" all
-          ./build/harmony-base --version
           ./build/harmony --version
       - name: Collect build outputs
         run: |
           mkdir -p dist-build
-          cp build/harmony build/harmony-base build/c2x-seed dist-build/
+          cp build/harmony dist-build/
           cp VERSION dist-build/
       - uses: actions/upload-artifact@v4
         with:
@@ -117,20 +126,14 @@ jobs:
       - name: Restore build outputs
         run: |
           mkdir -p build
-          cp build-artifacts/harmony build-artifacts/harmony-base \
-            build-artifacts/c2x-seed build/
+          cp build-artifacts/harmony build/
           cp build-artifacts/VERSION VERSION
-          # Artifact transfer drops the executable bit, but the seed runner
-          # and the Makefile invoke these binaries directly.
-          chmod +x build/c2x-seed build/harmony-base build/harmony
-          touch build/harmony build/harmony-base build/c2x-seed
+          # Artifact transfer drops the executable bit; the Makefile invokes
+          # this binary directly.
+          chmod +x build/harmony
+          touch build/harmony
       - name: make test
         run: make -j"$JOBS" test
-      # Bootstrap-retirement burn-in: drive the full suite with the v1 compiler
-      # while differential tests still use the legacy binary as their oracle.
-      # Does not delete or tag anything; purely additive verification.
-      - name: make test (v1 burn-in)
-        run: make -j"$JOBS" test-v1
 
   # -------------------------------------------------------------------------
   # Manual tag preparation. Runs only on the default branch. It does not
@@ -156,6 +159,14 @@ jobs:
           set -eu
           BASE=$(sed -n 's/^\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' VERSION | head -1)
           test -n "$BASE" || { echo "VERSION has no MAJOR.MINOR.PATCH base"; exit 1; }
+          # v0.3.3 belongs to the archived legacy toolchain and is published
+          # manually from legacy/bootstrap-final (docs/bootstrap-retirement.md).
+          # The first release from this seed-only tree must be 1.0.0 or newer.
+          MAJOR="${BASE%%.*}"
+          if [ "$MAJOR" -lt 1 ] 2>/dev/null; then
+            echo "VERSION base $BASE is pre-1.0; the first seed-native release is 1.0.0"
+            exit 1
+          fi
           TAG="${RELEASE_TAG:-v$BASE}"
           case "$TAG" in
             v[0-9]*.[0-9]*.[0-9]*) ;;
@@ -218,9 +229,9 @@ jobs:
             -o "dist/harmony-$VERSION-source.tar.gz" HEAD
           # Runtime bundle. LLVM/LLD shared libraries travel with the binary and
           # are found through a relative RPATH; core libc/loader stay host-side.
-          cp build-artifacts/harmony build-artifacts/harmony-base "pkg/harmony-$VERSION/bin/"
+          cp build-artifacts/harmony "pkg/harmony-$VERSION/bin/"
           # Artifact transfer drops the executable bit; restore it in the bundle.
-          chmod +x "pkg/harmony-$VERSION/bin/harmony" "pkg/harmony-$VERSION/bin/harmony-base"
+          chmod +x "pkg/harmony-$VERSION/bin/harmony"
           mkdir -p "pkg/harmony-$VERSION/lib"
           for lib in $(ldd build-artifacts/harmony | awk '/=> \// {print $3} /^\t\// {print $1}'); do
             case "$lib" in

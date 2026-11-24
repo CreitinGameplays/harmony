@@ -168,7 +168,7 @@ write 'fn main() { let big = heap([0u8; 8_000_000]); }\n'
 ok_case "heap(...) of a large array literal"
 
 write 'fn main() { let x = new 42; }\n'
-reject_case "`new` is no longer a keyword (parses as a name)" "SYN-04"
+reject_case '`new` is no longer a keyword (parses as a name)' "SYN-04"
 
 write 'fn main() { let r = 0..10; let s = 0..=10; }\n'
 ok_case "range expressions"

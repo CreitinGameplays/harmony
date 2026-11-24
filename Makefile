@@ -1,56 +1,27 @@
-# Harmony language build
+# Harmony language build — seed-only (post bootstrap-retirement).
+#
+# The canonical compiler is `harmony`, the self-hosted implementation in
+# harmony/ + library/. It is built by the frozen stage-0 seed at
+# bootstrap/seed/harmony-seed (a byte-identical stage-1 build of itself). The
+# legacy c2x-seed and harmony-base toolchains are preserved on the
+# `legacy/bootstrap` branch, tagged `legacy/bootstrap-final`, and are no part
+# of this tree.
 
-SEED      := build/c2x-seed
-HB_OUT    := build/harmony-base
-# Explicit order: c2x-seed resolves cross-file names from *earlier* files only,
-# so foundation modules must be listed first.
-# Bootstrap stage-0 compiler (c2x-seed, flat assembler) and the stage-1
-# compiler (harmony-base, written in c2x-seed) live under bootstrap/
-# (AGENTS.md). The pre-migration nasm sources are kept in
-# bootstrap/c2x-seed-nasm/ for reference.
-HB_SRC    := \
-	bootstrap/harmony-base/common.c2 \
-	bootstrap/harmony-base/util.c2 \
-	bootstrap/harmony-base/ast.c2 \
-	bootstrap/harmony-base/source.c2 \
-	bootstrap/harmony-base/diag.c2 \
-	bootstrap/harmony-base/reports.c2 \
-	bootstrap/harmony-base/module.c2 \
-	bootstrap/harmony-base/lexlit.c2 \
-	bootstrap/harmony-base/lexer.c2 \
-	bootstrap/harmony-base/types.c2 \
-	bootstrap/harmony-base/fmt.c2 \
-	bootstrap/harmony-base/check.c2 \
-	bootstrap/harmony-base/cexpr.c2 \
-	bootstrap/harmony-base/llvm.c2 \
-	bootstrap/harmony-base/lexpr.c2 \
-	bootstrap/harmony-base/lstmt.c2 \
-	bootstrap/harmony-base/emit.c2 \
-	bootstrap/harmony-base/parser.c2 \
-	bootstrap/harmony-base/pstmts.c2 \
-	bootstrap/harmony-base/pexpr.c2 \
-	bootstrap/harmony-base/pastout.c2 \
-	bootstrap/harmony-base/tokdump.c2 \
-	bootstrap/harmony-base/audit.c2 \
-	bootstrap/harmony-base/pipeline.c2 \
-	bootstrap/harmony-base/main.c2
-SEED_SRC  := $(wildcard bootstrap/c2x-seed/*.asm)
-# The final compiler is built from every Harmony source module. Since Harmony
-# has no linker-level include graph at make time, any source change rebuilds it.
+SEED        := bootstrap/seed/harmony-seed
 HARMONY_SRC := $(shell find harmony library -name '*.hr' -o -name '*.harmony' 2>/dev/null)
 HARMONY_OUT := build/harmony
 
-# Test-harness selection for the bootstrap-retirement burn-in (Phase 0-1).
-# Default keeps the historical behaviour: every suite is driven by the legacy
-# harmony-base. Run `make test-v1` (or set HARMONY=build/harmony yourself) to
-# exercise the self-hosted compiler while differential tests still compare
-# against the legacy ORACLE.
-HARMONY ?= $(CURDIR)/build/harmony-base
-ORACLE  ?= $(CURDIR)/build/harmony-base
-export HARMONY ORACLE
+# The compiler under test is the canonical binary; there is no separate
+# legacy lane any more. The differential suites that needed a second compiler
+# were retired with it, and now check determinism against this same binary.
+HARMONY ?= $(CURDIR)/build/harmony
+HC      ?= $(CURDIR)/build/harmony
+HB      ?= $(CURDIR)/build/harmony
+export HARMONY HC HB
 
-# The final compiler links the LLVM C API directly for build/run. These are
-# build-time artifacts: the compiler itself never spawns clang for codegen.
+# The compiler links the LLVM C API directly for build/run. Its runtime
+# sources are built here; the compiler itself never shells out to clang on the
+# default path.
 LLVM_LIBDIR   := $(shell llvm-config --libdir)
 LLVM_MAJOR    := $(shell llvm-config --version | cut -d. -f1)
 LLVM_CFLAGS   := $(shell llvm-config --cflags)
@@ -61,109 +32,32 @@ LLVMC_OBJ     := build/llvmc.o
 HOSTRT_OBJ    := build/hostrt.o
 HOSTMAIN_OBJ  := build/hostmain.o
 
-.PHONY: all clean test test-v1 qualify-seed goldens verify-goldens test-final test-fuzz test-fuzz2 fuzz2-deep test-seed test-lisp seed harmony harmony-base lisp version
+.PHONY: all clean test test-final test-fuzz test-fuzz2 fuzz2-deep \
+        qualify-seed verify-seed version harmony
 
-all: harmony-base harmony
+all: harmony
 
-seed: $(SEED)
-
-$(SEED): $(SEED_SRC) build.sh
-	bash build.sh
+build:
+	mkdir -p build
 
 # The root VERSION file is auto-regenerated (AGENTS.md: SemVer 2.0.0, rolling
-# support): MAJOR.MINOR.PATCH-dev|beta|stable.N+<short-commit-sha>. The base
-# is preserved from the existing file; the channel, the counter, and the sha
-# come from the repository state.
-#
-# AGENTS.md requires the file to always be up to date, so `make harmony-base`
-# refreshes it after building (below) and `make version` does it on demand.
-# The file is committed as part of the tree it describes; a build that moves
-# the sha leaves a one-line diff, which is the point: the stamp names the
-# commit it was built from.
+# support): MAJOR.MINOR.PATCH-dev|beta|stable.N+<short-commit-sha>. It is
+# committed as part of the tree it describes; `make version` refreshes it on
+# demand.
 version:
 	bash tools/version.sh
 
-# Freeze the legacy compiler's oracle outputs before any retirement commit.
-# Additive only: writes tests/golden/v0.3.3/; --verify re-captures and diffs.
-goldens: harmony-base
-	python3 tools/capture-goldens.py
+verify-seed:
+	cd bootstrap/seed && sha256sum -c SHA256SUMS
 
-verify-goldens: harmony-base
-	python3 tools/capture-goldens.py --verify
+# One canonical stage: the seed rebuilds the compiler through the native
+# LLVM-C backend, which is the same path every later stage uses. That keeps
+# stage 1, stage 2 and stage 3 byte-identical.
+harmony: $(SEED) $(HARMONY_SRC) $(LLVMC_OBJ) $(HOSTRT_OBJ) $(HOSTMAIN_OBJ) | build
+	$(SEED) build harmony/main.hr -o $(HARMONY_OUT)
 
-harmony-base: $(SEED) $(HB_SRC)
-	$(SEED) -o $(HB_OUT) $(HB_SRC)
-	@bash tools/version.sh >/dev/null 2>&1 || true
-
-$(LLVMC_OBJ): library/runtime/llvmc.cpp library/runtime/llvmc_core.cpp
-	clang++ $(CXXFLAGS) -fPIC -c $< -o $@
-
-# Rename `_start` so the C runtime startup can initialise libc before libLLVM
-# is used. The wrapper in hostmain.c supplies the real `main`.
-$(HOSTRT_OBJ): library/runtime/rt.c
-	clang -O2 -D_start=hc_unused_start -c $< -o $@
-
-$(HOSTMAIN_OBJ): library/runtime/hostmain.c
-	clang -O2 -c $< -o $@
-
-# The self-hosted compiler is linked against libLLVM once by the build tools,
-# then rebuilt by itself through the native LLVM-C backend. That extra stage
-# keeps stage 1, stage 2 and stage 3 byte-identical.
-HARMONY_STAGE0 := build/harmony-stage0
-HARMONY_STAGE0_IR := build/harmony-stage0.ll
-harmony: harmony-base $(HARMONY_SRC) $(LLVMC_OBJ) $(HOSTRT_OBJ) $(HOSTMAIN_OBJ)
-	$(HB_OUT) emit-llvm harmony/main.hr > $(HARMONY_STAGE0_IR)
-	clang++ -x ir $(HARMONY_STAGE0_IR) -x none $(LLVMC_OBJ) $(HOSTRT_OBJ) $(HOSTMAIN_OBJ) -o $(HARMONY_STAGE0) $(LLVM_LINK)
-	$(HARMONY_STAGE0) build harmony/main.hr -o $(HARMONY_OUT)
-	rm -f $(HARMONY_STAGE0) $(HARMONY_STAGE0_IR)
-
-# Full test target: c2x-seed regression corpus + harmony-base driver tests.
-test: test-seed harmony-base harmony
-	bash tests/harmony/run.sh
-	bash tests/harmony/lexer.sh
-	bash tests/harmony/parser.sh
-	bash tests/harmony/checker.sh
-	bash tests/harmony/error-handling.sh
-	bash tests/harmony/codegen.sh
-	bash tests/harmony/scale.sh
-	bash tests/harmony/golden.sh
-	bash tests/harmony/determinism.sh
-	# determinism.sh runs `make clean`; rebuild before suites that need build/harmony.
-	$(MAKE) harmony-base harmony
-	bash tests/harmony/string-pool.sh
-	bash tests/harmony/coverage.sh
-	bash tests/harmony/version.sh
-	bash tests/harmony/lisp.sh
-	bash tests/harmony-final/run.sh
-	python3 tests/harmony-final/difftest.py
-	python3 tests/harmony-final/parsediff.py
-	python3 tests/harmony-final/resolvediff.py
-	python3 tests/harmony-final/typediff.py
-	python3 tests/harmony-final/typechecker_sh.py
-	python3 tests/harmony-final/typecorpus.py error-handling
-	python3 tests/harmony-final/typecorpus.py codegen
-	python3 tests/harmony-final/irdiff.py codegen
-	# determinism.sh cleans build/, so rebuild both compilers before the driver gate.
-	$(MAKE) harmony-base harmony
-	bash tests/harmony-final/driver.sh
-	bash tests/harmony-final/parallel.sh
-	bash tests/harmony-final/v1.sh
-	bash tests/harmony-final/m2.sh
-	bash tests/harmony-final/m3.sh
-	bash tests/harmony-final/m4.sh
-	bash tests/harmony-final/m6.sh
-	bash tests/harmony-final/diag.sh
-	bash tests/harmony-final/fmt.sh
-	bash tests/harmony-final/prelude.sh
-	bash tests/harmony-final/strategy.sh
-
-# Burn-in lane: full suite with the self-hosted compiler under test, while the
-# differential suites keep comparing against the legacy harmony-base oracle.
-test-v1:
-	$(MAKE) test HARMONY=$(CURDIR)/build/harmony ORACLE=$(CURDIR)/build/harmony-base
-
-# A v1 binary may become the next seed only if it rebuilds itself byte-for-byte
-# through two further self-host passes (stage1 == stage2 == stage3).
+# A seed may stand for another stage only if it rebuilds itself byte-for-byte
+# through two further self-host passes.
 qualify-seed: harmony
 	./build/harmony build harmony/main.hr -o build/seed-candidate-2
 	build/seed-candidate-2 build harmony/main.hr -o build/seed-candidate-3
@@ -171,32 +65,21 @@ qualify-seed: harmony
 	cmp build/seed-candidate-2 build/seed-candidate-3
 	@echo "SEED QUALIFIED stage1==stage2==stage3: $$(sha256sum build/harmony | cut -d' ' -f1)"
 
-# c2x-seed regression corpus (guards the compiler bugs fixed during bring-up).
-test-seed: seed
-	bash tests/c2x-seed/run.sh
-	bash tests/c2x-seed/determinism.sh
-
-# A small LISP written in harmony-base (tests/harmony/lisp-interpreter/).
-# The interpreter is split across modules and wired together with `import`
-# (docs/harmony.md §6.7); `main.harmony` imports the other three.
-lisp: harmony-base
-	$(HB_OUT) run tests/harmony/lisp-interpreter/main.harmony
-
-test-lisp: harmony-base
-	bash tests/harmony/lisp.sh
-
-# The self-hosted compiler's own tests: library/core and, later, the phase
-# gates in roadmap/harmony. `make test` runs this too.
-test-final: harmony-base harmony
+test: harmony
+	bash tests/harmony/run.sh
+	bash tests/harmony/lexer.sh
+	bash tests/harmony/parser.sh
+	bash tests/harmony/checker.sh
+	bash tests/harmony/error-handling.sh
+	bash tests/harmony/codegen.sh
+	bash tests/harmony/scale.sh
+	bash tests/harmony/determinism.sh
+	# determinism.sh runs `make clean`; rebuild before the remaining suites.
+	$(MAKE) harmony
+	bash tests/harmony/string-pool.sh
+	bash tests/harmony/version.sh
+	bash tests/harmony/fuzz.sh
 	bash tests/harmony-final/run.sh
-	python3 tests/harmony-final/difftest.py
-	python3 tests/harmony-final/parsediff.py
-	python3 tests/harmony-final/resolvediff.py
-	python3 tests/harmony-final/typediff.py
-	python3 tests/harmony-final/typechecker_sh.py
-	python3 tests/harmony-final/typecorpus.py error-handling
-	python3 tests/harmony-final/typecorpus.py codegen
-	python3 tests/harmony-final/irdiff.py codegen
 	bash tests/harmony-final/driver.sh
 	bash tests/harmony-final/parallel.sh
 	bash tests/harmony-final/v1.sh
@@ -209,17 +92,39 @@ test-final: harmony-base harmony
 	bash tests/harmony-final/prelude.sh
 	bash tests/harmony-final/strategy.sh
 
-test-fuzz: harmony-base
+test-final: harmony
+	bash tests/harmony-final/run.sh
+	bash tests/harmony-final/driver.sh
+	bash tests/harmony-final/parallel.sh
+	bash tests/harmony-final/v1.sh
+	bash tests/harmony-final/m2.sh
+	bash tests/harmony-final/m3.sh
+	bash tests/harmony-final/m4.sh
+	bash tests/harmony-final/m6.sh
+	bash tests/harmony-final/diag.sh
+	bash tests/harmony-final/fmt.sh
+	bash tests/harmony-final/prelude.sh
+	bash tests/harmony-final/strategy.sh
+
+test-fuzz: harmony
 	bash tests/harmony/fuzz.sh
 
-# The aggressive fuzzer (tests/fuzz2). `test-fuzz2` is the fast smoke gate:
-# the deterministic adversarial shapes, no shrinking, parallel over cores.
-# `fuzz2-deep` runs a real campaign (grammar + mutation, shrinking on).
-test-fuzz2: harmony-base
+test-fuzz2: harmony
 	python3 tests/fuzz2/fuzz.py --engines specials --no-shrink
 
-fuzz2-deep: harmony-base
+fuzz2-deep: harmony
 	python3 tests/fuzz2/fuzz.py --engines specials,gen,mut --iterations 1000
+
+$(LLVMC_OBJ): library/runtime/llvmc.cpp library/runtime/llvmc_core.cpp | build
+	clang++ $(CXXFLAGS) -fPIC -c $< -o $@
+
+# Rename `_start` so the C runtime startup can initialise libc before libLLVM
+# is used. The wrapper in hostmain.c supplies the real `main`.
+$(HOSTRT_OBJ): library/runtime/rt.c | build
+	clang -O2 -D_start=hc_unused_start -c $< -o $@
+
+$(HOSTMAIN_OBJ): library/runtime/hostmain.c | build
+	clang -O2 -c $< -o $@
 
 clean:
 	rm -rf build

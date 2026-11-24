@@ -9,8 +9,9 @@ File extension: `.harmony`
 > says "the language" and "the compiler" where a neutral voice reads better.
 > Examples keep the compiler binary name `lc` for brevity — in this
 > codebase the driver is `harmony` (the self-hosted compiler, built from the
-> frozen stage-0 seed in `bootstrap/seed/`). The legacy `harmony-base` driver
-> is archived on the `legacy/bootstrap` branch.
+> stage-0 seed published as a release asset and verified against the checksum
+> in `bootstrap/seed/`). The legacy `harmony-base` driver is archived on the
+> `legacy/bootstrap` branch.
 >
 > Placeholders used in some older examples: `.src` file suffixes read as
 > `.harmony`.
@@ -2877,7 +2878,8 @@ holds the golden snapshots and `tests/harmony-final/interpreter.py` is the
 reference oracle. Item 4 waits for the deferred C11 backend (§19.4b).
 
 Bootstrap retirement is complete: the canonical build is seed-only, driven by
-the frozen stage-0 binary in `bootstrap/seed/`, and `make test` runs a single
+the stage-0 seed downloaded from its release and verified via `bootstrap/seed/`,
+and `make test` runs a single
 lane against `build/harmony`. The legacy oracle outputs, the two-lane harness
 and the differential suites were archived with the legacy compiler on the
 `legacy/bootstrap` branch (tag `legacy/bootstrap-final`); see

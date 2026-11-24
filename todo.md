@@ -58,10 +58,11 @@ bootstrap items remain.
       lines are explicit `DIVERGENCE`/`SKIP`s for v0 fixtures that v1's M2
       ownership rules reject and for wording/features that intentionally differ.
 - [x] **Phase 2 cutover.** Froze the legacy tree on the `legacy/bootstrap`
-      branch and tagged it `legacy/bootstrap-final` (both pushed). Committed
-      the qualified stage-1 binary as `bootstrap/seed/harmony-seed` with a
-      checksum; `make harmony` now rebuilds the compiler from that seed through
-      the same native LLVM-C path every stage uses. CI is single-lane; the
+      branch and tagged it `legacy/bootstrap-final` (both pushed). The
+      qualified stage-1 binary is published on the `stage0-v1` release;
+      `make harmony` downloads it into gitignored `build/seed/`, verifies its
+      checksum, and rebuilds the compiler through the same native LLVM-C path
+      every stage uses (`SEED_BIN` pins a local copy offline). CI is single-lane; the
       legacy toolchain, goldens, two-lane knobs and legacy-only suites are gone
       from master's tree. No `0.4.0`: the line stays `0.3.3-dev` and the first
       seed-native final release is `1.0.0`.

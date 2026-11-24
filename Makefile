@@ -1,13 +1,19 @@
 # Harmony language build — seed-only (post bootstrap-retirement).
 #
 # The canonical compiler is `harmony`, the self-hosted implementation in
-# harmony/ + library/. It is built by the frozen stage-0 seed at
-# bootstrap/seed/harmony-seed (a byte-identical stage-1 build of itself). The
-# legacy c2x-seed and harmony-base toolchains are preserved on the
+# harmony/ + library/. It is built by the frozen stage-0 seed: a byte-identical
+# stage-1 build of itself, published as a release asset and downloaded on
+# demand. The repo keeps only its checksum and provenance under bootstrap/seed/.
+# The legacy c2x-seed and harmony-base toolchains are preserved on the
 # `legacy/bootstrap` branch, tagged `legacy/bootstrap-final`, and are no part
 # of this tree.
 
-SEED        := bootstrap/seed/harmony-seed
+# SEED_BIN can point at a local copy for offline builds; otherwise the seed is
+# fetched from SEED_URL and verified against the committed checksum.
+SEED_BIN    ?= $(CURDIR)/build/seed/harmony-seed
+SEED_URL    ?= https://github.com/CreitinGameplays/harmony/releases/download/stage0-v1/harmony-seed
+SEED_SUM    := bootstrap/seed/SHA256SUMS
+SEED_SHA256 := $(shell cut -d' ' -f1 $(SEED_SUM))
 HARMONY_SRC := $(shell find harmony library -name '*.hr' -o -name '*.harmony' 2>/dev/null)
 HARMONY_OUT := build/harmony
 
@@ -40,6 +46,16 @@ all: harmony
 build:
 	mkdir -p build
 
+build/seed:
+	mkdir -p build/seed
+
+# Fetch the stage-0 seed on demand. Verification happens before the binary is
+# ever executed: a corrupted or tampered asset fails the build here.
+$(SEED_BIN): $(SEED_SUM) | build/seed
+	curl -fsSL --retry 3 "$(SEED_URL)" -o $@
+	printf '%s  %s\n' "$(SEED_SHA256)" "$@" | sha256sum -c -
+	chmod 755 $@
+
 # The root VERSION file is auto-regenerated (AGENTS.md: SemVer 2.0.0, rolling
 # support): MAJOR.MINOR.PATCH-dev|beta|stable.N+<short-commit-sha>. It is
 # committed as part of the tree it describes; `make version` refreshes it on
@@ -47,14 +63,14 @@ build:
 version:
 	bash tools/version.sh
 
-verify-seed:
-	cd bootstrap/seed && sha256sum -c SHA256SUMS
+verify-seed: $(SEED_BIN)
+	printf '%s  %s\n' "$(SEED_SHA256)" "$(SEED_BIN)" | sha256sum -c -
 
 # One canonical stage: the seed rebuilds the compiler through the native
 # LLVM-C backend, which is the same path every later stage uses. That keeps
 # stage 1, stage 2 and stage 3 byte-identical.
-harmony: $(SEED) $(HARMONY_SRC) $(LLVMC_OBJ) $(HOSTRT_OBJ) $(HOSTMAIN_OBJ) | build
-	$(SEED) build harmony/main.hr -o $(HARMONY_OUT)
+harmony: $(SEED_BIN) $(HARMONY_SRC) $(LLVMC_OBJ) $(HOSTRT_OBJ) $(HOSTMAIN_OBJ) | build
+	$(SEED_BIN) build harmony/main.hr -o $(HARMONY_OUT)
 
 # A seed may stand for another stage only if it rebuilds itself byte-for-byte
 # through two further self-host passes.

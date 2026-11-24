@@ -4,7 +4,8 @@
 > from this tree after the self-hosted `harmony` compiler was qualified as the
 > stage-0 seed. This document describes the historical toolchain, preserved on
 > the `legacy/bootstrap` branch (tag `legacy/bootstrap-final`). The current
-> seed is the binary in `bootstrap/seed/`; see `docs/bootstrap-retirement.md`.
+> seed is published as a release asset; see `bootstrap/seed/README.md` and
+> `docs/bootstrap-retirement.md`.
 
 The seed compiler is the bootstrap stage of the C2X compiler chain. Written in x86_64 assembly, it compiles `c2x-proto` source files into x86_64 assembly. It has no dependencies beyond Linux syscalls.
 

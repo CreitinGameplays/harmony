@@ -1,7 +1,8 @@
 # Harmony CI — build, test, package and publish a GitHub release.
 #
-# The canonical build is seed-only: `harmony` is rebuilt from the frozen
-# stage-0 seed in bootstrap/seed/. The legacy c2x-seed/harmony-base toolchain
+# The canonical build is seed-only: `harmony` is rebuilt from the stage-0 seed
+# published on the stage0-v1 release and verified via bootstrap/seed/. The
+# legacy c2x-seed/harmony-base toolchain
 # is archived on the `legacy/bootstrap` branch (tag `legacy/bootstrap-final`)
 # and has no lane in this workflow.
 #
@@ -87,8 +88,9 @@ jobs:
           ./build/harmony --version
       - name: Collect build outputs
         run: |
-          mkdir -p dist-build
+          mkdir -p dist-build/seed
           cp build/harmony dist-build/
+          cp build/seed/harmony-seed dist-build/seed/
           cp VERSION dist-build/
       - uses: actions/upload-artifact@v4
         with:
@@ -131,13 +133,15 @@ jobs:
           path: build-artifacts/
       - name: Restore build outputs
         run: |
-          mkdir -p build
+          mkdir -p build/seed
           cp build-artifacts/harmony build/
+          cp build-artifacts/seed/harmony-seed build/seed/
           cp build-artifacts/VERSION VERSION
           # Artifact transfer drops the executable bit; the Makefile invokes
-          # this binary directly.
-          chmod +x build/harmony
-          touch build/harmony
+          # these binaries directly. Touching them also stops make from
+          # re-downloading the seed in this job.
+          chmod +x build/harmony build/seed/harmony-seed
+          touch build/harmony build/seed/harmony-seed
       - name: make test
         run: make -j"$JOBS" test
 

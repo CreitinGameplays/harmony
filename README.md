@@ -54,7 +54,7 @@ Also install (for fuzzing tests): https://github.com/google/honggfuzz
 | `docs/harmony.md` | The language design / reference. |
 | `docs/c2x-seed.md` | The retired stage-0 compiler (x86_64 assembly); archived with the legacy tree. |
 | `docs/keywords.md` | Keyword / builtin reference. |
-| `bootstrap/seed/` | The frozen stage-0 seed: a byte-identical stage-1 `harmony` binary plus its checksum. |
+| `bootstrap/seed/` | Checksum and provenance for the stage-0 seed; the binary is downloaded from a release. |
 | `library/runtime/` | The freestanding runtime the compiler links in. |
 | `harmony/` | The self-hosted compiler (`*.hr`); phase plan in `roadmap/harmony`. |
 | `library/core/`, `library/alloc/`, `library/std/` | Standard library for the final language. `core` (arena, `Vec`, `String`) is started. |
@@ -88,8 +88,11 @@ compare against the legacy oracle were retired with it, and now check
 determinism against this binary. Only explicit `SKIP`s are allowed for features
 that are not implemented yet; every other failure fails the suite.
 
-`build/harmony` is rebuilt from `bootstrap/seed/harmony-seed`, a byte-identical
-stage-1 build of the compiler. The seed needs the LLVM/LLD runtime libraries
+`build/harmony` is rebuilt from a byte-identical stage-1 seed, downloaded from
+the [`stage0-v1` release](https://github.com/CreitinGameplays/harmony/releases/tag/stage0-v1)
+into gitignored `build/seed/` and verified against `bootstrap/seed/SHA256SUMS`
+before it runs. For offline builds, point `SEED_BIN` at a local copy (and
+`SEED_URL` at a mirror if needed). The seed needs the LLVM/LLD runtime libraries
 that `llvm-config` points at (LLVM 21 in the CI image).
 
 ## Usage (docs/harmony.md §19.5)

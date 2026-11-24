@@ -2,10 +2,13 @@
 
 ## What is in the tree
 
-The canonical compiler is `harmony`, built from `harmony/` + `library/` by the
-frozen stage-0 seed at `bootstrap/seed/harmony-seed`. That seed is a
-byte-identical stage-1 build of the compiler itself; `make verify-seed` checks
-its checksum and `make qualify-seed` re-proves stage1 == stage2 == stage3.
+The canonical compiler is `harmony`, built from `harmony/` + `library/` by a
+frozen stage-0 seed: a byte-identical stage-1 build of the compiler itself.
+The binary is **not** kept in git. It is published on the `stage0-v1` release
+and downloaded by `make harmony` into gitignored `build/seed/`, verified against
+`bootstrap/seed/SHA256SUMS` before it runs. `make verify-seed` re-checks it and
+`make qualify-seed` re-proves stage1 == stage2 == stage3. `SEED_BIN` pins a local
+copy for offline builds; `SEED_URL` selects a mirror.
 
 `make test` is a single lane. The legacy `c2x-seed` / `harmony-base` toolchain,
 the frozen oracle outputs in `tests/golden/v0.3.3/`, the `HARMONY`/`ORACLE`

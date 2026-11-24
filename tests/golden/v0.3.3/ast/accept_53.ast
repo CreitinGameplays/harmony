@@ -1,0 +1,12 @@
+program
+  fn main
+    type-name i32
+    block
+      let x
+        binary *
+          binary +
+            int #1
+            int #2
+          int #3
+      return
+        path x

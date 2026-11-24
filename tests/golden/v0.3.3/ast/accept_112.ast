@@ -1,0 +1,52 @@
+program
+  fn main
+    type-name i32
+    block
+      let total #1
+        int
+      for
+        let i #1
+          int
+        binary <
+          path i
+          int #20
+        assign +=
+          path i
+          int #1
+        block
+          if
+            binary ==
+              binary %
+                path i
+                int #2
+              int
+            block
+              continue
+          assign +=
+            path total
+            path i
+          if
+            binary >=
+              path i
+              int #9
+            block
+              break
+      let j #1
+        int
+      while
+        bool #1
+        block
+          assign +=
+            path total
+            int #6
+          assign +=
+            path j
+            int #1
+          if
+            binary >=
+              path j
+              int #5
+            block
+              break
+      return
+        path total

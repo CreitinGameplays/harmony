@@ -1,0 +1,31 @@
+kw "fn" kw=fn
+ident "main"
+punct '('
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "let" kw=let
+ident "a"
+punct '='
+punct '['
+int "10" =10
+punct ','
+int "20" =20
+punct ','
+int "30" =30
+punct ']'
+punct ';'
+kw "let" kw=let
+ident "i"
+punct '='
+int "7" =7
+punct ';'
+kw "return" kw=return
+ident "a"
+punct '['
+ident "i"
+punct ']'
+punct ';'
+punct '}'
+eof <eof>

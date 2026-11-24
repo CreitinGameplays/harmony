@@ -1,0 +1,50 @@
+program
+  import module-generic-path/vec.hr
+  import module-generic-path/mgp.hr
+  fn main
+    type-name i32
+    block
+      let h
+        type-name mgp::Holder
+        call
+          path mgp::make_holder
+      if
+        binary !=
+          call
+            field len
+              field items
+                path h
+          int #2
+        block
+          return
+            int #1
+      let a
+        call
+          field get
+            field items
+              path h
+          int
+      let b
+        call
+          field get
+            field items
+              path h
+          int #1
+      if
+        binary !=
+          field n
+            path a
+          int #10
+        block
+          return
+            int #2
+      if
+        binary !=
+          field n
+            path b
+          int #32
+        block
+          return
+            int #3
+      return
+        int #42

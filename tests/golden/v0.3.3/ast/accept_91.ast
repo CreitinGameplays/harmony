@@ -1,0 +1,45 @@
+program
+  fn main
+    type-name i32
+    block
+      let name
+        string world #5
+      expr-stmt
+        call
+          path println
+          string hello, {} #9
+          path name
+      let n
+        type-name i32
+        int #42
+      expr-stmt
+        call
+          path println
+          string n={} #4
+          path n
+      expr-stmt
+        call
+          path println
+          string hex={:x} #8
+          int #48879
+      expr-stmt
+        call
+          path println
+          string pi={:.2} #8
+          float 3.14159
+      expr-stmt
+        call
+          path println
+          string pad=[{:4}] #10
+          int #7
+      expr-stmt
+        call
+          path println
+          string zero=[{:04}] #12
+          int #42
+      expr-stmt
+        call
+          path println
+          string brace {{ }} pair #16
+      return
+        int

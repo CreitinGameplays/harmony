@@ -1,0 +1,14 @@
+program
+  fn main
+    type-name i32
+    block
+      if
+        binary >
+          path x
+          int
+        block
+          return
+            int #1
+        block
+          return
+            int #2

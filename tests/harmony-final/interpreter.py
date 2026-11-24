@@ -13,8 +13,11 @@ import subprocess
 import sys
 import tempfile
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-HC = os.path.join(ROOT, "build", "harmony")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import env
+
+ROOT = env.ROOT
+HC = env.HC
 
 TOKEN = re.compile(r"\s*(?:(\d+)|([A-Za-z_]\w*)|(==|!=|<=|>=|[+\-*/%<>=(){};:,]))")
 

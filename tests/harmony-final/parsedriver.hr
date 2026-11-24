@@ -20,7 +20,7 @@ fn run(src: &str) -> i32 {
     let mut lx: ctx::Ctx = ctx::make(src, "snippet.harmony");
     scan::scan(&mut lx, &mut arena);
     let mut ns: node::Nodes = node::nodes_make();
-    let mut p: pctx::Parser = pctx::make(&mut ns, lx.toks, "snippet.harmony");
+    let mut p: pctx::Parser = pctx::make(&mut ns, lx.toks.clone(), "snippet.harmony");
     let root = item::parse_program(&mut p);
     if (root < 0) { return 1; }
     let s = print::dump(&ns, root);

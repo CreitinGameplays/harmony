@@ -1,0 +1,74 @@
+kw "extern" kw=extern
+str "C"
+kw "fn" kw=fn
+ident "lc_syscall3"
+punct '('
+ident "n"
+punct ':'
+ident "i64"
+punct ','
+ident "a"
+punct ':'
+ident "i64"
+punct ','
+ident "b"
+punct ':'
+ident "i64"
+punct ','
+ident "c"
+punct ':'
+ident "i64"
+punct ')'
+punct '->'
+ident "i64"
+punct ';'
+kw "fn" kw=fn
+ident "main"
+punct '('
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "let" kw=let
+kw "mut" kw=mut
+ident "pid"
+punct ':'
+ident "i64"
+punct '='
+int "0" =0
+punct ';'
+kw "unchecked" kw=unchecked
+punct '('
+str "lc_syscall3(39) is getpid, which always succeeds"
+punct ')'
+punct '{'
+ident "pid"
+punct '='
+ident "lc_syscall3"
+punct '('
+int "39" =39
+punct ','
+int "0" =0
+punct ','
+int "0" =0
+punct ','
+int "0" =0
+punct ')'
+punct ';'
+punct '}'
+kw "if" kw=if
+punct '('
+ident "pid"
+punct '>'
+int "0" =0
+punct ')'
+punct '{'
+kw "return" kw=return
+int "9" =9
+punct ';'
+punct '}'
+kw "return" kw=return
+int "0" =0
+punct ';'
+punct '}'
+eof <eof>

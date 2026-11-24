@@ -21,8 +21,12 @@ import subprocess
 import sys
 import tempfile
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-HB = os.path.join(ROOT, "build", "harmony-base")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import env
+
+ROOT = env.ROOT
+HB = env.HB   # oracle: legacy check --format=line
+HC = env.HC   # compiler under test: runs the resolver driver
 TMP = tempfile.mkdtemp(prefix="harmony-resolve-")
 
 # (name, modules dict path->source, root path)
@@ -195,7 +199,7 @@ def run_all_rewrite(cases):
                 {"cases": "\n".join(chunks)})
     # -O0: this is a tiny test harness, not the compiler under test. Skipping
     # the optimizer cuts the one driver compilation from ~6 s to ~1 s.
-    return subprocess.run([HB, "run", drv, "-O0"], capture_output=True, text=True)
+    return subprocess.run([HC, "run", drv, "-O0"], capture_output=True, text=True)
 
 
 def split_cases(text, count):

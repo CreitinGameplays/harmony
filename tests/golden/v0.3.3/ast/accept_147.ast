@@ -1,0 +1,29 @@
+program
+  fn divide
+    type-name i32
+    block
+      if
+        binary ==
+          path b
+          int
+        block
+          expr-stmt
+            call
+              path trap
+              string division by zero #16
+      return
+        binary /
+          path a
+          path b
+    param a
+      type-name i32
+    param b
+      type-name i32
+  fn main
+    type-name i32
+    block
+      return
+        call
+          path divide
+          int #84
+          int #2

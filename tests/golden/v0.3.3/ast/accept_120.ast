@@ -1,0 +1,265 @@
+program
+  struct Box
+    param T
+    field v
+      type-name T
+  struct Pair
+    param A
+    param B
+    field a
+      type-name A
+    field b
+      type-name B
+  fn wrap
+    type-name Box
+      type-name T
+    block
+      return
+        struct-init Box
+          field-init v
+            path x
+          type-name T
+    param T
+    param x
+      type-name T
+  fn pair
+    type-name Pair
+      type-name A
+      type-name B
+    block
+      return
+        struct-init Pair
+          field-init a
+            path a
+          field-init b
+            path b
+          type-name A
+          type-name B
+    param A
+    param B
+    param a
+      type-name A
+    param b
+      type-name B
+  fn dup
+    type-name Pair
+      type-name T
+      type-name T
+    block
+      return
+        struct-init Pair
+          field-init a
+            path x
+          field-init b
+            path x
+          type-name T
+          type-name T
+    param T
+    param x
+      type-name T
+  fn add
+    type-name T
+    block
+      return
+        binary +
+          field v
+            path a
+          field v
+            path b
+    param T
+    param a
+      type-name Box
+        type-name T
+    param b
+      type-name Box
+        type-name T
+  fn split
+    type-name i32
+    block
+      return
+        binary +
+          field v
+            field v
+              path a
+          field v
+            path b
+    param A
+    param B
+    param a
+      type-name Box
+        type-name Box
+          type-name A
+    param b
+      type-name Box
+        type-name B
+  fn main
+    type-name i32
+    block
+      let b
+        call
+          path wrap
+          call
+            path wrap
+            int #42
+      if
+        binary !=
+          field v
+            field v
+              path b
+          int #42
+        block
+          return
+            int #1
+      let c
+        call
+          path wrap
+          call
+            path wrap
+            call
+              path wrap
+              int #42
+      if
+        binary !=
+          field v
+            field v
+              field v
+                path c
+          int #42
+        block
+          return
+            int #2
+      let p
+        call
+          path dup
+          call
+            path dup
+            int #7
+      if
+        binary !=
+          field a
+            field a
+              path p
+          int #7
+        block
+          return
+            int #3
+      if
+        binary !=
+          field a
+            field b
+              path p
+          int #7
+        block
+          return
+            int #4
+      let q
+        call
+          path pair
+          call
+            path pair
+            int #1
+            int #2
+          call
+            path pair
+            int #3
+            int #4
+      if
+        binary !=
+          binary +
+            binary +
+              binary +
+                field a
+                  field a
+                    path q
+                field b
+                  field a
+                    path q
+              field a
+                field b
+                  path q
+            field b
+              field b
+                path q
+          int #10
+        block
+          return
+            int #5
+      if
+        binary !=
+          call
+            path add
+            call
+              path wrap
+              int #20
+            call
+              path wrap
+              int #22
+          int #42
+        block
+          return
+            int #6
+      if
+        binary !=
+          call
+            path add
+            call
+              path wrap
+              int #20
+            call
+              path wrap
+              int #22
+          int #42
+        block
+          return
+            int #7
+      if
+        binary !=
+          call
+            path split
+            call
+              path wrap
+              call
+                path wrap
+                int #20
+            call
+              path wrap
+              int #22
+          int #42
+        block
+          return
+            int #8
+      let d
+        call
+          path wrap
+          call
+            path wrap
+            call
+              path wrap
+              call
+                path wrap
+                call
+                  path wrap
+                  call
+                    path wrap
+                    call
+                      path wrap
+                      call
+                        path wrap
+                        int #42
+      if
+        binary !=
+          field v
+            field v
+              field v
+                field v
+                  field v
+                    field v
+                      field v
+                        field v
+                          path d
+          int #42
+        block
+          return
+            int #9
+      return
+        int #42

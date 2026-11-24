@@ -1,0 +1,123 @@
+program
+  fn main
+    type-name i32
+    block
+      let s #1
+        int
+      for i
+        binary ..
+          int
+          int #5
+        block
+          assign =
+            path s
+            binary +
+              path s
+              path i
+      for j
+        binary ..=
+          int #1
+          int #3
+        block
+          assign =
+            path s
+            binary +
+              path s
+              path j
+      for k
+        binary ..
+          int
+          int
+        block
+          assign =
+            path s
+            binary +
+              path s
+              int #1000
+      for a
+        binary ..
+          int
+          int #3
+        block
+          for b
+            binary ..
+              int
+              int #4
+            block
+              assign =
+                path s
+                binary +
+                  path s
+                  int #1
+      for c
+        binary ..
+          int
+          int #100
+        block
+          if
+            binary ==
+              path c
+              int #5
+            block
+              break
+          assign =
+            path s
+            binary +
+              path s
+              int #1
+      for d
+        binary ..
+          int
+          int #6
+        block
+          if
+            binary ==
+              binary -
+                path d
+                binary *
+                  binary /
+                    path d
+                    int #2
+                  int #2
+              int
+            block
+              continue
+          assign =
+            path s
+            binary +
+              path s
+              int #1
+      for e
+        binary ..
+          int u8
+          int u8 #5
+        block
+          assign =
+            path s
+            binary +
+              path s
+              as
+                path e
+                type-name i32
+      let lo
+        type-name i64
+        int
+      let hi
+        type-name i64
+        int #4
+      for f
+        binary ..
+          path lo
+          path hi
+        block
+          assign =
+            path s
+            binary +
+              path s
+              as
+                path f
+                type-name i32
+      return
+        binary +
+          path s
+          int #36

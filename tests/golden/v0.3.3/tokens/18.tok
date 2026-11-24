@@ -1,0 +1,7 @@
+char "'\\0'" =0
+char "'\\''" =39
+char "'\\\\'" =92
+byte "b'a'" =97
+byte "b'\\n'" =10
+byte "b'\\u{41}'" =65
+eof <eof>

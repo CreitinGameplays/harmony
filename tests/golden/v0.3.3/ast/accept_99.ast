@@ -1,0 +1,106 @@
+program
+  fn id
+    type-name T
+    block
+      return
+        path x
+    param T
+    param x
+      type-name T
+  fn max
+    type-name T
+    block
+      if
+        binary <
+          path a
+          path b
+        block
+          return
+            path b
+      return
+        path a
+    param T:ord
+    param a
+      type-name T
+    param b
+      type-name T
+  fn first
+    type-name T
+    block
+      return
+        index
+          path xs
+          int
+    param T
+    param xs
+      type-ref
+        type-slice
+          type-name T
+  fn twice
+    type-name T
+    block
+      return
+        call id
+          path x
+          type-name T
+    param T
+    param x
+      type-name T
+  fn main
+    type-name i32
+    block
+      let a
+        call max
+          int #3
+          int #7
+          type-name i32
+      let b
+        call
+          path max
+          int #9
+          int #2
+      let c
+        call id
+          int #40
+          type-name i32
+      let d
+        call
+          path id
+          as
+            int #2
+            type-name u8
+      let e
+        call
+          path twice
+          int #5
+      let arr
+        type-array
+          type-name i32
+          int #3
+        array-lit
+          int #11
+          int #22
+          int #33
+      let f
+        call
+          path first
+          borrow
+            index
+              path arr
+              binary ..
+      return
+        binary -
+          binary +
+            binary +
+              binary +
+                binary +
+                  binary +
+                    path a
+                    path b
+                  path c
+                as
+                  path d
+                  type-name i32
+              path e
+            path f
+          int #32

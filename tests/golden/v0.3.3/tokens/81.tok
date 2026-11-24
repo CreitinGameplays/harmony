@@ -1,0 +1,100 @@
+kw "struct" kw=struct
+ident "A"
+punct '{'
+ident "x"
+punct ':'
+ident "i32"
+punct ';'
+punct '}'
+kw "struct" kw=struct
+ident "B"
+punct '{'
+ident "y"
+punct ':'
+ident "i32"
+punct ';'
+punct '}'
+kw "methods" kw=methods
+ident "A"
+punct '{'
+kw "export" kw=export
+kw "fn" kw=fn
+ident "m"
+punct '('
+punct '&'
+kw "self" kw=self
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "return" kw=return
+kw "self" kw=self
+punct '.'
+ident "x"
+punct ';'
+punct '}'
+punct '}'
+kw "methods" kw=methods
+ident "B"
+punct '{'
+kw "export" kw=export
+kw "fn" kw=fn
+ident "m"
+punct '('
+punct '&'
+kw "self" kw=self
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "return" kw=return
+kw "self" kw=self
+punct '.'
+ident "y"
+punct ';'
+punct '}'
+punct '}'
+kw "fn" kw=fn
+ident "main"
+punct '('
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "let" kw=let
+ident "a"
+punct '='
+ident "A"
+punct '{'
+punct '.'
+ident "x"
+punct '='
+int "10" =10
+punct '}'
+punct ';'
+kw "let" kw=let
+ident "b"
+punct '='
+ident "B"
+punct '{'
+punct '.'
+ident "y"
+punct '='
+int "20" =20
+punct '}'
+punct ';'
+kw "return" kw=return
+ident "a"
+punct '.'
+ident "m"
+punct '('
+punct ')'
+punct '+'
+ident "b"
+punct '.'
+ident "m"
+punct '('
+punct ')'
+punct ';'
+punct '}'
+eof <eof>

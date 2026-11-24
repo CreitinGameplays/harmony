@@ -213,7 +213,8 @@ export fn emit_helpers(e: &mut context::Emitter) {
     let mut i: usize = 0;
     while (i < ids.len()) {
         let ty = *ids.get(i);
-        if (!check::cloneable(&*e.c, ty)) {
+        if (!check::cloneable(&*e.c, ty)
+            || check::type_has_genparam(&*e.c, ty)) {
             i += 1; continue;
         }
         e.ssa = 0;

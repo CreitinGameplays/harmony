@@ -1,0 +1,19 @@
+program
+  fn main
+    type-name i32
+    block
+      let s
+        string hello #5
+      let bad
+        borrow
+          index
+            path s
+            binary ..
+              int #2
+              int #9
+      return
+        as
+          call
+            field len
+              path bad
+          type-name i32

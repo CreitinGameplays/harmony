@@ -1,0 +1,202 @@
+program
+  fn main
+    type-name i32
+    block
+      let h
+        heap
+          array-lit
+            int u8 #10
+            int #20
+            int #30
+            int #40
+            int #50
+      let s
+        borrow
+          index
+            path h
+            binary ..
+              int #1
+              int #3
+      if
+        binary !=
+          call
+            field len
+              path s
+          int #2
+        block
+          return
+            int #1
+      if
+        binary !=
+          as
+            index
+              path s
+              int
+            type-name i32
+          int #20
+        block
+          return
+            int #2
+      if
+        binary !=
+          as
+            index
+              path s
+              int #1
+            type-name i32
+          int #30
+        block
+          return
+            int #3
+      let t
+        borrow
+          index
+            deref
+              path h
+            binary ..
+              int #1
+              int #3
+      if
+        binary !=
+          call
+            field len
+              path t
+          call
+            field len
+              path s
+        block
+          return
+            int #4
+      if
+        binary !=
+          as
+            index
+              path t
+              int
+            type-name i32
+          as
+            index
+              path s
+              int
+            type-name i32
+        block
+          return
+            int #5
+      let all
+        borrow
+          index
+            path h
+            binary ..
+              int
+              int #5
+      if
+        binary !=
+          call
+            field len
+              path all
+          int #5
+        block
+          return
+            int #6
+      let tail
+        borrow
+          index
+            path h
+            binary ..
+              int #2
+      if
+        binary !=
+          call
+            field len
+              path tail
+          int #3
+        block
+          return
+            int #7
+      if
+        binary !=
+          as
+            index
+              path tail
+              int #2
+            type-name i32
+          int #50
+        block
+          return
+            int #8
+      let m #1
+        heap
+          array-lit
+            int u8
+            int #8
+      let w #1
+        borrow #1
+          index
+            path m
+            binary ..
+              int
+              int #8
+      assign =
+        index
+          path w
+          int #3
+        int #7
+      let r
+        borrow
+          index
+            path m
+            binary ..
+              int
+              int #8
+      if
+        binary !=
+          as
+            index
+              path r
+              int #3
+            type-name i32
+          int #7
+        block
+          return
+            int #9
+      let backing
+        array-lit
+          int u8 #10
+          int #20
+          int #30
+          int #40
+      let hs
+        heap
+          borrow
+            index
+              path backing
+              binary ..
+      let sq
+        borrow
+          index
+            path hs
+            binary ..
+              int #1
+              int #3
+      if
+        binary !=
+          call
+            field len
+              path sq
+          int #2
+        block
+          return
+            int #10
+      if
+        binary !=
+          as
+            index
+              path sq
+              int
+            type-name i32
+          int #20
+        block
+          return
+            int #11
+      return
+        int #42

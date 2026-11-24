@@ -1,0 +1,39 @@
+program
+  struct C
+    field n
+      type-name i32
+  fn bump
+    block
+      assign +=
+        field n
+          path c
+        int #1
+    param c
+      type-ref #1
+        type-name C
+  fn get
+    type-name i32
+    block
+      return
+        field n
+          path c
+    param c
+      type-ref
+        type-name C
+  fn main
+    type-name i32
+    block
+      let c #1
+        struct-init C
+          field-init n
+            int #41
+      expr-stmt
+        call
+          path bump
+          borrow #1
+            path c
+      return
+        call
+          path get
+          borrow
+            path c

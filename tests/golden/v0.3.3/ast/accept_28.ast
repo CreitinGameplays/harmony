@@ -1,0 +1,14 @@
+program
+  fn main
+    type-name i32
+    block
+      let s
+        type-ref
+          type-slice
+            type-name u8
+        borrow
+          index
+            path a
+            binary ..
+      return
+        int

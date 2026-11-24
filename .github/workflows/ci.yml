@@ -126,6 +126,11 @@ jobs:
           touch build/harmony build/harmony-base build/c2x-seed
       - name: make test
         run: make -j"$JOBS" test
+      # Bootstrap-retirement burn-in: drive the full suite with the v1 compiler
+      # while differential tests still use the legacy binary as their oracle.
+      # Does not delete or tag anything; purely additive verification.
+      - name: make test (v1 burn-in)
+        run: make -j"$JOBS" test-v1
 
   # -------------------------------------------------------------------------
   # Manual tag preparation. Runs only on the default branch. It does not

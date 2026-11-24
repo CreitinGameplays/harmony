@@ -23,7 +23,8 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-HB="$ROOT/build/harmony-base"
+. "$ROOT/tests/env.sh"
+HB="$HARMONY"   # compiler under test (default: legacy; override with HARMONY=)
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -37,7 +38,7 @@ if ! command -v valgrind >/dev/null 2>&1; then
     exit 0
 fi
 if [ ! -x "$HB" ]; then
-    echo "error: $HB not built (run 'make harmony-base' first)" >&2
+    echo "error: $HB not built (HARMONY=$HARMONY; run 'make all' first)" >&2
     exit 1
 fi
 

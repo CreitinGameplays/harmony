@@ -8,8 +8,7 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-HC="$ROOT/build/harmony"
-HB="$ROOT/build/harmony-base"
+. "$ROOT/tests/env.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -19,7 +18,7 @@ ok()   { pass=$((pass + 1)); printf 'ok   %s\n' "$1"; }
 bad()  { fail=$((fail + 1)); printf 'FAIL %s\n' "$1"; }
 
 if [ ! -x "$HC" ] || [ ! -x "$HB" ]; then
-    echo "error: build harmony-base and harmony first" >&2
+    echo "error: build HARMONY=$HARMONY and ORACLE=$ORACLE first" >&2
     exit 1
 fi
 

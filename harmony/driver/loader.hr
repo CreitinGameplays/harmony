@@ -392,6 +392,15 @@ fn parse_one(nodes: &mut node::Nodes, arena: &mut mem::Arena,
     let first = node::len(&*nodes);
     let mut lx: ctx::Ctx = ctx::make(src, path);
     scan::scan(&mut lx, arena);
+    // Lexer stops (LEX-01) are real diagnostics: dropping them made malformed
+    // literals look clean in v1 even though the scanner had rejected them.
+    let mut li: usize = 0;
+    while (li < lx.diags.len()) {
+        let mut d = *lx.diags.get(li);
+        fmt::set_source(&mut d, src);
+        diags.push(d);
+        li += 1;
+    }
     let mut p: pctx::Parser = pctx::make(nodes, lx.toks.clone(), path);
     let program = item::parse_program(&mut p);
     // A module's syntax errors belong to the load result. Dropping them made

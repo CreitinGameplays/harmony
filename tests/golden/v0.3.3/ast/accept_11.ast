@@ -1,0 +1,5 @@
+program
+  extern-fn abs #7
+    type-name i32
+    param x
+      type-name i32

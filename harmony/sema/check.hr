@@ -575,7 +575,7 @@ export fn type_id(c: &Checker, name: &str) -> i32 {
 
 // True when a type still contains a generic-parameter type, directly or in
 // one of its members (`Box<T>` inside `Box<Box<T>>`).
-fn type_has_genparam(c: &Checker, ty: i32) -> bool {
+export fn type_has_genparam(c: &Checker, ty: i32) -> bool {
     if (ty <= 0 || ty >= c.types.entries.len() as i32) { return false; }
     if (types::type_kind(&c.types, ty) == types::CTY_GENPARAM) { return true; }
     let mut i: usize = 0;

@@ -1,0 +1,71 @@
+program
+  extern-fn lc_syscall3 #289
+    type-name i64
+    param n
+      type-name i64
+    param a
+      type-name i64
+    param b
+      type-name i64
+    param c
+      type-name i64
+  extern-fn lc_put_str #355
+    param p
+      type-raw
+        type-name u8
+    param n
+      type-name i64
+  fn main
+    type-name i32
+    block
+      let pid #1
+        type-name i64
+        int
+      unchecked lc_syscall3(39) is getpid, which always succeeds
+        block
+          assign =
+            path pid
+            call
+              path lc_syscall3
+              int #39
+              int
+              int
+              int
+      if
+        binary <=
+          path pid
+          int
+        block
+          return
+            int #1
+      let bytes #1
+        array-lit
+          int u8
+          int #3
+      assign =
+        index
+          path bytes
+          int
+        int u8 #79
+      assign =
+        index
+          path bytes
+          int #1
+        int u8 #75
+      let p
+        type-raw
+          type-name u8
+        raw-expr
+          borrow
+            index
+              path bytes
+              int
+      unchecked write two bytes through the runtime hook
+        block
+          expr-stmt
+            call
+              path lc_put_str
+              path p
+              int #2
+      return
+        int #9

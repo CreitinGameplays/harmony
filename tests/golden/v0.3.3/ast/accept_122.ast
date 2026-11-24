@@ -1,0 +1,199 @@
+program
+  struct FixedVec
+    param T
+    field buf
+      type-array
+        type-name T
+        int #4
+    field len
+      type-name usize
+  methods FixedVec
+    param T
+    fn next #1
+      type-name Maybe
+        type-name T
+      block
+        if
+          binary ==
+            field len
+              path self
+            int
+          block
+            return
+              path Empty
+        assign =
+          field len
+            path self
+          binary -
+            field len
+              path self
+            int #1
+        return
+          call
+            path Has
+            index
+              field buf
+                path self
+              field len
+                path self
+      param &mut self
+    type-name T
+  fn checked_div
+    type-name Outcome
+      type-name i32
+      type-name i32
+    block
+      if
+        binary ==
+          path b
+          int
+        block
+          return
+            call
+              path Bad
+              unary -
+                int #1
+      return
+        call
+          path Good
+          binary /
+            path a
+            path b
+    param a
+      type-name i32
+    param b
+      type-name i32
+  fn main
+    type-name i32
+    block
+      let m
+        type-name Maybe
+          type-name i32
+        call
+          path Has
+          int #10
+      let acc #1
+        int
+      switch
+        path m
+        arm
+          block
+            assign =
+              path acc
+              binary +
+                path acc
+                path v
+          pat-variant Has
+            pat-bind v
+        arm
+          block
+            assign =
+              path acc
+              binary +
+                path acc
+                int #500
+          pat-bind Empty
+      let e
+        type-name Maybe
+          type-name i32
+        path Empty
+      switch
+        path e
+        arm
+          block
+            assign =
+              path acc
+              binary +
+                path acc
+                int #500
+          pat-variant Has
+            pat-bind v
+        arm
+          block
+            assign =
+              path acc
+              binary +
+                path acc
+                int #1
+          pat-bind Empty
+      let d
+        type-name Outcome
+          type-name i32
+          type-name i32
+        call
+          path checked_div
+          int #20
+          int #4
+      switch
+        path d
+        arm
+          block
+            assign =
+              path acc
+              binary +
+                path acc
+                path v
+          pat-variant Good
+            pat-bind v
+        arm
+          block
+            assign =
+              path acc
+              binary +
+                path acc
+                path err
+          pat-variant Bad
+            pat-bind err
+      let z
+        type-name Outcome
+          type-name i32
+          type-name i32
+        call
+          path checked_div
+          int #1
+          int
+      switch
+        path z
+        arm
+          block
+            assign =
+              path acc
+              binary +
+                path acc
+                int #1000
+          pat-variant Good
+            pat-bind v
+        arm
+          block
+            assign =
+              path acc
+              binary -
+                path acc
+                path err
+          pat-variant Bad
+            pat-bind err
+      let fv #1
+        type-name FixedVec
+          type-name i32
+        struct-init FixedVec
+          field-init buf
+            array-lit
+              int #5
+              int #3
+              int
+              int
+          field-init len
+            int #2
+          type-name i32
+      for x
+        path fv
+        block
+          assign =
+            path acc
+            binary +
+              path acc
+              path x
+      return
+        binary +
+          path acc
+          int #8

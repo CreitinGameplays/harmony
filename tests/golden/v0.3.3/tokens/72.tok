@@ -1,0 +1,51 @@
+kw "import" kw=import
+str "imports-rel/shared.harmony"
+punct ';'
+kw "import" kw=import
+str "imports-rel/nested/child.harmony"
+punct ';'
+kw "fn" kw=fn
+ident "main"
+punct '('
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "let" kw=let
+ident "a"
+punct '='
+ident "shared"
+punct '::'
+ident "shared"
+punct '('
+punct ')'
+punct ';'
+kw "let" kw=let
+ident "b"
+punct '='
+ident "child"
+punct '::'
+ident "via_parent"
+punct '('
+punct ')'
+punct ';'
+kw "if" kw=if
+punct '('
+ident "a"
+punct '!='
+int "40" =40
+punct ')'
+punct '{'
+kw "return" kw=return
+int "1" =1
+punct ';'
+punct '}'
+kw "return" kw=return
+ident "a"
+punct '+'
+ident "b"
+punct '-'
+int "40" =40
+punct ';'
+punct '}'
+eof <eof>

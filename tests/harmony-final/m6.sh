@@ -4,7 +4,7 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-HC="$ROOT/build/harmony"
+. "$ROOT/tests/env.sh"
 DIR="$ROOT/tests/harmony-final/m6"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT

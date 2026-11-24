@@ -1,0 +1,86 @@
+program
+  fn take
+    type-name i32
+    block
+      switch
+        path m
+        arm
+          block
+            return
+              path v
+          pat-variant Has
+            pat-bind v
+        arm
+          block
+            return
+              int
+          pat-bind Empty
+      return
+        unary -
+          int #1
+    param m
+      type-name Maybe
+        type-name i32
+  fn take_generic
+    type-name i32
+    block
+      return
+        call
+          path take
+          path m
+    param T
+    param x
+      type-name T
+    param m
+      type-name Maybe
+        type-name i32
+  fn main
+    type-name i32
+    block
+      let v #1
+        type-name Maybe
+          type-name i64
+        path Empty
+      assign =
+        path v
+        call
+          path Has
+          int #7
+      let a
+        call
+          path take
+          call
+            path Has
+            int #20
+      let b
+        call take_generic
+          int #1
+          call
+            path Has
+            int #15
+          type-name i32
+      let total #1
+        type-name i32
+        int
+      switch
+        path v
+        arm
+          block
+            assign =
+              path total
+              binary +
+                path total
+                as
+                  path w
+                  type-name i32
+          pat-variant Has
+            pat-bind w
+        arm
+          block
+          pat-bind Empty
+      return
+        binary +
+          binary +
+            path total
+            path a
+          path b

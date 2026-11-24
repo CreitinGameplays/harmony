@@ -1,0 +1,101 @@
+kw "fn" kw=fn
+ident "main"
+punct '('
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "let" kw=let
+ident "lt"
+punct '='
+punct '('
+int "1" =1
+punct '<'
+int "2" =2
+punct ')'
+punct ';'
+kw "let" kw=let
+ident "gt"
+punct '='
+punct '('
+int "3" =3
+punct '>'
+int "4" =4
+punct ')'
+punct ';'
+kw "if" kw=if
+punct '('
+punct '!'
+ident "lt"
+punct ')'
+punct '{'
+kw "return" kw=return
+int "1" =1
+punct ';'
+punct '}'
+kw "if" kw=if
+punct '('
+ident "gt"
+punct ')'
+punct '{'
+kw "return" kw=return
+int "2" =2
+punct ';'
+punct '}'
+kw "if" kw=if
+punct '('
+ident "lt"
+punct '=='
+kw "true" kw=true
+punct ')'
+punct '{'
+punct '}'
+kw "else" kw=else
+punct '{'
+kw "return" kw=return
+int "3" =3
+punct ';'
+punct '}'
+kw "let" kw=let
+ident "m"
+punct '='
+int "100" =100
+punct '%'
+int "30" =30
+punct ';'
+kw "let" kw=let
+ident "a"
+punct '='
+int "100" =100
+punct '&'
+int "30" =30
+punct ';'
+kw "let" kw=let
+ident "o"
+punct '='
+int "34" =34
+punct '|'
+int "8" =8
+punct ';'
+kw "let" kw=let
+ident "x"
+punct '='
+int "100" =100
+punct '^'
+int "30" =30
+punct ';'
+kw "return" kw=return
+int "40" =40
+punct '+'
+ident "m"
+punct '-'
+ident "a"
+punct '+'
+ident "o"
+punct '-'
+ident "x"
+punct '+'
+int "76" =76
+punct ';'
+punct '}'
+eof <eof>

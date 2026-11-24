@@ -1,0 +1,206 @@
+kw "const" kw=const
+ident "BASE"
+punct ':'
+ident "i32"
+punct '='
+int "10" =10
+punct ';'
+kw "const" kw=const
+ident "STEP"
+punct ':'
+ident "i32"
+punct '='
+int "2" =2
+punct '*'
+int "3" =3
+punct ';'
+kw "const" kw=const
+ident "NEXT"
+punct ':'
+ident "i32"
+punct '='
+ident "BASE"
+punct '+'
+ident "STEP"
+punct ';'
+kw "const" kw=const
+ident "NEG"
+punct ':'
+ident "i32"
+punct '='
+punct '-'
+int "6" =6
+punct ';'
+kw "const" kw=const
+ident "TABLE"
+punct ':'
+punct '['
+ident "i32"
+punct ';'
+int "3" =3
+punct ']'
+punct '='
+punct '['
+int "40" =40
+punct ','
+int "20" =20
+punct ','
+int "11" =11
+punct ']'
+punct ';'
+kw "struct" kw=struct
+ident "Pair"
+punct '{'
+ident "a"
+punct ':'
+ident "i32"
+punct ';'
+ident "b"
+punct ':'
+ident "i32"
+punct ';'
+punct '}'
+kw "const" kw=const
+ident "P"
+punct ':'
+ident "Pair"
+punct '='
+ident "Pair"
+punct '{'
+punct '.'
+ident "a"
+punct '='
+int "5" =5
+punct ','
+punct '.'
+ident "b"
+punct '='
+int "6" =6
+punct '}'
+punct ';'
+kw "fn" kw=fn
+ident "add"
+punct '('
+ident "x"
+punct ':'
+ident "i32"
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "return" kw=return
+ident "x"
+punct '+'
+int "1" =1
+punct ';'
+punct '}'
+kw "fn" kw=fn
+ident "main"
+punct '('
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "let" kw=let
+kw "mut" kw=mut
+ident "acc"
+punct '='
+int "0" =0
+punct ';'
+ident "acc"
+punct '='
+ident "acc"
+punct '+'
+ident "NEXT"
+punct ';'
+ident "acc"
+punct '='
+ident "acc"
+punct '+'
+ident "NEG"
+punct ';'
+ident "acc"
+punct '='
+ident "acc"
+punct '+'
+ident "TABLE"
+punct '['
+int "2" =2
+punct ']'
+punct ';'
+ident "acc"
+punct '='
+ident "acc"
+punct '+'
+ident "P"
+punct '.'
+ident "a"
+punct ';'
+ident "acc"
+punct '='
+ident "acc"
+punct '+'
+ident "add"
+punct '('
+ident "P"
+punct '.'
+ident "b"
+punct ')'
+punct ';'
+kw "if" kw=if
+punct '('
+ident "BASE"
+punct '=='
+int "10" =10
+punct ')'
+punct '{'
+ident "acc"
+punct '='
+ident "acc"
+punct '+'
+int "1" =1
+punct ';'
+punct '}'
+kw "let" kw=let
+kw "mut" kw=mut
+ident "i"
+punct '='
+int "0" =0
+punct ';'
+kw "while" kw=while
+punct '('
+ident "i"
+punct '<'
+int "3" =3
+punct ')'
+punct '{'
+ident "i"
+punct '='
+ident "i"
+punct '+'
+int "1" =1
+punct ';'
+punct '}'
+ident "acc"
+punct '='
+ident "acc"
+punct '+'
+ident "i"
+punct ';'
+kw "return" kw=return
+ident "acc"
+punct '+'
+ident "TABLE"
+punct '['
+int "0" =0
+punct ']'
+punct '+'
+ident "TABLE"
+punct '['
+int "2" =2
+punct ']'
+punct '+'
+int "37" =37
+punct ';'
+punct '}'
+eof <eof>

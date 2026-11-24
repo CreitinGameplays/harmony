@@ -1,0 +1,274 @@
+program
+  import struct-mixed-fields-env.hr
+  struct Point
+    field x
+      type-name i32
+    field y
+      type-name i32
+  struct S
+    field label
+      type-ref
+        type-name str
+    field items
+      type-name struct_mixed_fields_env::Vec
+        type-name i32
+    field tail
+      type-name u32
+  fn use_s
+    type-name i32
+    block
+      let s #1
+        type-name S
+        struct-init S
+          field-init label
+            string ok #2
+          field-init items
+            call
+              path struct_mixed_fields_env::Vec::make
+                type-name i32
+          field-init tail
+            int #7
+      if
+        binary !=
+          field label
+            path s
+          string ok #2
+        block
+          return
+            int #1
+      if
+        binary !=
+          field tail
+            path s
+          int #7
+        block
+          return
+            int #2
+      expr-stmt
+        call
+          field push
+            field items
+              path s
+          int #11
+      expr-stmt
+        call
+          field push
+            field items
+              path s
+          int #22
+      if
+        binary !=
+          call
+            field len
+              field items
+                path s
+          int #2
+        block
+          return
+            int #3
+      if
+        binary !=
+          deref
+            call
+              field get
+                field items
+                  path s
+              int
+          int #11
+        block
+          return
+            int #4
+      if
+        binary !=
+          deref
+            call
+              field get
+                field items
+                  path s
+              int #1
+          int #22
+        block
+          return
+            int #5
+      assign =
+        field tail
+          path s
+        int #9
+      if
+        binary !=
+          field tail
+            path s
+          int #9
+        block
+          return
+            int #6
+      return
+        int #42
+  struct Pair
+    field a
+      type-name struct_mixed_fields_env::Vec
+        type-name u8
+    field name
+      type-ref
+        type-name str
+    field b
+      type-name struct_mixed_fields_env::Vec
+        type-name u32
+  fn use_pair
+    type-name i32
+    block
+      let p #1
+        type-name Pair
+        struct-init Pair
+          field-init a
+            call
+              path struct_mixed_fields_env::Vec::make
+                type-name u8
+          field-init name
+            string pair #4
+          field-init b
+            call
+              path struct_mixed_fields_env::Vec::make
+                type-name u32
+      if
+        binary !=
+          field name
+            path p
+          string pair #4
+        block
+          return
+            int #1
+      expr-stmt
+        call
+          field push
+            field a
+              path p
+          int u8 #5
+      expr-stmt
+        call
+          field push
+            field b
+              path p
+          int u32 #100
+      if
+        binary !=
+          deref
+            call
+              field get
+                field a
+                  path p
+              int
+          int u8 #5
+        block
+          return
+            int #2
+      if
+        binary !=
+          deref
+            call
+              field get
+                field b
+                  path p
+              int
+          int u32 #100
+        block
+          return
+            int #3
+      return
+        int #42
+  struct Wrap
+    field inner
+      type-name struct_mixed_fields_env::Vec
+        type-name u8
+    field tag
+      type-name u32
+  fn use_wrap
+    type-name i32
+    block
+      let w
+        type-name Wrap
+        struct-init Wrap
+          field-init inner
+            call
+              path struct_mixed_fields_env::Vec::make
+                type-name u8
+          field-init tag
+            int #3
+      if
+        binary !=
+          field tag
+            path w
+          int #3
+        block
+          return
+            int #1
+      if
+        binary !=
+          call
+            field len
+              field inner
+                path w
+          int
+        block
+          return
+            int #2
+      return
+        int #42
+  fn main
+    type-name i32
+    block
+      let r
+        call
+          path use_s
+      if
+        binary !=
+          path r
+          int #42
+        block
+          return
+            binary +
+              int #100
+              path r
+      let r2
+        call
+          path use_pair
+      if
+        binary !=
+          path r2
+          int #42
+        block
+          return
+            binary +
+              int #200
+              path r2
+      let r3
+        call
+          path use_wrap
+      if
+        binary !=
+          path r3
+          int #42
+        block
+          return
+            binary +
+              int #300
+              path r3
+      let p
+        struct-init Point
+          field-init x
+            int #2
+          field-init y
+            int #3
+      if
+        binary !=
+          binary +
+            field x
+              path p
+            field y
+              path p
+          int #5
+        block
+          return
+            int #400
+      return
+        int #42

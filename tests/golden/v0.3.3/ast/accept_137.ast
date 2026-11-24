@@ -1,0 +1,96 @@
+program
+  struct Point
+    field x
+      type-name i32
+    field y
+      type-name i32
+  fn sum_x
+    type-name i32
+    block
+      let i #1
+        type-name usize
+        int
+      let t #1
+        type-name i32
+        int
+      while
+        binary <
+          path i
+          call
+            field len
+              path xs
+        block
+          assign =
+            path t
+            binary +
+              path t
+              field x
+                index
+                  path xs
+                  path i
+          assign =
+            path i
+            binary +
+              path i
+              int #1
+      return
+        path t
+    param xs
+      type-ref
+        type-slice
+          type-name Point
+  fn main
+    type-name i32
+    block
+      let ps
+        type-array
+          type-name Point
+          int #4
+        array-lit
+          struct-init Point
+            field-init x
+              int #1
+            field-init y
+              int
+          struct-init Point
+            field-init x
+              int #2
+            field-init y
+              int
+          struct-init Point
+            field-init x
+              int #3
+            field-init y
+              int
+          struct-init Point
+            field-init x
+              int #4
+            field-init y
+              int
+      let direct
+        binary +
+          field x
+            index
+              path ps
+              int
+          field x
+            index
+              path ps
+              int #3
+      let s
+        borrow
+          index
+            path ps
+            binary ..
+              int #1
+              int #4
+      return
+        binary +
+          binary +
+            path direct
+            binary *
+              call
+                path sum_x
+                path s
+              int #4
+          int #1

@@ -1,0 +1,10 @@
+program
+  fn main
+    type-name i32
+    block
+      expr-stmt
+        call
+          path trap
+          string reached a forbidden state #25
+      return
+        int

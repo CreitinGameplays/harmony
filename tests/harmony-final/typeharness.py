@@ -13,10 +13,17 @@ split the output on those markers.
 import os
 import re
 import subprocess
+import sys
 import tempfile
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-HB = os.path.join(ROOT, "build", "harmony-base")
+# Differential harness: drivers are built by the compiler under test (v1 by
+# default), expected diagnostics come from the legacy oracle.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import env
+
+ROOT = env.ROOT
+HC = env.HC        # compiler under test: builds the test drivers
+HB = env.HB        # differential oracle: supplies expected codes
 TMP = tempfile.mkdtemp(prefix="hd-batch-")
 BATCH = os.path.join(ROOT, "tests/harmony-final/typebatch.hr")
 
@@ -55,7 +62,7 @@ def run_cases(cases):
     open(drv, "w").write(body)
     # Build once. Build the binary into the temp dir (outside the repo).
     out = os.path.join(TMP, "batchbin")
-    b = subprocess.run([HB, "build", drv, "-o", out], capture_output=True, text=True)
+    b = subprocess.run([HC, "build", drv, "-o", out], capture_output=True, text=True)
     if b.returncode != 0:
         raise SystemExit("batch driver build failed:\n" + (b.stdout + b.stderr)[:4000])
     try:

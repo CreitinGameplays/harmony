@@ -1,0 +1,153 @@
+kw "struct" kw=struct
+ident "Big"
+punct '{'
+ident "a"
+punct ':'
+ident "i32"
+punct ';'
+ident "b"
+punct ':'
+ident "i32"
+punct ';'
+ident "c"
+punct ':'
+ident "i32"
+punct ';'
+ident "d"
+punct ':'
+ident "i32"
+punct ';'
+ident "e"
+punct ':'
+ident "i32"
+punct ';'
+ident "f"
+punct ':'
+ident "i32"
+punct ';'
+ident "g"
+punct ':'
+ident "i32"
+punct ';'
+ident "h"
+punct ':'
+ident "i32"
+punct ';'
+punct '}'
+kw "fn" kw=fn
+ident "summed"
+punct '('
+ident "v"
+punct ':'
+ident "Big"
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "return" kw=return
+ident "v"
+punct '.'
+ident "a"
+punct '+'
+ident "v"
+punct '.'
+ident "b"
+punct '+'
+ident "v"
+punct '.'
+ident "c"
+punct '+'
+ident "v"
+punct '.'
+ident "d"
+punct '+'
+ident "v"
+punct '.'
+ident "e"
+punct '+'
+ident "v"
+punct '.'
+ident "f"
+punct '+'
+ident "v"
+punct '.'
+ident "g"
+punct '+'
+ident "v"
+punct '.'
+ident "h"
+punct ';'
+punct '}'
+kw "fn" kw=fn
+ident "main"
+punct '('
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "let" kw=let
+ident "v"
+punct '='
+ident "Big"
+punct '{'
+punct '.'
+ident "a"
+punct '='
+int "1" =1
+punct ','
+punct '.'
+ident "b"
+punct '='
+int "2" =2
+punct ','
+punct '.'
+ident "c"
+punct '='
+int "3" =3
+punct ','
+punct '.'
+ident "d"
+punct '='
+int "4" =4
+punct ','
+punct '.'
+ident "e"
+punct '='
+int "5" =5
+punct ','
+punct '.'
+ident "f"
+punct '='
+int "6" =6
+punct ','
+punct '.'
+ident "g"
+punct '='
+int "7" =7
+punct ','
+punct '.'
+ident "h"
+punct '='
+int "8" =8
+punct '}'
+punct ';'
+kw "let" kw=let
+ident "total"
+punct '='
+ident "summed"
+punct '('
+ident "v"
+punct ')'
+punct '+'
+ident "summed"
+punct '('
+ident "v"
+punct ')'
+punct ';'
+kw "return" kw=return
+ident "total"
+punct '-'
+int "30" =30
+punct ';'
+punct '}'
+eof <eof>

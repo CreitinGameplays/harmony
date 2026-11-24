@@ -1,0 +1,245 @@
+program
+  enum Tok #1
+    variant Word
+      type-ref
+        type-name str
+    variant Num
+      type-name i64
+    variant Punct
+      type-name u8
+  fn classify
+    type-name i32
+    block
+      switch
+        path t
+        arm
+          block
+            return
+              as
+                call
+                  field len
+                    path s
+                type-name i32
+          pat-variant Word
+            pat-bind s
+        arm
+          block
+            return
+              as
+                binary %
+                  path n
+                  int #100
+                type-name i32
+          pat-variant Num
+            pat-bind n
+        arm
+          block
+            return
+              as
+                path c
+                type-name i32
+          pat-variant Punct
+            pat-bind c
+    param t
+      type-name Tok
+  fn kind_id
+    type-name i32
+    block
+      switch
+        path t
+        arm
+          block
+            return
+              int #1
+          pat-variant Num
+            pat-bind n
+        arm
+          block
+            return
+              int #2
+    param t
+      type-name Tok
+  fn deep
+    type-name i32
+    block
+      switch
+        path t
+        arm
+          block
+            if
+              binary >
+                call
+                  field len
+                    path s
+                int #2
+              block
+                return
+                  int #3
+              block
+                return
+                  int #4
+          pat-variant Word
+            pat-bind s
+        arm
+          block
+            return
+              int #5
+          pat-variant Num
+            pat-bind n
+        arm
+          block
+            return
+              int #6
+          pat-variant Punct
+            pat-bind c
+    param t
+      type-name Tok
+  fn partial
+    type-name i32
+    block
+      switch
+        path t
+        arm
+          block
+            return
+              int #7
+          pat-variant Num
+            pat-bind n
+        arm
+          block
+          pat-variant Word
+            pat-bind s
+        arm
+          block
+          pat-variant Punct
+            pat-bind c
+      return
+        int #8
+    param t
+      type-name Tok
+  fn main
+    type-name i32
+    block
+      if
+        binary !=
+          call
+            path classify
+            call
+              path Tok::Word
+              string abcd #4
+          int #4
+        block
+          return
+            int #1
+      if
+        binary !=
+          call
+            path classify
+            call
+              path Tok::Num
+              int #1234
+          int #34
+        block
+          return
+            int #2
+      if
+        binary !=
+          call
+            path classify
+            call
+              path Tok::Punct
+              int u8 #9
+          int #9
+        block
+          return
+            int #3
+      if
+        binary !=
+          call
+            path kind_id
+            call
+              path Tok::Num
+              int
+          int #1
+        block
+          return
+            int #4
+      if
+        binary !=
+          call
+            path kind_id
+            call
+              path Tok::Punct
+              int u8
+          int #2
+        block
+          return
+            int #5
+      if
+        binary !=
+          call
+            path deep
+            call
+              path Tok::Word
+              string abc #3
+          int #3
+        block
+          return
+            int #6
+      if
+        binary !=
+          call
+            path deep
+            call
+              path Tok::Word
+              string a #1
+          int #4
+        block
+          return
+            int #7
+      if
+        binary !=
+          call
+            path deep
+            call
+              path Tok::Num
+              int
+          int #5
+        block
+          return
+            int #8
+      if
+        binary !=
+          call
+            path deep
+            call
+              path Tok::Punct
+              int u8
+          int #6
+        block
+          return
+            int #9
+      if
+        binary !=
+          call
+            path partial
+            call
+              path Tok::Num
+              int
+          int #7
+        block
+          return
+            int #10
+      if
+        binary !=
+          call
+            path partial
+            call
+              path Tok::Word
+              string x #1
+          int #8
+        block
+          return
+            int #11
+      return
+        int #42

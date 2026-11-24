@@ -1,0 +1,8 @@
+program
+  methods P
+    fn get
+      type-name i32
+      block
+        return
+          int
+      param &self

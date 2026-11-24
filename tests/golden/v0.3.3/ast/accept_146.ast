@@ -1,0 +1,15 @@
+program
+  fn main
+    type-name i32
+    block
+      let a
+        array-lit
+          int #10
+          int #20
+          int #30
+      let i
+        int #7
+      return
+        index
+          path a
+          path i

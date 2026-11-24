@@ -22,7 +22,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import typeharness
 
 ROOT = typeharness.ROOT
-HB = typeharness.HB
+HB = typeharness.HB   # oracle: legacy emit-llvm
+HC = typeharness.HC   # compiler under test: builds the IR batch driver
 TEMPLATE = os.path.join(ROOT, "tests/harmony-final/irbatch.hr")
 DRIVER = os.path.join(ROOT, "tests/harmony-final/irbatch_gen.hr")
 
@@ -115,7 +116,7 @@ def build_driver(singles, module_cases):
     open(DRIVER, "w").write(body)
     work = tempfile.mkdtemp(prefix="harmony-irbatch-")
     out = os.path.join(work, "batch")
-    b = subprocess.run([HB, "build", DRIVER, "-o", out],
+    b = subprocess.run([HC, "build", DRIVER, "-o", out],
                        capture_output=True, text=True)
     if b.returncode != 0:
         raise SystemExit("IR batch driver build failed:\n" + (b.stdout + b.stderr)[:4000])

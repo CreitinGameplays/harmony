@@ -883,6 +883,10 @@ void lc_host_init(int argc, char **argv, char **envp) {
     g_argc = argc;
     g_argv = argv;
     g_envp = envp;
+    // The freestanding path installs this in lc_start(). Host-linked programs
+    // enter through the C runtime's main() instead, so install it here: without
+    // it, runaway recursion segfaults instead of trapping T-STACK.
+    install_stack_guard();
 }
 
 // Returns 1 when an environment variable is present. The driver uses this for

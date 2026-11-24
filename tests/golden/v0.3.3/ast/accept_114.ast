@@ -1,0 +1,71 @@
+program
+  import method-shadow/env.hr
+  fn main
+    type-name i32
+    block
+      if
+        binary !=
+          call
+            path env::scale
+            int #3
+          int #9
+        block
+          return
+            int #1
+      let a #1
+        type-name env::Acc
+        call
+          path env::Acc::make
+      expr-stmt
+        call
+          field add
+            path a
+          int #10
+      expr-stmt
+        call
+          field add
+            path a
+          int #20
+      if
+        binary !=
+          call
+            field total
+              path a
+          int #30
+        block
+          return
+            int #2
+      let b #1
+        type-name env::Counter
+        call
+          path env::Counter::make
+      expr-stmt
+        call
+          field add
+            path b
+          int #5
+      expr-stmt
+        call
+          field add
+            path b
+          int #6
+      if
+        binary !=
+          call
+            field total
+              path b
+          int #11
+        block
+          return
+            int #3
+      if
+        binary !=
+          call
+            path env::total
+            int #1
+          int #100
+        block
+          return
+            int #4
+      return
+        int #42

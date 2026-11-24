@@ -1,0 +1,11 @@
+program
+  fn main
+    type-name i32
+    block
+      let x
+        call
+          field narrow
+            path obj
+            type-name u8
+      return
+        int

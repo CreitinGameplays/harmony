@@ -1,0 +1,26 @@
+program
+  fn main
+    type-name i32
+    block
+      let x
+        int #1
+      assign =
+        path x
+        int #2
+      assign +=
+        path x
+        int #3
+      assign -=
+        path x
+        int #1
+      assign *=
+        path x
+        int #2
+      assign /=
+        path x
+        int #2
+      assign %=
+        path x
+        int #2
+      return
+        path x

@@ -1,0 +1,187 @@
+kw "struct" kw=struct
+ident "Point"
+punct '{'
+ident "x"
+punct ':'
+ident "i32"
+punct ';'
+ident "y"
+punct ':'
+ident "i32"
+punct ';'
+punct '}'
+kw "fn" kw=fn
+ident "sum_x"
+punct '('
+ident "xs"
+punct ':'
+punct '&'
+punct '['
+ident "Point"
+punct ']'
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "let" kw=let
+kw "mut" kw=mut
+ident "i"
+punct ':'
+ident "usize"
+punct '='
+int "0" =0
+punct ';'
+kw "let" kw=let
+kw "mut" kw=mut
+ident "t"
+punct ':'
+ident "i32"
+punct '='
+int "0" =0
+punct ';'
+kw "while" kw=while
+punct '('
+ident "i"
+punct '<'
+ident "xs"
+punct '.'
+ident "len"
+punct '('
+punct ')'
+punct ')'
+punct '{'
+ident "t"
+punct '='
+ident "t"
+punct '+'
+ident "xs"
+punct '['
+ident "i"
+punct ']'
+punct '.'
+ident "x"
+punct ';'
+ident "i"
+punct '='
+ident "i"
+punct '+'
+int "1" =1
+punct ';'
+punct '}'
+kw "return" kw=return
+ident "t"
+punct ';'
+punct '}'
+kw "fn" kw=fn
+ident "main"
+punct '('
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "let" kw=let
+ident "ps"
+punct ':'
+punct '['
+ident "Point"
+punct ';'
+int "4" =4
+punct ']'
+punct '='
+punct '['
+ident "Point"
+punct '{'
+punct '.'
+ident "x"
+punct '='
+int "1" =1
+punct ','
+punct '.'
+ident "y"
+punct '='
+int "0" =0
+punct '}'
+punct ','
+ident "Point"
+punct '{'
+punct '.'
+ident "x"
+punct '='
+int "2" =2
+punct ','
+punct '.'
+ident "y"
+punct '='
+int "0" =0
+punct '}'
+punct ','
+ident "Point"
+punct '{'
+punct '.'
+ident "x"
+punct '='
+int "3" =3
+punct ','
+punct '.'
+ident "y"
+punct '='
+int "0" =0
+punct '}'
+punct ','
+ident "Point"
+punct '{'
+punct '.'
+ident "x"
+punct '='
+int "4" =4
+punct ','
+punct '.'
+ident "y"
+punct '='
+int "0" =0
+punct '}'
+punct ','
+punct ']'
+punct ';'
+kw "let" kw=let
+ident "direct"
+punct '='
+ident "ps"
+punct '['
+int "0" =0
+punct ']'
+punct '.'
+ident "x"
+punct '+'
+ident "ps"
+punct '['
+int "3" =3
+punct ']'
+punct '.'
+ident "x"
+punct ';'
+kw "let" kw=let
+ident "s"
+punct '='
+punct '&'
+ident "ps"
+punct '['
+int "1" =1
+punct '..'
+int "4" =4
+punct ']'
+punct ';'
+kw "return" kw=return
+ident "direct"
+punct '+'
+ident "sum_x"
+punct '('
+ident "s"
+punct ')'
+punct '*'
+int "4" =4
+punct '+'
+int "1" =1
+punct ';'
+punct '}'
+eof <eof>

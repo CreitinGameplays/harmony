@@ -1,0 +1,173 @@
+program
+  struct Holder
+    param T
+    field v
+      type-name T
+  struct Box
+    param T
+    field v
+      type-name T
+  struct Pair #1
+    param T
+    param U
+    field a
+      type-name T
+    field b
+      type-name U
+  fn first
+    type-name T
+    block
+      return
+        field v
+          path h
+    param T
+    param h
+      type-name Holder
+        type-name T
+  fn wrap
+    type-name Box
+      type-name T
+    block
+      return
+        struct-init Box
+          field-init v
+            path x
+          type-name T
+    param T
+    param x
+      type-name T
+  fn unbox
+    type-name i32
+    block
+      return
+        field v
+          field v
+            path b
+    param b
+      type-name Box
+        type-name Box
+          type-name i32
+  fn swap
+    type-name Pair
+      type-name B
+      type-name A
+    block
+      return
+        struct-init Pair
+          field-init a
+            field b
+              path p
+          field-init b
+            field a
+              path p
+          type-name B
+          type-name A
+    param A
+    param B
+    param p
+      type-name Pair
+        type-name A
+        type-name B
+  fn main
+    type-name i32
+    block
+      let h
+        type-name Holder
+          type-name i32
+        struct-init Holder
+          field-init v
+            int #7
+          type-name i32
+      if
+        binary !=
+          call
+            path first
+            path h
+          int #7
+        block
+          return
+            int #1
+      let s
+        type-name Holder
+          type-ref
+            type-name str
+        struct-init Holder
+          field-init v
+            string hello #5
+          type-ref
+            type-name str
+      if
+        binary !=
+          as
+            call
+              field len
+                call
+                  path first
+                  path s
+            type-name i32
+          int #5
+        block
+          return
+            int #2
+      let inner
+        type-name Box
+          type-name i32
+        call
+          path wrap
+          int #7
+      let outer
+        type-name Box
+          type-name Box
+            type-name i32
+        call
+          path wrap
+          path inner
+      if
+        binary !=
+          call
+            path unbox
+            path outer
+          int #7
+        block
+          return
+            int #10
+      let p
+        type-name Pair
+          type-name i32
+          type-name u8
+        struct-init Pair
+          field-init a
+            int #40
+          field-init b
+            int u8 #2
+          type-name i32
+          type-name u8
+      let q
+        call
+          path swap
+          path p
+      if
+        binary !=
+          as
+            field a
+              path q
+            type-name i32
+          int #2
+        block
+          return
+            int #3
+      if
+        binary !=
+          binary +
+            field b
+              path q
+            as
+              field a
+                path q
+              type-name i32
+          int #42
+        block
+          return
+            int #4
+      return
+        int #42

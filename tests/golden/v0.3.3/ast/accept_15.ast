@@ -1,0 +1,14 @@
+program
+  methods Box
+    param T
+    fn make #1
+      type-name Box
+        type-name T
+      block
+        return
+          struct-init Box
+            field-init v
+              path v
+      param v
+        type-name T
+    type-name T

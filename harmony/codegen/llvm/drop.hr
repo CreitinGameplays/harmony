@@ -248,6 +248,11 @@ export fn emit_helpers(e: &mut context::Emitter) {
     while (i < ids.len()) {
         let ty = *ids.get(i);
         if (!check::needs_drop(&*e.c, ty)) { i += 1; continue; }
+        // Template placeholders that still contain a generic parameter are
+        // never called from lowered code; emitting their helper would produce
+        // calls to undefined @harmony__drop__T_* symbols and LLVM rejects the
+        // module. Concrete monomorphizations do not contain genparams.
+        if (check::type_has_genparam(&*e.c, ty)) { i += 1; continue; }
         e.ssa = 0;
         e.label = 0;
         context::out(e, "define internal void ");

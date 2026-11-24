@@ -1,0 +1,84 @@
+program
+  struct MiniVec
+    param T
+    field ptr
+      type-raw #1
+        type-name T
+    field len
+      type-name usize
+    field cap
+      type-name usize
+  struct Slot
+    field value
+      type-name Maybe
+        type-name i32
+  methods MiniVec
+    param T
+    fn make #1
+      type-name MiniVec
+        type-name T
+      block
+        return
+          struct-init MiniVec
+            field-init ptr
+              call
+                path Raw::null
+            field-init len
+              int
+            field-init cap
+              int
+    type-name T
+  fn main
+    type-name i32
+    block
+      let v
+        type-name MiniVec
+          type-name u8
+        call
+          path MiniVec::make
+            type-name u8
+      if
+        unary !
+          call
+            field is_null
+              field ptr
+                path v
+        block
+          return
+            int #99
+      if
+        binary !=
+          field cap
+            path v
+          int
+        block
+          return
+            int #98
+      let s
+        struct-init Slot
+          field-init value
+            call
+              path Has
+              int #42
+      let out #1
+        type-name i32
+        int
+      switch
+        field value
+          path s
+        arm
+          block
+            assign =
+              path out
+              path n
+          pat-variant Has
+            pat-bind n
+        arm
+          block
+            assign =
+              path out
+              unary -
+                int #1
+          pat-bind Empty
+      return
+        path out

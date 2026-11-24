@@ -1,0 +1,189 @@
+kw "fn" kw=fn
+ident "main"
+punct '('
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "let" kw=let
+ident "b"
+punct ':'
+ident "Box"
+punct '<'
+ident "i32"
+punct '>'
+punct '='
+ident "Box"
+punct '<'
+ident "i32"
+punct '>'
+punct '::'
+ident "make"
+punct '('
+int "20" =20
+punct ')'
+punct ';'
+kw "let" kw=let
+kw "mut" kw=mut
+ident "acc"
+punct '='
+ident "b"
+punct '.'
+ident "get"
+punct '('
+punct ')'
+punct ';'
+kw "let" kw=let
+kw "mut" kw=mut
+ident "m"
+punct ':'
+ident "Box"
+punct '<'
+ident "i32"
+punct '>'
+punct '='
+ident "Box"
+punct '<'
+ident "i32"
+punct '>'
+punct '::'
+ident "make"
+punct '('
+int "0" =0
+punct ')'
+punct ';'
+ident "m"
+punct '.'
+ident "set"
+punct '('
+int "10" =10
+punct ')'
+punct ';'
+ident "acc"
+punct '='
+ident "acc"
+punct '+'
+ident "m"
+punct '.'
+ident "get"
+punct '('
+punct ')'
+punct ';'
+kw "let" kw=let
+ident "u"
+punct ':'
+ident "Box"
+punct '<'
+ident "u8"
+punct '>'
+punct '='
+ident "Box"
+punct '<'
+ident "u8"
+punct '>'
+punct '::'
+ident "make"
+punct '('
+int "12u8" =12 sfx=u8
+punct ')'
+punct ';'
+ident "acc"
+punct '='
+ident "acc"
+punct '+'
+punct '('
+ident "u"
+punct '.'
+ident "get"
+punct '('
+punct ')'
+kw "as" kw=as
+ident "i32"
+punct ')'
+punct ';'
+kw "return" kw=return
+ident "acc"
+punct ';'
+punct '}'
+kw "struct" kw=struct
+ident "Box"
+punct '<'
+ident "T"
+punct '>'
+punct '{'
+ident "v"
+punct ':'
+ident "T"
+punct ';'
+punct '}'
+kw "methods" kw=methods
+punct '<'
+ident "T"
+punct '>'
+ident "Box"
+punct '<'
+ident "T"
+punct '>'
+punct '{'
+kw "export" kw=export
+kw "fn" kw=fn
+ident "make"
+punct '('
+ident "x"
+punct ':'
+ident "T"
+punct ')'
+punct '->'
+ident "Box"
+punct '<'
+ident "T"
+punct '>'
+punct '{'
+kw "return" kw=return
+ident "Box"
+punct '{'
+punct '.'
+ident "v"
+punct '='
+ident "x"
+punct '}'
+punct ';'
+punct '}'
+kw "export" kw=export
+kw "fn" kw=fn
+ident "get"
+punct '('
+punct '&'
+kw "self" kw=self
+punct ')'
+punct '->'
+ident "T"
+punct '{'
+kw "return" kw=return
+kw "self" kw=self
+punct '.'
+ident "v"
+punct ';'
+punct '}'
+kw "export" kw=export
+kw "fn" kw=fn
+ident "set"
+punct '('
+punct '&'
+kw "mut" kw=mut
+kw "self" kw=self
+punct ','
+ident "x"
+punct ':'
+ident "T"
+punct ')'
+punct '{'
+kw "self" kw=self
+punct '.'
+ident "v"
+punct '='
+ident "x"
+punct ';'
+punct '}'
+punct '}'
+eof <eof>

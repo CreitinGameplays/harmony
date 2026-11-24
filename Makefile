@@ -40,6 +40,15 @@ SEED_SRC  := $(wildcard bootstrap/c2x-seed/*.asm)
 HARMONY_SRC := $(shell find harmony library -name '*.hr' -o -name '*.harmony' 2>/dev/null)
 HARMONY_OUT := build/harmony
 
+# Test-harness selection for the bootstrap-retirement burn-in (Phase 0-1).
+# Default keeps the historical behaviour: every suite is driven by the legacy
+# harmony-base. Run `make test-v1` (or set HARMONY=build/harmony yourself) to
+# exercise the self-hosted compiler while differential tests still compare
+# against the legacy ORACLE.
+HARMONY ?= $(CURDIR)/build/harmony-base
+ORACLE  ?= $(CURDIR)/build/harmony-base
+export HARMONY ORACLE
+
 # The final compiler links the LLVM C API directly for build/run. These are
 # build-time artifacts: the compiler itself never spawns clang for codegen.
 LLVM_LIBDIR   := $(shell llvm-config --libdir)
@@ -52,7 +61,7 @@ LLVMC_OBJ     := build/llvmc.o
 HOSTRT_OBJ    := build/hostrt.o
 HOSTMAIN_OBJ  := build/hostmain.o
 
-.PHONY: all clean test test-final test-fuzz test-fuzz2 fuzz2-deep test-seed test-lisp seed harmony harmony-base lisp version
+.PHONY: all clean test test-v1 qualify-seed goldens verify-goldens test-final test-fuzz test-fuzz2 fuzz2-deep test-seed test-lisp seed harmony harmony-base lisp version
 
 all: harmony-base harmony
 
@@ -73,6 +82,14 @@ $(SEED): $(SEED_SRC) build.sh
 # commit it was built from.
 version:
 	bash tools/version.sh
+
+# Freeze the legacy compiler's oracle outputs before any retirement commit.
+# Additive only: writes tests/golden/v0.3.3/; --verify re-captures and diffs.
+goldens: harmony-base
+	python3 tools/capture-goldens.py
+
+verify-goldens: harmony-base
+	python3 tools/capture-goldens.py --verify
 
 harmony-base: $(SEED) $(HB_SRC)
 	$(SEED) -o $(HB_OUT) $(HB_SRC)
@@ -111,6 +128,8 @@ test: test-seed harmony-base harmony
 	bash tests/harmony/scale.sh
 	bash tests/harmony/golden.sh
 	bash tests/harmony/determinism.sh
+	# determinism.sh runs `make clean`; rebuild before suites that need build/harmony.
+	$(MAKE) harmony-base harmony
 	bash tests/harmony/string-pool.sh
 	bash tests/harmony/coverage.sh
 	bash tests/harmony/version.sh
@@ -137,6 +156,20 @@ test: test-seed harmony-base harmony
 	bash tests/harmony-final/fmt.sh
 	bash tests/harmony-final/prelude.sh
 	bash tests/harmony-final/strategy.sh
+
+# Burn-in lane: full suite with the self-hosted compiler under test, while the
+# differential suites keep comparing against the legacy harmony-base oracle.
+test-v1:
+	$(MAKE) test HARMONY=$(CURDIR)/build/harmony ORACLE=$(CURDIR)/build/harmony-base
+
+# A v1 binary may become the next seed only if it rebuilds itself byte-for-byte
+# through two further self-host passes (stage1 == stage2 == stage3).
+qualify-seed: harmony
+	./build/harmony build harmony/main.hr -o build/seed-candidate-2
+	build/seed-candidate-2 build harmony/main.hr -o build/seed-candidate-3
+	cmp build/harmony build/seed-candidate-2
+	cmp build/seed-candidate-2 build/seed-candidate-3
+	@echo "SEED QUALIFIED stage1==stage2==stage3: $$(sha256sum build/harmony | cut -d' ' -f1)"
 
 # c2x-seed regression corpus (guards the compiler bugs fixed during bring-up).
 test-seed: seed

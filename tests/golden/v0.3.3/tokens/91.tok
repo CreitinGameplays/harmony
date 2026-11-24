@@ -1,0 +1,17 @@
+kw "fn" kw=fn
+ident "main"
+punct '('
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+ident "exit"
+punct '('
+int "7" =7
+punct ')'
+punct ';'
+kw "return" kw=return
+int "99" =99
+punct ';'
+punct '}'
+eof <eof>

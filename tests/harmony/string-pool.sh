@@ -5,7 +5,8 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-HB="$ROOT/build/harmony-base"
+. "$ROOT/tests/env.sh"
+HB="$HARMONY"   # compiler under test (default: legacy; override with HARMONY=)
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 

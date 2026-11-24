@@ -1,0 +1,9 @@
+program
+  fn main
+    type-name i32
+    block
+      let s
+        string a
+	"q" #6
+      return
+        int

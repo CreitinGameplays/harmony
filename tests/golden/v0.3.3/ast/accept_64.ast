@@ -1,0 +1,27 @@
+program
+  fn add
+    type-name i32
+    block
+      return
+        binary +
+          path a
+          path b
+    param a
+      type-name i32
+    param b
+      type-name i32
+  fn main
+    type-name i32
+    block
+      let x
+        call
+          path add
+          int #7
+          int #8
+      let y
+        call
+          path add
+          path x
+          int #5
+      return
+        path y

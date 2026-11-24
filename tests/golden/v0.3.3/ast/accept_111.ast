@@ -1,0 +1,81 @@
+program
+  fn main
+    type-name i32
+    block
+      let a
+        int u8 #5
+      let n
+        type-name u8
+        path a
+      if
+        binary !=
+          path n
+          int #5
+        block
+          return
+            int #1
+      let big
+        type-array
+          type-name i64
+          int #3
+        array-lit
+          int #1
+          int #2
+          int #3
+      if
+        binary !=
+          index
+            path big
+            int
+          int i64 #1
+        block
+          return
+            int #2
+      let small
+        type-array
+          type-name u8
+          int #3
+        array-lit
+          int u8 #65
+          int u8 #66
+          int u8 #67
+      if
+        binary !=
+          index
+            path small
+            int
+          int u8 #65
+        block
+          return
+            int #3
+      let c
+        char #65
+      let code
+        type-name u32
+        as
+          path c
+          type-name u32
+      if
+        binary !=
+          path code
+          int #65
+        block
+          return
+            int #4
+      let b
+        type-name u8
+        int u8 #66
+      let d
+        type-name char
+        as
+          path b
+          type-name char
+      if
+        binary !=
+          path d
+          char #66
+        block
+          return
+            int #5
+      return
+        int

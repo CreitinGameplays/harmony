@@ -1,0 +1,363 @@
+kw "struct" kw=struct
+ident "Holder"
+punct '<'
+ident "T"
+punct '>'
+punct '{'
+ident "v"
+punct ':'
+ident "T"
+punct ';'
+punct '}'
+kw "struct" kw=struct
+ident "Box"
+punct '<'
+ident "T"
+punct '>'
+punct '{'
+ident "v"
+punct ':'
+ident "T"
+punct ';'
+punct '}'
+kw "copy" kw=copy
+kw "struct" kw=struct
+ident "Pair"
+punct '<'
+ident "T"
+punct ','
+ident "U"
+punct '>'
+punct '{'
+ident "a"
+punct ':'
+ident "T"
+punct ';'
+ident "b"
+punct ':'
+ident "U"
+punct ';'
+punct '}'
+kw "fn" kw=fn
+ident "first"
+punct '<'
+ident "T"
+punct '>'
+punct '('
+ident "h"
+punct ':'
+ident "Holder"
+punct '<'
+ident "T"
+punct '>'
+punct ')'
+punct '->'
+ident "T"
+punct '{'
+kw "return" kw=return
+ident "h"
+punct '.'
+ident "v"
+punct ';'
+punct '}'
+kw "fn" kw=fn
+ident "wrap"
+punct '<'
+ident "T"
+punct '>'
+punct '('
+ident "x"
+punct ':'
+ident "T"
+punct ')'
+punct '->'
+ident "Box"
+punct '<'
+ident "T"
+punct '>'
+punct '{'
+kw "return" kw=return
+ident "Box"
+punct '<'
+ident "T"
+punct '>'
+punct '{'
+punct '.'
+ident "v"
+punct '='
+ident "x"
+punct '}'
+punct ';'
+punct '}'
+kw "fn" kw=fn
+ident "unbox"
+punct '('
+ident "b"
+punct ':'
+ident "Box"
+punct '<'
+ident "Box"
+punct '<'
+ident "i32"
+punct '>>'
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "return" kw=return
+ident "b"
+punct '.'
+ident "v"
+punct '.'
+ident "v"
+punct ';'
+punct '}'
+kw "fn" kw=fn
+ident "swap"
+punct '<'
+ident "A"
+punct ','
+ident "B"
+punct '>'
+punct '('
+ident "p"
+punct ':'
+ident "Pair"
+punct '<'
+ident "A"
+punct ','
+ident "B"
+punct '>'
+punct ')'
+punct '->'
+ident "Pair"
+punct '<'
+ident "B"
+punct ','
+ident "A"
+punct '>'
+punct '{'
+kw "return" kw=return
+ident "Pair"
+punct '<'
+ident "B"
+punct ','
+ident "A"
+punct '>'
+punct '{'
+punct '.'
+ident "a"
+punct '='
+ident "p"
+punct '.'
+ident "b"
+punct ','
+punct '.'
+ident "b"
+punct '='
+ident "p"
+punct '.'
+ident "a"
+punct '}'
+punct ';'
+punct '}'
+kw "fn" kw=fn
+ident "main"
+punct '('
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "let" kw=let
+ident "h"
+punct ':'
+ident "Holder"
+punct '<'
+ident "i32"
+punct '>'
+punct '='
+ident "Holder"
+punct '<'
+ident "i32"
+punct '>'
+punct '{'
+punct '.'
+ident "v"
+punct '='
+int "7" =7
+punct '}'
+punct ';'
+kw "if" kw=if
+punct '('
+ident "first"
+punct '('
+ident "h"
+punct ')'
+punct '!='
+int "7" =7
+punct ')'
+punct '{'
+kw "return" kw=return
+int "1" =1
+punct ';'
+punct '}'
+kw "let" kw=let
+ident "s"
+punct ':'
+ident "Holder"
+punct '<'
+punct '&'
+ident "str"
+punct '>'
+punct '='
+ident "Holder"
+punct '<'
+punct '&'
+ident "str"
+punct '>'
+punct '{'
+punct '.'
+ident "v"
+punct '='
+str "hello"
+punct '}'
+punct ';'
+kw "if" kw=if
+punct '('
+ident "first"
+punct '('
+ident "s"
+punct ')'
+punct '.'
+ident "len"
+punct '('
+punct ')'
+kw "as" kw=as
+ident "i32"
+punct '!='
+int "5" =5
+punct ')'
+punct '{'
+kw "return" kw=return
+int "2" =2
+punct ';'
+punct '}'
+kw "let" kw=let
+ident "inner"
+punct ':'
+ident "Box"
+punct '<'
+ident "i32"
+punct '>'
+punct '='
+ident "wrap"
+punct '('
+int "7" =7
+punct ')'
+punct ';'
+kw "let" kw=let
+ident "outer"
+punct ':'
+ident "Box"
+punct '<'
+ident "Box"
+punct '<'
+ident "i32"
+punct '>>'
+punct '='
+ident "wrap"
+punct '('
+ident "inner"
+punct ')'
+punct ';'
+kw "if" kw=if
+punct '('
+ident "unbox"
+punct '('
+ident "outer"
+punct ')'
+punct '!='
+int "7" =7
+punct ')'
+punct '{'
+kw "return" kw=return
+int "10" =10
+punct ';'
+punct '}'
+kw "let" kw=let
+ident "p"
+punct ':'
+ident "Pair"
+punct '<'
+ident "i32"
+punct ','
+ident "u8"
+punct '>'
+punct '='
+ident "Pair"
+punct '<'
+ident "i32"
+punct ','
+ident "u8"
+punct '>'
+punct '{'
+punct '.'
+ident "a"
+punct '='
+int "40" =40
+punct ','
+punct '.'
+ident "b"
+punct '='
+int "2u8" =2 sfx=u8
+punct '}'
+punct ';'
+kw "let" kw=let
+ident "q"
+punct '='
+ident "swap"
+punct '('
+ident "p"
+punct ')'
+punct ';'
+kw "if" kw=if
+punct '('
+ident "q"
+punct '.'
+ident "a"
+kw "as" kw=as
+ident "i32"
+punct '!='
+int "2" =2
+punct ')'
+punct '{'
+kw "return" kw=return
+int "3" =3
+punct ';'
+punct '}'
+kw "if" kw=if
+punct '('
+ident "q"
+punct '.'
+ident "b"
+punct '+'
+punct '('
+ident "q"
+punct '.'
+ident "a"
+kw "as" kw=as
+ident "i32"
+punct ')'
+punct '!='
+int "42" =42
+punct ')'
+punct '{'
+kw "return" kw=return
+int "4" =4
+punct ';'
+punct '}'
+kw "return" kw=return
+int "42" =42
+punct ';'
+punct '}'
+eof <eof>

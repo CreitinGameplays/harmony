@@ -202,7 +202,7 @@ export fn parse(av: &[&str]) -> ParseResult {
             continue;
         }
         if (str::starts_with(a, "-")) {
-            if (str::starts_with(a, "-O")) { eprintln("harmony: unknown optimization level: {}", a); }
+            if (str::starts_with(a, "-O")) { eprintln("harmony: usage.bad-opt: {}", a); }
             else { eprintln("harmony: unknown flag: {}", a); }
             return ParseResult { .ok = -1, .opts = o };
         }

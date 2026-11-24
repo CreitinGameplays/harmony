@@ -1,0 +1,330 @@
+program
+  fn main
+    type-name i32
+    block
+      let acc #1
+        int
+      let buf #1
+        heap
+          array-lit
+            int u8
+            int #16
+      let base
+        type-raw #1
+          type-name u8
+        raw-expr
+          borrow #1
+            index
+              path buf
+              int
+      unchecked buf has 16 bytes; index 0 is valid
+        block
+          expr-stmt
+            call
+              field write
+                path base
+              int #10
+      let p1 #1
+        type-raw #1
+          type-name u8
+        path base
+      unchecked buf has 16 bytes; index 1 is valid
+        block
+          assign =
+            path p1
+            call
+              field plus
+                path base
+              int #1
+      unchecked write the second byte
+        block
+          expr-stmt
+            call
+              field write
+                path p1
+              int #20
+      let a #1
+        type-name u8
+        int
+      let b #1
+        type-name u8
+        int
+      unchecked read both bytes back
+        block
+          assign =
+            path a
+            call
+              field read
+                path base
+          assign =
+            path b
+            call
+              field read
+                path p1
+      assign =
+        path acc
+        binary +
+          binary +
+            path acc
+            as
+              path a
+              type-name i32
+          as
+            path b
+            type-name i32
+      unchecked index 2 is inside the buffer
+        block
+          assign =
+            index
+              path base
+              int #2
+            int #30
+      let c #1
+        type-name u8
+        int
+      unchecked read index 2 back
+        block
+          assign =
+            path c
+            index
+              path base
+              int #2
+      assign =
+        path acc
+        binary +
+          path acc
+          as
+            path c
+            type-name i32
+      let back #1
+        type-raw #1
+          type-name u8
+        path p1
+      unchecked step back one element
+        block
+          assign =
+            path back
+            call
+              field minus
+                path p1
+              int #1
+      let d #1
+        type-name u8
+        int
+      unchecked the wound-back pointer points at index 0
+        block
+          assign =
+            path d
+            call
+              field read
+                path back
+      assign =
+        path acc
+        binary +
+          path acc
+          as
+            path d
+            type-name i32
+      if
+        call
+          field is_null
+            path base
+        block
+          return
+            int #99
+      if
+        binary ==
+          path p1
+          path base
+        block
+          return
+            int #98
+      let nil
+        type-raw
+          type-name u8
+        call Raw::null
+          type-name u8
+      if
+        unary !
+          call
+            field is_null
+              path nil
+        block
+          return
+            int #97
+      let addr #1
+        type-name i64
+        int
+      unchecked take the address as an integer
+        block
+          assign =
+            path addr
+            as
+              path base
+              type-name i64
+      if
+        binary ==
+          path addr
+          int
+        block
+          return
+            int #96
+      let backp #1
+        type-raw #1
+          type-name u8
+        path base
+      unchecked turn the integer back into a pointer
+        block
+          assign =
+            path backp
+            as
+              path addr
+              type-raw #1
+                type-name u8
+      let e #1
+        type-name u8
+        int
+      unchecked the round-tripped pointer still reads the buffer
+        block
+          assign =
+            path e
+            call
+              field read
+                path backp
+      assign =
+        path acc
+        binary +
+          path acc
+          as
+            path e
+            type-name i32
+      let ints #1
+        type-raw #1
+          type-name i32
+        call Raw::null
+          type-name i32
+      unchecked allocate room for 3 ints
+        block
+          assign =
+            path ints
+            call alloc
+              int #3
+              type-name i32
+      unchecked fill the allocation
+        block
+          assign =
+            index
+              path ints
+              int
+            int #7
+          assign =
+            index
+              path ints
+              int #1
+            int #8
+          assign =
+            index
+              path ints
+              int #2
+            int #9
+      let f #1
+        type-name i32
+        int
+      unchecked read it back
+        block
+          assign =
+            path f
+            binary +
+              index
+                path ints
+                int
+              index
+                path ints
+                int #2
+      assign =
+        path acc
+        binary +
+          path acc
+          path f
+      unchecked give the allocation back
+        block
+          expr-stmt
+            call dealloc
+              path ints
+              int #3
+              type-name i32
+      let u #1
+        type-name u32
+        int
+      unchecked reinterpret an i32 as a u32 (same size)
+        block
+          assign =
+            path u
+            call reinterpret
+              int #7
+              type-name i32
+              type-name u32
+      assign =
+        path acc
+        binary +
+          path acc
+          as
+            path u
+            type-name i32
+      let h
+        heap
+          int #40
+      let hp #1
+        type-raw #1
+          type-name i32
+        call Raw::null
+          type-name i32
+      block
+        assign =
+          path hp
+          call
+            path Heap::into_raw
+            path h
+      let h2 #1
+        heap
+          int
+      unchecked re-take ownership of the box
+        block
+          assign =
+            path h2
+            call
+              path Heap::from_raw
+              path hp
+      assign =
+        path acc
+        binary +
+          path acc
+          deref
+            path h2
+      let arr
+        array-lit
+          int #1
+          int #2
+          int #3
+          int #4
+      let g #1
+        type-name i32
+        int
+      unchecked index 3 is in bounds
+        block
+          assign =
+            path g
+            deref
+              call
+                field get_unchecked
+                  path arr
+                int #3
+      assign =
+        path acc
+        binary +
+          path acc
+          path g
+      return
+        binary -
+          path acc
+          int #56

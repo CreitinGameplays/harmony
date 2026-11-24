@@ -24,7 +24,7 @@ fn run_one(i: usize, src: &str) {
     let mut ns: node::Nodes = node::nodes_make();
     let mut lx: ctx::Ctx = ctx::make(src, "main.harmony");
     scan::scan(&mut lx, &mut arena);
-    let mut p: pctx::Parser = pctx::make(&mut ns, lx.toks, "main.harmony");
+    let mut p: pctx::Parser = pctx::make(&mut ns, lx.toks.clone(), "main.harmony");
     let program = item::parse_program(&mut p);
     println("CASE {}", i);
     let mut pi: usize = 0;

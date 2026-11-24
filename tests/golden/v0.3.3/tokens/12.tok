@@ -1,0 +1,32 @@
+kw "for" kw=for
+punct '('
+ident "i"
+punct ':'
+int "0" =0
+punct '..'
+int "10" =10
+punct ')'
+punct '{'
+punct '}'
+kw "let" kw=let
+ident "j"
+punct '='
+int "1" =1
+punct '..='
+int "5" =5
+punct ';'
+kw "let" kw=let
+ident "p"
+punct '='
+ident "a"
+punct '::'
+ident "b"
+punct ';'
+kw "let" kw=let
+ident "q"
+punct '='
+ident "a"
+punct '->'
+ident "b"
+punct ';'
+eof <eof>

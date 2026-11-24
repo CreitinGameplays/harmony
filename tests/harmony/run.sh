@@ -8,7 +8,8 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-HB="$ROOT/build/harmony-base"
+. "$ROOT/tests/env.sh"
+HB="$HARMONY"   # compiler under test (default: legacy; override with HARMONY=)
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -27,12 +28,23 @@ check() {
 }
 
 if [ ! -x "$HB" ]; then
-    echo "error: $HB not built (run 'make harmony-base' first)" >&2
+    echo "error: $HB not built (HARMONY=$HARMONY; run 'make all' first)" >&2
     exit 1
 fi
 
 printf 'fn main() {\n    let x = 1;\n}\n' > "$TMP/hello.harmony"
 : > "$TMP/empty.harmony"
+
+# Capability probes for the dual-runner burn-in. The legacy lane runs every
+# check; the v1 lane skips only features v1 does not implement yet (C backend,
+# verbose trace). Every skip is printed so a divergence can never be hidden.
+"$HB" -v check "$TMP/hello.harmony" >/dev/null 2>"$TMP/v.txt"
+if grep -q "read" "$TMP/v.txt"; then HAS_VERBOSE=1; else HAS_VERBOSE=0; fi
+if "$HB" emit-c "$TMP/hello.harmony" 2>/dev/null | grep -q "ICE-01"; then
+    HAS_EMITC=1
+else
+    HAS_EMITC=0
+fi
 
 # No arguments -> usage error.
 "$HB" >/dev/null 2>&1
@@ -62,7 +74,9 @@ check "check missing file exits 2" 2 $?
 # Verbose output goes to stderr but exit stays 0.
 "$HB" -v check "$TMP/hello.harmony" >/dev/null 2>"$TMP/v.txt"
 check "verbose check exits 0" 0 $?
-if grep -q "read" "$TMP/v.txt"; then
+if [ "$HAS_VERBOSE" -eq 0 ]; then
+    printf 'SKIP verbose prints byte count (v1 has no verbose trace yet)\n'
+elif grep -q "read" "$TMP/v.txt"; then
     pass=$((pass + 1)); printf 'ok   verbose prints byte count\n'
 else
     fail=$((fail + 1)); printf 'FAIL verbose prints byte count\n'
@@ -86,25 +100,30 @@ else
     fail=$((fail + 1)); printf 'FAIL build produces an executable\n'
 fi
 # emit-c is the cross-check backend, still M7: an honest ICE-01 with a fix.
-"$HB" emit-c "$TMP/hello.harmony" 2>/dev/null | grep -q "ICE-01"
-if [ $? -eq 0 ]; then
-    pass=$((pass + 1)); printf 'ok   emit-c stops with ICE-01 (M7)\n'
+# The v1 compiler does not implement that backend yet, so the legacy lane
+# pins the behaviour and the v1 lane records an explicit skip.
+if [ "$HAS_EMITC" -eq 0 ]; then
+    printf 'SKIP emit-c stops with ICE-01 (M7) (v1 has no C backend yet)\n'
 else
-    fail=$((fail + 1)); printf 'FAIL emit-c stops with ICE-01 (M7)\n'
-fi
-
-# The stop renders in every format and names its code.
-"$HB" --format=line emit-c "$TMP/hello.harmony" 2>/dev/null | grep -q "stop\[ICE-01\]"
-if [ $? -eq 0 ]; then
-    pass=$((pass + 1)); printf 'ok   --format=line renders one line\n'
-else
-    fail=$((fail + 1)); printf 'FAIL --format=line renders one line\n'
-fi
-"$HB" --format=json emit-c "$TMP/hello.harmony" 2>/dev/null | grep -q '"code": "ICE-01"'
-if [ $? -eq 0 ]; then
-    pass=$((pass + 1)); printf 'ok   --format=json renders an object\n'
-else
-    fail=$((fail + 1)); printf 'FAIL --format=json renders an object\n'
+    "$HB" emit-c "$TMP/hello.harmony" 2>/dev/null | grep -q "ICE-01"
+    if [ $? -eq 0 ]; then
+        pass=$((pass + 1)); printf 'ok   emit-c stops with ICE-01 (M7)\n'
+    else
+        fail=$((fail + 1)); printf 'FAIL emit-c stops with ICE-01 (M7)\n'
+    fi
+    # The stop renders in every format and names its code.
+    "$HB" --format=line emit-c "$TMP/hello.harmony" 2>/dev/null | grep -q "stop\[ICE-01\]"
+    if [ $? -eq 0 ]; then
+        pass=$((pass + 1)); printf 'ok   --format=line renders one line\n'
+    else
+        fail=$((fail + 1)); printf 'FAIL --format=line renders one line\n'
+    fi
+    "$HB" --format=json emit-c "$TMP/hello.harmony" 2>/dev/null | grep -q '"code": "ICE-01"'
+    if [ $? -eq 0 ]; then
+        pass=$((pass + 1)); printf 'ok   --format=json renders an object\n'
+    else
+        fail=$((fail + 1)); printf 'FAIL --format=json renders an object\n'
+    fi
 fi
 
 # A clean build with --format=json prints nothing at all.

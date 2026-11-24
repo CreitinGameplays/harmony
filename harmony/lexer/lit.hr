@@ -129,6 +129,10 @@ export fn number(c: &mut ctx::Ctx) {
                        "Numeric suffixes are the primitive types.");
         } else {
             suffix_at = ss;
+            if (is_float && s != "f32" && s != "f64") {
+                ctx::error(c, "LEX-01", "integer suffix on a float",
+                           "A floating literal takes f32 or f64 as its suffix.");
+            }
         }
     } else {
         suffix_at = c.pos;

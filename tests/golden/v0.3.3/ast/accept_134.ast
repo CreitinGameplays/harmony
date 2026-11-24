@@ -1,0 +1,80 @@
+program
+  struct Big
+    field a
+      type-name i32
+    field b
+      type-name i32
+    field c
+      type-name i32
+    field d
+      type-name i32
+    field e
+      type-name i32
+    field f
+      type-name i32
+    field g
+      type-name i32
+    field h
+      type-name i32
+  fn summed
+    type-name i32
+    block
+      return
+        binary +
+          binary +
+            binary +
+              binary +
+                binary +
+                  binary +
+                    binary +
+                      field a
+                        path v
+                      field b
+                        path v
+                    field c
+                      path v
+                  field d
+                    path v
+                field e
+                  path v
+              field f
+                path v
+            field g
+              path v
+          field h
+            path v
+    param v
+      type-name Big
+  fn main
+    type-name i32
+    block
+      let v
+        struct-init Big
+          field-init a
+            int #1
+          field-init b
+            int #2
+          field-init c
+            int #3
+          field-init d
+            int #4
+          field-init e
+            int #5
+          field-init f
+            int #6
+          field-init g
+            int #7
+          field-init h
+            int #8
+      let total
+        binary +
+          call
+            path summed
+            path v
+          call
+            path summed
+            path v
+      return
+        binary -
+          path total
+          int #30

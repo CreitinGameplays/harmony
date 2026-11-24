@@ -1,0 +1,14 @@
+program
+  fn main
+    type-name i32
+    block
+      let a
+        type-array
+          type-name i32
+          int #3
+        array-lit
+          int #1
+          int #2
+          int #3
+      return
+        int

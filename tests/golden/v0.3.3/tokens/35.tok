@@ -1,0 +1,180 @@
+kw "fn" kw=fn
+ident "main"
+punct '('
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "let" kw=let
+kw "mut" kw=mut
+ident "buf"
+punct '='
+kw "heap" kw=heap
+punct '('
+punct '['
+int "0u8" =0 sfx=u8
+punct ';'
+int "131072" =131072
+punct ']'
+punct ')'
+punct ';'
+kw "if" kw=if
+punct '('
+ident "buf"
+punct '.'
+ident "len"
+punct '('
+punct ')'
+punct '!='
+int "131072" =131072
+punct ')'
+punct '{'
+kw "return" kw=return
+int "1" =1
+punct ';'
+punct '}'
+kw "if" kw=if
+punct '('
+ident "buf"
+punct '['
+int "0" =0
+punct ']'
+kw "as" kw=as
+ident "i32"
+punct '!='
+int "0" =0
+punct ')'
+punct '{'
+kw "return" kw=return
+int "2" =2
+punct ';'
+punct '}'
+kw "if" kw=if
+punct '('
+ident "buf"
+punct '['
+int "131071" =131071
+punct ']'
+kw "as" kw=as
+ident "i32"
+punct '!='
+int "0" =0
+punct ')'
+punct '{'
+kw "return" kw=return
+int "3" =3
+punct ';'
+punct '}'
+kw "let" kw=let
+ident "nines"
+punct '='
+kw "heap" kw=heap
+punct '('
+punct '['
+int "9u8" =9 sfx=u8
+punct ';'
+int "100000" =100000
+punct ']'
+punct ')'
+punct ';'
+kw "if" kw=if
+punct '('
+ident "nines"
+punct '['
+int "0" =0
+punct ']'
+kw "as" kw=as
+ident "i32"
+punct '!='
+int "9" =9
+punct ')'
+punct '{'
+kw "return" kw=return
+int "4" =4
+punct ';'
+punct '}'
+kw "if" kw=if
+punct '('
+ident "nines"
+punct '['
+int "65432" =65432
+punct ']'
+kw "as" kw=as
+ident "i32"
+punct '!='
+int "9" =9
+punct ')'
+punct '{'
+kw "return" kw=return
+int "5" =5
+punct ';'
+punct '}'
+kw "if" kw=if
+punct '('
+ident "nines"
+punct '['
+int "99999" =99999
+punct ']'
+kw "as" kw=as
+ident "i32"
+punct '!='
+int "9" =9
+punct ')'
+punct '{'
+kw "return" kw=return
+int "6" =6
+punct ';'
+punct '}'
+kw "let" kw=let
+ident "small"
+punct '='
+punct '['
+int "7u8" =7 sfx=u8
+punct ';'
+int "8" =8
+punct ']'
+punct ';'
+kw "if" kw=if
+punct '('
+ident "small"
+punct '['
+int "7" =7
+punct ']'
+kw "as" kw=as
+ident "i32"
+punct '!='
+int "7" =7
+punct ')'
+punct '{'
+kw "return" kw=return
+int "7" =7
+punct ';'
+punct '}'
+kw "let" kw=let
+ident "words"
+punct '='
+punct '['
+int "0i32" =0 sfx=i32
+punct ';'
+int "100" =100
+punct ']'
+punct ';'
+kw "if" kw=if
+punct '('
+ident "words"
+punct '['
+int "99" =99
+punct ']'
+punct '!='
+int "0" =0
+punct ')'
+punct '{'
+kw "return" kw=return
+int "8" =8
+punct ';'
+punct '}'
+kw "return" kw=return
+int "42" =42
+punct ';'
+punct '}'
+eof <eof>

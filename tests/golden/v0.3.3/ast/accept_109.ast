@@ -1,0 +1,123 @@
+program
+  enum Maybe
+    variant Has
+      type-name Heap
+        type-name Node
+    variant Empty
+  struct Node
+    field value
+      type-name i32
+    field next
+      type-name Maybe
+  fn push
+    type-name Maybe
+    block
+      return
+        call
+          path Has
+          heap
+            struct-init Node
+              field-init value
+                path v
+              field-init next
+                path head
+    param head
+      type-name Maybe
+    param v
+      type-name i32
+  fn sum
+    type-name i32
+    block
+      switch
+        path head
+        arm
+          block
+            return
+              binary +
+                field value
+                  path node
+                call
+                  path sum
+                  field next
+                    path node
+          pat-variant Has
+            pat-bind node
+        arm
+          block
+            return
+              int
+          pat-bind Empty
+      return
+        int
+    param head
+      type-ref
+        type-name Maybe
+  fn length
+    type-name i32
+    block
+      switch
+        path head
+        arm
+          block
+            return
+              binary +
+                int #1
+                call
+                  path length
+                  field next
+                    path node
+          pat-variant Has
+            pat-bind node
+        arm
+          block
+            return
+              int
+          pat-bind Empty
+      return
+        int
+    param head
+      type-ref
+        type-name Maybe
+  fn main
+    type-name i32
+    block
+      let head #1
+        type-name Maybe
+        path Empty
+      assign =
+        path head
+        call
+          path push
+          path head
+          int #5
+      assign =
+        path head
+        call
+          path push
+          path head
+          int #17
+      assign =
+        path head
+        call
+          path push
+          path head
+          int #20
+      let n
+        call
+          path length
+          borrow
+            path head
+      let total
+        call
+          path sum
+          borrow
+            path head
+      if
+        binary !=
+          path n
+          int #3
+        block
+          return
+            int #1
+      return
+        path total

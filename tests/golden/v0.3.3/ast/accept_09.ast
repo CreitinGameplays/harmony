@@ -1,0 +1,6 @@
+program
+  enum Tok #1
+    variant A
+    variant B
+      type-name i32
+    variant C

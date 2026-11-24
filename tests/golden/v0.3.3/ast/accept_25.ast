@@ -1,0 +1,14 @@
+program
+  fn main
+    type-name i32
+    block
+      let x
+        binary +
+          binary +
+            binary +
+              int #255
+              int #10
+            int #15
+          int #1000
+      return
+        int

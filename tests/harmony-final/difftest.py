@@ -18,8 +18,12 @@ import subprocess
 import sys
 import tempfile
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-HB = os.path.join(ROOT, "build", "harmony-base")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import env
+
+ROOT = env.ROOT
+HB = env.HB   # oracle: legacy --dump-tokens
+HC = env.HC   # compiler under test: runs the scanner driver
 DRIVER = os.path.join(ROOT, "tests", "harmony-final", "tokdriver.hr")
 TMP = tempfile.mkdtemp(prefix="harmony-tok-")
 
@@ -233,7 +237,7 @@ def main():
         tpl = tpl % ('"' + hs_escape(src) + '"',)
         with open(drv, "w") as f:
             f.write(tpl)
-        rw = subprocess.run([HB, "run", drv], capture_output=True, text=True)
+        rw = subprocess.run([HC, "run", drv], capture_output=True, text=True)
         if rw.returncode != 0:
             print("FAIL snippet %d: rewrite driver failed:\n%s" %
                   (idx, (rw.stdout + rw.stderr)[:500]))

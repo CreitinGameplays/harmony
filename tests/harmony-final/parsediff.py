@@ -16,8 +16,12 @@ import subprocess
 import sys
 import tempfile
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-HB = os.path.join(ROOT, "build", "harmony-base")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import env
+
+ROOT = env.ROOT
+HB = env.HB   # oracle: legacy --dump-ast
+HC = env.HC   # compiler under test: runs the parser driver
 TMP = tempfile.mkdtemp(prefix="harmony-parse-")
 
 # Every snippet is a complete program (items only; an expression needs a `fn`).
@@ -161,7 +165,7 @@ fn run(src: &str) -> i32 {
     let mut lx: ctx::Ctx = ctx::make(src, "snippet.harmony");
     scan::scan(&mut lx, &mut arena);
     let mut ns: node::Nodes = node::nodes_make();
-    let mut p: pctx::Parser = pctx::make(&mut ns, lx.toks, "snippet.harmony");
+    let mut p: pctx::Parser = pctx::make(&mut ns, lx.toks.clone(), "snippet.harmony");
     let root = item::parse_program(&mut p);
     // Print the diagnostics *first*, each as its code, so a reject case can be
     // compared by code. Then the tree (for the accept cases).
@@ -211,7 +215,7 @@ def run_all_rewrite(sources):
                 {"pushes": "\n".join(pushes)})
     # -O0: this is a tiny test harness, not the compiler under test. Skipping
     # the optimizer cuts the one driver compilation from ~5 s to ~1.4 s.
-    return subprocess.run([HB, "run", drv, "-O0"], capture_output=True, text=True)
+    return subprocess.run([HC, "run", drv, "-O0"], capture_output=True, text=True)
 
 
 def split_cases(text, count):

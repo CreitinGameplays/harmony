@@ -1,0 +1,80 @@
+kw "fn" kw=fn
+ident "fib"
+punct '('
+ident "n"
+punct ':'
+ident "i32"
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "if" kw=if
+punct '('
+ident "n"
+punct '<'
+int "2" =2
+punct ')'
+punct '{'
+kw "return" kw=return
+ident "n"
+punct ';'
+punct '}'
+kw "return" kw=return
+ident "fib"
+punct '('
+ident "n"
+punct '-'
+int "1" =1
+punct ')'
+punct '+'
+ident "fib"
+punct '('
+ident "n"
+punct '-'
+int "2" =2
+punct ')'
+punct ';'
+punct '}'
+kw "fn" kw=fn
+ident "main"
+punct '('
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "let" kw=let
+kw "mut" kw=mut
+ident "i"
+punct '='
+int "0" =0
+punct ';'
+kw "let" kw=let
+kw "mut" kw=mut
+ident "sum"
+punct '='
+int "0" =0
+punct ';'
+kw "while" kw=while
+punct '('
+ident "i"
+punct '<'
+int "7" =7
+punct ')'
+punct '{'
+ident "sum"
+punct '+='
+ident "fib"
+punct '('
+ident "i"
+punct ')'
+punct ';'
+ident "i"
+punct '+='
+int "1" =1
+punct ';'
+punct '}'
+kw "return" kw=return
+ident "sum"
+punct ';'
+punct '}'
+eof <eof>

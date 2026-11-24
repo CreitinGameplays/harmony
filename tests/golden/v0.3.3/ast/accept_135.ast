@@ -1,0 +1,62 @@
+program
+  fn at
+    type-name u8
+    block
+      return
+        index
+          path a
+          int #80
+    param a
+      type-ref
+        type-array
+          type-name u8
+          int #128
+  fn main
+    type-name i32
+    block
+      let info #1
+        type-array
+          type-name u8
+          int #128
+        array-lit
+          int u8
+          int #128
+      assign =
+        index
+          path info
+          int #80
+        int #7
+      let n
+        type-name usize
+        binary |
+          as
+            index
+              path info
+              int #80
+            type-name usize
+          binary <<
+            as
+              index
+                path info
+                int #81
+              type-name usize
+            int #8
+      if
+        binary !=
+          call
+            path at
+            borrow
+              path info
+          int #7
+        block
+          return
+            int #1
+      if
+        binary ==
+          path n
+          int #7
+        block
+          return
+            int #42
+      return
+        int #2

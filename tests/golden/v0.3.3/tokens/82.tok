@@ -1,0 +1,137 @@
+kw "import" kw=import
+str "method-shadow/env.hr"
+punct ';'
+kw "fn" kw=fn
+ident "main"
+punct '('
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "if" kw=if
+punct '('
+ident "env"
+punct '::'
+ident "scale"
+punct '('
+int "3" =3
+punct ')'
+punct '!='
+int "9" =9
+punct ')'
+punct '{'
+kw "return" kw=return
+int "1" =1
+punct ';'
+punct '}'
+kw "let" kw=let
+kw "mut" kw=mut
+ident "a"
+punct ':'
+ident "env"
+punct '::'
+ident "Acc"
+punct '='
+ident "env"
+punct '::'
+ident "Acc"
+punct '::'
+ident "make"
+punct '('
+punct ')'
+punct ';'
+ident "a"
+punct '.'
+ident "add"
+punct '('
+int "10" =10
+punct ')'
+punct ';'
+ident "a"
+punct '.'
+ident "add"
+punct '('
+int "20" =20
+punct ')'
+punct ';'
+kw "if" kw=if
+punct '('
+ident "a"
+punct '.'
+ident "total"
+punct '('
+punct ')'
+punct '!='
+int "30" =30
+punct ')'
+punct '{'
+kw "return" kw=return
+int "2" =2
+punct ';'
+punct '}'
+kw "let" kw=let
+kw "mut" kw=mut
+ident "b"
+punct ':'
+ident "env"
+punct '::'
+ident "Counter"
+punct '='
+ident "env"
+punct '::'
+ident "Counter"
+punct '::'
+ident "make"
+punct '('
+punct ')'
+punct ';'
+ident "b"
+punct '.'
+ident "add"
+punct '('
+int "5" =5
+punct ')'
+punct ';'
+ident "b"
+punct '.'
+ident "add"
+punct '('
+int "6" =6
+punct ')'
+punct ';'
+kw "if" kw=if
+punct '('
+ident "b"
+punct '.'
+ident "total"
+punct '('
+punct ')'
+punct '!='
+int "11" =11
+punct ')'
+punct '{'
+kw "return" kw=return
+int "3" =3
+punct ';'
+punct '}'
+kw "if" kw=if
+punct '('
+ident "env"
+punct '::'
+ident "total"
+punct '('
+int "1" =1
+punct ')'
+punct '!='
+int "100" =100
+punct ')'
+punct '{'
+kw "return" kw=return
+int "4" =4
+punct ';'
+punct '}'
+kw "return" kw=return
+int "42" =42
+punct ';'
+punct '}'
+eof <eof>

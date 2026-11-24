@@ -1,0 +1,334 @@
+kw "struct" kw=struct
+ident "Box"
+punct '<'
+ident "T"
+punct '>'
+punct '{'
+ident "v"
+punct ':'
+ident "T"
+punct ';'
+punct '}'
+kw "methods" kw=methods
+punct '<'
+ident "T"
+punct '>'
+ident "Box"
+punct '<'
+ident "T"
+punct '>'
+punct '{'
+kw "export" kw=export
+kw "fn" kw=fn
+ident "make"
+punct '('
+ident "x"
+punct ':'
+ident "T"
+punct ')'
+punct '->'
+ident "Box"
+punct '<'
+ident "T"
+punct '>'
+punct '{'
+kw "return" kw=return
+ident "Box"
+punct '<'
+ident "T"
+punct '>'
+punct '{'
+punct '.'
+ident "v"
+punct '='
+ident "x"
+punct '}'
+punct ';'
+punct '}'
+kw "export" kw=export
+kw "fn" kw=fn
+ident "get"
+punct '('
+punct '&'
+kw "self" kw=self
+punct ')'
+punct '->'
+ident "T"
+punct '{'
+kw "return" kw=return
+kw "self" kw=self
+punct '.'
+ident "v"
+punct ';'
+punct '}'
+kw "export" kw=export
+kw "fn" kw=fn
+ident "tag"
+punct '('
+punct '&'
+kw "self" kw=self
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "return" kw=return
+int "1" =1
+punct ';'
+punct '}'
+punct '}'
+kw "methods" kw=methods
+punct '<'
+ident "T"
+punct '>'
+ident "Box"
+punct '<'
+ident "Box"
+punct '<'
+ident "T"
+punct '>>'
+punct '{'
+kw "export" kw=export
+kw "fn" kw=fn
+ident "get"
+punct '('
+punct '&'
+kw "self" kw=self
+punct ')'
+punct '->'
+ident "T"
+punct '{'
+kw "return" kw=return
+kw "self" kw=self
+punct '.'
+ident "v"
+punct '.'
+ident "v"
+punct ';'
+punct '}'
+punct '}'
+kw "methods" kw=methods
+ident "Box"
+punct '<'
+ident "u8"
+punct '>'
+punct '{'
+kw "export" kw=export
+kw "fn" kw=fn
+ident "tag"
+punct '('
+punct '&'
+kw "self" kw=self
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "return" kw=return
+int "8" =8
+punct ';'
+punct '}'
+punct '}'
+kw "fn" kw=fn
+ident "main"
+punct '('
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "let" kw=let
+ident "a"
+punct ':'
+ident "Box"
+punct '<'
+ident "i32"
+punct '>'
+punct '='
+ident "Box"
+punct '<'
+ident "i32"
+punct '>'
+punct '::'
+ident "make"
+punct '('
+int "41" =41
+punct ')'
+punct ';'
+kw "if" kw=if
+punct '('
+ident "a"
+punct '.'
+ident "get"
+punct '('
+punct ')'
+punct '!='
+int "41" =41
+punct ')'
+punct '{'
+kw "return" kw=return
+int "1" =1
+punct ';'
+punct '}'
+kw "if" kw=if
+punct '('
+ident "a"
+punct '.'
+ident "tag"
+punct '('
+punct ')'
+punct '!='
+int "1" =1
+punct ')'
+punct '{'
+kw "return" kw=return
+int "2" =2
+punct ';'
+punct '}'
+kw "let" kw=let
+ident "n"
+punct ':'
+ident "Box"
+punct '<'
+ident "Box"
+punct '<'
+ident "i32"
+punct '>>'
+punct '='
+ident "Box"
+punct '<'
+ident "Box"
+punct '<'
+ident "i32"
+punct '>>'
+punct '::'
+ident "make"
+punct '('
+ident "Box"
+punct '<'
+ident "i32"
+punct '>'
+punct '::'
+ident "make"
+punct '('
+int "42" =42
+punct ')'
+punct ')'
+punct ';'
+kw "if" kw=if
+punct '('
+ident "n"
+punct '.'
+ident "get"
+punct '('
+punct ')'
+punct '!='
+int "42" =42
+punct ')'
+punct '{'
+kw "return" kw=return
+int "3" =3
+punct ';'
+punct '}'
+kw "let" kw=let
+ident "u"
+punct ':'
+ident "Box"
+punct '<'
+ident "u8"
+punct '>'
+punct '='
+ident "Box"
+punct '<'
+ident "u8"
+punct '>'
+punct '::'
+ident "make"
+punct '('
+int "7u8" =7 sfx=u8
+punct ')'
+punct ';'
+kw "if" kw=if
+punct '('
+ident "u"
+punct '.'
+ident "tag"
+punct '('
+punct ')'
+punct '!='
+int "8" =8
+punct ')'
+punct '{'
+kw "return" kw=return
+int "4" =4
+punct ';'
+punct '}'
+kw "let" kw=let
+ident "w"
+punct ':'
+ident "Box"
+punct '<'
+ident "Box"
+punct '<'
+ident "i32"
+punct '>>'
+punct '='
+ident "nest"
+punct '('
+int "42" =42
+punct ')'
+punct ';'
+kw "if" kw=if
+punct '('
+ident "w"
+punct '.'
+ident "get"
+punct '('
+punct ')'
+punct '!='
+int "42" =42
+punct ')'
+punct '{'
+kw "return" kw=return
+int "5" =5
+punct ';'
+punct '}'
+kw "return" kw=return
+int "42" =42
+punct ';'
+punct '}'
+kw "fn" kw=fn
+ident "nest"
+punct '<'
+ident "T"
+punct '>'
+punct '('
+ident "x"
+punct ':'
+ident "T"
+punct ')'
+punct '->'
+ident "Box"
+punct '<'
+ident "Box"
+punct '<'
+ident "T"
+punct '>>'
+punct '{'
+kw "return" kw=return
+ident "Box"
+punct '{'
+punct '.'
+ident "v"
+punct '='
+ident "Box"
+punct '<'
+ident "T"
+punct '>'
+punct '{'
+punct '.'
+ident "v"
+punct '='
+ident "x"
+punct '}'
+punct '}'
+punct ';'
+punct '}'
+eof <eof>

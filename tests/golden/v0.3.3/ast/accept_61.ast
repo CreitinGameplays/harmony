@@ -1,0 +1,14 @@
+program
+  fn main
+    type-name i32
+    block
+      let x
+        as
+          as
+            as
+              path a
+              type-name i64
+            type-name u8
+          type-name char
+      return
+        int

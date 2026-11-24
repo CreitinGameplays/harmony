@@ -1,0 +1,65 @@
+program
+  fn main
+    type-name i32
+    block
+      let max
+        type-name u64
+        int u64 #-1
+      let m
+        type-name u64
+        int u64 #1000
+      if
+        binary !=
+          binary %
+            path max
+            path m
+          int u64 #615
+        block
+          return
+            int #1
+      if
+        binary !=
+          binary /
+            path max
+            path m
+          int u64 #18446744073709551
+        block
+          return
+            int #2
+      if
+        unary !
+          binary >
+            path max
+            path m
+        block
+          return
+            int #3
+      if
+        unary !
+          binary >
+            path max
+            int u64 #9223372036854775807
+        block
+          return
+            int #4
+      let a
+        type-name u32
+        int u32 #4000000000
+      let b
+        type-name u32
+        int u32 #7
+      if
+        binary !=
+          binary %
+            path a
+            path b
+          int u32 #3
+        block
+          return
+            int #5
+      return
+        as
+          binary %
+            path max
+            path m
+          type-name i32

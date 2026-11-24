@@ -1,0 +1,77 @@
+kw "struct" kw=struct
+ident "C"
+punct '{'
+ident "n"
+punct ':'
+ident "i32"
+punct ';'
+punct '}'
+kw "fn" kw=fn
+ident "bump"
+punct '('
+ident "c"
+punct ':'
+punct '&'
+kw "mut" kw=mut
+ident "C"
+punct ')'
+punct '{'
+ident "c"
+punct '.'
+ident "n"
+punct '+='
+int "1" =1
+punct ';'
+punct '}'
+kw "fn" kw=fn
+ident "get"
+punct '('
+ident "c"
+punct ':'
+punct '&'
+ident "C"
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "return" kw=return
+ident "c"
+punct '.'
+ident "n"
+punct ';'
+punct '}'
+kw "fn" kw=fn
+ident "main"
+punct '('
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "let" kw=let
+kw "mut" kw=mut
+ident "c"
+punct '='
+ident "C"
+punct '{'
+punct '.'
+ident "n"
+punct '='
+int "41" =41
+punct '}'
+punct ';'
+ident "bump"
+punct '('
+punct '&'
+kw "mut" kw=mut
+ident "c"
+punct ')'
+punct ';'
+kw "return" kw=return
+ident "get"
+punct '('
+punct '&'
+ident "c"
+punct ')'
+punct ';'
+punct '}'
+eof <eof>

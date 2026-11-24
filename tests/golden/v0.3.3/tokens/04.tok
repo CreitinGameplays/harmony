@@ -1,0 +1,20 @@
+kw "let" kw=let
+ident "a"
+punct ':'
+ident "u8"
+punct '='
+int "200u8" =200 sfx=u8
+punct ';'
+kw "let" kw=let
+ident "b"
+punct ':'
+ident "i64"
+punct '='
+int "7i64" =7 sfx=i64
+punct ';'
+kw "let" kw=let
+ident "c"
+punct '='
+int "9usize" =9 sfx=usize
+punct ';'
+eof <eof>

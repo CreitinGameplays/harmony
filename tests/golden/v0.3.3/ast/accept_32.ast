@@ -1,0 +1,9 @@
+program
+  fn main
+    type-name i32
+    block
+      let n
+        sizeof
+          type-name i32
+      return
+        int

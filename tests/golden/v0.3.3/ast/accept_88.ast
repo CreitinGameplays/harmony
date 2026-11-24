@@ -1,0 +1,87 @@
+program
+  fn sum_upto
+    type-name usize
+    block
+      let total #1
+        type-name usize
+        int
+      for i
+        binary ..
+          int
+          path n
+        block
+          assign +=
+            path total
+            path i
+      return
+        path total
+    param n
+      type-name usize
+  fn main
+    type-name i32
+    block
+      let a
+        call
+          path sum_upto
+          int #4
+      let lo
+        type-name usize
+        int
+      let hi
+        type-name usize
+        int #4
+      let total #1
+        type-name usize
+        int
+      for i
+        binary ..
+          path lo
+          path hi
+        block
+          assign +=
+            path total
+            path i
+      if
+        binary !=
+          path a
+          path total
+        block
+          return
+            int #99
+      let buf
+        type-array
+          type-name u8
+          int #4
+        array-lit
+          int u8 #1
+          int u8 #2
+          int u8 #3
+          int u8 #4
+      let acc #1
+        type-name usize
+        int
+      for i
+        binary ..
+          int
+          call
+            field len
+              path buf
+        block
+          assign +=
+            path acc
+            as
+              index
+                path buf
+                path i
+              type-name usize
+      if
+        binary !=
+          path acc
+          int #10
+        block
+          return
+            int #98
+      return
+        as
+          path a
+          type-name i32

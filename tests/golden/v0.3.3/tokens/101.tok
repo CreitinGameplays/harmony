@@ -1,0 +1,330 @@
+kw "fn" kw=fn
+ident "sum"
+punct '('
+ident "xs"
+punct ':'
+punct '&'
+punct '['
+ident "i32"
+punct ']'
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "let" kw=let
+kw "mut" kw=mut
+ident "i"
+punct ':'
+ident "usize"
+punct '='
+int "0" =0
+punct ';'
+kw "let" kw=let
+kw "mut" kw=mut
+ident "total"
+punct ':'
+ident "i32"
+punct '='
+int "0" =0
+punct ';'
+kw "while" kw=while
+punct '('
+ident "i"
+punct '<'
+ident "xs"
+punct '.'
+ident "len"
+punct '('
+punct ')'
+punct ')'
+punct '{'
+ident "total"
+punct '='
+ident "total"
+punct '+'
+ident "xs"
+punct '['
+ident "i"
+punct ']'
+punct ';'
+ident "i"
+punct '='
+ident "i"
+punct '+'
+int "1" =1
+punct ';'
+punct '}'
+kw "return" kw=return
+ident "total"
+punct ';'
+punct '}'
+kw "fn" kw=fn
+ident "tail"
+punct '('
+ident "xs"
+punct ':'
+punct '&'
+punct '['
+ident "i32"
+punct ']'
+punct ')'
+punct '->'
+punct '&'
+punct '['
+ident "i32"
+punct ']'
+punct '{'
+kw "return" kw=return
+punct '&'
+ident "xs"
+punct '['
+int "1" =1
+punct '..'
+punct ']'
+punct ';'
+punct '}'
+kw "fn" kw=fn
+ident "main"
+punct '('
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "let" kw=let
+ident "a"
+punct ':'
+punct '['
+ident "i32"
+punct ';'
+int "5" =5
+punct ']'
+punct '='
+punct '['
+int "10" =10
+punct ','
+int "20" =20
+punct ','
+int "30" =30
+punct ','
+int "40" =40
+punct ','
+int "50" =50
+punct ']'
+punct ';'
+kw "let" kw=let
+kw "mut" kw=mut
+ident "lo"
+punct ':'
+ident "usize"
+punct '='
+int "1" =1
+punct ';'
+kw "let" kw=let
+kw "mut" kw=mut
+ident "hi"
+punct ':'
+ident "usize"
+punct '='
+int "4" =4
+punct ';'
+kw "let" kw=let
+ident "s"
+punct '='
+punct '&'
+ident "a"
+punct '['
+ident "lo"
+punct '..'
+ident "hi"
+punct ']'
+punct ';'
+kw "let" kw=let
+ident "inc"
+punct '='
+punct '&'
+ident "a"
+punct '['
+int "1" =1
+punct '..='
+int "3" =3
+punct ']'
+punct ';'
+kw "let" kw=let
+ident "front"
+punct '='
+punct '&'
+ident "a"
+punct '['
+punct '..'
+int "2" =2
+punct ']'
+punct ';'
+kw "let" kw=let
+ident "back"
+punct '='
+punct '&'
+ident "a"
+punct '['
+int "3" =3
+punct '..'
+punct ']'
+punct ';'
+kw "let" kw=let
+ident "all"
+punct '='
+punct '&'
+ident "a"
+punct '['
+punct '..'
+punct ']'
+punct ';'
+kw "let" kw=let
+ident "sub"
+punct '='
+punct '&'
+ident "s"
+punct '['
+int "1" =1
+punct '..'
+punct ']'
+punct ';'
+kw "if" kw=if
+punct '('
+ident "inc"
+punct '.'
+ident "len"
+punct '('
+punct ')'
+punct '!='
+int "3" =3
+punct ')'
+punct '{'
+kw "return" kw=return
+int "1" =1
+punct ';'
+punct '}'
+kw "if" kw=if
+punct '('
+ident "front"
+punct '.'
+ident "len"
+punct '('
+punct ')'
+punct '!='
+int "2" =2
+punct ')'
+punct '{'
+kw "return" kw=return
+int "2" =2
+punct ';'
+punct '}'
+kw "if" kw=if
+punct '('
+ident "back"
+punct '.'
+ident "len"
+punct '('
+punct ')'
+punct '!='
+int "2" =2
+punct ')'
+punct '{'
+kw "return" kw=return
+int "3" =3
+punct ';'
+punct '}'
+kw "if" kw=if
+punct '('
+ident "all"
+punct '.'
+ident "len"
+punct '('
+punct ')'
+punct '!='
+int "5" =5
+punct ')'
+punct '{'
+kw "return" kw=return
+int "4" =4
+punct ';'
+punct '}'
+kw "let" kw=let
+ident "t"
+punct '='
+ident "tail"
+punct '('
+ident "s"
+punct ')'
+punct ';'
+kw "if" kw=if
+punct '('
+ident "t"
+punct '.'
+ident "len"
+punct '('
+punct ')'
+punct '!='
+int "2" =2
+punct ')'
+punct '{'
+kw "return" kw=return
+int "5" =5
+punct ';'
+punct '}'
+kw "let" kw=let
+ident "total"
+punct '='
+ident "sum"
+punct '('
+ident "s"
+punct ')'
+punct '+'
+ident "sum"
+punct '('
+ident "inc"
+punct ')'
+punct '+'
+ident "sum"
+punct '('
+ident "front"
+punct ')'
+punct '+'
+ident "sum"
+punct '('
+ident "back"
+punct ')'
+punct '+'
+ident "sum"
+punct '('
+ident "all"
+punct ')'
+punct '+'
+ident "sum"
+punct '('
+ident "sub"
+punct ')'
+punct '+'
+ident "sum"
+punct '('
+ident "t"
+punct ')'
+punct ';'
+kw "return" kw=return
+punct '('
+ident "total"
+punct '+'
+ident "a"
+punct '.'
+ident "len"
+punct '('
+punct ')'
+kw "as" kw=as
+ident "i32"
+punct ')'
+punct '/'
+int "10" =10
+punct '-'
+int "17" =17
+punct ';'
+punct '}'
+eof <eof>

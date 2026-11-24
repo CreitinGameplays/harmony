@@ -1,0 +1,40 @@
+kw "fn" kw=fn
+ident "main"
+punct '('
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "let" kw=let
+kw "mut" kw=mut
+ident "acc"
+punct '='
+int "1" =1
+punct ';'
+kw "for" kw=for
+punct '('
+kw "let" kw=let
+kw "mut" kw=mut
+ident "i"
+punct '='
+int "1" =1
+punct ';'
+ident "i"
+punct '<='
+int "5" =5
+punct ';'
+ident "i"
+punct '+='
+int "1" =1
+punct ')'
+punct '{'
+ident "acc"
+punct '*='
+ident "i"
+punct ';'
+punct '}'
+kw "return" kw=return
+ident "acc"
+punct ';'
+punct '}'
+eof <eof>

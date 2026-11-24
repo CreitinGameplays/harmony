@@ -1,0 +1,113 @@
+kw "fn" kw=fn
+ident "main"
+punct '('
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "let" kw=let
+ident "max"
+punct ':'
+ident "u64"
+punct '='
+int "18446744073709551615u64" =-1 sfx=u64
+punct ';'
+kw "let" kw=let
+ident "m"
+punct ':'
+ident "u64"
+punct '='
+int "1000u64" =1000 sfx=u64
+punct ';'
+kw "if" kw=if
+punct '('
+ident "max"
+punct '%'
+ident "m"
+punct '!='
+int "615u64" =615 sfx=u64
+punct ')'
+punct '{'
+kw "return" kw=return
+int "1" =1
+punct ';'
+punct '}'
+kw "if" kw=if
+punct '('
+ident "max"
+punct '/'
+ident "m"
+punct '!='
+int "18446744073709551u64" =18446744073709551 sfx=u64
+punct ')'
+punct '{'
+kw "return" kw=return
+int "2" =2
+punct ';'
+punct '}'
+kw "if" kw=if
+punct '('
+punct '!'
+punct '('
+ident "max"
+punct '>'
+ident "m"
+punct ')'
+punct ')'
+punct '{'
+kw "return" kw=return
+int "3" =3
+punct ';'
+punct '}'
+kw "if" kw=if
+punct '('
+punct '!'
+punct '('
+ident "max"
+punct '>'
+int "9223372036854775807u64" =9223372036854775807 sfx=u64
+punct ')'
+punct ')'
+punct '{'
+kw "return" kw=return
+int "4" =4
+punct ';'
+punct '}'
+kw "let" kw=let
+ident "a"
+punct ':'
+ident "u32"
+punct '='
+int "4000000000u32" =4000000000 sfx=u32
+punct ';'
+kw "let" kw=let
+ident "b"
+punct ':'
+ident "u32"
+punct '='
+int "7u32" =7 sfx=u32
+punct ';'
+kw "if" kw=if
+punct '('
+ident "a"
+punct '%'
+ident "b"
+punct '!='
+int "3u32" =3 sfx=u32
+punct ')'
+punct '{'
+kw "return" kw=return
+int "5" =5
+punct ';'
+punct '}'
+kw "return" kw=return
+punct '('
+ident "max"
+punct '%'
+ident "m"
+punct ')'
+kw "as" kw=as
+ident "i32"
+punct ';'
+punct '}'
+eof <eof>

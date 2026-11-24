@@ -1,0 +1,6 @@
+program
+  struct Point
+    field x
+      type-name i32
+    field y
+      type-name i32

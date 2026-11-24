@@ -1,0 +1,80 @@
+program
+  fn main
+    type-name i32
+    block
+      let a
+        float 1.5e3
+      let b
+        float 1.5e-3
+      let c
+        float 1.5E3
+      let d
+        float 1.5E+3
+      let tail
+        float 10.0e2
+      expr-stmt
+        call
+          path println
+          string {:.6} #5
+          binary +
+            path a
+            path b
+      if
+        binary !=
+          path a
+          path c
+        block
+          return
+            int #1
+      if
+        binary !=
+          path a
+          path d
+        block
+          return
+            int #2
+      if
+        binary !=
+          path a
+          float 1500.0
+        block
+          return
+            int #3
+      if
+        binary !=
+          path tail
+          float 1000.0
+        block
+          return
+            int #4
+      let big
+        float 2.0e10
+      if
+        binary !=
+          path big
+          float 20000000000.0
+        block
+          return
+            int #5
+      let e2
+        float 2e3
+      if
+        binary !=
+          path e2
+          float 2000.0
+        block
+          return
+            int #6
+      let f
+        float 1.5e2
+      if
+        binary !=
+          as
+            path f
+            type-name f64
+          float 150.0
+        block
+          return
+            int #7
+      return
+        int #42

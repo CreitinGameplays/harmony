@@ -1,0 +1,28 @@
+kw "fn" kw=fn
+ident "main"
+punct '('
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "let" kw=let
+ident "value"
+punct ':'
+ident "i32"
+punct '='
+int "3" =3
+punct ';'
+ident "assert"
+punct '('
+ident "value"
+punct '>'
+int "10" =10
+punct ','
+str "value must exceed ten"
+punct ')'
+punct ';'
+kw "return" kw=return
+int "0" =0
+punct ';'
+punct '}'
+eof <eof>

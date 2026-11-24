@@ -1,0 +1,102 @@
+program
+  enum Val
+    variant Nil
+    variant Int
+      type-name i32
+    variant Sym
+      type-ref
+        type-name str
+    variant Cons
+      type-name Heap
+        type-name Val
+      type-name Heap
+        type-name Val
+  fn main
+    type-name i32
+    block
+      let items #1
+        type-array
+          type-name Val
+          int #64
+        array-lit
+          path Val::Nil
+          int #64
+      assign =
+        index
+          path items
+          int
+        call
+          path Val::Int
+          int #40
+      assign =
+        index
+          path items
+          int #63
+        call
+          path Val::Int
+          int #2
+      let sum #1
+        type-name i32
+        int
+      switch
+        borrow
+          index
+            path items
+            int
+        arm
+          block
+            assign +=
+              path sum
+              path n
+          pat-variant Int
+            pat-bind n
+        arm
+          block
+            return
+              int #1
+          pat-bind Nil
+        arm
+          block
+            return
+              int #1
+          pat-variant Sym
+            pat-bind s
+        arm
+          block
+            return
+              int #1
+          pat-variant Cons
+            pat-bind h
+            pat-bind t
+      switch
+        borrow
+          index
+            path items
+            int #63
+        arm
+          block
+            assign +=
+              path sum
+              path n
+          pat-variant Int
+            pat-bind n
+        arm
+          block
+            return
+              int #2
+          pat-bind Nil
+        arm
+          block
+            return
+              int #2
+          pat-variant Sym
+            pat-bind s
+        arm
+          block
+            return
+              int #2
+          pat-variant Cons
+            pat-bind h
+            pat-bind t
+      return
+        path sum

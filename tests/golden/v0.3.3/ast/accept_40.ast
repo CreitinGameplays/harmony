@@ -1,0 +1,16 @@
+program
+  fn main
+    type-name i32
+    block
+      switch
+        path x
+        arm
+          block
+            return
+              int #1
+          pat-lit
+            int #1
+        arm
+          block
+            return
+              int

@@ -19,6 +19,47 @@ checker → LLVM IR text → clang + freestanding runtime → runnable programs
 (`emit-llvm`, `build`, `run`, `check`), byte-deterministic. Only a few small
 bootstrap items remain.
 
+## Bootstrap retirement — Phase 0-1 (in progress, additive)
+
+- [x] `make qualify-seed` proves a v1 binary rebuilds itself byte-identically
+      through two further self-host passes (stage1 == stage2 == stage3).
+- [x] `tests/env.sh` / `tests/env.py` provide `HARMONY`, `HC` and `ORACLE`
+      overrides so the full suite can run in a legacy lane and a v1 lane.
+- [x] `make test-v1` runs the v1 lane. Known v1 gaps (no C backend yet, no
+      verbose trace) are reported as explicit `SKIP`s, never silent passes.
+- [x] Fixed four v1 harnesses that moved `lx.toks` out of an owning struct
+      field; the compiler's own driver code already used `.clone()`.
+- [x] Fixed genuine v1 lexer/driver bugs found by the burn-in: lexer diagnostics
+      were dropped in `loader::parse_one`; a char literal accepted more than one
+      scalar; surrogate escapes and integer suffixes on floats were accepted.
+      Also aligned the bad-`-O` message with `usage.bad-opt`.
+- [x] Fixed the undefined `@harmony__drop__*`/`@harmony__clone__*` calls for
+      generic template placeholders (emit helpers only for concrete types).
+- [x] Host-linked programs now install the runtime's stack guard in
+      `lc_host_init`, so runaway recursion traps `T-STACK` instead of segfaulting.
+- [x] `tools/capture-goldens.py` freezes the legacy compiler's token, AST,
+      resolver, checker, IR and driver outputs under `tests/golden/v0.3.3/`;
+      `make verify-goldens` re-captures and diffs with machine-independent paths.
+- [x] Legacy-only suites degrade explicitly in the v1 lane: `parser.sh` uses
+      `fmt` as the parse-only proxy and skips AST-text cases (covered by
+      `parsediff.py` against goldens); `golden.sh` skips fixtures that pin
+      legacy CLI/wording. Both print `SKIP`.
+- [ ] **1.0 parity/bug items:** (a) a stray control byte is `LEX-01` in v1 but
+      `SYN-05` in the legacy compiler; (b) missing imports are reported as a
+      plain driver error rather than `NAME-04`; (c) a multi-error program does
+      not emit `CASE-01` because v1 stops earlier; (d) v1 has no `--dump-ast` /
+      `emit-c` CLI surface; (e) four v0 codegen programs and the v0 LISP
+      interpreter are intentionally rejected by v1's M2 ownership rules;
+      (f) **open v1 bug:** `big-aggregate-init` hits
+      a drop-flag codegen fault (uninitialised stack pointer; reproduced with
+      gdb/valgrind and a minimal `switch` + `return` repro). Every item is
+      printed as `DIVERGENCE` or `SKIP` by the v1 lane, never a silent pass.
+- [ ] Run both full lanes (`make test`, `make test-v1`) to completion; fix any
+      remaining genuine v1 divergence before the next phase.
+- [ ] Phase 2+: freeze `legacy/bootstrap`, publish the v0.3.3 seed, rewire the
+      build/CI, then retire the legacy paths from the master tree. No `0.4.0`:
+      the first seed-native final release is `1.0.0`.
+
 ---
 
 ## harmony-base — the bootstrap core

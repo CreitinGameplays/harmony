@@ -1,0 +1,23 @@
+kw "unchecked" kw=unchecked
+punct '('
+str "reason"
+punct ')'
+punct '{'
+kw "let" kw=let
+ident "p"
+punct '='
+kw "heap" kw=heap
+punct '('
+int "0u8" =0 sfx=u8
+punct ')'
+punct ';'
+kw "let" kw=let
+ident "s"
+punct '='
+kw "sizeof" kw=sizeof
+punct '('
+ident "u8"
+punct ')'
+punct ';'
+punct '}'
+eof <eof>

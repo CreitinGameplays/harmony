@@ -1,0 +1,24 @@
+kw "let" kw=let
+ident "t"
+punct '='
+kw "true" kw=true
+punct ';'
+kw "let" kw=let
+ident "f"
+punct '='
+kw "false" kw=false
+punct ';'
+kw "let" kw=let
+ident "r"
+punct '='
+punct '&'
+kw "mut" kw=mut
+ident "x"
+punct ';'
+kw "let" kw=let
+ident "s"
+punct '='
+punct '*'
+ident "r"
+punct ';'
+eof <eof>

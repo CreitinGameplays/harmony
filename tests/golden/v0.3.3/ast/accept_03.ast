@@ -1,0 +1,9 @@
+program
+  const LIMITS
+    type-array
+      type-name i32
+      int #3
+    array-lit
+      int #10
+      int #20
+      int #30

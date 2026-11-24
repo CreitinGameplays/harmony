@@ -1,0 +1,14 @@
+{
+  "counts": {
+    "ast_accept": 157,
+    "ast_reject": 13,
+    "ir_modules": 9,
+    "ir_singles": 86,
+    "resolve": 19,
+    "tokens": 126,
+    "types_snippets": 32
+  },
+  "legacy_commit": "ad109adbacdfa01cfe4152d5bc6a357aaffacae6",
+  "oracle": "build/harmony-base",
+  "oracle_sha256": "c6738f303ebe797b76ab87019e40313e4ce8f7afc8244f32ba08200189b37179"
+}

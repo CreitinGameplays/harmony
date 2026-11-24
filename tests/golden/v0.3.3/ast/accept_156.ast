@@ -1,0 +1,44 @@
+program
+  fn add
+    type-name i64
+    block
+      return
+        binary +
+          path a
+          path b
+    param a
+      type-name i64
+    param b
+      type-name i64
+  fn answer
+    type-name i64
+    block
+      return
+        int #40
+  fn main
+    type-name i32
+    block
+      let x
+        type-name i64
+        int #1
+      let y
+        type-name u8
+        int #2
+      let v
+        binary +
+          call
+            path add
+            path x
+            call
+              path answer
+          int #1
+      let n
+        as
+          path v
+          type-name i32
+      return
+        binary +
+          path n
+          as
+            path y
+            type-name i32

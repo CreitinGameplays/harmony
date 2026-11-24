@@ -1,0 +1,12 @@
+program
+  fn main
+    type-name i32
+    block
+      let p
+        borrow
+          path x
+      let q
+        borrow #1
+          path y
+      return
+        int

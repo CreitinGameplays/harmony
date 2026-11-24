@@ -1,0 +1,218 @@
+program
+  struct MiniVec
+    param T
+    field ptr
+      type-raw #1
+        type-name T
+    field len
+      type-name usize
+    field cap
+      type-name usize
+  methods MiniVec
+    param T
+    fn make #1
+      type-name MiniVec
+        type-name T
+      block
+        return
+          struct-init MiniVec
+            field-init ptr
+              call Raw::null
+                type-name T
+            field-init len
+              int
+            field-init cap
+              int
+    fn grow #1
+      block
+        let newcap
+          call
+            path grow_cap
+            field cap
+              path self
+        let np #1
+          type-raw #1
+            type-name T
+          call Raw::null
+            type-name T
+        unchecked allocate the new, larger buffer
+          block
+            assign =
+              path np
+              call alloc
+                path newcap
+                type-name T
+        let i #1
+          type-name usize
+          int
+        while
+          binary <
+            path i
+            field len
+              path self
+          block
+            unchecked copy an element into the new buffer
+              block
+                assign =
+                  index
+                    path np
+                    path i
+                  index
+                    field ptr
+                      path self
+                    path i
+            assign =
+              path i
+              binary +
+                path i
+                int #1
+        unchecked free the old buffer
+          block
+            expr-stmt
+              call dealloc
+                field ptr
+                  path self
+                field cap
+                  path self
+                type-name T
+        assign =
+          field ptr
+            path self
+          path np
+        assign =
+          field cap
+            path self
+          path newcap
+      param &mut self
+    fn push #1
+      block
+        if
+          binary ==
+            field len
+              path self
+            field cap
+              path self
+          block
+            expr-stmt
+              call
+                field grow
+                  path self
+        unchecked grow() guarantees cap > len, so slot len is inside our allocation
+          block
+            assign =
+              index
+                field ptr
+                  path self
+                field len
+                  path self
+              path value
+        assign =
+          field len
+            path self
+          binary +
+            field len
+              path self
+            int #1
+      param &mut self
+      param value
+        type-name T
+    fn at #1
+      type-name T
+      block
+        unchecked the caller promised i < size()
+          block
+            return
+              index
+                field ptr
+                  path self
+                path i
+      param &self
+      param i
+        type-name usize
+    fn size #1
+      type-name usize
+      block
+        return
+          field len
+            path self
+      param &self
+    type-name T
+  fn grow_cap
+    type-name usize
+    block
+      if
+        binary ==
+          path c
+          int
+        block
+          return
+            int #4
+      return
+        binary *
+          path c
+          int #2
+    param c
+      type-name usize
+  fn main
+    type-name i32
+    block
+      let v #1
+        type-name MiniVec
+          type-name i32
+        call
+          path MiniVec::make
+            type-name i32
+      expr-stmt
+        call
+          field push
+            path v
+          int #10
+      expr-stmt
+        call
+          field push
+            path v
+          int #20
+      expr-stmt
+        call
+          field push
+            path v
+          int #30
+      expr-stmt
+        call
+          field push
+            path v
+          int #40
+      expr-stmt
+        call
+          field push
+            path v
+          int #50
+      let s #1
+        int
+      let i #1
+        type-name usize
+        int
+      while
+        binary <
+          path i
+          call
+            field size
+              path v
+        block
+          assign =
+            path s
+            binary +
+              path s
+              call
+                field at
+                  path v
+                path i
+          assign =
+            path i
+            binary +
+              path i
+              int #1
+      return
+        binary -
+          path s
+          int #56

@@ -1,0 +1,68 @@
+program
+  enum Shape
+    variant Rect
+      type-name i32
+      type-name i32
+    variant Circle
+      type-name i32
+    variant Point
+  fn area
+    type-name i32
+    block
+      switch
+        path s
+        arm
+          block
+            return
+              binary *
+                path w
+                path h
+          pat-variant Rect
+            pat-bind w
+            pat-bind h
+        arm
+          block
+            return
+              binary *
+                path r
+                path r
+          pat-variant Circle
+            pat-bind r
+        arm
+          block
+            return
+              int
+          pat-bind Point
+      return
+        unary -
+          int #1
+    param s
+      type-name Shape
+  fn main
+    type-name i32
+    block
+      let a
+        call
+          path area
+          call
+            path Shape::Rect
+            int #6
+            int #7
+      let b
+        call
+          path area
+          call
+            path Shape::Circle
+            int #1
+      let c
+        call
+          path area
+          path Shape::Point
+      return
+        binary -
+          binary +
+            binary +
+              path a
+              path b
+            path c
+          int #1

@@ -1,0 +1,12 @@
+program
+  fn main
+    type-name i32
+    block
+      let c
+        char #65
+      let b
+        int u8 #122
+      let s
+        string hi #2
+      return
+        int

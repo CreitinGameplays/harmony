@@ -1,0 +1,541 @@
+kw "import" kw=import
+str "struct-mixed-fields-env.hr"
+punct ';'
+kw "struct" kw=struct
+ident "Point"
+punct '{'
+ident "x"
+punct ':'
+ident "i32"
+punct ';'
+ident "y"
+punct ':'
+ident "i32"
+punct ';'
+punct '}'
+kw "struct" kw=struct
+ident "S"
+punct '{'
+ident "label"
+punct ':'
+punct '&'
+ident "str"
+punct ';'
+ident "items"
+punct ':'
+ident "struct_mixed_fields_env"
+punct '::'
+ident "Vec"
+punct '<'
+ident "i32"
+punct '>'
+punct ';'
+ident "tail"
+punct ':'
+ident "u32"
+punct ';'
+punct '}'
+kw "fn" kw=fn
+ident "use_s"
+punct '('
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "let" kw=let
+kw "mut" kw=mut
+ident "s"
+punct ':'
+ident "S"
+punct '='
+ident "S"
+punct '{'
+punct '.'
+ident "label"
+punct '='
+str "ok"
+punct ','
+punct '.'
+ident "items"
+punct '='
+ident "struct_mixed_fields_env"
+punct '::'
+ident "Vec"
+punct '<'
+ident "i32"
+punct '>'
+punct '::'
+ident "make"
+punct '('
+punct ')'
+punct ','
+punct '.'
+ident "tail"
+punct '='
+int "7" =7
+punct ','
+punct '}'
+punct ';'
+kw "if" kw=if
+punct '('
+ident "s"
+punct '.'
+ident "label"
+punct '!='
+str "ok"
+punct ')'
+punct '{'
+kw "return" kw=return
+int "1" =1
+punct ';'
+punct '}'
+kw "if" kw=if
+punct '('
+ident "s"
+punct '.'
+ident "tail"
+punct '!='
+int "7" =7
+punct ')'
+punct '{'
+kw "return" kw=return
+int "2" =2
+punct ';'
+punct '}'
+ident "s"
+punct '.'
+ident "items"
+punct '.'
+ident "push"
+punct '('
+int "11" =11
+punct ')'
+punct ';'
+ident "s"
+punct '.'
+ident "items"
+punct '.'
+ident "push"
+punct '('
+int "22" =22
+punct ')'
+punct ';'
+kw "if" kw=if
+punct '('
+ident "s"
+punct '.'
+ident "items"
+punct '.'
+ident "len"
+punct '('
+punct ')'
+punct '!='
+int "2" =2
+punct ')'
+punct '{'
+kw "return" kw=return
+int "3" =3
+punct ';'
+punct '}'
+kw "if" kw=if
+punct '('
+punct '*'
+ident "s"
+punct '.'
+ident "items"
+punct '.'
+ident "get"
+punct '('
+int "0" =0
+punct ')'
+punct '!='
+int "11" =11
+punct ')'
+punct '{'
+kw "return" kw=return
+int "4" =4
+punct ';'
+punct '}'
+kw "if" kw=if
+punct '('
+punct '*'
+ident "s"
+punct '.'
+ident "items"
+punct '.'
+ident "get"
+punct '('
+int "1" =1
+punct ')'
+punct '!='
+int "22" =22
+punct ')'
+punct '{'
+kw "return" kw=return
+int "5" =5
+punct ';'
+punct '}'
+ident "s"
+punct '.'
+ident "tail"
+punct '='
+int "9" =9
+punct ';'
+kw "if" kw=if
+punct '('
+ident "s"
+punct '.'
+ident "tail"
+punct '!='
+int "9" =9
+punct ')'
+punct '{'
+kw "return" kw=return
+int "6" =6
+punct ';'
+punct '}'
+kw "return" kw=return
+int "42" =42
+punct ';'
+punct '}'
+kw "struct" kw=struct
+ident "Pair"
+punct '{'
+ident "a"
+punct ':'
+ident "struct_mixed_fields_env"
+punct '::'
+ident "Vec"
+punct '<'
+ident "u8"
+punct '>'
+punct ';'
+ident "name"
+punct ':'
+punct '&'
+ident "str"
+punct ';'
+ident "b"
+punct ':'
+ident "struct_mixed_fields_env"
+punct '::'
+ident "Vec"
+punct '<'
+ident "u32"
+punct '>'
+punct ';'
+punct '}'
+kw "fn" kw=fn
+ident "use_pair"
+punct '('
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "let" kw=let
+kw "mut" kw=mut
+ident "p"
+punct ':'
+ident "Pair"
+punct '='
+ident "Pair"
+punct '{'
+punct '.'
+ident "a"
+punct '='
+ident "struct_mixed_fields_env"
+punct '::'
+ident "Vec"
+punct '<'
+ident "u8"
+punct '>'
+punct '::'
+ident "make"
+punct '('
+punct ')'
+punct ','
+punct '.'
+ident "name"
+punct '='
+str "pair"
+punct ','
+punct '.'
+ident "b"
+punct '='
+ident "struct_mixed_fields_env"
+punct '::'
+ident "Vec"
+punct '<'
+ident "u32"
+punct '>'
+punct '::'
+ident "make"
+punct '('
+punct ')'
+punct ','
+punct '}'
+punct ';'
+kw "if" kw=if
+punct '('
+ident "p"
+punct '.'
+ident "name"
+punct '!='
+str "pair"
+punct ')'
+punct '{'
+kw "return" kw=return
+int "1" =1
+punct ';'
+punct '}'
+ident "p"
+punct '.'
+ident "a"
+punct '.'
+ident "push"
+punct '('
+int "5u8" =5 sfx=u8
+punct ')'
+punct ';'
+ident "p"
+punct '.'
+ident "b"
+punct '.'
+ident "push"
+punct '('
+int "100u32" =100 sfx=u32
+punct ')'
+punct ';'
+kw "if" kw=if
+punct '('
+punct '*'
+ident "p"
+punct '.'
+ident "a"
+punct '.'
+ident "get"
+punct '('
+int "0" =0
+punct ')'
+punct '!='
+int "5u8" =5 sfx=u8
+punct ')'
+punct '{'
+kw "return" kw=return
+int "2" =2
+punct ';'
+punct '}'
+kw "if" kw=if
+punct '('
+punct '*'
+ident "p"
+punct '.'
+ident "b"
+punct '.'
+ident "get"
+punct '('
+int "0" =0
+punct ')'
+punct '!='
+int "100u32" =100 sfx=u32
+punct ')'
+punct '{'
+kw "return" kw=return
+int "3" =3
+punct ';'
+punct '}'
+kw "return" kw=return
+int "42" =42
+punct ';'
+punct '}'
+kw "struct" kw=struct
+ident "Wrap"
+punct '{'
+ident "inner"
+punct ':'
+ident "struct_mixed_fields_env"
+punct '::'
+ident "Vec"
+punct '<'
+ident "u8"
+punct '>'
+punct ';'
+ident "tag"
+punct ':'
+ident "u32"
+punct ';'
+punct '}'
+kw "fn" kw=fn
+ident "use_wrap"
+punct '('
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "let" kw=let
+ident "w"
+punct ':'
+ident "Wrap"
+punct '='
+ident "Wrap"
+punct '{'
+punct '.'
+ident "inner"
+punct '='
+ident "struct_mixed_fields_env"
+punct '::'
+ident "Vec"
+punct '<'
+ident "u8"
+punct '>'
+punct '::'
+ident "make"
+punct '('
+punct ')'
+punct ','
+punct '.'
+ident "tag"
+punct '='
+int "3" =3
+punct ','
+punct '}'
+punct ';'
+kw "if" kw=if
+punct '('
+ident "w"
+punct '.'
+ident "tag"
+punct '!='
+int "3" =3
+punct ')'
+punct '{'
+kw "return" kw=return
+int "1" =1
+punct ';'
+punct '}'
+kw "if" kw=if
+punct '('
+ident "w"
+punct '.'
+ident "inner"
+punct '.'
+ident "len"
+punct '('
+punct ')'
+punct '!='
+int "0" =0
+punct ')'
+punct '{'
+kw "return" kw=return
+int "2" =2
+punct ';'
+punct '}'
+kw "return" kw=return
+int "42" =42
+punct ';'
+punct '}'
+kw "fn" kw=fn
+ident "main"
+punct '('
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "let" kw=let
+ident "r"
+punct '='
+ident "use_s"
+punct '('
+punct ')'
+punct ';'
+kw "if" kw=if
+punct '('
+ident "r"
+punct '!='
+int "42" =42
+punct ')'
+punct '{'
+kw "return" kw=return
+int "100" =100
+punct '+'
+ident "r"
+punct ';'
+punct '}'
+kw "let" kw=let
+ident "r2"
+punct '='
+ident "use_pair"
+punct '('
+punct ')'
+punct ';'
+kw "if" kw=if
+punct '('
+ident "r2"
+punct '!='
+int "42" =42
+punct ')'
+punct '{'
+kw "return" kw=return
+int "200" =200
+punct '+'
+ident "r2"
+punct ';'
+punct '}'
+kw "let" kw=let
+ident "r3"
+punct '='
+ident "use_wrap"
+punct '('
+punct ')'
+punct ';'
+kw "if" kw=if
+punct '('
+ident "r3"
+punct '!='
+int "42" =42
+punct ')'
+punct '{'
+kw "return" kw=return
+int "300" =300
+punct '+'
+ident "r3"
+punct ';'
+punct '}'
+kw "let" kw=let
+ident "p"
+punct '='
+ident "Point"
+punct '{'
+punct '.'
+ident "x"
+punct '='
+int "2" =2
+punct ','
+punct '.'
+ident "y"
+punct '='
+int "3" =3
+punct '}'
+punct ';'
+kw "if" kw=if
+punct '('
+ident "p"
+punct '.'
+ident "x"
+punct '+'
+ident "p"
+punct '.'
+ident "y"
+punct '!='
+int "5" =5
+punct ')'
+punct '{'
+kw "return" kw=return
+int "400" =400
+punct ';'
+punct '}'
+kw "return" kw=return
+int "42" =42
+punct ';'
+punct '}'
+eof <eof>

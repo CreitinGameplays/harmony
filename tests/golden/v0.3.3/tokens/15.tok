@@ -1,0 +1,13 @@
+kw "raw" kw=raw
+kw "mut" kw=mut
+kw "raw" kw=raw
+ident "u8"
+kw "as" kw=as
+kw "extern" kw=extern
+kw "import" kw=import
+kw "export" kw=export
+kw "copy" kw=copy
+kw "methods" kw=methods
+kw "self" kw=self
+ident "life"
+eof <eof>

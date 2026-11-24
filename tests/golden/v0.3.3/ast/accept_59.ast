@@ -1,0 +1,15 @@
+program
+  const K
+    type-name usize
+    int #4
+  struct A
+    field x
+      type-name i32
+  enum B
+    variant C
+    variant D
+  fn main
+    type-name i32
+    block
+      return
+        int

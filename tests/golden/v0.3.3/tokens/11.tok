@@ -1,0 +1,6 @@
+kw "let" kw=let
+ident "after"
+punct '='
+int "1" =1
+punct ';'
+eof <eof>

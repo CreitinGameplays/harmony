@@ -1,0 +1,65 @@
+kw "const" kw=const
+ident "A"
+punct ':'
+ident "usize"
+punct '='
+int "8" =8
+punct ';'
+kw "const" kw=const
+ident "B"
+punct ':'
+ident "u8"
+punct '='
+int "200" =200
+punct ';'
+kw "const" kw=const
+ident "C"
+punct ':'
+ident "i64"
+punct '='
+int "9" =9
+punct ';'
+kw "const" kw=const
+ident "D"
+punct ':'
+ident "usize"
+punct '='
+int "8" =8
+punct '*'
+int "4" =4
+punct ';'
+kw "fn" kw=fn
+ident "main"
+punct '('
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "let" kw=let
+ident "total"
+punct ':'
+ident "usize"
+punct '='
+ident "A"
+punct '+'
+punct '('
+ident "B"
+kw "as" kw=as
+ident "usize"
+punct ')'
+punct '+'
+punct '('
+ident "C"
+kw "as" kw=as
+ident "usize"
+punct ')'
+punct '+'
+ident "D"
+punct ';'
+kw "return" kw=return
+ident "total"
+kw "as" kw=as
+ident "i32"
+punct ';'
+punct '}'
+eof <eof>

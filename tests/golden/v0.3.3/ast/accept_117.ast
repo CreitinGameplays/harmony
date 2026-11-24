@@ -1,0 +1,35 @@
+program
+  import module-const/dims.hr
+  fn main
+    type-name i32
+    block
+      let a
+        path dims::LIMIT
+      if
+        binary !=
+          path a
+          int #8
+        block
+          return
+            int #1
+      let b
+        call
+          path dims::twice
+      if
+        binary !=
+          path b
+          int #16
+        block
+          return
+            int #2
+      let c
+        path dims::AREA
+      if
+        binary !=
+          path c
+          int #40
+        block
+          return
+            int #3
+      return
+        int #42

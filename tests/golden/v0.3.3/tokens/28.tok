@@ -1,0 +1,13 @@
+ident "async"
+ident "await"
+ident "macro"
+ident "try"
+ident "unsafe"
+ident "impl"
+ident "match"
+ident "trait"
+ident "pub"
+ident "use"
+ident "loop"
+ident "goto"
+eof <eof>

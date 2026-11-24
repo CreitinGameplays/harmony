@@ -1,0 +1,48 @@
+program
+  extern-fn lc_put_str #373
+    param p
+      type-raw
+        type-name u8
+    param n
+      type-name i64
+  fn main
+    type-name i32
+    block
+      let b #1
+        type-name u8
+        int #66
+      let shared
+        type-raw
+          type-name u8
+        raw-expr
+          borrow
+            path b
+      let uniq
+        type-raw #1
+          type-name u8
+        raw-expr
+          borrow #1
+            path b
+      if
+        binary ==
+          path shared
+          int
+        block
+          return
+            int #1
+      if
+        binary ==
+          path uniq
+          int
+        block
+          return
+            int #2
+      unchecked the runtime hook writes exactly n bytes from a valid pointer
+        block
+          expr-stmt
+            call
+              path lc_put_str
+              path shared
+              int #1
+      return
+        int #42

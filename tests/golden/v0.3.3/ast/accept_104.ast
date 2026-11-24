@@ -1,0 +1,25 @@
+program
+  import imports-rel/shared.harmony
+  import imports-rel/nested/child.harmony
+  fn main
+    type-name i32
+    block
+      let a
+        call
+          path shared::shared
+      let b
+        call
+          path child::via_parent
+      if
+        binary !=
+          path a
+          int #40
+        block
+          return
+            int #1
+      return
+        binary -
+          binary +
+            path a
+            path b
+          int #40

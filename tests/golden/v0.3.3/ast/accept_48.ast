@@ -1,0 +1,11 @@
+program
+  fn main
+    type-name i32
+    block
+      let x
+        call
+          call
+            path f
+          int #1
+      return
+        int

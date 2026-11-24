@@ -1,0 +1,71 @@
+kw "import" kw=import
+str "module-const/dims.hr"
+punct ';'
+kw "fn" kw=fn
+ident "main"
+punct '('
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "let" kw=let
+ident "a"
+punct '='
+ident "dims"
+punct '::'
+ident "LIMIT"
+punct ';'
+kw "if" kw=if
+punct '('
+ident "a"
+punct '!='
+int "8" =8
+punct ')'
+punct '{'
+kw "return" kw=return
+int "1" =1
+punct ';'
+punct '}'
+kw "let" kw=let
+ident "b"
+punct '='
+ident "dims"
+punct '::'
+ident "twice"
+punct '('
+punct ')'
+punct ';'
+kw "if" kw=if
+punct '('
+ident "b"
+punct '!='
+int "16" =16
+punct ')'
+punct '{'
+kw "return" kw=return
+int "2" =2
+punct ';'
+punct '}'
+kw "let" kw=let
+ident "c"
+punct '='
+ident "dims"
+punct '::'
+ident "AREA"
+punct ';'
+kw "if" kw=if
+punct '('
+ident "c"
+punct '!='
+int "40" =40
+punct ')'
+punct '{'
+kw "return" kw=return
+int "3" =3
+punct ';'
+punct '}'
+kw "return" kw=return
+int "42" =42
+punct ';'
+punct '}'
+eof <eof>

@@ -1,0 +1,8 @@
+program
+  fn main
+    type-name i32
+    block
+      let u
+        char #129408
+      return
+        int

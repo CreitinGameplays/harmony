@@ -1,0 +1,64 @@
+kw "unchecked" kw=unchecked
+punct '('
+str "n is a small literal chosen by the caller, always in range"
+punct ')'
+kw "fn" kw=fn
+ident "add_one"
+punct '('
+ident "n"
+punct ':'
+ident "i64"
+punct ')'
+punct '->'
+ident "i64"
+punct '{'
+kw "return" kw=return
+ident "n"
+punct '+'
+int "1" =1
+punct ';'
+punct '}'
+kw "fn" kw=fn
+ident "main"
+punct '('
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "let" kw=let
+kw "mut" kw=mut
+ident "t"
+punct ':'
+ident "i64"
+punct '='
+int "0" =0
+punct ';'
+kw "unchecked" kw=unchecked
+punct '('
+str "n = 8 is a small literal, always in range"
+punct ')'
+punct '{'
+ident "t"
+punct '='
+ident "add_one"
+punct '('
+int "8" =8
+punct ')'
+punct ';'
+punct '}'
+kw "if" kw=if
+punct '('
+ident "t"
+punct '=='
+int "9" =9
+punct ')'
+punct '{'
+kw "return" kw=return
+int "9" =9
+punct ';'
+punct '}'
+kw "return" kw=return
+int "0" =0
+punct ';'
+punct '}'
+eof <eof>

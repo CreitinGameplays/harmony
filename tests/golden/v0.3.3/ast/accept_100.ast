@@ -1,0 +1,143 @@
+program
+  fn main
+    type-name i32
+    block
+      let s
+        heap
+          int #7
+      if
+        binary !=
+          deref
+            path s
+          int #7
+        block
+          return
+            int #1
+      let h
+        heap
+          array-lit
+            int #10
+            int #20
+            int #30
+      if
+        binary !=
+          index
+            path h
+            int
+          int #10
+        block
+          return
+            int #2
+      if
+        binary !=
+          index
+            path h
+            int #1
+          int #20
+        block
+          return
+            int #3
+      if
+        binary !=
+          index
+            path h
+            int #2
+          int #30
+        block
+          return
+            int #4
+      if
+        binary !=
+          index
+            deref
+              path h
+            int #1
+          index
+            path h
+            int #1
+        block
+          return
+            int #5
+      let m #1
+        heap
+          array-lit
+            int #1
+            int #2
+            int #3
+      assign =
+        index
+          path m
+          int #1
+        int #99
+      if
+        binary !=
+          index
+            path m
+            int #1
+          int #99
+        block
+          return
+            int #6
+      if
+        binary !=
+          index
+            path m
+            int
+          int #1
+        block
+          return
+            int #7
+      if
+        binary !=
+          index
+            path m
+            int #2
+          int #3
+        block
+          return
+            int #8
+      assign =
+        index
+          deref
+            path m
+          int #2
+        int #5
+      if
+        binary !=
+          index
+            path m
+            int #2
+          int #5
+        block
+          return
+            int #9
+      let i #1
+        int
+      let sum #1
+        int
+      while
+        binary <
+          path i
+          int #3
+        block
+          assign +=
+            path sum
+            index
+              path m
+              as
+                path i
+                type-name usize
+          assign =
+            path i
+            binary +
+              path i
+              int #1
+      if
+        binary !=
+          path sum
+          int #105
+        block
+          return
+            int #10
+      return
+        int #42

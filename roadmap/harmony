@@ -7,6 +7,17 @@ written in Harmony itself and built by `harmony-base` (which is written in
 c2x-seed). It is the compiler AGENTS.md calls the final `harmony`; the
 bootstrap under `bootstrap/` stays as the stage-0/1 toolchain that builds it.
 
+## Bootstrap retirement (Phase 0-1, additive)
+
+The v1 compiler is being qualified as the next stage-0 seed **before** any
+legacy code is removed. `make qualify-seed` checks stage1 == stage2 == stage3
+byte identity; `make test-v1` drives the full suite with `build/harmony`;
+`make goldens` / `make verify-goldens` freeze and re-check the legacy oracle
+outputs in `tests/golden/v0.3.3/`. Nothing is deleted and no tag is created in
+this phase. The planned retirement puts the legacy tree on a frozen
+`legacy/bootstrap` branch, keeps legacy commits in master's ancestry, and
+waits for `1.0.0` as the first seed-native final release.
+
 Target layout (AGENTS.md):
 
 ```

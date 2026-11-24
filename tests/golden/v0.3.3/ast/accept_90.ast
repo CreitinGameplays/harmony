@@ -1,0 +1,43 @@
+program
+  fn main
+    type-name i32
+    block
+      let a
+        type-name i32
+        int #42
+      let b
+        type-name u8
+        int #2
+      let c
+        type-name bool
+        bool #1
+      let ch
+        type-name char
+        char #65
+      expr-stmt
+        call
+          path println
+          string answered {} with {} and {} #26
+          path a
+          path c
+          path ch
+      expr-stmt
+        call
+          path println
+          string d={:x} #6
+          int #255
+      expr-stmt
+        call
+          path println
+          string f={} #4
+          float 2.5
+      expr-stmt
+        call
+          path println
+          string mixed [{}][{}][{}][{}] #22
+          int #1
+          int #2
+          int #3
+          int #4
+      return
+        int

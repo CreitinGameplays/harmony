@@ -1,0 +1,95 @@
+program
+  struct View
+    field data
+      type-ref
+        type-slice
+          type-name i32
+    field label
+      type-name i32
+  fn total
+    type-name i32
+    block
+      let i #1
+        type-name usize
+        int
+      let sum #1
+        type-name i32
+        int
+      while
+        binary <
+          path i
+          call
+            field len
+              field data
+                path v
+        block
+          assign =
+            path sum
+            binary +
+              path sum
+              index
+                field data
+                  path v
+                path i
+          assign =
+            path i
+            binary +
+              path i
+              int #1
+      return
+        binary +
+          path sum
+          field label
+            path v
+    param v
+      type-name View
+  fn main
+    type-name i32
+    block
+      let a
+        type-array
+          type-name i32
+          int #6
+        array-lit
+          int #1
+          int #2
+          int #3
+          int #4
+          int #5
+          int #6
+      let s
+        borrow
+          index
+            path a
+            binary ..
+              int #1
+              int #5
+      let sub
+        borrow
+          index
+            path s
+            binary ..
+              int #1
+              int #3
+      let v
+        struct-init View
+          field-init data
+            path sub
+          field-init label
+            int #1
+      let w
+        struct-init View
+          field-init data
+            path s
+          field-init label
+            int #2
+      let cv
+        path v
+      return
+        binary +
+          call
+            path total
+            path cv
+          call
+            path total
+            path w

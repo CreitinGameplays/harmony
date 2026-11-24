@@ -1,0 +1,147 @@
+program
+  struct CountTo
+    field i
+      type-name i32
+    field n
+      type-name i32
+    field nxt_count
+      type-name i32
+  methods CountTo
+    fn next #1
+      type-name Maybe
+        type-name i32
+      block
+        if
+          binary >=
+            field i
+              path self
+            field n
+              path self
+          block
+            return
+              path Empty
+        let v
+          field i
+            path self
+        assign =
+          field i
+            path self
+          binary +
+            field i
+              path self
+            int #1
+        return
+          call
+            path Has
+            path v
+      param &mut self
+  fn main
+    type-name i32
+    block
+      let acc #1
+        int
+      let a #1
+        struct-init CountTo
+          field-init i
+            int
+          field-init n
+            int #5
+          field-init nxt_count
+            int
+      for x
+        path a
+        block
+          assign =
+            path acc
+            binary +
+              path acc
+              path x
+      let b #1
+        struct-init CountTo
+          field-init i
+            int
+          field-init n
+            int #100
+          field-init nxt_count
+            int
+      for x
+        path b
+        block
+          if
+            binary ==
+              path x
+              int #3
+            block
+              break
+          assign =
+            path acc
+            binary +
+              path acc
+              int #1
+      let c #1
+        struct-init CountTo
+          field-init i
+            int
+          field-init n
+            int #6
+          field-init nxt_count
+            int
+      for x
+        path c
+        block
+          if
+            binary ==
+              binary -
+                path x
+                binary *
+                  binary /
+                    path x
+                    int #2
+                  int #2
+              int
+            block
+              continue
+          assign =
+            path acc
+            binary +
+              path acc
+              int #1
+      let d #1
+        struct-init CountTo
+          field-init i
+            int
+          field-init n
+            int #2
+          field-init nxt_count
+            int
+      for x
+        path d
+        block
+          let e #1
+            struct-init CountTo
+              field-init i
+                int
+              field-init n
+                int #3
+              field-init nxt_count
+                int
+          for y
+            path e
+            block
+              assign =
+                path acc
+                binary +
+                  path acc
+                  int #1
+      for i
+        binary ..
+          int
+          int #38
+        block
+          assign =
+            path acc
+            binary +
+              path acc
+              int #1
+      return
+        path acc

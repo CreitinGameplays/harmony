@@ -6,7 +6,7 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-HC="$ROOT/build/harmony"
+. "$ROOT/tests/env.sh"
 DIR="$ROOT/tests/harmony-final/snapshots"
 SRC="tests/harmony-final/diag/fold.harmony"
 TMP="$(mktemp -d)"

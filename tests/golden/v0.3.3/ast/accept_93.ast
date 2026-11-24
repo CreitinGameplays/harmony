@@ -1,0 +1,62 @@
+program
+  import generic-instance-identity/vec.hr
+  fn make
+    type-name vec::Vec
+      type-ref
+        type-name str
+    block
+      let v #1
+        type-name vec::Vec
+          type-ref
+            type-name str
+        call
+          path vec::Vec::make
+            type-ref
+              type-name str
+      return
+        path v
+  fn count
+    type-name usize
+    block
+      return
+        call
+          field len
+            path v
+    param v
+      type-name vec::Vec
+        type-ref
+          type-name str
+  fn main
+    type-name i32
+    block
+      let v
+        call
+          path make
+      if
+        binary !=
+          call
+            path count
+            path v
+          int
+        block
+          return
+            int #1
+      let w #1
+        type-name vec::Vec
+          type-ref
+            type-name str
+        call
+          path vec::Vec::make
+            type-ref
+              type-name str
+      if
+        binary !=
+          call
+            path count
+            path w
+          int
+        block
+          return
+            int #2
+      return
+        int #42

@@ -1,0 +1,81 @@
+program
+  import imports/libmid.harmony
+  import imports/geometry.harmony
+  fn main
+    type-name i32
+    block
+      let v
+        struct-init geometry::Vec2
+          field-init x
+            float 3.0
+          field-init y
+            float 4.0
+      let a
+        call
+          path geometry::length2
+          borrow
+            path v
+      let w
+        call
+          path libmid::scale
+          path v
+          float 2.0
+      let b
+        call
+          path geometry::length2
+          borrow
+            path w
+      let s
+        call
+          path geometry::describe
+          borrow
+            path v
+      let t
+        call
+          path geometry::id
+          int #5
+      if
+        binary !=
+          path a
+          float 25.0
+        block
+          return
+            int #1
+      if
+        binary !=
+          path b
+          float 100.0
+        block
+          return
+            int #2
+      if
+        binary !=
+          call
+            field len
+              path s
+          int #3
+        block
+          return
+            int #3
+      if
+        binary !=
+          path t
+          int #5
+        block
+          return
+            int #4
+      let z
+        call
+          path libmid::zero
+      if
+        binary !=
+          call
+            path geometry::length2
+            borrow
+              path z
+          float 0.0
+        block
+          return
+            int #5
+      return
+        int #42

@@ -62,6 +62,9 @@ Also install (for fuzzing tests): https://github.com/google/honggfuzz
 | `harmony/` | Self-hosted rewrite (`*.hr`); phase plan in `roadmap/harmony`. |
 | `library/core/`, `library/alloc/`, `library/std/` | Standard library for the final language. `core` (arena, `Vec`, `String`) is started. |
 | `tests/` | Test suites and fuzzing. |
+| `tests/env.sh`, `tests/env.py` | Shared harness config for the two-lane bootstrap burn-in (`HARMONY`, `HC`, `ORACLE`). |
+| `tests/golden/v0.3.3/` | Legacy oracle outputs frozen before bootstrap retirement; checked by `make verify-goldens`. |
+| `tools/capture-goldens.py` | Capture / verify those goldens from the legacy compiler. |
 | `roadmap/` | Milestone checklists. |
 | `todo.md` | Detailed implementation checklist. |
 
@@ -77,7 +80,21 @@ make test-lisp     # the harmony-base LISP interpreter suite
 make test-final    # the self-hosted compiler's library/ tests (tests/harmony-final)
 make lisp          # run the LISP interpreter demo (a multi-module program)
 make clean
+
+# Bootstrap-retirement burn-in (Phase 0-1: additive, nothing removed yet)
+make test-v1        # full suite driven by build/harmony instead of harmony-base
+make qualify-seed   # assert stage1 == stage2 == stage3 byte-for-byte
+make goldens        # capture legacy oracle outputs into tests/golden/v0.3.3/
+make verify-goldens # re-capture into a temp dir and diff (machine-independent)
 ```
+
+Test-harness knobs (also settable as environment variables): `HARMONY` selects
+the compiler under test for compatibility suites (default: legacy
+`build/harmony-base`), `HC` selects the self-hosted compiler used by the v1 and
+differential suites (default: `build/harmony`), and `ORACLE` selects the legacy
+reference compiler for differential suites (default: `build/harmony-base`).
+Only explicit `SKIP`s are allowed for v1 features that are not implemented yet;
+every other v1 failure fails the lane.
 
 `harmony-base` is bootstrapped with `c2x-seed`; `c2x-seed` is bootstrapped with
 `fasm` + `ld` and needs no libc.

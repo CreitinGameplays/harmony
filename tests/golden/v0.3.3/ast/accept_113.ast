@@ -1,0 +1,42 @@
+program
+  struct A
+    field x
+      type-name i32
+  struct B
+    field y
+      type-name i32
+  methods A
+    fn m #1
+      type-name i32
+      block
+        return
+          field x
+            path self
+      param &self
+  methods B
+    fn m #1
+      type-name i32
+      block
+        return
+          field y
+            path self
+      param &self
+  fn main
+    type-name i32
+    block
+      let a
+        struct-init A
+          field-init x
+            int #10
+      let b
+        struct-init B
+          field-init y
+            int #20
+      return
+        binary +
+          call
+            field m
+              path a
+          call
+            field m
+              path b

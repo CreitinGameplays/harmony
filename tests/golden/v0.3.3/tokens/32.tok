@@ -1,0 +1,52 @@
+kw "fn" kw=fn
+ident "add"
+punct '('
+ident "a"
+punct ':'
+ident "i32"
+punct ','
+ident "b"
+punct ':'
+ident "i32"
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "return" kw=return
+ident "a"
+punct '+'
+ident "b"
+punct ';'
+punct '}'
+kw "fn" kw=fn
+ident "main"
+punct '('
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "let" kw=let
+ident "x"
+punct '='
+ident "add"
+punct '('
+int "7" =7
+punct ','
+int "8" =8
+punct ')'
+punct ';'
+kw "let" kw=let
+ident "y"
+punct '='
+ident "add"
+punct '('
+ident "x"
+punct ','
+int "5" =5
+punct ')'
+punct ';'
+kw "return" kw=return
+ident "y"
+punct ';'
+punct '}'
+eof <eof>

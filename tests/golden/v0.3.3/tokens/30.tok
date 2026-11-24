@@ -1,0 +1,6 @@
+byte "b'z'" =122
+byte "b'\\u{41}'" =65
+char "'z'" =122
+char "'\\u{1F600}'" =128512
+char "'\\u{10FFFF}'" =1114111
+eof <eof>

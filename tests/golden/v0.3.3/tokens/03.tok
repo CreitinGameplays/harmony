@@ -1,0 +1,21 @@
+kw "let" kw=let
+ident "a"
+punct '='
+float "1.5"
+punct ';'
+kw "let" kw=let
+ident "b"
+punct '='
+float "1e-3"
+punct ';'
+kw "let" kw=let
+ident "c"
+punct '='
+float "2.5" sfx=f32
+punct ';'
+kw "let" kw=let
+ident "d"
+punct '='
+float "1.5E+3"
+punct ';'
+eof <eof>

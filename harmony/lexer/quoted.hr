@@ -46,6 +46,12 @@ fn escape(c: &mut ctx::Ctx, arena: &mut mem::Arena,
                        "A byte literal holds exactly one byte (0..255).");
             return false;
         }
+        // Unicode surrogate code points are not scalar values (§4.3).
+        if (v >= 55296u32 && v <= 57343u32) {
+            ctx::error(c, "LEX-01", "surrogate is not a scalar value",
+                       "A \\u{...} escape must name a Unicode scalar value, not a surrogate.");
+            return false;
+        }
         // Encode `v` as UTF-8 (1..4 bytes).
         if (v < 128u32) {
             out.push_byte((v & 127u32) as u8);
@@ -105,19 +111,29 @@ export fn quoted_char(c: &mut ctx::Ctx, arena: &mut mem::Arena, is_byte: bool) {
     } else {
         if (buf.len() > 0) {
             let b = buf.byte_at(0);
+            let mut width: usize = 1;
             if (b < 128u8) {
                 ival = b as i64;
             } else if ((b & 224u8) == 192u8 && buf.len() >= 2) {
                 ival = ((b & 31u8) as i64) * 64 + ((buf.byte_at(1) & 63u8) as i64);
+                width = 2;
             } else if ((b & 240u8) == 224u8 && buf.len() >= 3) {
                 ival = ((b & 15u8) as i64) * 4096
                      + ((buf.byte_at(1) & 63u8) as i64) * 64
                      + ((buf.byte_at(2) & 63u8) as i64);
+                width = 3;
             } else if (buf.len() >= 4) {
                 ival = ((b & 7u8) as i64) * 262144
                      + ((buf.byte_at(1) & 63u8) as i64) * 4096
                      + ((buf.byte_at(2) & 63u8) as i64) * 64
                      + ((buf.byte_at(3) & 63u8) as i64);
+                width = 4;
+            }
+            // A char holds exactly one Unicode scalar: reject trailing bytes
+            // such as `'ab'` (the legacy compiler reports LEX-01 here too).
+            if (buf.len() != width) {
+                ctx::error(c, "LEX-01", "char literal needs one scalar",
+                           "A char literal holds exactly one Unicode scalar value.");
             }
         }
     }

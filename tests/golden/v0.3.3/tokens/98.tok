@@ -1,0 +1,182 @@
+kw "struct" kw=struct
+ident "View"
+punct '{'
+ident "data"
+punct ':'
+punct '&'
+punct '['
+ident "i32"
+punct ']'
+punct ';'
+ident "label"
+punct ':'
+ident "i32"
+punct ';'
+punct '}'
+kw "fn" kw=fn
+ident "total"
+punct '('
+ident "v"
+punct ':'
+ident "View"
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "let" kw=let
+kw "mut" kw=mut
+ident "i"
+punct ':'
+ident "usize"
+punct '='
+int "0" =0
+punct ';'
+kw "let" kw=let
+kw "mut" kw=mut
+ident "sum"
+punct ':'
+ident "i32"
+punct '='
+int "0" =0
+punct ';'
+kw "while" kw=while
+punct '('
+ident "i"
+punct '<'
+ident "v"
+punct '.'
+ident "data"
+punct '.'
+ident "len"
+punct '('
+punct ')'
+punct ')'
+punct '{'
+ident "sum"
+punct '='
+ident "sum"
+punct '+'
+ident "v"
+punct '.'
+ident "data"
+punct '['
+ident "i"
+punct ']'
+punct ';'
+ident "i"
+punct '='
+ident "i"
+punct '+'
+int "1" =1
+punct ';'
+punct '}'
+kw "return" kw=return
+ident "sum"
+punct '+'
+ident "v"
+punct '.'
+ident "label"
+punct ';'
+punct '}'
+kw "fn" kw=fn
+ident "main"
+punct '('
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+kw "let" kw=let
+ident "a"
+punct ':'
+punct '['
+ident "i32"
+punct ';'
+int "6" =6
+punct ']'
+punct '='
+punct '['
+int "1" =1
+punct ','
+int "2" =2
+punct ','
+int "3" =3
+punct ','
+int "4" =4
+punct ','
+int "5" =5
+punct ','
+int "6" =6
+punct ']'
+punct ';'
+kw "let" kw=let
+ident "s"
+punct '='
+punct '&'
+ident "a"
+punct '['
+int "1" =1
+punct '..'
+int "5" =5
+punct ']'
+punct ';'
+kw "let" kw=let
+ident "sub"
+punct '='
+punct '&'
+ident "s"
+punct '['
+int "1" =1
+punct '..'
+int "3" =3
+punct ']'
+punct ';'
+kw "let" kw=let
+ident "v"
+punct '='
+ident "View"
+punct '{'
+punct '.'
+ident "data"
+punct '='
+ident "sub"
+punct ','
+punct '.'
+ident "label"
+punct '='
+int "1" =1
+punct '}'
+punct ';'
+kw "let" kw=let
+ident "w"
+punct '='
+ident "View"
+punct '{'
+punct '.'
+ident "data"
+punct '='
+ident "s"
+punct ','
+punct '.'
+ident "label"
+punct '='
+int "2" =2
+punct '}'
+punct ';'
+kw "let" kw=let
+ident "cv"
+punct '='
+ident "v"
+punct ';'
+kw "return" kw=return
+ident "total"
+punct '('
+ident "cv"
+punct ')'
+punct '+'
+ident "total"
+punct '('
+ident "w"
+punct ')'
+punct ';'
+punct '}'
+eof <eof>

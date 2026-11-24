@@ -1,0 +1,18 @@
+program
+  fn fail
+    type-name i32
+    block
+      expr-stmt
+        call
+          path trap
+          path msg
+    param msg
+      type-ref
+        type-name str
+  fn main
+    type-name i32
+    block
+      return
+        call
+          path fail
+          string a borrowed message #18

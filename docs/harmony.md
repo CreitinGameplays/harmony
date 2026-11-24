@@ -2874,6 +2874,12 @@ The final compiler implements items 1–3 and 5; `tests/harmony-final/strategy.s
 holds the golden snapshots and `tests/harmony-final/interpreter.py` is the
 reference oracle. Item 4 waits for the deferred C11 backend (§19.4b).
 
+During the bootstrap-retirement burn-in, the legacy compiler's oracle outputs
+are frozen in `tests/golden/v0.3.3/` (`make goldens`, `make verify-goldens`),
+and the whole suite can be driven by the self-hosted compiler with
+`make test-v1`. Differential suites keep using the legacy compiler as their
+reference until the retirement is complete.
+
 ### 19.7 Milestones
 
 | M | Deliverable |

@@ -1,0 +1,6 @@
+program
+  fn main
+    type-name i32
+    block
+      return
+        int #1033658417137

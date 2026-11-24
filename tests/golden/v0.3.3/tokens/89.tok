@@ -1,0 +1,82 @@
+kw "fn" kw=fn
+ident "check"
+punct '('
+ident "n"
+punct ':'
+ident "i32"
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+ident "assert"
+punct '('
+ident "n"
+punct '>'
+int "0" =0
+punct ','
+str "n must be positive"
+punct ')'
+punct ';'
+ident "assert"
+punct '('
+ident "n"
+punct '<'
+int "100" =100
+punct ')'
+punct ';'
+kw "return" kw=return
+ident "n"
+punct '*'
+int "2" =2
+punct ';'
+punct '}'
+kw "fn" kw=fn
+ident "main"
+punct '('
+punct ')'
+punct '->'
+ident "i32"
+punct '{'
+ident "assert"
+punct '('
+kw "true" kw=true
+punct ')'
+punct ';'
+ident "assert"
+punct '('
+int "1" =1
+punct '=='
+int "1" =1
+punct ')'
+punct ';'
+kw "let" kw=let
+kw "mut" kw=mut
+ident "total"
+punct ':'
+ident "i32"
+punct '='
+int "0" =0
+punct ';'
+ident "total"
+punct '='
+ident "total"
+punct '+'
+ident "check"
+punct '('
+int "3" =3
+punct ')'
+punct ';'
+ident "total"
+punct '='
+ident "total"
+punct '+'
+ident "check"
+punct '('
+int "18" =18
+punct ')'
+punct ';'
+kw "return" kw=return
+ident "total"
+punct ';'
+punct '}'
+eof <eof>

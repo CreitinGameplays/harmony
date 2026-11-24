@@ -1,0 +1,17 @@
+program
+  fn main
+    type-name i32
+    block
+      switch
+        path m
+        arm
+          block
+            return
+              path x
+          pat-variant Has
+            pat-bind x
+        arm
+          block
+            return
+              int
+          pat-bind Empty

@@ -54,7 +54,7 @@ a `NAME-02` translation hint): `unsafe` `impl` `match` `trait` `pub` `use`
 | `sizeof(T)` `heap(x)` `raw(x)` | built-in forms |
 | `abilities Name { fn sig; ... }` | v1 final-compiler declaration: an ability with required method signatures; used as a generic bound, satisfied structurally (see `harmony.md` §6.9) |
 | `fn(Params) -> Ret` | v1 final-compiler type: a structural, `copy`, pointer-sized function pointer; a declared function name coerces to it when the signature matches (see `harmony.md` §5.11) |
-| `fnptr(name)` | v1 final-compiler intrinsic: address of a declared function as `raw u8`, used for thread entries; harmony-base does not parse it |
+| `fnptr(name)` | v1 compiler intrinsic: address of a declared function as `raw u8`, used for thread entries; the archived v0 `harmony-base` did not parse it |
 | `else` (on a simple statement) | v1 final-compiler clause: `let x = f() else return;`, `x = f() else (e) { ... };`, `f() else trap("...");`. Only `Maybe`/`Outcome`; see FLOW-01/02/03 |
 | named payload / struct pattern | v1 final compiler: `enum E { V { f: T } }`, `E::V { .f = x }`, and `case V { f: p }:` / `case S { f: p }:` in `switch` |
 | future `#` / `...` | reserved tokens for §20.5 macros: `#name(...)` invocation, `items: expr...` packs and `pack...` spreads; not implemented in v1 |

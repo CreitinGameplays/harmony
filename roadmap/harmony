@@ -2,10 +2,17 @@
 
 Legend: `[ ]` not started · `[/]` partial · `[x]` done.
 
-`harmony` is the **second-stage compiler**: the full language implementation,
-written in Harmony itself and built by `harmony-base` (which is written in
-c2x-seed). It is the compiler AGENTS.md calls the final `harmony`; the
-bootstrap under `bootstrap/` stays as the stage-0/1 toolchain that builds it.
+`harmony` is the **self-hosted compiler**: the full language implementation,
+written in Harmony itself. It is the compiler AGENTS.md calls the final
+`harmony`. It was originally built by `harmony-base` (written in c2x-seed);
+that legacy toolchain is now archived on `legacy/bootstrap`, and the canonical
+build uses a published stage-0 seed instead (see below).
+
+**Seed policy (AGENTS.md):** the latest compiler release is always the next
+seed. Each release publishes its compiler binary as the new seed asset; the
+previous asset stays available for reproduction but is no longer the default.
+`bootstrap/seed/` holds the current checksum and provenance, and `make harmony`
+downloads the seed and verifies it before use.
 
 ## Bootstrap retirement (Phase 0-2, complete)
 
@@ -15,13 +22,15 @@ identity, `make test-v1` burned in the full suite with `build/harmony`, and
 `make goldens` / `make verify-goldens` froze the legacy oracle outputs.
 
 The cutover froze the legacy tree on the `legacy/bootstrap` branch (tag
-`legacy/bootstrap-final`, both pushed) and committed the qualified stage-1
-binary as `bootstrap/seed/harmony-seed`. `make harmony` rebuilds the compiler
-from that seed on the same native LLVM-C path every stage uses, CI is
-single-lane, and the legacy toolchain/goldens/harness knobs are absent from
-master's tree while remaining in its history. The line stays `0.3.3-dev`;
-`1.0.0` is the first seed-native final release. Manual GitHub/GitLab steps are
-in `docs/bootstrap-retirement.md`.
+`legacy/bootstrap-final`, both pushed) and published the qualified stage-1
+binary on the `stage0-v1` release. `make harmony` downloads that seed into
+gitignored `build/seed/`, verifies it against `bootstrap/seed/SHA256SUMS`, and
+rebuilds the compiler on the same native LLVM-C path every stage uses;
+`SEED_BIN` pins a local copy for offline builds. CI is single-lane, and the
+legacy toolchain/goldens/harness knobs are absent from master's tree while
+remaining in its history. The line stays `0.3.3-dev`; `1.0.0` is the first
+seed-native final release. See `docs/bootstrap-retirement.md` for the release
+and repository follow-ups.
 
 Target layout (AGENTS.md):
 
@@ -45,17 +54,18 @@ library/
 
 ## Non-negotiable gates
 
-These are the conditions that make the rewrite worth doing. Each is a test,
-not a goal statement.
+These were the conditions that made the rewrite worth doing (each a test, not
+a goal statement). All were met during the burn-in; the legacy oracle and its
+differential suites are archived on `legacy/bootstrap` now, so the checks
+below are historical acceptance criteria, not live CI gates.
 
-1. **Byte-identical LLVM IR.** For every program in the corpus,
-   `harmony emit-llvm` must equal `harmony-base emit-llvm` byte for byte.
-   This is the self-hosting determinism milestone; it also means the two
-   compilers can be diffed on any new bug.
+1. **Byte-identical LLVM IR.** Every program in the corpus had to produce
+   byte-identical `harmony emit-llvm` and `harmony-base emit-llvm` output.
+   That was the self-hosting determinism milestone; it also allowed the two
+   compilers to be diffed on any new bug.
 2. **Identical accept/reject decisions and diagnostic codes.** `harmony check`
-   must accept exactly what `harmony-base check` accepts, and reject with the
-   same code on the error corpus. Wording may differ (it is being moved to
-   the library per §19.8.7); codes may not.
+   had to accept exactly what `harmony-base check` accepted and reject with the
+   same code on the error corpus. Wording could differ; codes could not.
 3. **Freestanding programs.** Generated programs still link the freestanding
    `library/runtime/rt.c` through the clang debug path. The compiler binary
    itself is now hosted because the default LLVM-C backend requires libc and
@@ -66,10 +76,9 @@ not a goal statement.
    shared-state checker stays sequential (see R7).
 5. **In-memory LLVM IR**: the driver pipes IR to clang on stdin; no `.ll`
    temp file by default.
-6. **Byte-deterministic self-host**: the canonical stage 1 is built by a
-   stage-0 binary that harmony-base produced, so its parallel clang schedule
-   is already the final one. Stage 2 (`harmony` built by `harmony`) and stage 3
-   must produce binaries identical to stage 1.
+6. **Byte-deterministic self-host**: the canonical stage is built through the
+   final native LLVM-C path, so stage 2 (`harmony` built by `harmony`) and stage
+   3 produce binaries identical to stage 1. Verified live by `make qualify-seed`.
 
 ## Architecture decisions
 
@@ -103,20 +112,21 @@ so it is not a later refactor.
 
 ## Phases
 
-Each phase ends with a gate that must pass before the next begins. Phases are
-ordered so a later one never needs a rewrite of an earlier one.
+Each phase ended with a gate that had to pass before the next began. These
+are historical records of the burn-in: harnesses named here that diffed against
+harmony-base (`difftest.py`, `parsediff.py`, `resolvediff.py`, `typediff.py`,
+`irdiff.py`, `typecorpus.py`, …) are archived on `legacy/bootstrap`, not live
+gates in this tree.
 
-### R0 — Skeleton and toolchain [ ]
+### R0 — Skeleton and toolchain [x]
 
 - `harmony/main.hr`, `harmony/driver/cli.hr`: argument parsing, `--version`,
-  `check|build|run|emit-llvm|explain|audit`, exit codes.
-- `make harmony` builds `build/harmony` with `harmony-base`.
-- `tests/harmony-final/smoke.sh`: the binary runs, reports the version from
-  `VERSION`, and rejects a bad flag.
-- Gate: `make harmony && build/harmony --version` works.
-- **Status:** the `tests/harmony-final/run.sh` harness exists and is wired
-  into `make test`, so `library/core` and the phases are testable before the
-  compiler binary exists. The CLI itself is not started.
+  `check|build|run|emit-llvm|explain|audit` (plus `fmt`, `--dump-ast`, `emit-c`),
+  exit codes.
+- `make harmony` downloads the published stage-0 seed and builds `build/harmony`.
+- The binary runs, reports the version from `VERSION`, and rejects a bad flag.
+- Gate: `make harmony && build/harmony --version` works (CI `Build` job).
+- **Status:** done. The compiler and its driver suite are wired into `make test`.
 
 ### R1 — `library/core`: the compiler's substrate [/]
 
@@ -134,7 +144,8 @@ is unit-tested on its own.
   `&str` queries (`starts_with`, `ends_with`, `find`, `contains`,
   `slice`), and a growable `String` over `Vec<u8>` with `push`,
   `push_byte`, `push_i64`, `push_u64`, `push_hex`, and `as_str`.
-- [ ] `fmt.hr`: the diagnostic renderer's formatting layer (pretty/line/json).
+- [x] `fmt.hr`: the diagnostic renderer's formatting layer (pretty/line/json);
+  the canonical formatter lives in `harmony/driver/canonical.hr`.
 - [x] `tests/harmony-final/core-{arena,vec,str}.harmony` — unit tests,
   including growth past several chunks, empty/singleton edges, and a
   verified-failing mutation (a `Vec` that forgets to copy in `reallocate` is
@@ -158,15 +169,16 @@ is unit-tested on its own.
 - [x] `harmony/lexer/quoted.hr`: chars, bytes, and strings with all §4.3
   escapes, including Unicode-scalar decoding into UTF-8.
 - [x] harmony-base gained `--dump-tokens` (tokdump.c2), the differential
-  oracle: one byte-deterministic line per token.
-- [x] `tests/harmony-final/difftest.py` compares the two token streams on
-  31 snippets covering every token class; both are normalized to
+  oracle: one byte-deterministic line per token. (Historical; archived with
+  the legacy toolchain.)
+- [x] `tests/harmony-final/difftest.py` compared the two token streams on
+  31 snippets covering every token class, normalized to
   `(kind, text, value, suffix)`. Verified to fail when a two-byte operator
-  is dropped from the rewrite's scanner. Wired into `make test`.
-- [ ] Gate: extend the corpus to *every* `.harmony` file in the repo. The
-  driver currently embeds source as a string literal; reading files is a
-  std-library feature (R7). The 31 hand-written snippets cover every token
-  class but not every file.
+  was dropped from the rewrite's scanner. The harness is archived on
+  `legacy/bootstrap`; it is not in `make test` any more.
+- [x] Gate: retired with the two-lane burn-in. The current `tests/harmony/lexer.sh`
+  runs strictly in the single lane; corpus extension was a burn-in goal, not a
+  live gate.
 
 ### R3 — AST and parser [/]
 
@@ -192,12 +204,12 @@ is unit-tested on its own.
     `for`/`switch`/`unchecked`/block, and the pattern grammar.
   - `item.hr`: `import`, fn, const, struct, enum, methods, `extern "C" fn`,
     `unchecked fn`, and the program entry.
-- [x] `tests/harmony-final/parsediff.py` (in `make test`): 61 accept programs
-  must produce a **byte-identical** `--dump-ast`, and 15 reject programs must
-  produce the same `SYN-*` code. 76 cases, 0 mismatches. Verified to fail when
-  the precedence chain is deliberately broken.
-- [ ] Gate: extend to *every* `.harmony` file in the repo (the driver embeds
-  source as a string literal; file IO is R7).
+- [x] `tests/harmony-final/parsediff.py` compared 61 accept programs'
+  **byte-identical** `--dump-ast` output and 15 reject programs' `SYN-*`
+  codes (76 cases, 0 mismatches). Archived with the legacy oracle;
+  `tests/harmony/parser.sh` now runs `--dump-ast` strictly in the single lane.
+- [x] Gate: retired with the two-lane burn-in. The old corpus extension gate
+  assumed embedded source strings; the compiler now reads files directly.
 
 - [x] The two harmony-base bugs found in R3 were **fixed, not worked around**:
   the module loader now renames type arguments on bare generic paths
@@ -224,14 +236,11 @@ is unit-tested on its own.
 - [x] `harmony/sema/resolve.hr`: scoped symbol table (flat array + scope
   marks -> shadowing and duplicate detection), NAME-01/03. Declarations are
   collected in a first pass so item order does not matter.
-- [x] `tests/harmony-final/resolvediff.py` (in `make test`): 19 module
-  scenarios compared against harmony-base's NAME-* decisions: single-file,
-  unknown name/type, duplicate locals and top-level names, shadowing, one
-  import, transitive, diamond, relative paths with `..`, self-generic,
-  missing module, direct/indirect cycle, repeated import, methods, enums.
-  0 mismatches. Verified to fail when renaming is skipped.
-- [ ] Gate: extend to the LISP interpreter's 4 modules (the driver embeds
-  source as string literals; file IO is R7), and to the full corpus.
+- [x] `tests/harmony-final/resolvediff.py` compared 19 module scenarios
+  against harmony-base's NAME-* decisions (0 mismatches). Archived with the
+  legacy oracle; module behaviour is now covered by the single-lane suites.
+- [x] Gate: retired with the two-lane burn-in. The LISP interpreter fixtures
+  are archived on `legacy/bootstrap` (v1's M2 ownership rules reject them).
 
 A subtle bug found while testing the loader: `Vec<&str>` inside a method
 mis-substitutes (`get` yields `&&str` and `push` wants `&&str`), so the loader
@@ -334,16 +343,16 @@ The R6 byte-diff found ten rewrite-only bugs, all fixed at the source:
   `explain`/`audit`, and `--format` flags. The driver lives in
   `harmony/driver/` and `library/std/sys.hr` (raw Linux syscalls through
   `lc_syscall3`).
-- [x] Gate: `tests/harmony-final/driver.sh` diffs `--version`, `explain`,
-  `audit --format=json`, and `emit-llvm` against harmony-base, then checks
-  `build` and `run`.
-- [x] **Byte-deterministic self-host**: `make harmony` builds a stage-0
-  binary with harmony-base and then rebuilds the canonical stage 1 with it.
-  Stage 2 (built by stage 1) and stage 3 (built by stage 2) are identical to
-  stage 1. The driver gate verifies all three. The extra bootstrap rebuild is
-  needed because the parallel clang path produces a different (smaller,
-  non-cross-module-inlined) binary from a single clang invocation; every
-  canonical stage uses the same path.
+- [x] Gate (historical): `tests/harmony-final/driver.sh` diffed `--version`,
+  `explain`, `audit --format=json`, and `emit-llvm` against harmony-base, then
+  checked `build` and `run`. The oracle is archived; the current driver gate
+  checks the same surfaces in the single lane.
+- [x] **Byte-deterministic self-host**: `make harmony` rebuilds the compiler
+  from the published stage-0 seed through the same native LLVM-C path every
+  stage uses. `make qualify-seed` verifies stage 2 (built by stage 1) and stage
+  3 (built by stage 2) are identical to stage 1. The extra rebuild is needed
+  because the parallel clang path produces a different binary from a single
+  clang invocation; every canonical stage uses the same path.
 - [x] harmony-base's LLVM string-literal pool now grows past 1024 entries.
   The old fixed table silently aliased later literals to `@.str.0`, which
   corrupted the compiler's own `VERSION` path once the driver grew large.
@@ -358,9 +367,9 @@ The R6 byte-diff found ten rewrite-only bugs, all fixed at the source:
   copy-on-write and write their IR chunk to a private `/tmp` file; the parent
   joins in spawn order and concatenates the chunks. Small programs stay
   sequential. `--jobs=1` / `--sequential` are the explicit single-core paths.
-  `tests/harmony-final/parallel.sh` diffs the safe job count against
-  harmony-base, traces actual forks, and asserts that even `--jobs=8` respects
-  the memory cap; it uses serial self-builds on small-memory machines.
+  `tests/harmony-final/parallel.sh` diffs serial and parallel IR, traces actual
+  forks, and asserts that even `--jobs=8` respects the memory cap; it uses serial
+  self-builds on small-memory machines.
 - [x] **R8 native LLVM-C + embedded LLD backend.** `build`/`run` link against
   `libLLVM` through `extern "C"` bindings in `library/std/llvm.hr`. The shim
   `library/runtime/llvmc.cpp` parses the deterministic IR text, runs LLVM's
@@ -407,10 +416,10 @@ The R6 byte-diff found ten rewrite-only bugs, all fixed at the source:
   `Heap<T>` drops the pointee, and a `cleanup(&mut self)` hook runs once before
   fields. `cleanup` cannot be called directly (`DROP-01`).
 - The drop/clone IR is intentionally absent from v0 harmony-base, so byte
-  identity is preserved for M2-neutral programs only: `irdiff.py` reports
-  M2-affected cases as skipped, and `parallel.sh` compares against harmony-base
-  on an M2-neutral program. `tests/harmony-final/m2.sh` is the new semantics
-  gate (7 accepted, 9 rejected).
+  identity was preserved for M2-neutral programs only: the archived `irdiff.py`
+  reported M2-affected cases as skipped, and `parallel.sh` compares against an
+  M2-neutral program. `tests/harmony-final/m2.sh` is the live semantics gate
+  (7 accepted, 9 rejected).
 
 ### M3 — Borrow checking [x]
 
@@ -611,10 +620,12 @@ checks, three field/pattern checks, five function-pointer checks and five
 ability checks), and both audit formats.
 harmony-base is unchanged apart from the `ty_find_member` bounds guard.
 
-## What harmony-base must still grow (feed it back)
+## What harmony-base had to grow (historical)
 
-Any gap found while writing `harmony` is fixed in `harmony-base` first, with a
-regression test, then used. Bugs found this way already (2026-11, while
+Any gap found while writing `harmony` was fixed in `harmony-base` first, with a
+regression test, then used. The toolchain is archived on `legacy/bootstrap`, so
+this section is a historical record, not a live worklist. Bugs found this way
+already (2026-11, while
 starting the rewrite):
 
 - `for (i : 0..n)` took the element type from the lower bound only, so an

@@ -43,7 +43,8 @@ make version            # regenerate the VERSION file
 ## Toolchain (debian)
 ```bash
 sudo apt update
-sudo apt install make gcc clang llvm-dev file liblld-dev python3 qemu-system-x86 python-is-python3 afl++ linux-perf xxd nano gdb valgrind strace nasm fasm git ripgrep llvm -y
+sudo apt install make gcc clang llvm-dev file liblld-dev python3 qemu-system-x86 python-is-python3 afl++ linux-perf xxd nano gdb valgrind strace git ripgrep llvm -y
+# nasm and fasm are only needed to rebuild the archived legacy/bootstrap tree
 ```
 Also install (for fuzzing tests): https://github.com/google/honggfuzz
 
@@ -52,6 +53,7 @@ Also install (for fuzzing tests): https://github.com/google/honggfuzz
 | Path | What it is |
 |---|---|
 | `docs/harmony.md` | The language design / reference. |
+| `docs/changelog.md` | Version history and the vocabulary map (moved out of `harmony.md` §1). |
 | `docs/c2x-seed.md` | The retired stage-0 compiler (x86_64 assembly); archived with the legacy tree. |
 | `docs/keywords.md` | Keyword / builtin reference. |
 | `bootstrap/seed/` | Checksum and provenance for the stage-0 seed; the binary is downloaded from a release. |
@@ -92,8 +94,9 @@ that are not implemented yet; every other failure fails the suite.
 the [`stage0-v1` release](https://github.com/CreitinGameplays/harmony/releases/tag/stage0-v1)
 into gitignored `build/seed/` and verified against `bootstrap/seed/SHA256SUMS`
 before it runs. For offline builds, point `SEED_BIN` at a local copy (and
-`SEED_URL` at a mirror if needed). The seed needs the LLVM/LLD runtime libraries
-that `llvm-config` points at (LLVM 21 in the CI image).
+`SEED_URL` at a mirror if needed). The latest compiler release is always the
+next seed. The seed needs the LLVM/LLD runtime libraries that `llvm-config`
+points at (LLVM 21 in the CI image).
 
 ## Usage (docs/harmony.md §19.5)
 

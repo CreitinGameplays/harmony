@@ -20,6 +20,7 @@ File Extension: .harmony (default), .hr (secondary)
   `1.0` will only come once the final `harmony` language is fully implemented.
 - Make sure `VERSION` is always up-to-date.
 - Compiler quirks should also be fixed if found.
+- The latest compiler release will always be the next seed.
 - Use c2x-seed to write the harmony language:
   harmony-base: basic implementation with few features, written in c2x-seed.
   harmony: full rewrite in harmony-base itself.

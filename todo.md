@@ -723,12 +723,15 @@ implemented in the `harmony` compiler (written in harmony-base) under
   allocator it exposes, so embedded targets can swap it).
 - `library/std/` (`*.hr`): the full standard library (HashMap, io, fs, net)
   that needs the OS.
-- `bootstrap/` holds the stage-0 compilers: `bootstrap/c2x-seed/` (NASM),
-  `bootstrap/harmony-base/` (c2x-seed), and `library/runtime/` (the
-  freestanding runtime only harmony-base links).
+- `bootstrap/seed/` holds the current stage-0 seed's checksum and provenance;
+  the binary is published as a release asset and downloaded on demand by
+  `make harmony`. The legacy `bootstrap/c2x-seed/` (NASM) and
+  `bootstrap/harmony-base/` (c2x-seed) toolchains are archived on
+  `legacy/bootstrap`. `library/runtime/` holds the freestanding runtime.
 
 Also per AGENTS.md: the final `harmony` compiler must (a) integrate LLVM IR
-directly into its binary and (b) support **multi-core compilation by default**.
+directly into its binary, (b) support **multi-core compilation by default**,
+and (c) treat the latest compiler release as the next seed.
 
 ### Language semantics
 
@@ -845,14 +848,18 @@ directly into its binary and (b) support **multi-core compilation by default**.
       clobbering, SIGSEGV mislabeled `T-STACK`, uninitialized `dump_ast`,
       broken valgrind oracle, parser depth SIGSEGV, name truncation, quadratic
       instantiation, expected-type gaps in assignment/call/generic-call, and
-      the method-name collision). `make test-fuzz2` is the fast gate;
-      `make fuzz2-deep` a real campaign; `tests/harmony/coverage.sh` (in
-      `make test`) guards that the grammar sampler keeps reaching the
-      compiler's semantic stage. `make fuzz2-deep` was run after the rewrite:
+      the method-name collision). `make test-fuzz2` is the fast gate and
+      `make fuzz2-deep` a real campaign. `tests/harmony/coverage.sh` was retired
+      with the legacy toolchain: its symbol baseline measured LLD internals
+      once the compiler linked libLLVM dynamically. `make fuzz2-deep` was run
+      after the rewrite:
       1000 generated + 1000 mutated programs, 0 findings.
 - [x] **Rewrite the compiler in harmony-base (`harmony/`).** The phase plan,
   architecture decisions, and gates live in **`roadmap/harmony`** (read it
-  first). Started 2026-11:
+  first). Started 2026-11. Historical record: the differential harnesses named
+  below (`difftest.py`, `parsediff.py`, `resolvediff.py`, `typediff.py`,
+  `irdiff.py`, `typecorpus.py`, …) were archived with the legacy oracle on
+  `legacy/bootstrap`; current gates are single-lane.
   - `library/core/` has its substrate: `mem.hr` (chunked arena),
     `vec.hr` (`Vec<T>`), `str.hr` (`String`, byte helpers), `fmt.hr`
     (diagnostics as data + line/json renderers). Unit-tested by

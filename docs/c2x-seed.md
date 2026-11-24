@@ -5,7 +5,8 @@
 > stage-0 seed. This document describes the historical toolchain, preserved on
 > the `legacy/bootstrap` branch (tag `legacy/bootstrap-final`). The current
 > seed is published as a release asset; see `bootstrap/seed/README.md` and
-> `docs/bootstrap-retirement.md`.
+> `docs/bootstrap-retirement.md`. The commands below describe the archived
+> toolchain and only apply on `legacy/bootstrap`, not on this tree.
 
 The seed compiler is the bootstrap stage of the C2X compiler chain. Written in x86_64 assembly, it compiles `c2x-proto` source files into x86_64 assembly. It has no dependencies beyond Linux syscalls.
 

@@ -10,6 +10,13 @@ and downloaded by `make harmony` into gitignored `build/seed/`, verified against
 `make qualify-seed` re-proves stage1 == stage2 == stage3. `SEED_BIN` pins a local
 copy for offline builds; `SEED_URL` selects a mirror.
 
+**Seed policy:** the latest compiler release is always the next seed (AGENTS.md).
+Each new release publishes its compiler binary as the new seed asset, updates
+`bootstrap/seed/SHA256SUMS` and `SEED_URL`, and re-qualifies it with
+`make qualify-seed`. Older seed assets remain available for reproducing past
+builds but are no longer the default. The current seed is `stage0-v1`; the
+first seed-native final release is `1.0.0`.
+
 `make test` is a single lane. The legacy `c2x-seed` / `harmony-base` toolchain,
 the frozen oracle outputs in `tests/golden/v0.3.3/`, the `HARMONY`/`ORACLE`
 lane switches and the legacy-only suites are **not** in this tree. That

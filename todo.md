@@ -25,8 +25,8 @@ bootstrap items remain.
       through two further self-host passes (stage1 == stage2 == stage3).
 - [x] `tests/env.sh` / `tests/env.py` provide `HARMONY`, `HC` and `ORACLE`
       overrides so the full suite can run in a legacy lane and a v1 lane.
-- [x] `make test-v1` runs the v1 lane. Known v1 gaps (no C backend yet, no
-      verbose trace) are reported as explicit `SKIP`s, never silent passes.
+- [x] `make test-v1` runs the v1 lane. The only remaining CLI gap (no verbose
+      trace) is reported as an explicit `SKIP`, never a silent pass.
 - [x] Fixed four v1 harnesses that moved `lx.toks` out of an owning struct
       field; the compiler's own driver code already used `.clone()`.
 - [x] Fixed genuine v1 lexer/driver bugs found by the burn-in: lexer diagnostics
@@ -40,20 +40,19 @@ bootstrap items remain.
 - [x] `tools/capture-goldens.py` freezes the legacy compiler's token, AST,
       resolver, checker, IR and driver outputs under `tests/golden/v0.3.3/`;
       `make verify-goldens` re-captures and diffs with machine-independent paths.
-- [x] Legacy-only suites degrade explicitly in the v1 lane: `parser.sh` uses
-      `fmt` as the parse-only proxy and skips AST-text cases (covered by
-      `parsediff.py` against goldens); `golden.sh` skips fixtures that pin
-      legacy CLI/wording. Both print `SKIP`.
-- [ ] **1.0 parity/bug items:** (a) a stray control byte is `LEX-01` in v1 but
-      `SYN-05` in the legacy compiler; (b) missing imports are reported as a
-      plain driver error rather than `NAME-04`; (c) a multi-error program does
-      not emit `CASE-01` because v1 stops earlier; (d) v1 has no `--dump-ast` /
-      `emit-c` CLI surface; (e) four v0 codegen programs and the v0 LISP
-      interpreter are intentionally rejected by v1's M2 ownership rules;
-      (f) **open v1 bug:** `big-aggregate-init` hits
-      a drop-flag codegen fault (uninitialised stack pointer; reproduced with
-      gdb/valgrind and a minimal `switch` + `return` repro). Every item is
-      printed as `DIVERGENCE` or `SKIP` by the v1 lane, never a silent pass.
+- [x] Fixed the `big-aggregate-init` drop-flag fault: flags now use their own
+      `%dfN` namespace and their allocas are spliced into the function entry
+      block with an in-place `String::insert` (no O(n^2) module rebuild).
+- [x] Aligned v1 diagnostics with v0: stray bytes are `SYN-05`, missing imports
+      are a structured `NAME-04` stop, and `check --all` lifts the stop cap.
+- [x] Added the missing CLI surface: `--dump-ast` (parse-only tree dump) and
+      `emit-c` (honest ICE-01 stop until the C backend lands).
+- [x] `parser.sh` now runs strictly in both lanes; `golden.sh` still skips
+      fixtures that pin legacy CLI wording (v1 rendering intentionally differs).
+- [ ] **Remaining intentional divergences (not defects):** four v0 codegen
+      programs and the v0 LISP interpreter move out of owning fields and are
+      therefore rejected by v1's M2 ownership rules. Rewriting those fixtures
+      would change what they test; keep them visible with `DIVERGENCE` lines.
 - [ ] Run both full lanes (`make test`, `make test-v1`) to completion; fix any
       remaining genuine v1 divergence before the next phase.
 - [ ] Phase 2+: freeze `legacy/bootstrap`, publish the v0.3.3 seed, rewire the

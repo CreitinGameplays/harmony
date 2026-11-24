@@ -465,6 +465,41 @@ fn render_diags(ds: &vec::Vec<fmt::Diag>, format: i32, all: i32,
     diagnostics::render_all(ds, &opts);
 }
 
+// Parse-only AST dump (the legacy compiler's `--dump-ast` surface). It reads
+// one module, scans it, prints the tree, and stops before name resolution.
+export fn dump_ast(path: &str, format: i32, all: i32,
+                   ascii: i32, no_color: i32) -> i32 {
+    let file = sys::read_file(path);
+    if (file.ok != 0) {
+        eprintln("harmony: module not found: {}", path);
+        return process::EXIT_USAGE;
+    }
+    let mut arena: mem::Arena = mem::Arena { .cur = Raw::null() };
+    let mut lx: ctx::Ctx = ctx::make(file.data, path);
+    scan::scan(&mut lx, &mut arena);
+    let mut ns: node::Nodes = node::nodes_make();
+    let mut p: pctx::Parser = pctx::make(&mut ns, lx.toks.clone(), path);
+    let root = item::parse_program(&mut p);
+    render_diags(&p.diags, format, all, ascii, no_color);
+    if (root < 0 || diagnostics::stop_count(&p.diags) != 0) {
+        return process::EXIT_STOP;
+    }
+    let text = print::dump(&ns, root);
+    print("{}", text.as_str());
+    return process::EXIT_OK;
+}
+
+// The C11 backend is deferred (docs: M7). Keep the legacy CLI surface honest:
+// `emit-c` reports a structured ICE-01 instead of being parsed as an input.
+export fn emit_c_stub(format: i32, all: i32, ascii: i32, no_color: i32) -> i32 {
+    let mut ds: vec::Vec<fmt::Diag> = vec::Vec<fmt::Diag>::make();
+    ds.push(fmt::diag("ICE-01", fmt::Severity::Stop, "the C backend is not implemented",
+                      "The C11 cross-check backend lands with M7; use the LLVM backend.",
+                      "", 0u32, 0u32));
+    render_diags(&ds, format, all, ascii, no_color);
+    return process::EXIT_STOP;
+}
+
 // Runs the full compiler pipeline for one command.
 export fn run(cmd: i32, input: &str, output: &str, opt: &str,
              opt_given: i32, format: i32, jobs: i32, llvmc: i32,
@@ -477,8 +512,18 @@ export fn run(cmd: i32, input: &str, output: &str, opt: &str,
     let root = loader::normalize_path(input);
     let d = discover(root);
     if (d.ok != 0) {
-        eprintln("harmony: module not found: {}", d.missing);
-        return process::EXIT_USAGE;
+        // A missing *input file* remains a usage error (exit 2), matching the
+        // legacy driver. A missing *import* is a structured NAME-04 stop.
+        if (d.missing == root) {
+            eprintln("harmony: module not found: {}", d.missing);
+            return process::EXIT_USAGE;
+        }
+        let mut ds: vec::Vec<fmt::Diag> = vec::Vec<fmt::Diag>::make();
+        ds.push(fmt::diag("NAME-04", fmt::Severity::Stop, "module not found",
+                          "The imported file does not exist.", d.missing,
+                          1u32, 0u32));
+        render_diags(&ds, format, all, ascii, no_color);
+        return process::EXIT_STOP;
     }
     let need_core = uses_llvmc(&d.mods);
 

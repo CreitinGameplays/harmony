@@ -9,6 +9,8 @@ export const CMD_AUDIT: i32 = 4;
 export const CMD_EXPLAIN: i32 = 5;
 export const CMD_VERSION: i32 = 6;
 export const CMD_FMT: i32 = 7;
+export const CMD_DUMP_AST: i32 = 8;
+export const CMD_EMIT_C: i32 = 9;
 
 export const FORMAT_PRETTY: i32 = 0;
 export const FORMAT_LINE: i32 = 1;
@@ -30,6 +32,7 @@ export struct Options {
     deny_unchecked: i32;
     ascii: i32;                 // §16.3 glyph fallbacks
     no_color: i32;              // --no-color / NO_COLOR
+    dump_ast: i32;              // --dump-ast (parse-only)
 }
 
 // ok: 1 = run, 0 = print usage, -1 = bad option.
@@ -42,6 +45,7 @@ fn usage() {
     eprintln("usage: harmony build <file.harmony> [-o out] [-O<level>]");
     eprintln("       harmony run   <file.harmony> [-O<level>]");
     eprintln("       harmony check <file.harmony>");
+    eprintln("       harmony --dump-ast <file.harmony>   print the parse tree");
     eprintln("       harmony emit-llvm <file.harmony> [-O<level>]");
     eprintln("       harmony audit [file.harmony] [--format=json]");
     eprintln("       harmony fmt   <file.harmony>   canonical formatter");
@@ -109,6 +113,7 @@ export fn parse(av: &[&str]) -> ParseResult {
         .deny_unchecked = 0,
         .ascii = 0,
         .no_color = 0,
+        .dump_ast = 0,
     };
     if (av.len() < 2) { usage(); return ParseResult { .ok = 0, .opts = o }; }
     let mut i: usize = 1;
@@ -134,6 +139,8 @@ export fn parse(av: &[&str]) -> ParseResult {
         if (a == "--ascii") { o.ascii = 1; i += 1; continue; }
         if (a == "--no-color") { o.no_color = 1; i += 1; continue; }
         if (a == "--version") { o.cmd = CMD_VERSION; i += 1; continue; }
+        if (a == "--dump-ast") { o.dump_ast = 1; i += 1; continue; }
+        if (a == "emit-c") { o.cmd = CMD_EMIT_C; i += 1; continue; }
         if (a == "--sequential") { o.jobs = 1; i += 1; continue; }
         let backend = flag_value(a, "--backend=");
         if (backend != "") {

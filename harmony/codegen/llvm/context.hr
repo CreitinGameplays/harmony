@@ -55,7 +55,9 @@ struct Format {
 export struct Emitter {
     c: &mut check::Checker;
     out: str::String;
+    entry: str::String;   // M2 drop-flag allocas, hoisted into the entry block
     ssa: i32;
+    df: i32;              // drop-flag names use their own namespace
     label: i32;
     expr_ty: i32;          // type of the most recently lowered expression
     terminated: i32;       // current block already has a terminator
@@ -71,7 +73,9 @@ export fn make(c: &mut check::Checker) -> Emitter {
     return Emitter {
         .c = c,
         .out = str::String::make(),
+        .entry = str::String::make(),
         .ssa = 0,
+        .df = 0,
         .label = 0,
         .expr_ty = types::TY_UNIT,
         .terminated = 0,
@@ -97,6 +101,17 @@ export fn new_reg(e: &mut Emitter) -> &str {
     e.ssa += 1;
     s.push("%");
     s.push_i64(e.ssa as i64);
+    return s.as_str();
+}
+
+// Drop flags are hoisted into the entry block but named while the body is
+// lowered, so they must not share the body's `%N` counter: a flag called `%1`
+// would collide with an instruction already emitted earlier in the entry.
+export fn new_flag(e: &mut Emitter) -> &str {
+    let mut s: str::String = str::String::make();
+    e.df += 1;
+    s.push("%df");
+    s.push_i64(e.df as i64);
     return s.as_str();
 }
 
@@ -275,9 +290,13 @@ export fn scope_pop(e: &mut Emitter) {
 export fn local_declare(e: &mut Emitter, name: &str, slot: &str, ty: i32) {
     let mut flag: &str = "";
     if (check::needs_drop(&*e.c, ty)) {
-        flag = new_reg(e);
-        out(e, "  "); out(e, flag); out(e, " = alloca i1\n");
-        out(e, "  store i1 false, ptr "); out(e, flag); nl(e);
+        flag = new_flag(e);
+        // A local can be declared inside a switch arm or loop body, while its
+        // cleanup runs from other blocks (early `return`, scope end). Keep the
+        // flag in the function's entry block so every use is dominated by its
+        // alloca; emit_fn splices this buffer in after the `entry:` label.
+        e.entry.push("  "); e.entry.push(flag); e.entry.push(" = alloca i1\n");
+        e.entry.push("  store i1 false, ptr "); e.entry.push(flag); e.entry.push("\n");
     }
     e.locals.push(Local { .name = name, .slot = slot, .ty = ty, .flag = flag });
 }

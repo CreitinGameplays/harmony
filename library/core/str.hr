@@ -138,6 +138,29 @@ methods String {
     export fn clear(&mut self) { self.bytes.clear(); }
     export fn release(&mut self) { self.bytes.release(); }
 
+    // Inserts `s` at byte offset `at`, shifting the tail in place. Used by the
+    // LLVM emitter to hoist drop-flag allocas into a function's entry block
+    // without rebuilding (and reallocating) the whole module text per function.
+    export fn insert(&mut self, at: usize, s: &str) {
+        let add = s.len();
+        if (add == 0) { return; }
+        let old = self.bytes.len();
+        self.bytes.reserve(old + add);
+        self.bytes.set_len(old + add);
+        let mut i: usize = old;
+        while (i > at) {
+            i -= 1;
+            let b = *self.bytes.get(i);
+            self.bytes.set(i + add, b);
+        }
+        let src = s.as_bytes();
+        let mut j: usize = 0;
+        while (j < add) {
+            self.bytes.set(at + j, src[j]);
+            j += 1;
+        }
+    }
+
     // A `&str` view of the current contents. `self` is shared, so the view
     // cannot outlive a mutation by the borrow rules once they land (M3).
     export fn as_str(&self) -> &str {

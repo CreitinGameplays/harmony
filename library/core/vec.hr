@@ -132,6 +132,11 @@ methods<T> Vec<T> {
         self.len = 0;
     }
 
+    // Sets the live length without touching the slots. Callers must have
+    // reserved and initialised the new region; String::insert uses it after a
+    // reserve and an in-place tail shift.
+    export fn set_len(&mut self, n: usize) { self.len = n; }
+
     // Frees the block. Only for a vector whose elements need no drop (the
     // compiler's tables hold plain data).
     export fn release(&mut self) {

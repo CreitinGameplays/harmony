@@ -205,6 +205,8 @@ fn emit_fn(e: &mut context::Emitter, h: i32) {
         context::out(e, ")\n\n");
         return;
     }
+    let func_start = e.out.len();
+    e.entry.clear();
     context::out(e, "define ");
     if (sret != 0) { context::out(e, "void "); } else { context::out(e, context::type_name(e, retty)); }
     context::out(e, " @");
@@ -219,6 +221,7 @@ fn emit_fn(e: &mut context::Emitter, h: i32) {
     emit_param_types(e, params);
     context::out(e, ") {\nentry:\n");
     e.ssa = 0;
+    e.df = 0;
     e.label = 0;
     e.locals.clear();
     e.scopes.clear();
@@ -270,6 +273,13 @@ fn emit_fn(e: &mut context::Emitter, h: i32) {
         }
     }
     context::out(e, "}\n\n");
+    // Splice the hoisted drop-flag allocas into the entry block in place.
+    // Rebuilding the whole module string per function made self-hosting O(n^2)
+    // and OOM'd on harmony/main.hr; a single reserve + tail shift stays linear.
+    let at = str::find(str::slice(e.out.as_str(), func_start, e.out.len()), "entry:\n");
+    if (at >= 0) {
+        e.out.insert(func_start + at as usize + 7, e.entry.as_str());
+    }
 }
 
 // A declaration with the exact signature of a definition. Split modules call

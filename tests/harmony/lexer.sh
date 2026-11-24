@@ -110,19 +110,7 @@ write "/* never closed\nfn main() {}\n"
 reject_case "unterminated block comment" "LEX-01"
 
 write "fn main() { let a = 1 \x07 2; }\n"
-if [ "$(basename "$HB")" = "harmony-base" ]; then
-    reject_case "unexpected byte" "SYN-05"
-else
-    # Documented v0/v1 divergence: v1 classifies a stray control byte as a
-    # lexer stop (LEX-01), while the legacy compiler reported a parser stop
-    # (SYN-05). Both reject; the code differs. Tracked as a 1.0 parity item.
-    out="$("$HB" check "$TMP/c.harmony" 2>&1)"
-    if echo "$out" | grep -q "LEX-01"; then
-        printf 'DIVERGENCE unexpected byte: v1 reports LEX-01 (legacy: SYN-05)\n'
-    else
-        reject_case "unexpected byte" "SYN-05"
-    fi
-fi
+reject_case "unexpected byte" "SYN-05"
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -2844,6 +2844,7 @@ lc emit-c  <file.harmony>   print the generated C (secondary backend)
 lc explain <CODE>           long-form lesson for a diagnostic
 lc audit   [paths]          list every `unchecked` site
 lc fmt     <file.harmony>   canonical formatter (one style, no options)
+lc --dump-ast <file.harmony> print the parse tree, no type checking
 
 flags:  --format=pretty|line|json   --all   --strict   --deny-unchecked
         --no-color   --ascii   -o <out>

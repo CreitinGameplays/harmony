@@ -281,7 +281,7 @@ export fn scan(c: &mut ctx::Ctx, arena: &mut mem::Arena) {
         if (two_byte(c)) { continue; }
         if (one_byte(c)) { continue; }
         // Nothing matched: report and skip one byte.
-        ctx::error(c, "LEX-01", "unexpected byte",
+        ctx::error(c, "SYN-05", "unexpected byte",
                    "This byte cannot start a token.");
         ctx::bump(c);
     }

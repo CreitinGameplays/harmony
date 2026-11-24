@@ -15,27 +15,14 @@ trap 'rm -rf "$TMP"' EXIT
 pass=0
 fail=0
 
-# v1 has no --dump-ast CLI flag: its AST is exercised by tests/harmony-final/
-# parsediff.py against frozen legacy AST dumps. In the v1 lane this suite still
-# checks grammar accept/reject decisions, just without the AST text comparison.
-if [ "$(basename "$HB")" = "harmony-base" ]; then
-    PARSE_FLAGS=(--dump-ast check)
-    V1_LANE=0
-else
-    PARSE_FLAGS=(check)
-    V1_LANE=1
-fi
+# Both compilers expose --dump-ast; the v1 driver added it during the
+# bootstrap burn-in so this suite runs strictly in both lanes.
+PARSE_FLAGS=(--dump-ast check)
 
 ok_case() {
     local name="$1"
-    # Parser-only check: legacy uses --dump-ast, which skips the type checker.
-    # v1 has no parse-only flag, but `fmt` parses without resolving names, so
-    # it is the closest equivalent for grammar-only fixtures.
-    if [ "$V1_LANE" -eq 1 ]; then
-        "$HB" fmt "$TMP/c.harmony" >/dev/null 2>&1
-    else
-        "$HB" "${PARSE_FLAGS[@]}" "$TMP/c.harmony" >/dev/null 2>&1
-    fi
+    # Parser-only check: --dump-ast skips the type checker on both compilers.
+    "$HB" "${PARSE_FLAGS[@]}" "$TMP/c.harmony" >/dev/null 2>&1
     if [ $? -eq 0 ]; then
         pass=$((pass + 1)); printf 'ok   %s\n' "$name"
     else
@@ -47,10 +34,6 @@ ok_case() {
 ast_case() {
     # name; then source on stdin; golden AST text as $2
     local name="$1" want="$2"
-    if [ "$V1_LANE" -eq 1 ]; then
-        printf 'SKIP %s (ast) (v1 has no --dump-ast; covered by parsediff.py)\n' "$name"
-        return
-    fi
     "$HB" --dump-ast check "$TMP/c.harmony" >"$TMP/ast.out" 2>/dev/null
     printf '%s\n' "$want" > "$TMP/ast.want"
     if diff -q "$TMP/ast.want" "$TMP/ast.out" >/dev/null; then

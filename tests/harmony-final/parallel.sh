@@ -127,7 +127,12 @@ else bad "clang debug backend still works"; fi
 # Optional: prove the default really forks. On a memory-constrained box the
 # compiler deliberately uses one worker, so this check is skipped there.
 SAFE_JOBS=$(safe_jobs)
-if command -v strace >/dev/null 2>&1 && [ "$SAFE_JOBS" -ge 2 ]; then
+# The compiler caps workers against MemAvailable *after* it has mapped its own
+# checker (~0.5 GiB here). Require headroom so this canary never fails just
+# because the box is close to the 2 GiB/worker threshold.
+FORK_HEADROOM_MB=2560
+if command -v strace >/dev/null 2>&1 && [ "$SAFE_JOBS" -ge 2 ] \
+   && [ "$(available_mb)" -ge "$FORK_HEADROOM_MB" ]; then
     timeout 120 strace -f -e trace=fork,clone,vfork,clone3 \
         "$HC" emit-llvm --jobs="$SAFE_JOBS" "$BIG" >/dev/null 2>"$TMP/trace"
     forks=$(grep -c -E 'fork\(|clone\(|vfork\(|clone3\(' "$TMP/trace" || true)
@@ -136,8 +141,8 @@ if command -v strace >/dev/null 2>&1 && [ "$SAFE_JOBS" -ge 2 ]; then
     else
         bad "default large compile forks multiple workers (got $forks)"
     fi
-elif [ "$SAFE_JOBS" -lt 2 ]; then
-    ok "fork check skipped (only $SAFE_JOBS worker fits in memory)"
+elif [ "$SAFE_JOBS" -lt 2 ] || [ "$(available_mb)" -lt "$FORK_HEADROOM_MB" ]; then
+    ok "fork check skipped (memory cap allows fewer workers)"
 fi
 
 # An explicit large job count must still obey the memory cap; otherwise a test

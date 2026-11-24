@@ -38,6 +38,12 @@ fn main() -> i32 {
         eprintln("harmony: unknown diagnostic code: {}", o.code);
         return process::EXIT_USAGE;
     }
+    if (o.dump_ast != 0) {
+        return pipeline::dump_ast(o.input, o.format, o.all, o.ascii, o.no_color);
+    }
+    if (o.cmd == cli::CMD_EMIT_C) {
+        return pipeline::emit_c_stub(o.format, o.all, o.ascii, o.no_color);
+    }
     if (o.cmd == cli::CMD_AUDIT) { return audit::run(o.input, o.format); }
     if (o.cmd == cli::CMD_FMT) {
         let f = sys::read_file(o.input);

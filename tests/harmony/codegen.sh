@@ -44,9 +44,6 @@ run_case() {
                     printf 'DIVERGENCE %s: v1 rejects v0 code under M2 ownership\n' "$name"
                     return
                 fi;;
-            big-aggregate-init)
-                printf 'DIVERGENCE big-aggregate-init: known v1 drop-flag codegen bug (1.0 blocker)\n'
-                return;;
         esac
     fi
     # A crash is a *signal* death, which the driver reports on stderr (it

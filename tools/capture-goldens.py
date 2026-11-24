@@ -174,8 +174,11 @@ def main():
         tmp_out = os.path.join(work, "goldens")
         os.makedirs(tmp_out)
         capture(tmp_out, work)
-        diff = subprocess.run(["diff", "-ru", OUT, tmp_out],
-                              capture_output=True, text=True)
+        # MANIFEST records provenance (including the HEAD at capture time), so
+        # it necessarily differs on every later commit; only oracle outputs
+        # are verified here.
+        diff = subprocess.run(["diff", "-ru", "--exclude=MANIFEST.json",
+                               OUT, tmp_out], capture_output=True, text=True)
         if diff.returncode == 0:
             print("goldens verified: %s" % os.path.relpath(OUT, ROOT))
             return 0

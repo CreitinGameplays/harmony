@@ -19,8 +19,6 @@ trap 'rm -rf "$TMP"' EXIT
 pass=0
 fail=0
 
-if [ "$(basename "$HB")" = "harmony-base" ]; then V1_LANE=0; else V1_LANE=1; fi
-
 run_case() {
     local src="$1"
     local name
@@ -33,19 +31,6 @@ run_case() {
 
     "$HB" run "$src" >"$TMP/out" 2>"$TMP/err"
     local rc=$?
-    # Documented v0/v1 divergences (tracked in todo.md as 1.0 parity items).
-    # v1 enforces M2 ownership and rejects these v0 programs; one program also
-    # hits a known drop-flag codegen bug. Both compilers reject/crash nowhere
-    # else; each skip is printed, never silent.
-    if [ "$V1_LANE" -eq 1 ]; then
-        case "$name" in
-            enum-array|heap-recursive-tree|linked-list|stack-align)
-                if grep -qE 'MOVE-0[14]' "$TMP/out" "$TMP/err"; then
-                    printf 'DIVERGENCE %s: v1 rejects v0 code under M2 ownership\n' "$name"
-                    return
-                fi;;
-        esac
-    fi
     # A crash is a *signal* death, which the driver reports on stderr (it
     # keeps the shell's 128+n code). A large exit code alone is not a crash:
     # `run` forwards `main`'s value mod 256, so 241 is a legitimate result.

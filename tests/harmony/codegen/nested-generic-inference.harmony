@@ -19,7 +19,9 @@ struct Pair<A, B> { a: A; b: B; }
 
 fn wrap<T>(x: T) -> Box<T> { return Box<T> { .v = x }; }
 fn pair<A, B>(a: A, b: B) -> Pair<A, B> { return Pair<A, B> { .a = a, .b = b }; }
-fn dup<T>(x: T) -> Pair<T, T> { return Pair<T, T> { .a = x, .b = x }; }
+// M2: one owning value cannot fill two fields. Pass both values in so the
+// nested-inference shape is unchanged.
+fn dup<T>(a: T, b: T) -> Pair<T, T> { return Pair<T, T> { .a = a, .b = b }; }
 fn add<T>(a: Box<T>, b: Box<T>) -> T { return a.v + b.v; }
 fn split<A, B>(a: Box<Box<A>>, b: Box<B>) -> i32 { return a.v.v + b.v; }
 
@@ -33,7 +35,7 @@ fn main() -> i32 {
     if (c.v.v.v != 42) { return 2; }
 
     // A two-parameter generic nested inside a one-parameter generic.
-    let p = dup(dup(7));
+    let p = dup(dup(7, 7), dup(7, 7));
     if (p.a.a != 7) { return 3; }
     if (p.b.a != 7) { return 4; }
 

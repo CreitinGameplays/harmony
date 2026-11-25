@@ -35,7 +35,7 @@ fn main() -> i32 {
     let ops: [Token; 3] = [Token::Num(20), Token::Num(22), Token::Add];
     let mut i: usize = 0;
     while (i < ops.len()) {
-        let r = apply(&mut s, ops[i]);
+        let r = apply(&mut s, ops[i].clone());
         if (r != 0) { return 9; }
         i = i + 1;
     }

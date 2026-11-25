@@ -20,7 +20,7 @@ fn push(head: Maybe, v: i32) -> Maybe {
 
 fn sum(head: &Maybe) -> i32 {
     switch (head) {
-        case Has(node): { return node.value + sum(node.next); }
+        case Has(node): { return node.value + sum(&node.next); }
         case Empty:     { return 0; }
     }
     return 0;
@@ -28,7 +28,7 @@ fn sum(head: &Maybe) -> i32 {
 
 fn length(head: &Maybe) -> i32 {
     switch (head) {
-        case Has(node): { return 1 + length(node.next); }
+        case Has(node): { return 1 + length(&node.next); }
         case Empty:     { return 0; }
     }
     return 0;

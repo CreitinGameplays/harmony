@@ -2411,6 +2411,34 @@ fn stmt_let(e: &mut context::Emitter, h: i32) {
     }
 }
 
+// True when `h` contains a use of `name` stamped as a move by the M2 pass.
+// Such an assignment transfers the old value into the RHS result, so the
+// caller must not drop it before storing the new one.
+fn rhs_moves(e: &mut context::Emitter, h: i32, name: &str) -> bool {
+    if (h < 0) { return false; }
+    let n = node::get(&e.c.nodes, h);
+    if (n.kind == node::AST_PATH && n.sval == name && n.own != 0) { return true; }
+    if (rhs_moves(e, n.a, name)) { return true; }
+    if (rhs_moves(e, n.b, name)) { return true; }
+    if (rhs_moves(e, n.c, name)) { return true; }
+    let mut i: usize = 0;
+    while (i < n.kids.len()) {
+        if (rhs_moves(e, *n.kids.get(i), name)) { return true; }
+        i += 1;
+    }
+    i = 0;
+    while (i < n.kids2.len()) {
+        if (rhs_moves(e, *n.kids2.get(i), name)) { return true; }
+        i += 1;
+    }
+    i = 0;
+    while (i < n.kids3.len()) {
+        if (rhs_moves(e, *n.kids3.get(i), name)) { return true; }
+        i += 1;
+    }
+    return false;
+}
+
 fn stmt_assign(e: &mut context::Emitter, h: i32) {
     let n = node::get(&e.c.nodes, h);
     if (n.c >= 0) { stmt_assign_else(e, h); return; }
@@ -2426,9 +2454,13 @@ fn stmt_assign(e: &mut context::Emitter, h: i32) {
     }
     if (slot == "") { return; }
     if (n.sval == "=") {
-        // Assignment overwrites an owner: drop the old value first.
-        if (lhs.kind == node::AST_PATH) { drop::drop_named(e, lhs.sval); }
-        else { drop::drop_addr(e, ty, slot); }
+        // Assignment overwrites an owner: drop the old value first, unless the
+        // RHS already moved it into the new value (`head = push(head, x)`).
+        let consumed = lhs.kind == node::AST_PATH && rhs_moves(e, n.b, lhs.sval);
+        if (!consumed) {
+            if (lhs.kind == node::AST_PATH) { drop::drop_named(e, lhs.sval); }
+            else { drop::drop_addr(e, ty, slot); }
+        }
         let v = expr(e, n.b);
         let vty = e.expr_ty;
         if (context::is_aggregate(e, vty)) {
@@ -2973,7 +3005,8 @@ fn variant_suffix_str(s: &str) -> &str {
 // Kept byte-identical to harmony-base: load the payload first, then allocate
 // the local and store the loaded value (even aggregates are loaded by value
 // here). Changing that order changes the IR of every variant-binding switch.
-fn bind_at(e: &mut context::Emitter, name: &str, addr: &str, ft: i32) {
+fn bind_at(e: &mut context::Emitter, name: &str, addr: &str, ft: i32,
+           borrowed: bool) {
     let v = load(e, ft, addr);
     let slot = context::new_reg(e);
     context::out(e, "  ");
@@ -2988,12 +3021,16 @@ fn bind_at(e: &mut context::Emitter, name: &str, addr: &str, ft: i32) {
     context::out(e, ", ptr ");
     context::out(e, slot);
     context::nl(e);
-    context::local_declare(e, name, slot, ft);
-    context::mark_live(e, name);
+    if (borrowed) {
+        context::local_declare_borrow(e, name, slot, ft);
+    } else {
+        context::local_declare(e, name, slot, ft);
+        context::mark_live(e, name);
+    }
 }
 
 fn bind_pattern(e: &mut context::Emitter, pats: &vec::Vec<i32>, st: i32,
-                subjslot: &str) {
+                subjslot: &str, borrowed: bool) {
     let mut k: usize = 0;
     while (k < pats.len()) {
         let p = node::get(&e.c.nodes, *pats.get(k));
@@ -3021,8 +3058,12 @@ fn bind_pattern(e: &mut context::Emitter, pats: &vec::Vec<i32>, st: i32,
                         context::out(e, ", ptr ");
                         context::out(e, slot);
                         context::nl(e);
-                        context::local_declare(e, sub.sval, slot, ft);
-                        context::mark_live(e, sub.sval);
+                        if (borrowed) {
+                            context::local_declare_borrow(e, sub.sval, slot, ft);
+                        } else {
+                            context::local_declare(e, sub.sval, slot, ft);
+                            context::mark_live(e, sub.sval);
+                        }
                     }
                     j += 1;
                 }
@@ -3038,7 +3079,7 @@ fn bind_pattern(e: &mut context::Emitter, pats: &vec::Vec<i32>, st: i32,
                 if (mi >= 0 && sub.kind == node::AST_PAT_BIND) {
                     let ft = types::member_type(&e.c.types, fty, mi);
                     let a = pattern_field_addr(e, subjslot, st, vi, mi);
-                    bind_at(e, sub.sval, a, ft);
+                    bind_at(e, sub.sval, a, ft, borrowed);
                 }
                 j += 1;
             }
@@ -3075,7 +3116,12 @@ fn switch_test(e: &mut context::Emitter, pats: &vec::Vec<i32>, st: i32,
 
 fn stmt_switch(e: &mut context::Emitter, h: i32) {
     let n = node::get(&e.c.nodes, h);
-    let mut st = node::get(&e.c.nodes, n.a).ty;
+    let scrut_ty = node::get(&e.c.nodes, n.a).ty;
+    // Bindings taken from a reference or a heap box alias the owner's storage;
+    // they must never run drop glue at the end of the arm.
+    let borrowed = types::is_ref(&e.c.types, scrut_ty)
+                || types::is_heap(&e.c.types, scrut_ty);
+    let mut st = scrut_ty;
     let subj = expr(e, n.a);
     while (types::is_ref(&e.c.types, st) || types::is_heap(&e.c.types, st)) {
         st = types::elem(&e.c.types, st);
@@ -3144,7 +3190,7 @@ fn stmt_switch(e: &mut context::Emitter, h: i32) {
         let nextlbl = context::new_label(e, "switch.test");
         switch_test(e, &arm.kids, st, subjslot, armlbl, nextlbl);
         label(e, armlbl);
-        bind_pattern(e, &arm.kids, st, subjslot);
+        bind_pattern(e, &arm.kids, st, subjslot, borrowed);
         if (arm.c >= 0) {
             let guard = expr(e, arm.c);
             let true_lbl = context::new_label(e, "switch.guard");

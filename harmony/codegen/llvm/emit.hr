@@ -143,9 +143,13 @@ fn emit_type_def(e: &mut context::Emitter, id: i32) {
         if (maxpay == 0) { maxpay = 1; }
         context::out(e, "%enum.");
         context::out(e, context::sanitize(types::tname(&e.c.types, id)));
+        // The payload slot must have 8-byte alignment: the checker places
+        // variant payloads at byte offset 8, and an `[N x i8]` payload would
+        // give the enum only 4-byte alignment (LLVM would then lay the field
+        // out at offset 4). `[N/8 x i64]` keeps the compiler and LLVM in step.
         context::out(e, " = type { i32, [4 x i8], [");
-        context::out_i64(e, ((maxpay + 7) & (0 - 8)) as i64);
-        context::out(e, " x i8] }\n");
+        context::out_i64(e, (((maxpay + 7) & (0 - 8)) / 8) as i64);
+        context::out(e, " x i64] }\n");
     }
 }
 

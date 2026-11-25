@@ -1,0 +1,28 @@
+// EXPECT: 42
+// A value moved into an aggregate by the RHS of an assignment must not be
+// dropped as the "old" value before the new one is stored, and its drop flag
+// must be cleared after the move. Also guards the enum payload offset used by
+// both the checker and LLVM.
+enum Maybe {
+    Has(Heap<Node>),
+    Empty,
+}
+
+struct Node {
+    v: i32;
+    next: Maybe;
+}
+
+fn push(head: Maybe, v: i32) -> Maybe {
+    return Has(heap(Node { .v = v, .next = head }));
+}
+
+fn main() -> i32 {
+    let mut head: Maybe = Empty;
+    head = push(head, 42);
+    switch (head) {
+        case Has(n): { return (*n).v; }
+        case Empty: { return 0; }
+    }
+    return 0;
+}

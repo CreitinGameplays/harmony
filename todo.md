@@ -59,10 +59,19 @@ bootstrap items remain.
       copyable raw frame handle so closures share the frame their `define`
       mutates, and list folds clone instead of moving in loops. All 53 cases in
       `tests/harmony/lisp.sh` pass in the single lane.
-- [ ] **Remaining intentional divergences (not defects):** four v0 codegen
-      programs move out of owning fields and are therefore rejected by v1's M2
-      ownership rules. Rewriting those fixtures would change what they test;
-      keep them visible with `DIVERGENCE` lines.
+- [x] Ported the last four M2-divergent codegen fixtures (`enum-array`,
+      `heap-recursive-tree`, `linked-list`, `stack-align`) to the current
+      compiler; all run strictly in `tests/harmony/codegen.sh` with no
+      `DIVERGENCE` lines. Porting exposed and fixed four genuine v1 defects:
+      pattern bindings from borrowed scrutinees reported as moved, assignment
+      losing the reinitialized state when its RHS moved the old value, struct
+      field initializers treated as borrows (moved values kept drop flags), and
+      drop-before-overwrite freeing a value already moved into the RHS, and a
+      false MOVE-02 on a value moved by an early `return` inside a loop. Also
+      fixed the LLVM enum layout (`[N/8 x i64]` payload) so LLVM and the
+      checker agree on the 8-byte payload offset. `make harmony` again does an
+      extra stage-0 self-rebuild so a published seed that predates a compiler
+      fix cannot desynchronise stage 1 from stage 2.
 - [x] Ran both full lanes to completion with zero failures; the only remaining
       lines are explicit `DIVERGENCE`/`SKIP`s for v0 fixtures that v1's M2
       ownership rules reject and for wording/features that intentionally differ.

@@ -287,6 +287,13 @@ export fn scope_pop(e: &mut Emitter) {
     }
 }
 
+// A binding extracted from a borrowed scrutinee (`switch (&x)` or a heap box)
+// aliases storage owned elsewhere. It must not get drop glue: dropping it at
+// the end of the arm would free the value still owned by the caller.
+export fn local_declare_borrow(e: &mut Emitter, name: &str, slot: &str, ty: i32) {
+    e.locals.push(Local { .name = name, .slot = slot, .ty = ty, .flag = "" });
+}
+
 export fn local_declare(e: &mut Emitter, name: &str, slot: &str, ty: i32) {
     let mut flag: &str = "";
     if (check::needs_drop(&*e.c, ty)) {

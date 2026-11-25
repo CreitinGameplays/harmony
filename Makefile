@@ -70,7 +70,12 @@ verify-seed: $(SEED_BIN)
 # LLVM-C backend, which is the same path every later stage uses. That keeps
 # stage 1, stage 2 and stage 3 byte-identical.
 harmony: $(SEED_BIN) $(HARMONY_SRC) $(LLVMC_OBJ) $(HOSTRT_OBJ) $(HOSTMAIN_OBJ) | build
-	$(SEED_BIN) build harmony/main.hr -o $(HARMONY_OUT)
+	# The published seed may predate local compiler fixes. Build a stage 0
+	# with it, then let stage 0 rebuild the canonical stage 1 so every stage
+	# uses the same codegen path as the source currently in the tree.
+	$(SEED_BIN) build harmony/main.hr -o build/harmony-stage0
+	build/harmony-stage0 build harmony/main.hr -o $(HARMONY_OUT)
+	rm -f build/harmony-stage0
 
 # A seed may stand for another stage only if it rebuilds itself byte-for-byte
 # through two further self-host passes.

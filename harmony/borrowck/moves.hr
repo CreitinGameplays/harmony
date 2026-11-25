@@ -41,6 +41,9 @@ export struct Borrow {
     places: vec::Vec<Place>;
     events: vec::Vec<Event>;
     reported: vec::Vec<i64>;   // (code hash, AST handle) pairs
+    // A move on a `return`/`break`/`continue` path leaves the function; it is
+    // not "moved on every loop iteration" even though the loop depth is > 0.
+    terminating: i32;
 }
 
 fn find_place(b: &Borrow, decl: i32) -> i32 {
@@ -190,7 +193,7 @@ fn use_place(b: &mut Borrow, c: &mut check::Checker, h: i32, mov: bool,
             // One root cause, one report (§16.9): fold the next use into it.
             check::fold_diag(c, p.reported - 1, h);
         }
-        if (depth > p.loop_depth && p.reported == 0) {
+        if (depth > p.loop_depth && p.reported == 0 && b.terminating == 0) {
             let mut s: str::String = str::String::make();
             s.push("`"); s.push(p.name);
             s.push("` is moved on every loop iteration");
@@ -309,6 +312,14 @@ fn expr(b: &mut Borrow, c: &mut check::Checker, h: i32, mov: bool, depth: i32) {
         expr(b, c, n.a, true, depth);
         return;
     }
+    if (k == node::AST_FIELD_INIT) {
+        // A struct/enum field initializer consumes a non-copy value exactly
+        // like a constructor argument; otherwise the source keeps its drop
+        // flag and frees a value that now belongs to the aggregate.
+        let vt = node::get(&c.nodes, n.a).ty;
+        expr(b, c, n.a, !check::is_copy(&*c, vt), depth);
+        return;
+    }
     if (k == node::AST_UNARY || k == node::AST_AS) {
         expr(b, c, n.a, false, depth);
         return;
@@ -358,8 +369,13 @@ fn instr(b: &mut Borrow, c: &mut check::Checker, ins: &cfg::Instr) {
         if (dn.kind == node::AST_PATH && dn.target >= 0) { dest = dn.target; }
         set_state(b, dest, ST_LIVE, ins.loop, ins.node);
         expr(b, c, n.b, true, ins.loop);
+        // The RHS may consume the old value of `dest` (`head = push(head, x)`).
+        // It is live again once the new value is stored.
+        set_state(b, dest, ST_LIVE, ins.loop, ins.node);
     } else if (k == node::AST_RETURN) {
+        b.terminating = 1;
         expr(b, c, n.a, true, ins.loop);
+        b.terminating = 0;
     } else if (k == node::AST_EXPR_STMT) {
         expr(b, c, n.a, false, ins.loop);
     } else if (k == node::AST_FOR) {
@@ -408,6 +424,7 @@ export fn check_fn(c: &mut check::Checker, fh: i32) -> Borrow {
         .places = vec::Vec<Place>::make(),
         .events = vec::Vec<Event>::make(),
         .reported = vec::Vec<i64>::make(),
+        .terminating = 0,
     };
     let mut i: usize = 0;
     while (i < f.kids2.len()) {

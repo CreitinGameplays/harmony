@@ -1,0 +1,25 @@
+// EXPECT: 42
+// A non-copy switch payload bound from a borrowed scrutinee is a reference to
+// the arm's binding, not a use-after-move (§8.6). This regressed when the move
+// pass walked switch arms as expressions from the scrutinee block.
+struct Inner {
+    n: i32;
+}
+
+enum E {
+    A(Inner),
+    B,
+}
+
+fn get(e: &E) -> i32 {
+    switch (e) {
+        case A(x): { return x.n; }
+        case B: { return 0; }
+    }
+    return 0;
+}
+
+fn main() -> i32 {
+    let v = E::A(Inner { .n = 42 });
+    return get(&v);
+}

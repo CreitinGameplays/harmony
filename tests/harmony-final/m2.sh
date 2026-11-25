@@ -46,6 +46,7 @@ reject() {
 }
 
 run_case basic-move 42
+run_case switch-bind 42
 run_case copy-keeps-source 42
 run_case clone 42
 run_case vec-drop 42

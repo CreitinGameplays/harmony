@@ -50,10 +50,19 @@ bootstrap items remain.
       `emit-c` (honest ICE-01 stop until the C backend lands).
 - [x] `parser.sh` now runs strictly in both lanes; `golden.sh` still skips
       fixtures that pin legacy CLI wording (v1 rendering intentionally differs).
+- [x] Fixed a genuine v1 M2 checker bug found while porting the LISP suite:
+      the move pass walked switch arms as expressions from the scrutinee block,
+      so every non-`copy` pattern binding looked like a use-after-move (§8.6).
+      `cfg.hr` now enters arm bindings in their own block and `moves.hr` only
+      evaluates the scrutinee. Regression `tests/harmony-final/m2/switch-bind.harmony`.
+- [x] Ported the LISP interpreter to the current compiler: `Env` now holds a
+      copyable raw frame handle so closures share the frame their `define`
+      mutates, and list folds clone instead of moving in loops. All 53 cases in
+      `tests/harmony/lisp.sh` pass in the single lane.
 - [ ] **Remaining intentional divergences (not defects):** four v0 codegen
-      programs and the v0 LISP interpreter move out of owning fields and are
-      therefore rejected by v1's M2 ownership rules. Rewriting those fixtures
-      would change what they test; keep them visible with `DIVERGENCE` lines.
+      programs move out of owning fields and are therefore rejected by v1's M2
+      ownership rules. Rewriting those fixtures would change what they test;
+      keep them visible with `DIVERGENCE` lines.
 - [x] Ran both full lanes to completion with zero failures; the only remaining
       lines are explicit `DIVERGENCE`/`SKIP`s for v0 fixtures that v1's M2
       ownership rules reject and for wording/features that intentionally differ.
@@ -353,8 +362,8 @@ binary is `harmony-base` (the spec's `lc`).
       The modules are wired together with **`import`** (§6.7), not
       concatenation: `reader` and `eval` import `value`, `main` imports all
       three, and the cross-module names are spelled `value::Val`,
-      `value::cons`, and so on. `make lisp` runs the driver directly;
-      `make test-lisp` runs the 53-case suite in `tests/harmony/lisp.sh`
+      `value::cons`, and so on. `make test` runs the 53-case suite in
+      `tests/harmony/lisp.sh`
       (arith, closures, capture, `set!`, mutual recursion, ackermann, list
       processing, and malformed-input robustness), wired into `make test`. Each
       case generates its own driver that imports the modules, so the import

@@ -115,13 +115,16 @@ export fn eval(form: value::Val, env: &value::Env, args: value::Val, mode: i32) 
         let mut rev = value::Val::Nil;
         let mut cur = form;
         while (!value::is_nil(&cur)) {
-            rev = value::cons(eval(value::car(&cur), env, value::Val::Nil, 0), rev);
+            rev = value::cons(eval(value::car(&cur), env, value::Val::Nil, 0), rev.clone());
             cur = value::cdr(&cur);
         }
         return value::reverse(rev);
     }
     if (mode == 1) {
-        switch (&form) {
+        // Consume the callable: its captured environment must be moved into
+        // the child frame, not cloned (a clone would give `set!` a private
+        // copy of every frame and break recursion).
+        switch (form) {
             case Sym(name): { return builtin(name, args); }
             case Closure(params, body, cenv): {
                 // A child frame of the closure's captured environment, with
@@ -183,7 +186,7 @@ export fn eval(form: value::Val, env: &value::Env, args: value::Val, mode: i32) 
                         let var = value::car(&rest);
                         let inner = eval(value::car(&value::cdr(&rest)), env, value::Val::Nil, 0);
                         switch (&var) {
-                            case Sym(vname): { value::env_define(env, vname, inner); }
+                            case Sym(vname): { value::env_define(env, vname, inner.clone()); }
                             case Nil: { }
                             case Int(n): { }
                             case Cons(a, b): { }
@@ -195,7 +198,7 @@ export fn eval(form: value::Val, env: &value::Env, args: value::Val, mode: i32) 
                         let var = value::car(&rest);
                         let inner = eval(value::car(&value::cdr(&rest)), env, value::Val::Nil, 0);
                         switch (&var) {
-                            case Sym(vname): { value::env_set(env, vname, inner); }
+                            case Sym(vname): { value::env_set(env, vname, inner.clone()); }
                             case Nil: { }
                             case Int(n): { }
                             case Cons(a, b): { }

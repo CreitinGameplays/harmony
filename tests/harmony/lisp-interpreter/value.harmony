@@ -40,9 +40,14 @@ export enum Val {
 // a small association list; lookup walks the chain from the innermost frame.
 // `Env::Empty` ends the chain.
 // ---------------------------------------------------------------------------
-export enum Env {
+// A frame is held through a raw pointer rather than a `Heap<Frame>`: `.clone()`
+// on a heap deep-copies its pointee, but a closure must capture the *same*
+// frame its `define` later mutates. The pointer is created with
+// `Heap::into_raw` and intentionally lives for the whole short-lived run.
+// `Env` is a `copy` handle, so passing or capturing it shares identity.
+export copy enum Env {
     Empty,
-    Frame(Heap<Frame>),
+    Frame(raw mut Frame),
 }
 
 export struct Frame {
@@ -59,7 +64,7 @@ export fn cons(a: Val, b: Val) -> Val {
 
 export fn car(v: &Val) -> Val {
     switch (v) {
-        case Cons(h, t): { return *h; }
+        case Cons(h, t): { return (*h).clone(); }
         case Nil:        { return Val::Nil; }
         case Int(n):     { return Val::Nil; }
         case Sym(s):     { return Val::Nil; }
@@ -70,7 +75,7 @@ export fn car(v: &Val) -> Val {
 
 export fn cdr(v: &Val) -> Val {
     switch (v) {
-        case Cons(h, t): { return *t; }
+        case Cons(h, t): { return (*t).clone(); }
         case Nil:        { return Val::Nil; }
         case Int(n):     { return Val::Nil; }
         case Sym(s):     { return Val::Nil; }
@@ -119,7 +124,7 @@ export fn list_of(items: &[Val], n: i32, tail: Val) -> Val {
     let mut i: i32 = n - 1;
     let mut acc = tail;
     while (i >= 0) {
-        acc = cons(items[i as usize], acc);
+        acc = cons(items[i as usize].clone(), acc.clone());
         i -= 1;
     }
     return acc;
@@ -130,7 +135,7 @@ export fn reverse(v: Val) -> Val {
     let mut out = Val::Nil;
     let mut cur = v;
     while (!is_nil(&cur)) {
-        out = cons(car(&cur), out);
+        out = cons(car(&cur), out.clone());
         cur = cdr(&cur);
     }
     return out;
@@ -141,26 +146,37 @@ export fn reverse(v: Val) -> Val {
 // ---------------------------------------------------------------------------
 
 // A fresh empty top-level frame (its parent is `Empty`).
+fn new_frame(parent: Env) -> Env {
+    let mut cell = heap(Frame { .binds = Val::Nil, .parent = parent });
+    // Leak the box deliberately: every frame lives until process exit, and
+    // copying an `Env` must never free the frame another handle still uses.
+    return Env::Frame(Heap::into_raw(cell));
+}
+
 export fn env_new() -> Env {
-    return Env::Frame(heap(Frame { .binds = Val::Nil, .parent = Env::Empty }));
+    return new_frame(Env::Empty);
 }
 
 // A fresh child frame that closes over `parent`.
 export fn env_child(parent: Env) -> Env {
-    return Env::Frame(heap(Frame { .binds = Val::Nil, .parent = parent }));
+    return new_frame(parent);
 }
 
 // Prepend the binding (name . value) to the frame `cell`. The frame struct is
 // replaced through the box (the box identity, and so the frame's identity to
 // any closure that captured it, is preserved).
-fn frame_define(cell: Heap<Frame>, key: Val, value: Val) {
-    *cell = Frame { .binds = cons(cons(key, value), cell.binds), .parent = cell.parent };
+fn frame_define(cell: raw mut Frame, key: Val, value: Val) {
+    unchecked("new_frame allocated this cell; it lives for the whole run") {
+        let binds = cons(cons(key, value), (*cell).binds.clone());
+        let parent = (*cell).parent.clone();
+        (*cell) = Frame { .binds = binds, .parent = parent };
+    }
 }
 
 // Bind `name` to `value` in the innermost frame of `env`.
 export fn env_define(env: &Env, name: &str, value: Val) {
-    switch (env) {
-        case Frame(c): { frame_define(c, Val::Sym(name), value); }
+    switch (*env) {
+        case Frame(p): { frame_define(p, Val::Sym(name), value); }
         case Empty:    { }
     }
 }
@@ -168,27 +184,26 @@ export fn env_define(env: &Env, name: &str, value: Val) {
 // Replace the value of `name` inside the association list `binds`, in place.
 // Returns true when the binding was found. The pair's value cell is a
 // `Heap<Val>`, so writing through it updates every share of the spine.
-fn alist_set(binds: Val, name: &str, value: Val) -> bool {
-    let mut cur = binds;
-    while (!is_nil(&cur)) {
-        switch (&cur) {
-            case Cons(h, t): {
-                switch (h) {
-                    case Cons(k, v): {
-                        if (is_sym(&*k, name)) { *v = value; return true; }
-                    }
-                    case Nil: { }
-                    case Int(n): { }
-                    case Sym(s): { }
-                    case Closure(p, b, e): { }
+fn alist_set(binds: &Val, name: &str, value: &Val) -> bool {
+    // Mutate through the original heap cells in the association list: cloning
+    // the list here would give `set!` a private copy nobody else can see.
+    switch (binds) {
+        case Cons(h, t): {
+            switch (h) {
+                case Cons(k, v): {
+                    if (is_sym(&*k, name)) { *v = value.clone(); return true; }
                 }
-                cur = *t;
+                case Nil: { }
+                case Int(n): { }
+                case Sym(s): { }
+                case Closure(p, b, e): { }
             }
-            case Nil: { return false; }
-            case Int(n): { return false; }
-            case Sym(s): { return false; }
-            case Closure(p, b, e): { return false; }
+            return alist_set(&*t, name, value);
         }
+        case Nil: { return false; }
+        case Int(n): { return false; }
+        case Sym(s): { return false; }
+        case Closure(p, b, e): { return false; }
     }
     return false;
 }
@@ -197,18 +212,16 @@ fn alist_set(binds: Val, name: &str, value: Val) -> bool {
 // mutate a captured variable); if it is unbound anywhere, define it in the
 // innermost frame, as `define` would.
 export fn env_set(env: &Env, name: &str, value: Val) {
-    let mut e = *env;
-    while (true) {
-        switch (&e) {
-            case Frame(c): {
-                if (alist_set(c.binds, name, value)) { return; }
-                e = c.parent;
+    switch (*env) {
+        case Frame(p): {
+            unchecked("new_frame allocated this cell; it lives for the whole run") {
+                if (alist_set(&(*p).binds, name, &value)) { return; }
+                let parent = (*p).parent;
+                env_set(&parent, name, value);
             }
-            case Empty: {
-                env_define(env, name, value);
-                return;
-            }
+            return;
         }
+        case Empty: { env_define(env, name, value); }
     }
 }
 
@@ -216,17 +229,19 @@ export fn env_set(env: &Env, name: &str, value: Val) {
 export fn env_lookup(env: &Env, name: &str) -> Val {
     let mut e = *env;
     while (true) {
-        switch (&e) {
-            case Frame(c): {
-                let mut cur = c.binds;
-                while (!is_nil(&cur)) {
-                    let pair = car(&cur);
-                    if (is_sym(&car(&pair), name)) {
-                        return cdr(&pair);
+        switch (e) {
+            case Frame(p): {
+                unchecked("new_frame allocated this cell; it lives for the whole run") {
+                    let mut cur = (*p).binds.clone();
+                    while (!is_nil(&cur)) {
+                        let pair = car(&cur);
+                        if (is_sym(&car(&pair), name)) {
+                            return cdr(&pair);
+                        }
+                        cur = cdr(&cur);
                     }
-                    cur = cdr(&cur);
+                    e = (*p).parent;
                 }
-                e = c.parent;
             }
             case Empty: { return Val::Nil; }
         }

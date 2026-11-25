@@ -364,6 +364,13 @@ fn instr(b: &mut Borrow, c: &mut check::Checker, ins: &cfg::Instr) {
         expr(b, c, n.a, false, ins.loop);
     } else if (k == node::AST_FOR) {
         expr(b, c, n.a, true, ins.loop);
+    } else if (k == node::AST_SWITCH) {
+        // Only the scrutinee is evaluated here. Arms live in their own CFG
+        // blocks; walking them as expressions would use pattern bindings
+        // before the arm's ENTER instruction initializes them.
+        expr(b, c, n.a, false, ins.loop);
+    } else if (k == node::AST_ARM) {
+        // Handled by the arm's block; never walk it from a parent instruction.
     } else {
         expr(b, c, ins.node, false, ins.loop);
     }

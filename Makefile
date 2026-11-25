@@ -94,6 +94,7 @@ test: harmony
 	$(MAKE) harmony
 	bash tests/harmony/string-pool.sh
 	bash tests/harmony/version.sh
+	bash tests/harmony/lisp.sh
 	bash tests/harmony/fuzz.sh
 	bash tests/harmony-final/run.sh
 	bash tests/harmony-final/driver.sh

@@ -239,8 +239,9 @@ is unit-tested on its own.
 - [x] `tests/harmony-final/resolvediff.py` compared 19 module scenarios
   against harmony-base's NAME-* decisions (0 mismatches). Archived with the
   legacy oracle; module behaviour is now covered by the single-lane suites.
-- [x] Gate: retired with the two-lane burn-in. The LISP interpreter fixtures
-  are archived on `legacy/bootstrap` (v1's M2 ownership rules reject them).
+- [x] Gate: retired with the two-lane burn-in. The LISP interpreter was later
+  ported to the current compiler and its 53-case suite is live again as
+  `tests/harmony/lisp.sh` in `make test`.
 
 A subtle bug found while testing the loader: `Vec<&str>` inside a method
 mis-substitutes (`get` yields `&&str` and `push` wants `&&str`), so the loader

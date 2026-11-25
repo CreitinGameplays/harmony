@@ -76,6 +76,26 @@ export fn build(nodes: &node::Nodes, body: i32,
     return c;
 }
 
+// A switch arm's pattern bindings are declarations (§8.6). The checker
+// declares them, but the move analysis needs an ENTER instruction in the arm's
+// block or every binding starts uninitialized and looks like a use-after-move.
+fn enter_pattern(c: &mut Cfg, nodes: &node::Nodes, h: i32, b: i32, depth: i32) {
+    if (h < 0) { return; }
+    let n = node::get(nodes, h);
+    if (n.kind == node::AST_PAT_BIND) {
+        push_instr(c, b, -1, h, depth);
+    }
+    enter_pattern(c, nodes, n.a, b, depth);
+    enter_pattern(c, nodes, n.b, b, depth);
+    enter_pattern(c, nodes, n.c, b, depth);
+    let mut i: usize = 0;
+    while (i < n.kids.len()) { enter_pattern(c, nodes, *n.kids.get(i), b, depth); i += 1; }
+    i = 0;
+    while (i < n.kids2.len()) { enter_pattern(c, nodes, *n.kids2.get(i), b, depth); i += 1; }
+    i = 0;
+    while (i < n.kids3.len()) { enter_pattern(c, nodes, *n.kids3.get(i), b, depth); i += 1; }
+}
+
 // Adds one simple statement to `cur` and returns it.
 fn simple(c: &mut Cfg, cur: i32, h: i32, depth: i32) -> i32 {
     push_instr(c, cur, h, -1, depth);
@@ -178,6 +198,11 @@ fn stmt(c: &mut Cfg, nodes: &node::Nodes, h: i32, cur: i32, depth: i32,
             let arm = node::get(nodes, *n.kids.get(i));
             let ab = add_block(c);
             edge(c, cur, ab);
+            let mut pk: usize = 0;
+            while (pk < arm.kids.len()) {
+                enter_pattern(c, nodes, *arm.kids.get(pk), ab, depth);
+                pk += 1;
+            }
             let a2 = stmt(c, nodes, arm.b, ab, depth, brks, conts);
             if (c.blocks.get(a2 as usize).term == T_NEXT) { edge(c, a2, mb); }
             i += 1;

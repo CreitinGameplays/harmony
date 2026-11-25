@@ -101,7 +101,7 @@ export fn read_form(r: &mut Reader) -> value::Val {
             skip_ws(r);
             if (at_end(&*r)) { break; }
             if (peek(&*r) == 41u8) { r.pos += 1; break; }
-            rev = value::cons(read_form(r), rev);
+            rev = value::cons(read_form(r), rev.clone());
         }
         return value::reverse(rev);
     }
@@ -116,7 +116,7 @@ export fn read_all(src: &str) -> value::Val {
     while (true) {
         skip_ws(&mut r);
         if (at_end(&r)) { break; }
-        rev = value::cons(read_form(&mut r), rev);
+        rev = value::cons(read_form(&mut r), rev.clone());
     }
     return value::reverse(rev);
 }
